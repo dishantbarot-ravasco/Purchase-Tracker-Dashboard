@@ -80,6 +80,40 @@
   .admin-form label { font-size:12px; color:var(--slate-soft); display:flex; align-items:center; gap:4px; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px; box-shadow:var(--shadow); }
   .section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); margin:0 0 4px; }
+
+  .back-link { color:var(--blue); cursor:pointer; font-size:12.5px; font-weight:600; margin-bottom:12px; display:inline-block; }
+  .back-link:hover { text-decoration:underline; }
+  .po-search { width:100%; max-width:340px; margin-bottom:14px; }
+  .row-link { color:var(--blue); cursor:pointer; font-weight:700; }
+  .row-link:hover { text-decoration:underline; }
+  .status-pill { display:inline-block; padding:3px 9px; border-radius:999px; font-size:10.5px; font-weight:700; letter-spacing:0.02em; text-transform:uppercase; }
+  .status-ordered { background:var(--amber-soft); color:#92400e; }
+  .status-material_inwarded { background:var(--blue-soft); color:#1e40af; }
+  .status-received_in_inventory { background:var(--green-soft); color:#166534; }
+  .flag-badge { display:inline-block; font-size:10px; font-weight:700; border-radius:999px; padding:2px 8px; margin-left:6px; background:var(--red-soft); color:#991b1b; }
+
+  .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,0.55); display:none; align-items:flex-start; justify-content:center; z-index:100; padding:36px 16px; overflow:auto; }
+  .modal-backdrop.open { display:flex; }
+  .modal { background:#fff; border-radius:14px; max-width:760px; width:100%; padding:24px 28px 28px; max-height:92vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.25); }
+  .modal h2 { margin:0 0 2px; font-size:19px; color:var(--navy); }
+  .modal .close-btn { float:right; cursor:pointer; font-size:22px; color:#9ca3af; line-height:1; }
+  .modal .close-btn:hover { color:var(--slate); }
+  .modal-meta { font-size:12.5px; color:var(--slate-soft); margin-bottom:14px; }
+  .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:14px 0; }
+  @media (max-width:600px) { .field-grid { grid-template-columns:1fr; } }
+  .field-block { background:var(--gray-soft); border-radius:10px; padding:12px 14px; }
+  .field-block h4 { margin:0 0 6px; font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; }
+  .field-block div.line { font-size:13px; margin-bottom:3px; color:var(--slate); }
+  .items-table { width:100%; border-collapse:collapse; margin-top:6px; font-size:12.5px; }
+  .items-table th, .items-table td { border-bottom:1px solid var(--border); padding:6px 8px; text-align:left; }
+  .flags-box { background:var(--red-soft); border:1px solid #fecaca; border-radius:10px; padding:12px 14px; margin-top:14px; }
+  .flags-box h4 { margin:0 0 8px; font-size:10.5px; text-transform:uppercase; color:#991b1b; font-weight:700; }
+  .flags-box li { font-size:12.5px; margin-bottom:5px; color:#7f1d1d; }
+  .correction-box { background:var(--gray-soft); border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-top:14px; }
+  .correction-box h4 { margin:0 0 8px; font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; }
+  .correction-box textarea { width:100%; min-height:52px; resize:vertical; font-family:inherit; }
+  .correction-status { font-size:12px; margin-top:8px; font-weight:600; }
+  .correction-status.ok { color:var(--green); }
 </style>
 </head>
 <body>
@@ -91,8 +125,22 @@
     const root = document.getElementById('root');
     let currentTab = 'dashboard';
 
+    function getCookie(name) {
+      const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+      return match ? match.pop() : '';
+    }
+
     async function api(path, opts) {
-      const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+      opts = opts || {};
+      const method = (opts.method || 'GET').toUpperCase();
+      const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+      // Django's CSRF protection is on for every POST/PUT/DELETE - the
+      // ensure_csrf_cookie wrapper on the index view (see core/urls.py)
+      // guarantees this cookie exists, we just read it back here.
+      if (method !== 'GET' && method !== 'HEAD') {
+        headers['X-CSRFToken'] = getCookie('csrftoken');
+      }
+      const res = await fetch(path, Object.assign({}, opts, { headers }));
       if (res.status === 401) { showSignIn(); throw new Error('not signed in'); }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
@@ -180,7 +228,7 @@
       const noticeHtml = p.errors.length
         ? p.errors.map(e => '<div class="notice-banner">' + escapeHtml(e) + '</div>').join('')
         : '';
-      return '<div class="plant-card">' +
+      return '<div class="plant-card" style="cursor:pointer" onclick="openPlantPos(\'' + p.plant + '\')">' +
         '<div class="plant-name">' + escapeHtml(plantLabel(p.plant)) + '</div>' +
         '<div class="stat-grid">' +
           '<div class="stat"><div class="val">' + p.poCount + '</div><div class="label">Domestic POs</div></div>' +
@@ -189,6 +237,130 @@
           '<div class="stat"><div class="val">' + p.stockRowCount + '</div><div class="label">RM Stock Rows</div></div>' +
         '</div>' + noticeHtml +
       '</div>';
+    }
+
+    // --- Purchase Order list + drill-down (per plant) ------------------
+
+    let currentPlant = null;
+    let currentPos = [];
+
+    async function openPlantPos(plant) {
+      currentPlant = plant;
+      const el = document.getElementById('tab-content');
+      el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading purchase orders&hellip;</div></div>';
+      try {
+        const data = await api('/api/plants/' + plant + '/purchase-orders');
+        currentPos = data.purchaseOrders;
+        renderPoList();
+      } catch (e) {
+        el.innerHTML = '<div class="back-link" onclick="loadDashboard()">&larr; Back to dashboard</div>' +
+          '<div class="noaccess">Couldn\'t load purchase orders right now. Please try again, or contact IT if this keeps happening.</div>';
+      }
+    }
+
+    function renderPoList(searchTerm) {
+      const el = document.getElementById('tab-content');
+      searchTerm = (searchTerm || '').toLowerCase();
+      const filtered = !searchTerm ? currentPos : currentPos.filter(po =>
+        (po.poNumber + ' ' + po.vendorName).toLowerCase().includes(searchTerm)
+      );
+
+      if (!currentPos.length) {
+        el.innerHTML = '<div class="back-link" onclick="loadDashboard()">&larr; Back to dashboard</div>' +
+          '<div class="noaccess">No purchase orders for ' + escapeHtml(plantLabel(currentPlant)) +
+          ' yet - the extraction pipeline hasn\'t loaded any in, or none exist for this plant.</div>';
+        return;
+      }
+
+      const rows = filtered.map((po, i) => {
+        const originalIndex = currentPos.indexOf(po);
+        const flagCount = (po.flags || []).filter(f => !f.resolved).length;
+        return '<tr>' +
+          '<td><span class="row-link" onclick="openPoModal(' + originalIndex + ')">' + escapeHtml(po.poNumber) + '</span></td>' +
+          '<td>' + escapeHtml(po.vendorName || '—') + '</td>' +
+          '<td>' + escapeHtml(po.createdDate || '—') + '</td>' +
+          '<td>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '—') + '</td>' +
+          '<td><span class="status-pill status-' + po.status + '">' + escapeHtml((po.status || '').replace(/_/g, ' ')) + '</span>' +
+            (flagCount ? '<span class="flag-badge">' + flagCount + '</span>' : '') + '</td>' +
+        '</tr>';
+      }).join('');
+
+      el.innerHTML =
+        '<div class="back-link" onclick="loadDashboard()">&larr; Back to dashboard</div>' +
+        '<div class="card">' +
+          '<div class="section-title">' + escapeHtml(plantLabel(currentPlant)) + ' - Purchase Orders</div>' +
+          '<input class="po-search" placeholder="Search PO number or vendor&hellip;" oninput="renderPoList(this.value)">' +
+          '<table><thead><tr><th>PO Number</th><th>Vendor</th><th>Date</th><th>Value (incl. tax)</th><th>Status</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table>' +
+        '</div>';
+    }
+
+    function openPoModal(index) {
+      const po = currentPos[index];
+      const flagsHtml = (po.flags || []).length
+        ? '<div class="flags-box"><h4>Flags</h4><ul style="margin:0;padding-left:18px;">' +
+            po.flags.map(f => '<li>' + escapeHtml(f.text) + (f.resolved ? ' (resolved)' : '') + '</li>').join('') +
+          '</ul></div>'
+        : '';
+      const itemsHtml = (po.items || []).length
+        ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th></tr></thead><tbody>' +
+            po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '—') +
+              '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '—') + '</td></tr>').join('') +
+          '</tbody></table>'
+        : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop open';
+      backdrop.id = 'po-modal-backdrop';
+      backdrop.onclick = (e) => { if (e.target === backdrop) closePoModal(); };
+      backdrop.innerHTML =
+        '<div class="modal">' +
+          '<span class="close-btn" onclick="closePoModal()">&times;</span>' +
+          '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
+          '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(po.createdDate || 'no date') + '</div>' +
+          '<div class="field-grid">' +
+            '<div class="field-block"><h4>Vendor</h4>' +
+              '<div class="line">' + escapeHtml(po.vendorName || '—') + '</div>' +
+              '<div class="line">GSTIN: ' + escapeHtml(po.vendorGstin || '—') + '</div>' +
+            '</div>' +
+            '<div class="field-block"><h4>Commercials</h4>' +
+              '<div class="line">Total incl. tax: ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '—') + '</div>' +
+              '<div class="line">Payment terms: ' + escapeHtml(po.paymentTerms || '—') + '</div>' +
+              '<div class="line">Incoterms: ' + escapeHtml(po.incoterms || '—') + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="section-title">Items</div>' + itemsHtml +
+          flagsHtml +
+          '<div class="correction-box">' +
+            '<h4>Spot something wrong? Flag it</h4>' +
+            '<textarea id="correction-text" placeholder="e.g. Quantity should be 5000 KG, not 500 KG"></textarea>' +
+            '<div style="margin-top:8px;"><button class="btn small" onclick="submitCorrection(\'' + po.poNumber + '\')">Submit</button></div>' +
+            '<div id="correction-status" class="correction-status"></div>' +
+          '</div>' +
+        '</div>';
+      document.body.appendChild(backdrop);
+    }
+
+    function closePoModal() {
+      const el = document.getElementById('po-modal-backdrop');
+      if (el) el.remove();
+    }
+
+    async function submitCorrection(poNumber) {
+      const text = document.getElementById('correction-text').value.trim();
+      const statusEl = document.getElementById('correction-status');
+      if (!text) { statusEl.className = 'correction-status'; statusEl.textContent = 'Please describe what looks wrong first.'; return; }
+      try {
+        await api('/api/purchase-orders/' + encodeURIComponent(poNumber) + '/flags', {
+          method: 'POST', body: JSON.stringify({ flagText: text })
+        });
+        statusEl.className = 'correction-status ok';
+        statusEl.textContent = 'Submitted - thank you.';
+        document.getElementById('correction-text').value = '';
+      } catch (e) {
+        statusEl.className = 'correction-status';
+        statusEl.textContent = e.message || 'Could not submit right now, please try again.';
+      }
     }
 
     function plantLabel(code) {

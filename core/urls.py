@@ -1,7 +1,16 @@
 from django.urls import path
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.generic import TemplateView
 
 from . import auth_views, views
+
+# ensure_csrf_cookie guarantees the csrftoken cookie actually gets set on
+# first page load. Without this, Django's CsrfViewMiddleware (active
+# globally) has nothing to compare against, and every POST/DELETE from the
+# frontend (Admin tab add/remove, PO corrections) fails with a 403 - the
+# frontend's fetch calls read this cookie and send it back as the
+# X-CSRFToken header, see public/index.html's api() helper.
+index_view = ensure_csrf_cookie(TemplateView.as_view(template_name="index.html"))
 
 urlpatterns = [
     # Auth
@@ -24,5 +33,5 @@ urlpatterns = [
 
     # Frontend shell - served for every other route (no client-side routing
     # beyond one screen, same pattern as the earlier Node prototype)
-    path("", TemplateView.as_view(template_name="index.html"), name="index"),
+    path("", index_view, name="index"),
 ]
