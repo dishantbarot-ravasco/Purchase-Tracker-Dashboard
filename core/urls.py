@@ -20,6 +20,7 @@ urlpatterns = [
     # collection path, DELETE on the per-email path)
     path("api/admin/users", views.admin_users, name="admin_users"),
     path("api/admin/users/<str:email>", views.admin_user_detail, name="admin_user_detail"),
+    path("api/admin/diagnostics", views.admin_diagnostics, name="admin_diagnostics"),
 
     # Frontend shell - served for every other route (no client-side routing
     # beyond one screen, same pattern as the earlier Node prototype)

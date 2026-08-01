@@ -11,7 +11,9 @@ is the whole point (see core/decorators.py's module docstring).
 """
 import json
 import logging
+import os
 
+from django.conf import settings
 from django.db.models import Count, Sum
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_protect
@@ -177,6 +179,29 @@ def _upsert_user_access(request):
         detail={"target_email": target_email, "role": role, "plants": plants},
     )
     return JsonResponse({"ok": True})
+
+
+@require_GET
+@require_admin
+def admin_diagnostics(request):
+    """Admin-only, no shell access needed: lets you check from the browser
+    whether the service account key and the Drive folder IDs are actually
+    configured on this Render instance, without needing the paid Shell tab
+    or digging through logs. Never returns the key's contents, only whether
+    the file exists and how big it is."""
+    key_path = settings.GOOGLE_SERVICE_ACCOUNT_JSON_PATH
+    key_exists = os.path.isfile(key_path)
+    return JsonResponse(
+        {
+            "serviceAccountKeyPath": key_path,
+            "serviceAccountKeyFound": key_exists,
+            "serviceAccountKeySizeBytes": os.path.getsize(key_path) if key_exists else None,
+            "drivePlantRootsConfigured": {
+                plant: bool(folder_id) for plant, folder_id in settings.DRIVE_PLANT_ROOTS.items()
+            },
+            "extractionQueueFolderConfigured": bool(settings.DRIVE_EXTRACTION_QUEUE_FOLDER),
+        }
+    )
 
 
 @require_http_methods(["DELETE"])
