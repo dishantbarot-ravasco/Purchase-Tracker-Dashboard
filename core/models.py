@@ -193,6 +193,32 @@ class StockSnapshot(models.Model):
 
 
 # ---------------------------------------------------------------------------
+# Plant file status - a small CACHE of "how many rows does each plant's
+# live MIR/Stock file currently have", refreshed periodically by the
+# refresh_plant_file_status management command, NOT read live on every
+# dashboard page view.
+#
+# This does not contradict the "MIR isn't stored as a system of record"
+# rule above - we're not storing MIR's actual transaction rows here, only a
+# lightweight row-count/status summary for the dashboard cards. The reason
+# this table exists at all: the dashboard was calling Drive live on every
+# page load (see core/mir_stock.py), which meant any Drive slowness or a
+# cold-started Render instance showed up as a broken page for whoever
+# happened to load it at that moment. Reading this cached table instead
+# means the dashboard never depends on Drive's response time at all - only
+# the background refresh job does, and that runs outside any web request's
+# timeout window.
+# ---------------------------------------------------------------------------
+
+class PlantFileStatus(models.Model):
+    plant = models.CharField(max_length=20, choices=Plant.choices, unique=True)
+    mir_row_count = models.IntegerField(default=0)
+    stock_row_count = models.IntegerField(default=0)
+    last_checked_at = models.DateTimeField(auto_now=True)
+    last_error = models.CharField(max_length=500, blank=True)  # plain-language, same as the dashboard's notice banner
+
+
+# ---------------------------------------------------------------------------
 # Extraction hand-off queue: Django never calls the Anthropic API directly
 # (cost reasons, per Dishant's explicit call). Instead this table is the
 # source of truth for "what still needs extracting", and a Claude scheduled

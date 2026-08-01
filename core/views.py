@@ -19,9 +19,8 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods
 
-from . import mir_stock
 from .decorators import require_admin, require_login, require_plant_access
-from .models import AuditLog, POFlag, Plant, PurchaseOrder, StockSnapshot, UserAccess
+from .models import AuditLog, PlantFileStatus, POFlag, Plant, PurchaseOrder, StockSnapshot, UserAccess
 from .serializers import (
     serialize_dashboard_plant_card,
     serialize_purchase_order,
@@ -29,27 +28,37 @@ from .serializers import (
     serialize_user_access,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @require_GET
 @require_login
 def dashboard(request):
-    """One summary card per plant the signed-in user can see. PO counts/
-    totals come from Postgres (fast); MIR/Stock row counts are read live off
-    Drive (slower, and can legitimately fail if a file's momentarily
-    unreachable) - failures there are surfaced per-plant in `errors` rather
-    than taking down the whole dashboard response."""
+    """One summary card per plant the signed-in user can see. Everything
+    here reads from Postgres only - no live Drive calls in this request.
+
+    MIR/Stock row counts used to be read live off Drive on every page load,
+    which meant any Drive slowness (or a cold-started Render instance) could
+    time out the whole dashboard request. They now come from PlantFileStatus,
+    a small cache refreshed in the background by the
+    refresh_plant_file_status management command (run on a schedule, e.g.
+    every 15-30 min via Render Cron Job) - so this view is always fast and
+    never depends on Drive's response time, only the background job does."""
     plants_out = [_build_plant_card(plant) for plant in request.user_access.allowed_plants()]
     return JsonResponse({"plants": plants_out})
 
 
 def _build_plant_card(plant):
-    errors = []
     po_agg = PurchaseOrder.objects.filter(plant=plant, doc_type="domestic").aggregate(
         count=Count("id"), total=Sum("total_incl_tax")
     )
 
-    mir_row_count = _safe_call(mir_stock.get_mir_rm_row_count, plant, errors, "MIR file")
-    stock_row_count = _safe_call(mir_stock.get_stock_row_count, plant, errors, "RM Stock file")
+    status = PlantFileStatus.objects.filter(plant=plant).first()
+    mir_row_count = status.mir_row_count if status else 0
+    stock_row_count = status.stock_row_count if status else 0
+    errors = [status.last_error] if (status and status.last_error) else []
+    if not status:
+        errors.append("MIR/Stock data hasn't been checked yet - the background refresh job hasn't run.")
 
     return serialize_dashboard_plant_card(
         plant=plant,
@@ -59,29 +68,6 @@ def _build_plant_card(plant):
         stock_row_count=stock_row_count,
         errors=errors,
     )
-
-
-logger = logging.getLogger(__name__)
-
-
-def _safe_call(fn, plant, errors_out, label):
-    """Runs a Drive-dependent read and turns any failure into a short,
-    non-technical message instead of raising - a bad/missing file for one
-    plant shouldn't 500 the whole dashboard for every plant.
-
-    The full exception (stack trace, file paths, etc.) is logged
-    server-side only, via logger.exception() - visible in Render's Logs tab
-    for whoever's debugging it, but a manager looking at the dashboard
-    should never see a Python error message. If this starts showing up
-    for every plant, check the Render logs for the real cause (common one:
-    the GOOGLE_SERVICE_ACCOUNT_JSON_PATH secret file wasn't uploaded, or
-    its path doesn't match the env var)."""
-    try:
-        return fn(plant)
-    except Exception:
-        logger.exception("Failed to read %s for plant %s", label, plant)
-        errors_out.append(f"{label} isn't available right now.")
-        return 0
 
 
 @require_GET
