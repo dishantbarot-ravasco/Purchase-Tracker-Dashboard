@@ -157,6 +157,24 @@
   .correction-status { font-size:12px; margin-top:8px; font-weight:600; }
   .correction-status.ok { color:var(--green); }
   .full-width { grid-column: 1 / -1; }
+  .mat-toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+  .mat-search { flex:1; min-width:220px; padding:9px 13px; border:1px solid #cbd5e1; border-radius:9px; font-size:13px; }
+  .mat-cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-bottom:18px; }
+  .kpi-card.unknown { border-left-color:var(--gray); }
+  .kpi-card.unknown .val { color:var(--gray); }
+  .material-chip { display:inline-block; background:var(--green-soft); color:#166534; font-size:11px; font-weight:600; border-radius:99px; padding:3px 10px; margin:2px 4px 2px 0; }
+  .material-chip.unused { background:#f1f5f9; color:#475569; }
+  .license-card { background:var(--card); border:1px solid var(--border); border-left:5px solid var(--indigo); border-radius:13px; padding:18px 20px; margin-bottom:16px; box-shadow:var(--shadow); }
+  .license-card-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:14px; }
+  .license-card-head h4 { margin:0; font-size:15px; font-family:var(--mono); color:var(--navy); }
+  .license-stat-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:10px; margin-bottom:16px; }
+  .license-stat { background:#f8fafc; border:1px solid var(--border); border-radius:10px; padding:10px 12px; }
+  .license-stat .lval { font-family:var(--mono); font-weight:700; font-size:13.5px; color:var(--navy); }
+  .license-stat .llabel { font-size:9.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; margin-top:3px; }
+  .license-section-label { font-size:11px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; margin:14px 0 8px; }
+  .license-po-table { width:100%; border-collapse:collapse; font-size:12px; margin-bottom:4px; }
+  .license-po-table th, .license-po-table td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
+  .license-po-table td.po-cell { font-family:var(--mono); font-weight:700; color:var(--navy); white-space:nowrap; }
 
   /* --- Additions beyond the artifact: sign-in screen, admin panel --- */
   .signin-screen { text-align:center; padding:100px 20px; }
@@ -193,7 +211,13 @@
     // as-is, just reading from Postgres via the API instead of parsing CSVs
     // live off Drive on every load.
     let DATA = { HRS: [], RTP_ACHHAD: [], RTP_VAPI: [] };
-    let state = { plant: 'HRS', sub: 'Domestic', statusFilter: null, from: null, to: null, showAllPOs: false };
+    let MATERIALS = { HRS: [], RTP_ACHHAD: [], RTP_VAPI: [] };
+    let LICENSES = { HRS: [], RTP_ACHHAD: [], RTP_VAPI: [] };
+    let state = {
+      view: 'po', plant: 'HRS', sub: 'Domestic', statusFilter: null, from: null, to: null, showAllPOs: false,
+      impSubView: 'pos',
+      matPlant: 'HRS', matSearch: '', showAllMaterials: false,
+    };
 
     function getCookie(name) {
       const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
@@ -285,32 +309,44 @@
           const data = await api('/api/plants/' + p + '/purchase-orders');
           DATA[p] = data.purchaseOrders;
         }));
-        el.innerHTML =
-          '<div class="view-tabs" id="viewTabs"></div>' +
-          '<div class="plant-tabs" id="plantTabs"></div>' +
-          '<div class="sub-tabs" id="subTabs"></div>' +
-          '<div id="viewContent"></div>';
+        el.innerHTML = '<div class="view-tabs" id="viewTabs"></div><div id="viewContent"></div>';
         renderViewTabs();
-        renderPlantTabs();
-        renderSubTabs();
-        renderPoContent();
+        renderAll();
       } catch (e) {
         el.innerHTML = '<div class="noaccess">Couldn\'t load the dashboard right now. Please refresh, or contact IT if this keeps happening.</div>';
       }
     }
 
+    // Exactly the two top-level views the real artifact has - "Purchase
+    // Orders" and "Raw Material Analysis". There is no separate top-level
+    // Materials/Licenses tab; Licenses lives nested inside the Import
+    // sub-tab instead (see renderPoContent).
     function renderViewTabs() {
       const el = document.getElementById('viewTabs');
-      el.innerHTML = '<div class="view-tab active">PO Tracker</div>' +
-        '<div class="view-tab" title="Coming next" style="opacity:.55;cursor:default;">Materials (coming soon)</div>' +
-        '<div class="view-tab" title="Coming next" style="opacity:.55;cursor:default;">Advance Licenses (coming soon)</div>';
+      el.innerHTML =
+        '<div class="view-tab ' + (state.view === 'po' ? 'active' : '') + '" data-view="po">Purchase Orders</div>' +
+        '<div class="view-tab ' + (state.view === 'materials' ? 'active' : '') + '" data-view="materials">Raw Material Analysis</div>';
+      el.querySelectorAll('.view-tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; renderViewTabs(); renderAll(); });
+    }
+
+    function renderAll() {
+      const el = document.getElementById('viewContent');
+      if (state.view === 'po') {
+        el.innerHTML = '<div class="plant-tabs" id="plantTabs"></div><div class="sub-tabs" id="subTabs"></div><div id="content"></div>';
+        renderPlantTabs();
+        renderSubTabs();
+        renderPoContent();
+      } else {
+        el.innerHTML = '<div id="materialsContent"></div>';
+        loadAndRenderMaterials();
+      }
     }
 
     function renderPlantTabs() {
       const el = document.getElementById('plantTabs');
       el.innerHTML = PLANTS.map(p => '<div class="plant-tab ' + (p === state.plant ? 'active' : '') + '" data-plant="' + p + '">' + PLANT_LABELS[p] + '</div>').join('');
       el.querySelectorAll('.plant-tab').forEach(t => t.onclick = () => {
-        state.plant = t.dataset.plant; state.statusFilter = null; state.showAllPOs = false;
+        state.plant = t.dataset.plant; state.statusFilter = null; state.showAllPOs = false; state.impSubView = 'pos';
         renderPlantTabs(); renderPoContent();
       });
     }
@@ -319,7 +355,7 @@
       const el = document.getElementById('subTabs');
       el.innerHTML = ['Domestic', 'Import'].map(s => '<div class="sub-tab ' + (s === state.sub ? 'active' : '') + '" data-sub="' + s + '">' + s + ' Purchases</div>').join('');
       el.querySelectorAll('.sub-tab').forEach(t => t.onclick = () => {
-        state.sub = t.dataset.sub; state.statusFilter = null; state.showAllPOs = false;
+        state.sub = t.dataset.sub; state.statusFilter = null; state.showAllPOs = false; state.impSubView = 'pos';
         renderSubTabs(); renderPoContent();
       });
     }
@@ -342,9 +378,86 @@
     }
 
     function renderPoContent() {
-      const el = document.getElementById('viewContent');
+      const el = document.getElementById('content');
       destroyPageCharts();
       const docType = state.sub === 'Domestic' ? 'domestic' : 'import';
+
+      // Licenses is nested INSIDE the Import sub-tab, not a separate
+      // top-level view - matches the real artifact's structure exactly.
+      // Applies to every plant's Import sub-tab, not just RTP-Vapi - Advance
+      // Licenses are an import-side concept generally, RTP-Vapi just
+      // happens to be the only plant with import data extracted so far this
+      // financial year (HRS/RTP-Achhad's Import folders are empty, not
+      // architecturally excluded).
+      if (docType === 'import') {
+        const importSubTabsHtml =
+          '<div class="sub-tabs" style="margin-bottom:14px;">' +
+            '<div class="sub-tab ' + (state.impSubView === 'pos' ? 'active' : '') + '" id="impSubPos">Purchase Orders</div>' +
+            '<div class="sub-tab ' + (state.impSubView === 'licenses' ? 'active' : '') + '" id="impSubLicenses">Licenses</div>' +
+          '</div>';
+        if (state.impSubView === 'licenses') {
+          el.innerHTML = importSubTabsHtml + '<div id="licensesArea"><div class="load-banner"><div class="spinner"></div><div>Loading licenses&hellip;</div></div></div>';
+          document.getElementById('impSubPos').onclick = () => { state.impSubView = 'pos'; renderPoContent(); };
+          document.getElementById('impSubLicenses').onclick = () => { state.impSubView = 'licenses'; renderPoContent(); };
+          loadAndRenderLicenses();
+          return;
+        }
+        el.innerHTML = importSubTabsHtml + '<div id="poListArea"></div>';
+        document.getElementById('impSubPos').onclick = () => { state.impSubView = 'pos'; renderPoContent(); };
+        document.getElementById('impSubLicenses').onclick = () => { state.impSubView = 'licenses'; renderPoContent(); };
+        renderPoList(document.getElementById('poListArea'), docType);
+        return;
+      }
+
+      renderPoList(el, docType);
+    }
+
+    async function loadAndRenderLicenses() {
+      const el = document.getElementById('licensesArea');
+      const plant = state.plant;
+      try {
+        if (!LICENSES[plant].length) {
+          const data = await api('/api/plants/' + plant + '/licenses');
+          LICENSES[plant] = data.licenses;
+        }
+        if (!LICENSES[plant].length) {
+          el.innerHTML = '<div class="no-data-note" style="padding:20px 0;">No Advance Authorisation licenses recorded yet for ' + escapeHtml(PLANT_LABELS[plant]) + ' - they get added once the extraction pipeline reads a license letter off Drive.</div>';
+          return;
+        }
+        el.innerHTML = LICENSES[plant].map(renderLicenseCard).join('');
+      } catch (e) {
+        el.innerHTML = '<div class="noaccess">Couldn\'t load licenses right now. Please refresh, or contact IT if this keeps happening.</div>';
+      }
+    }
+
+    function renderLicenseCard(lic) {
+      const poRows = lic.poUsages.length
+        ? lic.poUsages.map(u => '<tr><td class="po-cell">' + escapeHtml(u.poNumber) + '</td><td>' + escapeHtml(u.materialDescription || '—') + '</td></tr>').join('')
+        : '<tr><td colspan="2"><span class="no-data-note">No import PO currently linked to this license</span></td></tr>';
+      const chips = lic.items.length
+        ? lic.items.filter(i => i.itemType === 'input').map(i => '<span class="material-chip' + (i.consumedQty > 0 ? '' : ' unused') + '">' + escapeHtml(i.materialDescription) + (i.consumedQty > 0 ? ' (in use)' : '') + '</span>').join('')
+        : '<div class="no-data-note">Not available yet.</div>';
+      const today = new Date().toISOString().slice(0, 10);
+      const expired = lic.exportObligationEnd && lic.exportObligationEnd < today;
+      const pillClass = lic.eodcStatus === 'closed' ? 'received' : expired ? 'overdue' : 'pending';
+      const pillLabel = lic.eodcStatus === 'closed' ? 'EODC Closed' : expired ? 'Expired' : 'Open';
+      return '<div class="license-card">' +
+        '<div class="license-card-head"><h4>Authorisation No. ' + escapeHtml(lic.licenseNumber) + '</h4>' +
+          '<span class="status-pill status-' + pillClass + '">' + pillLabel + '</span></div>' +
+        '<div class="license-stat-grid">' +
+          '<div class="license-stat"><div class="lval">' + escapeHtml(lic.issueDate || 'Not extracted') + '</div><div class="llabel">Issue Date</div></div>' +
+          '<div class="license-stat"><div class="lval">' + escapeHtml(lic.importValidityEnd || 'Not extracted') + '</div><div class="llabel">Import Validity</div></div>' +
+          '<div class="license-stat"><div class="lval">' + escapeHtml(lic.exportObligationEnd || 'Not extracted') + '</div><div class="llabel">Export Obligation End</div></div>' +
+          '<div class="license-stat"><div class="lval">' + (lic.totalAuthorisedCifValue != null ? formatInr(lic.totalAuthorisedCifValue) : 'Not extracted') + '</div><div class="llabel">Authorised CIF Value</div></div>' +
+        '</div>' +
+        '<div class="license-section-label">Material Raised Against (by PO)</div>' +
+        '<table class="license-po-table"><tbody>' + poRows + '</tbody></table>' +
+        '<div class="license-section-label">Material(s) It Can Be Raised Against</div>' +
+        '<div>' + chips + '</div>' +
+      '</div>';
+    }
+
+    function renderPoList(el, docType) {
       const all = (DATA[state.plant] || []).filter(po => po.docType === docType);
       all.forEach(po => { po._status = computeStatus(po); });
 
@@ -509,7 +622,133 @@
         '</div>';
     }
 
-    function closeModal() { document.getElementById('modalBackdrop').classList.remove('open'); }
+    function closeModal() { document.getElementById('modalBackdrop').classList.remove('open'); destroyPageCharts(); }
+
+    // ------------------------------------------------------------------
+    // Raw Material Analysis view - the artifact's second top-level tab.
+    // Built off StockSnapshot (already real data in Postgres), one row per
+    // material (latest snapshot only). Deliberately has NO "Open PO Lines"
+    // or "MIR vs Stock Mismatch" cards yet - those need the PO-vs-MIR
+    // reconciliation engine, a separate not-yet-built piece (see task #17),
+    // and showing made-up numbers for them would be worse than omitting.
+    // ------------------------------------------------------------------
+    async function loadAndRenderMaterials() {
+      const el = document.getElementById('materialsContent');
+      el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading materials&hellip;</div></div>';
+      try {
+        if (!MATERIALS[state.matPlant].length) {
+          const data = await api('/api/plants/' + state.matPlant + '/materials');
+          MATERIALS[state.matPlant] = data.materials;
+        }
+        renderMaterialsView();
+      } catch (e) {
+        el.innerHTML = '<div class="noaccess">Couldn\'t load material data right now. Please refresh, or contact IT if this keeps happening.</div>';
+      }
+    }
+
+    function renderMaterialsView() {
+      const el = document.getElementById('materialsContent');
+      destroyPageCharts();
+      const all = MATERIALS[state.matPlant] || [];
+
+      const catCounts = {};
+      all.forEach(m => { catCounts[m.category || 'Uncategorized'] = (catCounts[m.category || 'Uncategorized'] || 0) + 1; });
+      const catOptions = Object.entries(catCounts).sort((a, b) => b[1] - a[1]);
+
+      let filtered = all;
+      if (state.matCategoryFilter) filtered = filtered.filter(m => (m.category || 'Uncategorized') === state.matCategoryFilter);
+      if (state.matSearch) {
+        const q = state.matSearch.toLowerCase();
+        filtered = filtered.filter(m => (m.description || '').toLowerCase().includes(q));
+      }
+
+      const totalMaterials = filtered.length;
+      const totalValue = filtered.reduce((s, m) => s + (m.value || 0), 0);
+      const sorted = filtered.slice().sort((a, b) => (b.value || 0) - (a.value || 0));
+      const showingAll = state.showAllMaterials;
+      const listRecs = showingAll ? sorted : sorted.slice(0, 5);
+
+      if (!all.length) {
+        el.innerHTML =
+          '<div class="plant-tabs" id="matPlantTabs">' + PLANTS.map(p => '<div class="plant-tab ' + (p === state.matPlant ? 'active' : '') + '" data-mplant="' + p + '">' + PLANT_LABELS[p] + '</div>').join('') + '</div>' +
+          '<div class="empty-state">No RM Stock snapshot recorded yet for ' + escapeHtml(PLANT_LABELS[state.matPlant]) + ' - it gets populated by the daily snapshot job once it runs.</div>';
+        bindMatPlantTabs();
+        return;
+      }
+
+      el.innerHTML =
+        '<div class="plant-tabs" id="matPlantTabs">' + PLANTS.map(p => '<div class="plant-tab ' + (p === state.matPlant ? 'active' : '') + '" data-mplant="' + p + '">' + PLANT_LABELS[p] + '</div>').join('') + '</div>' +
+        '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(PLANT_LABELS[state.matPlant]) + '</div>' +
+        '<div class="section-sub">Latest RM Stock snapshot per material at this plant. Click a row for its stock trend over time.</div>' +
+        '<div class="mat-cards">' +
+          '<div class="kpi-card"><div class="val">' + totalMaterials + '</div><div class="label">Materials Tracked</div></div>' +
+          '<div class="kpi-card"><div class="val">' + formatInr(totalValue) + '</div><div class="label">' + escapeHtml(PLANT_LABELS[state.matPlant]) + ' Inventory Value</div></div>' +
+        '</div>' +
+        '<div class="mat-toolbar">' +
+          '<input type="text" class="mat-search" id="matSearchInput" placeholder="Search material name..." value="' + escapeHtml(state.matSearch || '') + '">' +
+          '<select id="matCatSelect" class="mat-search" style="flex:none;min-width:220px;">' +
+            '<option value="">All categories (' + all.length + ')</option>' +
+            catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '" ' + (state.matCategoryFilter === c ? 'selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
+          '</select>' +
+        '</div>' +
+        '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Materials by Inventory Value (' + sorted.length + ')</div>' +
+          (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
+        '</div>' +
+        '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Stock Qty</th><th>Rate</th><th>Value</th></tr></thead><tbody>' +
+        listRecs.map(m => '<tr><td><span class="row-link" data-mat="' + escapeHtml(m.materialCode) + '">' + escapeHtml(m.description || m.materialCode) + '</span></td>' +
+          '<td>' + escapeHtml(m.category || '—') + '</td>' +
+          '<td>' + (m.qty != null ? m.qty : '—') + '</td>' +
+          '<td>' + (m.rate != null ? formatInr(m.rate) : '—') + '</td>' +
+          '<td>' + (m.value != null ? formatInr(m.value) : '—') + '</td></tr>').join('') +
+        '</tbody></table></div>';
+
+      bindMatPlantTabs();
+      document.getElementById('matSearchInput').oninput = (e) => { state.matSearch = e.target.value; renderMaterialsView(); };
+      document.getElementById('matCatSelect').onchange = (e) => { state.matCategoryFilter = e.target.value || null; renderMaterialsView(); };
+      const toggleBtn = document.getElementById('toggleMatBtn');
+      if (toggleBtn) toggleBtn.onclick = () => { state.showAllMaterials = !state.showAllMaterials; renderMaterialsView(); };
+      document.querySelectorAll('[data-mat]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.mat));
+    }
+
+    function bindMatPlantTabs() {
+      document.querySelectorAll('#matPlantTabs .plant-tab').forEach(t => t.onclick = () => {
+        state.matPlant = t.dataset.mplant; state.matCategoryFilter = null; state.matSearch = ''; state.showAllMaterials = false;
+        loadAndRenderMaterials();
+      });
+    }
+
+    async function openMaterialModal(materialCode) {
+      const mat = (MATERIALS[state.matPlant] || []).find(m => m.materialCode === materialCode);
+      if (!mat) return;
+      const backdrop = document.getElementById('modalBackdrop');
+      const body = document.getElementById('modalBody');
+      backdrop.classList.add('open');
+      backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+      body.innerHTML =
+        '<span class="close-btn" onclick="closeModal()">&times;</span>' +
+        '<h2>' + escapeHtml(mat.description || mat.materialCode) + '</h2>' +
+        '<div class="modal-meta">' + escapeHtml(mat.category || 'Uncategorized') + ' &middot; ' + escapeHtml(PLANT_LABELS[state.matPlant]) + '</div>' +
+        '<div class="field-grid">' +
+          '<div class="field-block"><h4>Current Stock</h4><div class="line">Qty: ' + (mat.qty != null ? mat.qty : '—') + '</div><div class="line">Rate: ' + (mat.rate != null ? formatInr(mat.rate) : '—') + '</div><div class="line">Value: ' + (mat.value != null ? formatInr(mat.value) : '—') + '</div></div>' +
+          '<div class="field-block"><h4>As of</h4><div class="line">' + escapeHtml(mat.date || '—') + '</div></div>' +
+        '</div>' +
+        '<div class="section-title">Stock Trend</div>' +
+        '<div class="chart-box" id="matTrendBox"><div class="no-data-note">Loading&hellip;</div></div>';
+
+      try {
+        const data = await api('/api/plants/' + state.matPlant + '/stock-trend?material_code=' + encodeURIComponent(materialCode));
+        const trendBox = document.getElementById('matTrendBox');
+        if (!data.snapshots.length) { trendBox.innerHTML = '<div class="no-data-note">Not enough daily snapshots yet to plot a trend.</div>'; return; }
+        trendBox.innerHTML = '<canvas id="matTrendChart"></canvas>';
+        pageCharts.push(new Chart(document.getElementById('matTrendChart'), {
+          type: 'line',
+          data: { labels: data.snapshots.map(s => s.date), datasets: [{ label: 'Qty', data: data.snapshots.map(s => s.qty), borderColor: '#2563eb', tension: 0.2 }] },
+          options: { plugins: { legend: { display: false } } }
+        }));
+      } catch (e) {
+        document.getElementById('matTrendBox').innerHTML = '<div class="no-data-note">Couldn\'t load the stock trend right now.</div>';
+      }
+    }
 
     async function submitCorrection(poNumber) {
       const text = document.getElementById('correction-text').value.trim();

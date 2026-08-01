@@ -100,6 +100,41 @@ def plant_stock_trend(request, plant):
     return JsonResponse({"plant": plant, "snapshots": data})
 
 
+@require_GET
+@require_plant_access(lambda request, plant: plant)
+def plant_materials(request, plant):
+    """Latest RM Stock snapshot per material for a plant - one row per
+    material_code, using whichever snapshot_date is most recent for it.
+    Backs the Raw Material Analysis view. Deliberately does NOT include
+    "open PO lines" or "MIR vs Stock mismatch" figures - those need the
+    PO-vs-MIR reconciliation engine (a separate, not-yet-built piece), and
+    showing fabricated zeros for them would be worse than leaving them out."""
+    # Deduped in Python rather than Postgres' DISTINCT ON: that's a
+    # Postgres-only feature and this code should behave the same in the
+    # local sqlite fallback (see settings.py) as it does in production.
+    latest_by_material = {}
+    for snap in StockSnapshot.objects.filter(plant=plant).order_by("material_code", "-snapshot_date"):
+        latest_by_material.setdefault(snap.material_code, snap)
+    ordered = sorted(latest_by_material.values(), key=lambda s: (s.value or 0), reverse=True)
+    return JsonResponse({"plant": plant, "materials": [serialize_stock_snapshot(s) for s in ordered]})
+
+
+@require_GET
+@require_plant_access(lambda request, plant: plant)
+def plant_licenses(request, plant):
+    """Advance Authorisation licenses for a plant. Works the same for any
+    plant - RTP-Vapi is just the only one with import data extracted so far
+    this financial year (HRS/RTP-Achhad's Import folders are empty, not
+    architecturally excluded). Empty until the extraction pipeline actually
+    ingests license letters (see ingest_extraction_results' _ingest_licenses)
+    - an empty list here means "nothing extracted yet", not a bug."""
+    from .models import AdvanceLicense
+    from .serializers import serialize_advance_license
+
+    qs = AdvanceLicense.objects.filter(plant=plant).prefetch_related("items", "po_usages__purchase_order")
+    return JsonResponse({"plant": plant, "licenses": [serialize_advance_license(lic) for lic in qs]})
+
+
 @csrf_protect
 @require_http_methods(["POST"])
 @require_login
