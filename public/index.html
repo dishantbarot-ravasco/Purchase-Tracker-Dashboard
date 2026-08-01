@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Purchase Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; background: #f6f7f9; color: #1f2430; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .sub { color: #6b7280; font-size: 13px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+    .plant-name { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+    .stat-row { display: flex; gap: 24px; flex-wrap: wrap; }
+    .stat { min-width: 120px; }
+    .stat .val { font-size: 20px; font-weight: 600; }
+    .stat .label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .03em; }
+    .err { color: #b91c1c; font-size: 12px; margin-top: 8px; }
+    .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eef2ff; color: #4338ca; font-weight: 600; }
+    .noaccess { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 10px; padding: 14px 18px; }
+    .btn { border: none; background: #4338ca; color: #fff; padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block; }
+    .btn.secondary { background: #fff; color: #4338ca; border: 1px solid #4338ca; }
+    .btn.small { padding: 4px 10px; font-size: 12px; }
+    .signin-screen { text-align: center; padding: 80px 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+    th { color: #6b7280; font-size: 11px; text-transform: uppercase; }
+    input, select { font-size: 13px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 5px; }
+    .admin-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+    .tabs { margin-bottom: 16px; }
+    .tabs button { background: none; border: none; font-size: 14px; padding: 8px 14px; cursor: pointer; color: #6b7280; border-bottom: 2px solid transparent; }
+    .tabs button.active { color: #1f2430; border-bottom-color: #4338ca; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="signin-screen">Loading&hellip;</div>
+  </div>
+
+  <script>
+    const root = document.getElementById('root');
+    const PLANT_LABELS = { 'HRS': 'HRS', 'RTP-Achhad': 'RTP-Achhad', 'RTP-Vapi': 'RTP-Vapi' };
+    let currentTab = 'dashboard';
+
+    async function api(path, opts) {
+      const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+      if (res.status === 401) { showSignIn(); throw new Error('not signed in'); }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    }
+    function formatInr(n) { return '₹' + Math.round(n).toLocaleString('en-IN'); }
+
+    function showSignIn() {
+      root.innerHTML = '<div class="signin-screen">' +
+        '<h1>Purchase Tracker</h1>' +
+        '<p class="sub" style="justify-content:center;">Ravasco Transmission and Packing</p>' +
+        '<a class="btn" href="/auth/google">Sign in with Google</a>' +
+        '</div>';
+    }
+
+    async function init() {
+      try {
+        const access = await api('/api/me');
+        renderShell(access);
+      } catch (e) {
+        // showSignIn already called by api() on 401; anything else, show the error plainly
+        if (e.message !== 'not signed in') {
+          root.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+        }
+      }
+    }
+
+    function renderShell(access) {
+      if (access.role === 'none') {
+        root.innerHTML =
+          '<h1>Purchase Tracker</h1>' +
+          '<div class="sub">' + escapeHtml(access.email) + '</div>' +
+          '<div class="noaccess">You are signed in, but this account has not been granted access yet. Ask Dishant to add you in the Admin panel.</div>';
+        return;
+      }
+      const isAdmin = access.role === 'admin';
+      root.innerHTML =
+        '<h1>Purchase Tracker</h1>' +
+        '<div class="sub">' + escapeHtml(access.email) +
+          '<span class="badge">' + (access.role === 'admin' || access.role === 'viewer-all' ? 'All plants' : access.plants.join(', ')) + ' &middot; ' + escapeHtml(access.role) + '</span>' +
+          '<button class="btn secondary small" onclick="logout()">Sign out</button>' +
+        '</div>' +
+        (isAdmin ? '<div class="tabs"><button id="tab-dashboard" class="active" onclick="switchTab(\'dashboard\')">Dashboard</button><button id="tab-admin" onclick="switchTab(\'admin\')">Admin</button></div>' : '') +
+        '<div id="tab-content"></div>';
+      currentTab = 'dashboard';
+      loadDashboard();
+    }
+
+    function switchTab(tab) {
+      currentTab = tab;
+      document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+      const btn = document.getElementById('tab-' + tab);
+      if (btn) btn.classList.add('active');
+      if (tab === 'dashboard') loadDashboard();
+      else loadAdmin();
+    }
+
+    async function loadDashboard() {
+      const el = document.getElementById('tab-content');
+      el.innerHTML = '<div class="sub">Loading plant data&hellip;</div>';
+      try {
+        const data = await api('/api/dashboard');
+        if (!data.plants.length) { el.innerHTML = '<div class="noaccess">No plants to show.</div>'; return; }
+        el.innerHTML = data.plants.map(renderPlantCard).join('');
+      } catch (e) {
+        el.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    function renderPlantCard(p) {
+      const errHtml = p.errors.length ? '<div class="err">' + p.errors.map(escapeHtml).join('<br>') + '</div>' : '';
+      return '<div class="card">' +
+        '<div class="plant-name">' + escapeHtml(p.plant) + '</div>' +
+        '<div class="stat-row">' +
+          '<div class="stat"><div class="val">' + p.poCount + '</div><div class="label">Domestic POs</div></div>' +
+          '<div class="stat"><div class="val">' + formatInr(p.totalValue) + '</div><div class="label">Total PO Value</div></div>' +
+          '<div class="stat"><div class="val">' + p.mirRowCount + '</div><div class="label">MIR Rows</div></div>' +
+          '<div class="stat"><div class="val">' + p.stockRowCount + '</div><div class="label">RM Stock Rows</div></div>' +
+        '</div>' + errHtml +
+      '</div>';
+    }
+
+    async function loadAdmin() {
+      const el = document.getElementById('tab-content');
+      el.innerHTML = '<div class="sub">Loading users&hellip;</div>';
+      try {
+        const data = await api('/api/admin/users');
+        const rows = data.users.map(u => '<tr>' +
+          '<td>' + escapeHtml(u.email) + '</td>' +
+          '<td>' + escapeHtml(u.role) + '</td>' +
+          '<td>' + escapeHtml(u.plants.join(', ')) + '</td>' +
+          '<td><button class="btn secondary small" onclick="removeUser(\'' + escapeHtml(u.email) + '\')">Remove</button></td>' +
+        '</tr>').join('');
+        const roleOptions = data.validRoles.map(r => '<option value="' + r + '">' + r + '</option>').join('');
+        const plantChecks = data.plants.map(p => '<label style="font-size:12px;"><input type="checkbox" value="' + p + '" class="plant-check"> ' + p + '</label>').join(' ');
+        el.innerHTML =
+          '<div class="card">' +
+            '<table><thead><tr><th>Email</th><th>Role</th><th>Plants</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+            '<div class="admin-form">' +
+              '<input id="new-email" placeholder="email@ravasco.com" style="width:220px;">' +
+              '<select id="new-role">' + roleOptions + '</select>' +
+              plantChecks +
+              '<button class="btn small" onclick="addUser()">Add / Update</button>' +
+            '</div>' +
+            '<div id="admin-err" class="err"></div>' +
+          '</div>';
+      } catch (e) {
+        el.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    async function addUser() {
+      const email = document.getElementById('new-email').value.trim();
+      const role = document.getElementById('new-role').value;
+      const plants = Array.from(document.querySelectorAll('.plant-check:checked')).map(c => c.value);
+      try {
+        await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ email, role, plants }) });
+        loadAdmin();
+      } catch (e) {
+        document.getElementById('admin-err').textContent = e.message;
+      }
+    }
+
+    async function removeUser(email) {
+      if (!confirm('Remove ' + email + '?')) return;
+      try {
+        await api('/api/admin/users/' + encodeURIComponent(email), { method: 'DELETE' });
+        loadAdmin();
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    async function logout() {
+      await fetch('/auth/logout', { method: 'POST' });
+      location.reload();
+    }
+
+    init();
+  </script>
+</body>
+</html>
