@@ -188,14 +188,26 @@ def admin_diagnostics(request):
     whether the service account key and the Drive folder IDs are actually
     configured on this Render instance, without needing the paid Shell tab
     or digging through logs. Never returns the key's contents, only whether
-    the file exists and how big it is."""
+    something usable was found and where it came from."""
+    env_json_set = bool(os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON"))
     key_path = settings.GOOGLE_SERVICE_ACCOUNT_JSON_PATH
-    key_exists = os.path.isfile(key_path)
+    path_candidates = [key_path, os.path.join(str(settings.BASE_DIR), os.path.basename(key_path))]
+    found_path = next((p for p in path_candidates if os.path.isfile(p)), None)
+
+    try:
+        from . import drive
+        drive.get_drive_service()
+        credentials_load_ok = True
+        credentials_error = None
+    except Exception as e:
+        credentials_load_ok = False
+        credentials_error = str(e)
+
     return JsonResponse(
         {
-            "serviceAccountKeyPath": key_path,
-            "serviceAccountKeyFound": key_exists,
-            "serviceAccountKeySizeBytes": os.path.getsize(key_path) if key_exists else None,
+            "credentialsLoadedSuccessfully": credentials_load_ok,
+            "credentialsError": credentials_error,
+            "loadedFrom": "GOOGLE_SERVICE_ACCOUNT_JSON env var" if env_json_set else (found_path or "not found"),
             "drivePlantRootsConfigured": {
                 plant: bool(folder_id) for plant, folder_id in settings.DRIVE_PLANT_ROOTS.items()
             },

@@ -8,9 +8,28 @@ Setup required (see .env.example): the service account's own email (looks
 like ...@<project>.iam.gserviceaccount.com) must be explicitly shared as a
 Viewer on every plant's Drive folder - service accounts don't inherit access
 automatically, sharing is a one-time manual step per folder.
+
+Credential loading deliberately supports TWO ways to supply the key,
+because Render's "Secret Files" feature has known gotchas (community.render
+.com has multiple threads of secret files not showing up at the documented
+/etc/secrets/<name> path). Rather than depend on getting that UI step
+exactly right:
+
+  1. GOOGLE_SERVICE_ACCOUNT_JSON - a regular environment variable
+     containing the ENTIRE contents of the key file, pasted as one value.
+     This is the recommended path: it's just a normal env var, the same
+     mechanism already confirmed working for GOOGLE_OAUTH_CLIENT_ID etc.,
+     no separate Render feature to get right.
+  2. GOOGLE_SERVICE_ACCOUNT_JSON_PATH - a file path (Secret File mount,
+     or any other path). Only used if #1 isn't set. Kept for anyone who
+     prefers the file-based approach or is running this outside Render.
+
+If neither resolves to real credentials, the error raised lists exactly
+what was tried, rather than a bare "file not found" three directories deep.
 """
 import io
 import json
+import os
 
 from django.conf import settings
 from google.oauth2 import service_account
@@ -27,10 +46,40 @@ _drive_service = None
 
 
 def _load_credentials():
-    path = settings.GOOGLE_SERVICE_ACCOUNT_JSON_PATH
-    with open(path, "r", encoding="utf-8") as f:
-        info = json.load(f)
-    return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if raw_json:
+        try:
+            info = json.loads(raw_json)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                "GOOGLE_SERVICE_ACCOUNT_JSON is set but isn't valid JSON - make sure the "
+                "ENTIRE contents of service_account.json were pasted in, including the "
+                "surrounding { } braces, with nothing added or stripped."
+            ) from e
+        return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
+    configured_path = settings.GOOGLE_SERVICE_ACCOUNT_JSON_PATH
+    candidates = [configured_path]
+    # Render's own docs note that for non-Docker services, a Secret File is
+    # ALSO copied into the service's project root, not just /etc/secrets/ -
+    # worth trying both rather than assuming the configured path is exact.
+    fallback = os.path.join(str(settings.BASE_DIR), os.path.basename(configured_path))
+    if fallback not in candidates:
+        candidates.append(fallback)
+
+    for path in candidates:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as f:
+                info = json.load(f)
+            return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
+    raise FileNotFoundError(
+        "Could not find the Google service account key. Tried the "
+        f"GOOGLE_SERVICE_ACCOUNT_JSON env var (not set) and these file paths: "
+        f"{', '.join(candidates)}. Easiest fix: set GOOGLE_SERVICE_ACCOUNT_JSON "
+        "to the full contents of service_account.json as a regular environment "
+        "variable instead of a Secret File."
+    )
 
 
 def get_drive_service():
