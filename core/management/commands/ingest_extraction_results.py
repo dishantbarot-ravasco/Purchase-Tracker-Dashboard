@@ -22,8 +22,27 @@ Expected result batch JSON shape (written by the Claude scheduled task):
       "license_refs": [{"license_number": "...", "material_description": "...",
                          "qty_used": 0, "value_used": 0}]
     }
+  ],
+  "licenses": [
+    {
+      "license_number": "0311047672", "plant": "RTP_VAPI", "issue_date": "2025-11-01",
+      "import_validity_end": "2026-11-01", "export_obligation_end": "2027-05-01",
+      "extension_1_end": null, "extension_2_end": null, "auto_extension_end": null,
+      "eodc_status": "open", "total_authorised_cif_value": 0,
+      "letter_drive_file_id": "...",
+      "items": [{"item_type": "input", "material_description": "...",
+                 "sion_norm": "...", "authorised_qty": 0, "uom": "KG"}]
+    }
   ]
 }
+`licenses` is optional and only present when a batch included a license
+letter to extract - each entry upserts AdvanceLicense + replaces its
+LicenseItem rows wholesale (same re-extraction-replaces pattern as PO
+items). Doing this BEFORE the `items` loop below matters: a PO's
+`license_refs` can only link to a license that already exists in Postgres,
+so a license referenced and extracted in the same batch as its PO needs to
+be upserted first, not skipped for "not found yet".
+
 This command is intentionally tolerant of missing fields (writes "NULL"-ish
 blanks rather than crashing the whole batch) and always records what it
 skipped so nothing silently vanishes.
@@ -35,7 +54,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from core import drive
-from core.models import AdvanceLicense, ExtractionQueue, LicensePOUsage, POFlag, POItem, PurchaseOrder
+from core.models import AdvanceLicense, ExtractionQueue, LicenseItem, LicensePOUsage, POFlag, POItem, PurchaseOrder
 
 
 class Command(BaseCommand):
@@ -71,6 +90,8 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def _ingest_batch(self, batch):
+        self._ingest_licenses(batch.get("licenses", []))
+
         count = 0
         for item in batch.get("items", []):
             po_number = item.get("po_number")
@@ -142,3 +163,34 @@ class Command(BaseCommand):
 
             count += 1
         return count
+
+    def _ingest_licenses(self, license_items):
+        for lic in license_items:
+            license_number = lic.get("license_number")
+            if not license_number:
+                continue
+            license_obj, _ = AdvanceLicense.objects.update_or_create(
+                license_number=license_number,
+                defaults={
+                    "plant": lic.get("plant", ""),
+                    "issue_date": lic.get("issue_date") or None,
+                    "import_validity_end": lic.get("import_validity_end") or None,
+                    "export_obligation_end": lic.get("export_obligation_end") or None,
+                    "extension_1_end": lic.get("extension_1_end") or None,
+                    "extension_2_end": lic.get("extension_2_end") or None,
+                    "auto_extension_end": lic.get("auto_extension_end") or None,
+                    "eodc_status": lic.get("eodc_status", "open"),
+                    "total_authorised_cif_value": lic.get("total_authorised_cif_value"),
+                    "letter_drive_file_id": lic.get("letter_drive_file_id", ""),
+                },
+            )
+            license_obj.items.all().delete()  # re-extraction replaces the authorised-items list wholesale
+            for it in lic.get("items", []):
+                LicenseItem.objects.create(
+                    license=license_obj,
+                    item_type=it.get("item_type", "input"),
+                    material_description=it.get("material_description", ""),
+                    sion_norm=it.get("sion_norm", ""),
+                    authorised_qty=it.get("authorised_qty"),
+                    uom=it.get("uom", ""),
+                )
