@@ -115,16 +115,55 @@ multi-line and easy to mangle as one).
 
 ## Daily/scheduled jobs
 
-Not wired to a scheduler yet - run these on whatever cadence you choose
-(Render Cron Jobs, or an external scheduler hitting a protected endpoint):
+Render's Shell tab, its one-off Job runner, and Render Cron Jobs are all
+paid-tier features and unavailable on this project's plan - there's no way
+to open a shell or set up a native cron trigger to run
+`python manage.py <command>` directly on the server. Instead, the same 5
+management commands are exposed over HTTP:
 
-- `python manage.py snapshot_rm_stock` - once daily, e.g. ~5pm, matching
-  the old EOD timing.
-- `python manage.py scan_new_pos` - as often as you want new POs picked up
-  for extraction (e.g. every few hours).
-- `python manage.py ingest_extraction_results` - runs after the Claude
-  scheduled task has had a chance to process a batch (e.g. an hour after
-  `scan_new_pos`).
+`POST /api/tasks/run/<task_name>` (`run_task` view in `core/views.py`)
+runs one of the whitelisted commands - `backfill_from_master_csv`,
+`scan_new_pos`, `ingest_extraction_results`, `snapshot_rm_stock`,
+`refresh_plant_file_status` - via Django's `call_command`. It accepts
+either an authenticated admin browser session, or a shared-secret token
+passed as `?token=...` or an `X-Task-Token` header, checked against the
+`RUN_TASKS_TOKEN` env var (see `.env.example`).
+
+**Manual runs**: the Admin tab in `public/index.html` has a "Scheduled
+Tasks (manual run)" card with a "Run now" button per task, for anyone
+logged in as an admin - no server access needed.
+
+**Automatic runs**: since there's no cron on this plan, wire up a free
+external scheduler instead - e.g. [cron-job.org](https://cron-job.org) -
+to send a `POST` to
+`https://<your-render-url>/api/tasks/run/<task_name>?token=<RUN_TASKS_TOKEN>`
+on a schedule. Recommended cadences:
+
+- `refresh_plant_file_status` - every 15-30 min. Cheap check, and this is
+  what keeps the "is today's file uploaded" indicator honest, so it
+  benefits from being close to real-time.
+- `snapshot_rm_stock` - once daily, at a fixed time after factory data
+  entry is done for the day, e.g. 22:00 IST (matching the old EOD
+  timing). Running it more than once a day is harmless (unique
+  constraint on plant+material+date) but pointless before the day's
+  entry is finished.
+- `scan_new_pos` and `ingest_extraction_results` - every 2-4 hours each.
+  These drive the extraction hand-off (see "What this replaces, and why"
+  above), so they don't need to be tight to the minute - just often
+  enough that a new PO folder doesn't sit unnoticed for a full day.
+  Stagger `ingest_extraction_results` to run some time after
+  `scan_new_pos` so the Claude-side batch has had a chance to complete.
+
+**`RUN_TASKS_TOKEN`** must be set in Render's Environment tab like the
+other secrets in this project - never logged, never committed, never put
+in a URL that ends up in a browser history you don't control. Treat it
+with the same care as `GOOGLE_OAUTH_CLIENT_SECRET` or the service account
+key.
+
+Because there's no shell access to tail logs, `AuditLog` records every
+task run (who/what triggered it - including "external scheduler" for
+token-authenticated calls - and whether it succeeded), so there's still a
+trail to check if a task didn't run or failed.
 
 ## Security model
 

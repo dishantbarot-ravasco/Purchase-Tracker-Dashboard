@@ -391,9 +391,59 @@
               '<button class="btn small" onclick="addUser()">Add / Update</button>' +
             '</div>' +
             '<div id="admin-err"></div>' +
-          '</div>';
+          '</div>' +
+          renderTaskRunnerCard();
       } catch (e) {
         el.innerHTML = '<div class="noaccess">Couldn\'t load the user list right now. Please refresh, or contact IT if this keeps happening.</div>';
+      }
+    }
+
+    // --- Manual task runner ---------------------------------------------
+    // Buttons for the 5 whitelisted management commands, since Render's
+    // Shell tab and one-off Job runner are both paid-tier and unavailable on
+    // this plan (see views.py's run_task). These same tasks also run on a
+    // schedule via a free external scheduler hitting the token-authed URL -
+    // this panel is just the manual/on-demand path for an admin.
+    const RUNNABLE_TASKS = [
+      { name: 'backfill_from_master_csv', label: 'Backfill POs from master CSVs' },
+      { name: 'scan_new_pos', label: 'Scan Drive for new POs' },
+      { name: 'ingest_extraction_results', label: 'Ingest extraction results' },
+      { name: 'snapshot_rm_stock', label: 'Take RM Stock snapshot' },
+      { name: 'refresh_plant_file_status', label: 'Refresh MIR/Stock dashboard cache' },
+    ];
+
+    function renderTaskRunnerCard() {
+      const rows = RUNNABLE_TASKS.map(t =>
+        '<tr><td>' + escapeHtml(t.label) + '</td><td style="font-family:var(--mono);font-size:11.5px;color:var(--slate-soft);">' + t.name + '</td>' +
+        '<td><button class="btn secondary small" id="run-btn-' + t.name + '" onclick="runTask(\'' + t.name + '\')">Run now</button></td></tr>'
+      ).join('');
+      return '<div class="card" style="margin-top:16px;">' +
+        '<div class="section-title">Scheduled Tasks (manual run)</div>' +
+        '<div style="font-size:12px;color:var(--slate-soft);margin-bottom:8px;">These same jobs also run automatically on a schedule. Use this only to run one immediately - e.g. after loading new files onto Drive.</div>' +
+        '<table><thead><tr><th>Task</th><th>Command</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+        '<div id="task-output" style="margin-top:12px;"></div>' +
+      '</div>';
+    }
+
+    async function runTask(name) {
+      const btn = document.getElementById('run-btn-' + name);
+      const outEl = document.getElementById('task-output');
+      btn.disabled = true;
+      const originalText = btn.textContent;
+      btn.textContent = 'Running…';
+      outEl.innerHTML = '<div class="notice-banner info">Running ' + escapeHtml(name) + '&hellip;</div>';
+      try {
+        const data = await api('/api/tasks/run/' + encodeURIComponent(name), { method: 'POST' });
+        const bannerClass = data.success ? 'notice-banner info' : 'notice-banner';
+        outEl.innerHTML =
+          '<div class="' + bannerClass + '">' + (data.success ? 'Finished: ' : 'Finished with errors: ') + escapeHtml(name) + '</div>' +
+          (data.stdout ? '<pre style="white-space:pre-wrap;font-size:11.5px;background:var(--gray-soft);border-radius:8px;padding:10px 12px;margin-top:8px;max-height:260px;overflow:auto;">' + escapeHtml(data.stdout) + '</pre>' : '') +
+          (data.stderr ? '<pre style="white-space:pre-wrap;font-size:11.5px;background:var(--red-soft);color:#7f1d1d;border-radius:8px;padding:10px 12px;margin-top:8px;max-height:260px;overflow:auto;">' + escapeHtml(data.stderr) + '</pre>' : '');
+      } catch (e) {
+        outEl.innerHTML = '<div class="notice-banner">Could not run this task: ' + escapeHtml(e.message || 'unknown error') + '</div>';
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
       }
     }
 

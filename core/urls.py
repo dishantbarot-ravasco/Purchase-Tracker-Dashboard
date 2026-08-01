@@ -31,6 +31,13 @@ urlpatterns = [
     path("api/admin/users/<str:email>", views.admin_user_detail, name="admin_user_detail"),
     path("api/admin/diagnostics", views.admin_diagnostics, name="admin_diagnostics"),
 
+    # Runs a whitelisted management command over HTTP - the workaround for
+    # Render's Shell and one-off Jobs both being paid-tier features. Works
+    # either as a signed-in admin (button in the Admin tab) or via
+    # ?token=RUN_TASKS_TOKEN for an external free scheduler. See
+    # views.run_task's docstring and RUN_TASKS_TOKEN in settings.py.
+    path("api/tasks/run/<str:task_name>", views.run_task, name="run_task"),
+
     # Frontend shell - served for every other route (no client-side routing
     # beyond one screen, same pattern as the earlier Node prototype)
     path("", index_view, name="index"),

@@ -154,3 +154,10 @@ DRIVE_PLANT_ROOTS = {
     'RTP_VAPI': env('DRIVE_RTP_VAPI_ROOT', default=''),
 }
 DRIVE_EXTRACTION_QUEUE_FOLDER = env('DRIVE_EXTRACTION_QUEUE_FOLDER', default='')
+
+# --- Task runner (workaround for Render's Shell/one-off Jobs being paid-tier) ---
+# A long random secret - lets an external free scheduler (e.g. cron-job.org)
+# trigger management commands via /api/tasks/run/<name>?token=... without
+# needing a login session. Leave unset to disable that path entirely and
+# only allow admin-session-triggered runs (via the Admin tab's buttons).
+RUN_TASKS_TOKEN = env('RUN_TASKS_TOKEN', default='')

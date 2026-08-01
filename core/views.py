@@ -9,14 +9,16 @@ which re-checks the signed-in user's allowed_plants() server-side on every
 single request - the frontend never being trusted as the security boundary
 is the whole point (see core/decorators.py's module docstring).
 """
+import io
 import json
 import logging
 import os
 
 from django.conf import settings
+from django.core.management import call_command
 from django.db.models import Count, Sum
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_protect
+from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_GET, require_http_methods
 
 from .decorators import require_admin, require_login, require_plant_access
@@ -200,6 +202,69 @@ def admin_diagnostics(request):
             "extractionQueueFolderConfigured": bool(settings.DRIVE_EXTRACTION_QUEUE_FOLDER),
         }
     )
+
+
+# Whitelisted management commands that are safe to trigger over HTTP - never
+# accept an arbitrary command name from the request, only look up against
+# this fixed dict. Each maps a short public name to the real command.
+RUNNABLE_TASKS = {
+    "backfill_from_master_csv": "backfill_from_master_csv",
+    "scan_new_pos": "scan_new_pos",
+    "ingest_extraction_results": "ingest_extraction_results",
+    "snapshot_rm_stock": "snapshot_rm_stock",
+    "refresh_plant_file_status": "refresh_plant_file_status",
+}
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def run_task(request, task_name):
+    """Runs one of the whitelisted management commands over HTTP - the fix
+    for not having Render's paid Shell or one-off Jobs features. Two ways
+    in, since this needs to work both for a human clicking a button in the
+    Admin tab AND for a free external scheduler (e.g. cron-job.org) hitting
+    this on a timer with no browser session at all:
+
+      1. A signed-in admin session (same cookie-based auth as everything
+         else in core/decorators.py).
+      2. A shared secret token, passed as ?token=... or an
+         X-Task-Token header, checked against the RUN_TASKS_TOKEN env var.
+         This is what an external scheduler uses instead of logging in.
+
+    Output (stdout/stderr from the command) is returned in the response so
+    you can see what happened without needing logs or shell access either.
+    RUN_TASKS_TOKEN must be set to a long random value for path 2 to work
+    at all - if it's not set, only the admin-session path is available."""
+    if task_name not in RUNNABLE_TASKS:
+        return JsonResponse({"error": f"Unknown task '{task_name}'."}, status=404)
+
+    token = request.GET.get("token") or request.headers.get("X-Task-Token", "")
+    token_ok = bool(settings.RUN_TASKS_TOKEN) and token == settings.RUN_TASKS_TOKEN
+
+    if not token_ok:
+        email = request.session.get("email")
+        if not email:
+            return JsonResponse({"error": "Not signed in, and no valid task token was provided."}, status=401)
+        from .models import UserAccess
+        access = UserAccess.objects.filter(email=email, is_active=True).first()
+        if not access or access.role != "admin":
+            return JsonResponse({"error": "Admin access required."}, status=403)
+
+    out, err = io.StringIO(), io.StringIO()
+    try:
+        call_command(RUNNABLE_TASKS[task_name], stdout=out, stderr=err)
+        success = True
+    except Exception as e:
+        logger.exception("Task %s failed", task_name)
+        err.write(f"\n(unhandled exception: {e})")
+        success = False
+
+    AuditLog.objects.create(
+        email=(request.session.get("email") or "external-scheduler"),
+        action="run_task",
+        detail={"task": task_name, "success": success},
+    )
+    return JsonResponse({"task": task_name, "success": success, "stdout": out.getvalue(), "stderr": err.getvalue()})
 
 
 @require_http_methods(["DELETE"])
