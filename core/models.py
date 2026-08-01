@@ -82,7 +82,7 @@ class PurchaseOrder(models.Model):
 class POItem(models.Model):
     purchase_order = models.ForeignKey(PurchaseOrder, related_name="items", on_delete=models.CASCADE)
     item_code = models.CharField(max_length=100, blank=True)  # SAP item code, ties into the HSN master
-    description = models.CharField(max_length=500)
+    description = models.TextField()  # free-text material description - see POFlag.flag_text's comment
     hsn = models.CharField(max_length=30, blank=True)
     qty = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
     uom = models.CharField(max_length=20, blank=True)
@@ -96,7 +96,12 @@ class POFlag(models.Model):
     correction requests submitted through the inline pencil-icon edit UX."""
 
     purchase_order = models.ForeignKey(PurchaseOrder, related_name="flags", on_delete=models.CASCADE)
-    flag_text = models.CharField(max_length=500)
+    # TextField, not CharField: this holds free-text Remarks/extraction notes
+    # of genuinely unpredictable length (a 500-char cap already broke the CSV
+    # backfill once - same class of bug as po_number/tax_type/incoterms
+    # above, just for prose instead of codes, so it gets an unbounded field
+    # instead of another guessed number).
+    flag_text = models.TextField()
     source = models.CharField(
         max_length=30,
         choices=[
@@ -148,7 +153,7 @@ class LicenseItem(models.Model):
 
     license = models.ForeignKey(AdvanceLicense, related_name="items", on_delete=models.CASCADE)
     item_type = models.CharField(max_length=10, choices=[("input", "Input"), ("output", "Output")])
-    material_description = models.CharField(max_length=500)
+    material_description = models.TextField()
     sion_norm = models.CharField(max_length=50, blank=True)
     authorised_qty = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
     uom = models.CharField(max_length=20, blank=True)
@@ -167,7 +172,7 @@ class LicensePOUsage(models.Model):
 
     license = models.ForeignKey(AdvanceLicense, related_name="po_usages", on_delete=models.CASCADE)
     purchase_order = models.ForeignKey(PurchaseOrder, related_name="license_usages", on_delete=models.CASCADE)
-    material_description = models.CharField(max_length=500, blank=True)
+    material_description = models.TextField(blank=True)
     qty_used = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
     value_used = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
