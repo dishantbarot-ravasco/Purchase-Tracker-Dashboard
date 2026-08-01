@@ -1,51 +1,101 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8">
-  <title>Purchase Tracker</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 24px; background: #f6f7f9; color: #1f2430; }
-    h1 { font-size: 20px; margin: 0 0 4px; }
-    .sub { color: #6b7280; font-size: 13px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
-    .plant-name { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
-    .stat-row { display: flex; gap: 24px; flex-wrap: wrap; }
-    .stat { min-width: 120px; }
-    .stat .val { font-size: 20px; font-weight: 600; }
-    .stat .label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .03em; }
-    .err { color: #b91c1c; font-size: 12px; margin-top: 8px; }
-    .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #eef2ff; color: #4338ca; font-weight: 600; }
-    .noaccess { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 10px; padding: 14px 18px; }
-    .btn { border: none; background: #4338ca; color: #fff; padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; text-decoration: none; display: inline-block; }
-    .btn.secondary { background: #fff; color: #4338ca; border: 1px solid #4338ca; }
-    .btn.small { padding: 4px 10px; font-size: 12px; }
-    .signin-screen { text-align: center; padding: 80px 20px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
-    th { color: #6b7280; font-size: 11px; text-transform: uppercase; }
-    input, select { font-size: 13px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 5px; }
-    .admin-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
-    .tabs { margin-bottom: 16px; }
-    .tabs button { background: none; border: none; font-size: 14px; padding: 8px 14px; cursor: pointer; color: #6b7280; border-bottom: 2px solid transparent; }
-    .tabs button.active { color: #1f2430; border-bottom-color: #4338ca; font-weight: 600; }
-  </style>
+<meta charset="UTF-8">
+<title>Purchase Tracker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  /* Same palette/visual language as the Purchase Tracker Cowork artifact,
+     kept intentionally simpler here (fewer views, plainer language in
+     errors/labels) since this screen is used by non-technical management,
+     not just the people who built it. */
+  :root {
+    color-scheme: light;
+    --navy: #0f1b2d;
+    --navy-hover: #182a44;
+    --on-accent: #ffffff;
+    --slate: #1f2937;
+    --slate-soft: #475569;
+    --border: #e2e8f0;
+    --border-soft: #f1f5f9;
+    --bg: #f4f6f9;
+    --card: #ffffff;
+    --gray-soft: #f1f5f9;
+    --blue: #2563eb;
+    --blue-soft: #eff4ff;
+    --red: #dc2626;
+    --red-soft: #fef2f2;
+    --amber: #d97706;
+    --amber-soft: #fffbeb;
+    --green: #16a34a;
+    --green-soft: #f0fdf4;
+    --mono: ui-monospace, SFMono-Regular, 'Roboto Mono', Menlo, Consolas, monospace;
+    --shadow: 0 1px 2px rgba(15,23,42,0.04), 0 2px 8px rgba(15,23,42,0.05);
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--slate); line-height:1.45; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 22px clamp(12px, 2.5vw, 26px) 60px; }
+
+  .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; padding-bottom:18px; margin-bottom:20px; border-bottom:1px solid var(--border); }
+  .app-title { font-size:26px; margin:0; color:var(--navy); font-weight:800; letter-spacing:-0.015em; }
+  .who { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--slate-soft); flex-wrap:wrap; }
+  .badge { display:inline-block; font-size:11px; padding:3px 10px; border-radius:999px; background:var(--blue-soft); color:#1e40af; font-weight:700; }
+  .btn { border:1px solid var(--navy); background:var(--navy); color:var(--on-accent); padding:8px 16px; border-radius:8px; font-size:12.5px; font-weight:600; cursor:pointer; text-decoration:none; display:inline-block; box-shadow:var(--shadow); }
+  .btn:hover { background:var(--navy-hover); }
+  .btn.secondary { background:#fff; color:var(--navy); }
+  .btn.secondary:hover { background:var(--blue-soft); }
+  .btn.small { padding:5px 12px; font-size:12px; }
+
+  .tabs { display:flex; gap:8px; margin-bottom:20px; }
+  .tab { padding:10px 20px; cursor:pointer; font-size:13.5px; font-weight:700; border-radius:9px; color:var(--slate-soft); background:var(--card); border:1px solid var(--border); }
+  .tab.active { color:var(--on-accent); background:var(--navy); border-color:var(--navy); }
+
+  .load-banner { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:48px 20px; text-align:center; color:var(--slate-soft); font-size:14px; box-shadow:var(--shadow); }
+  .spinner { display:inline-block; width:22px; height:22px; border:3px solid var(--border); border-top-color:var(--blue); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Errors are always short and in plain language - no file paths, no
+     Python exception text. Full technical detail only ever goes to
+     Render's server-side logs, never to this screen. */
+  .notice-banner { background:var(--amber-soft); border:1px solid #fde68a; color:#92400e; border-radius:8px; padding:10px 14px; font-size:12.5px; margin-top:10px; }
+  .notice-banner.info { background:var(--blue-soft); border-color:#dbeafe; color:#1e40af; }
+  .noaccess { background:var(--amber-soft); border:1px solid #fde68a; border-radius:12px; padding:20px 22px; color:#92400e; font-size:13.5px; }
+
+  .plant-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; }
+  .plant-card { background:var(--card); border:1px solid var(--border); border-left:5px solid var(--blue); border-radius:13px; padding:18px 20px; box-shadow:var(--shadow); }
+  .plant-name { font-weight:800; font-size:16px; color:var(--navy); margin-bottom:14px; }
+  .stat-grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
+  .stat .val { font-family:var(--mono); font-size:24px; font-weight:800; color:var(--navy); font-variant-numeric: tabular-nums; }
+  .stat .label { font-size:10.5px; color:var(--slate-soft); margin-top:4px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
+
+  .signin-screen { text-align:center; padding:100px 20px; }
+  .signin-screen .app-title { font-size:30px; }
+  .signin-screen p { color:var(--slate-soft); font-size:13.5px; margin:8px 0 26px; }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:12px; }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border-soft); }
+  th { color:var(--slate-soft); font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700; }
+  input, select { font-size:13px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:7px; font-family:inherit; }
+  .admin-form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:16px; padding-top:16px; border-top:1px solid var(--border-soft); }
+  .admin-form label { font-size:12px; color:var(--slate-soft); display:flex; align-items:center; gap:4px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px; box-shadow:var(--shadow); }
+  .section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); margin:0 0 4px; }
+</style>
 </head>
 <body>
-  <div id="root">
-    <div class="signin-screen">Loading&hellip;</div>
+  <div class="wrap" id="root">
+    <div class="load-banner"><div class="spinner"></div><div>Loading&hellip;</div></div>
   </div>
 
   <script>
     const root = document.getElementById('root');
-    const PLANT_LABELS = { 'HRS': 'HRS', 'RTP-Achhad': 'RTP-Achhad', 'RTP-Vapi': 'RTP-Vapi' };
     let currentTab = 'dashboard';
 
     async function api(path, opts) {
       const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
       if (res.status === 401) { showSignIn(); throw new Error('not signed in'); }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Request failed');
+      if (!res.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
       return data;
     }
 
@@ -55,10 +105,11 @@
     function formatInr(n) { return '₹' + Math.round(n).toLocaleString('en-IN'); }
 
     function showSignIn() {
-      root.innerHTML = '<div class="signin-screen">' +
-        '<h1>Purchase Tracker</h1>' +
-        '<p class="sub" style="justify-content:center;">Ravasco Transmission and Packing</p>' +
-        '<a class="btn" href="/auth/google">Sign in with Google</a>' +
+      root.innerHTML =
+        '<div class="signin-screen">' +
+          '<h1 class="app-title">Purchase Tracker</h1>' +
+          '<p>Ravasco Transmission and Packing</p>' +
+          '<a class="btn" href="/auth/google">Sign in with Google</a>' +
         '</div>';
     }
 
@@ -67,9 +118,8 @@
         const access = await api('/api/me');
         renderShell(access);
       } catch (e) {
-        // showSignIn already called by api() on 401; anything else, show the error plainly
         if (e.message !== 'not signed in') {
-          root.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+          root.innerHTML = '<div class="noaccess">Something went wrong loading your account. Please refresh, or contact IT if this keeps happening.</div>';
         }
       }
     }
@@ -77,19 +127,22 @@
     function renderShell(access) {
       if (access.role === 'none') {
         root.innerHTML =
-          '<h1>Purchase Tracker</h1>' +
-          '<div class="sub">' + escapeHtml(access.email) + '</div>' +
-          '<div class="noaccess">You are signed in, but this account has not been granted access yet. Ask Dishant to add you in the Admin panel.</div>';
+          '<div class="topbar"><h1 class="app-title">Purchase Tracker</h1></div>' +
+          '<div class="noaccess">You\'re signed in as ' + escapeHtml(access.email) + ', but nobody has given this account access yet. Ask an admin to add you.</div>';
         return;
       }
       const isAdmin = access.role === 'admin';
+      const scopeLabel = access.role === 'admin' ? 'All plants' : (access.plants || []).join(', ');
       root.innerHTML =
-        '<h1>Purchase Tracker</h1>' +
-        '<div class="sub">' + escapeHtml(access.email) +
-          '<span class="badge">' + (access.role === 'admin' || access.role === 'viewer-all' ? 'All plants' : access.plants.join(', ')) + ' &middot; ' + escapeHtml(access.role) + '</span>' +
-          '<button class="btn secondary small" onclick="logout()">Sign out</button>' +
+        '<div class="topbar">' +
+          '<h1 class="app-title">Purchase Tracker</h1>' +
+          '<div class="who">' +
+            '<span>' + escapeHtml(access.email) + '</span>' +
+            '<span class="badge">' + escapeHtml(scopeLabel) + '</span>' +
+            '<button class="btn secondary small" onclick="logout()">Sign out</button>' +
+          '</div>' +
         '</div>' +
-        (isAdmin ? '<div class="tabs"><button id="tab-dashboard" class="active" onclick="switchTab(\'dashboard\')">Dashboard</button><button id="tab-admin" onclick="switchTab(\'admin\')">Admin</button></div>' : '') +
+        (isAdmin ? '<div class="tabs"><div id="tab-dashboard" class="tab active" onclick="switchTab(\'dashboard\')">Dashboard</div><div id="tab-admin" class="tab" onclick="switchTab(\'admin\')">Admin</div></div>' : '') +
         '<div id="tab-content"></div>';
       currentTab = 'dashboard';
       loadDashboard();
@@ -97,7 +150,7 @@
 
     function switchTab(tab) {
       currentTab = tab;
-      document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
       const btn = document.getElementById('tab-' + tab);
       if (btn) btn.classList.add('active');
       if (tab === 'dashboard') loadDashboard();
@@ -106,44 +159,58 @@
 
     async function loadDashboard() {
       const el = document.getElementById('tab-content');
-      el.innerHTML = '<div class="sub">Loading plant data&hellip;</div>';
+      el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading plant data&hellip;</div></div>';
       try {
         const data = await api('/api/dashboard');
-        if (!data.plants.length) { el.innerHTML = '<div class="noaccess">No plants to show.</div>'; return; }
-        el.innerHTML = data.plants.map(renderPlantCard).join('');
+        if (!data.plants.length) {
+          el.innerHTML = '<div class="noaccess">No plants to show for this account yet.</div>';
+          return;
+        }
+        el.innerHTML = '<div class="plant-grid">' + data.plants.map(renderPlantCard).join('') + '</div>';
       } catch (e) {
-        el.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+        el.innerHTML = '<div class="noaccess">Couldn\'t load the dashboard right now. Please refresh, or contact IT if this keeps happening.</div>';
       }
     }
 
     function renderPlantCard(p) {
-      const errHtml = p.errors.length ? '<div class="err">' + p.errors.map(escapeHtml).join('<br>') + '</div>' : '';
-      return '<div class="card">' +
-        '<div class="plant-name">' + escapeHtml(p.plant) + '</div>' +
-        '<div class="stat-row">' +
+      // Any file-read issues (e.g. a Drive file being temporarily
+      // unreachable) show as one short, plain-language line here - never
+      // raw error text. See core/views.py's _safe_call for where these
+      // messages are generated server-side.
+      const noticeHtml = p.errors.length
+        ? p.errors.map(e => '<div class="notice-banner">' + escapeHtml(e) + '</div>').join('')
+        : '';
+      return '<div class="plant-card">' +
+        '<div class="plant-name">' + escapeHtml(plantLabel(p.plant)) + '</div>' +
+        '<div class="stat-grid">' +
           '<div class="stat"><div class="val">' + p.poCount + '</div><div class="label">Domestic POs</div></div>' +
           '<div class="stat"><div class="val">' + formatInr(p.totalValue) + '</div><div class="label">Total PO Value</div></div>' +
           '<div class="stat"><div class="val">' + p.mirRowCount + '</div><div class="label">MIR Rows</div></div>' +
           '<div class="stat"><div class="val">' + p.stockRowCount + '</div><div class="label">RM Stock Rows</div></div>' +
-        '</div>' + errHtml +
+        '</div>' + noticeHtml +
       '</div>';
+    }
+
+    function plantLabel(code) {
+      return { HRS: 'HRS', RTP_ACHHAD: 'RTP - Achhad', RTP_VAPI: 'RTP - Vapi' }[code] || code;
     }
 
     async function loadAdmin() {
       const el = document.getElementById('tab-content');
-      el.innerHTML = '<div class="sub">Loading users&hellip;</div>';
+      el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading users&hellip;</div></div>';
       try {
         const data = await api('/api/admin/users');
         const rows = data.users.map(u => '<tr>' +
           '<td>' + escapeHtml(u.email) + '</td>' +
           '<td>' + escapeHtml(u.role) + '</td>' +
-          '<td>' + escapeHtml(u.plants.join(', ')) + '</td>' +
+          '<td>' + escapeHtml((u.plants || []).join(', ') || (u.role === 'admin' ? 'All plants' : '—')) + '</td>' +
           '<td><button class="btn secondary small" onclick="removeUser(\'' + escapeHtml(u.email) + '\')">Remove</button></td>' +
         '</tr>').join('');
         const roleOptions = data.validRoles.map(r => '<option value="' + r + '">' + r + '</option>').join('');
-        const plantChecks = data.plants.map(p => '<label style="font-size:12px;"><input type="checkbox" value="' + p + '" class="plant-check"> ' + p + '</label>').join(' ');
+        const plantChecks = data.plants.map(p => '<label><input type="checkbox" value="' + p + '" class="plant-check"> ' + escapeHtml(plantLabel(p)) + '</label>').join(' ');
         el.innerHTML =
           '<div class="card">' +
+            '<div class="section-title">Users</div>' +
             '<table><thead><tr><th>Email</th><th>Role</th><th>Plants</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
             '<div class="admin-form">' +
               '<input id="new-email" placeholder="email@ravasco.com" style="width:220px;">' +
@@ -151,10 +218,10 @@
               plantChecks +
               '<button class="btn small" onclick="addUser()">Add / Update</button>' +
             '</div>' +
-            '<div id="admin-err" class="err"></div>' +
+            '<div id="admin-err"></div>' +
           '</div>';
       } catch (e) {
-        el.innerHTML = '<div class="err">' + escapeHtml(e.message) + '</div>';
+        el.innerHTML = '<div class="noaccess">Couldn\'t load the user list right now. Please refresh, or contact IT if this keeps happening.</div>';
       }
     }
 
@@ -162,21 +229,23 @@
       const email = document.getElementById('new-email').value.trim();
       const role = document.getElementById('new-role').value;
       const plants = Array.from(document.querySelectorAll('.plant-check:checked')).map(c => c.value);
+      const errEl = document.getElementById('admin-err');
+      errEl.innerHTML = '';
       try {
         await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ email, role, plants }) });
         loadAdmin();
       } catch (e) {
-        document.getElementById('admin-err').textContent = e.message;
+        errEl.innerHTML = '<div class="notice-banner">' + escapeHtml(e.message) + '</div>';
       }
     }
 
     async function removeUser(email) {
-      if (!confirm('Remove ' + email + '?')) return;
+      if (!confirm('Remove access for ' + email + '?')) return;
       try {
         await api('/api/admin/users/' + encodeURIComponent(email), { method: 'DELETE' });
         loadAdmin();
       } catch (e) {
-        alert(e.message);
+        alert('Could not remove this user. Please try again.');
       }
     }
 

@@ -10,6 +10,7 @@ single request - the frontend never being trusted as the security boundary
 is the whole point (see core/decorators.py's module docstring).
 """
 import json
+import logging
 
 from django.db.models import Count, Sum
 from django.http import JsonResponse
@@ -58,14 +59,26 @@ def _build_plant_card(plant):
     )
 
 
+logger = logging.getLogger(__name__)
+
+
 def _safe_call(fn, plant, errors_out, label):
-    """Runs a Drive-dependent read and turns any failure into a labeled
-    entry in errors_out instead of raising - a bad/missing file for one
-    plant shouldn't 500 the whole dashboard for every plant."""
+    """Runs a Drive-dependent read and turns any failure into a short,
+    non-technical message instead of raising - a bad/missing file for one
+    plant shouldn't 500 the whole dashboard for every plant.
+
+    The full exception (stack trace, file paths, etc.) is logged
+    server-side only, via logger.exception() - visible in Render's Logs tab
+    for whoever's debugging it, but a manager looking at the dashboard
+    should never see a Python error message. If this starts showing up
+    for every plant, check the Render logs for the real cause (common one:
+    the GOOGLE_SERVICE_ACCOUNT_JSON_PATH secret file wasn't uploaded, or
+    its path doesn't match the env var)."""
     try:
         return fn(plant)
-    except Exception as e:
-        errors_out.append(f"{label}: {e}")
+    except Exception:
+        logger.exception("Failed to read %s for plant %s", label, plant)
+        errors_out.append(f"{label} isn't available right now.")
         return 0
 
 

@@ -106,6 +106,23 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# Send our own logger.exception() calls (see core/views.py's _safe_call) to
+# stdout, which Render captures as the service's Logs tab. Without this,
+# under gunicorn (not runserver) those errors could get swallowed silently -
+# the whole point of logging them server-side instead of showing raw
+# exceptions to users is that someone can actually go look at them here.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler'},
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+}
+
 # --- Session / cookie security -------------------------------------------
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
