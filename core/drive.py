@@ -116,6 +116,18 @@ def list_children(folder_id, mime_type=None, name_contains=None):
     return files
 
 
+def find_file_by_title(folder_id, exact_title):
+    """Resolve a file by its exact title within a folder - used for the
+    master CSVs, which get re-uploaded under the same title on every update
+    (see the CSV versioning policy in project_automation_routines_live), so
+    the file ID isn't stable but the title always is."""
+    candidates = list_children(folder_id, name_contains=exact_title.split(".")[0][:30])
+    for f in candidates:
+        if f["name"] == exact_title:
+            return f
+    return None
+
+
 def download_file_bytes(file_id):
     """Download a file's raw bytes (works for binary files like .xlsx/.pdf
     that were uploaded as-is, not native Google Docs/Sheets)."""

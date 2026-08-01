@@ -8,7 +8,7 @@ command. Any time a plant renamed a file or a folder got restructured, both
 places had to be updated in sync, easy to miss one. Now there's exactly one
 file to touch when that happens.
 """
-from .models import Plant
+from .models import DocType, Plant
 
 # --- MIR / RM Stock file titles, as they exist on Drive today ---------------
 # (confirmed via direct Drive search, 2026-08-01 - update here if a plant
@@ -50,3 +50,21 @@ KNOWN_IMPORT_PO_FOLDER_IDS = {
 # mapped to their own Drive root (not the domestic PO folder) so the probe
 # searches the right place.
 DYNAMIC_IMPORT_PROBE_PLANTS = [Plant.HRS, Plant.RTP_ACHHAD]
+
+# --- Master CSVs (already-extracted current-year PO data) -------------------
+# These 6 files already contain extracted PO data for 2026-2027, built by an
+# earlier extraction pass before this Django app existed. Backfilling from
+# them (see backfill_from_master_csv command) is much faster than
+# re-extracting the same PDFs from scratch through the Claude pipeline -
+# that pipeline is still what handles NEW POs going forward, this is just
+# for getting the existing, already-extracted backlog into Postgres fast.
+MASTER_CSV_PARENT_FOLDER = "17cP2suZv26IAU5mqSKyC8U9zL0EysF9a"  # "Purchase Tracker Tool Database"
+
+MASTER_CSV_TITLES = {
+    (Plant.HRS, DocType.DOMESTIC): "Master_HRS_SILVASSA_Domestic_Purchase_Data.csv",
+    (Plant.RTP_ACHHAD, DocType.DOMESTIC): "Master_RTP_Achhad_Domestic_Purchase_Data.csv",
+    (Plant.RTP_VAPI, DocType.DOMESTIC): "Master_RTP_VAPI_Domestic_Purchase_Data.csv",
+    (Plant.HRS, DocType.IMPORT): "Master_HRS_SILVASSA_Imports_Purchase_Data.csv",
+    (Plant.RTP_ACHHAD, DocType.IMPORT): "Master_RTP_Achhad_Imports_Purchase_Data.csv",
+    (Plant.RTP_VAPI, DocType.IMPORT): "Master_RTP_VAPI_Imports_Purchase_Data.csv",
+}
