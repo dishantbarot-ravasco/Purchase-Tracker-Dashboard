@@ -42,7 +42,16 @@ def _load_workbook_for(plant, titles_map):
     if not file_meta:
         raise FileNotFoundError(f"Could not find the expected file for {plant} in its Drive folder.")
     raw_bytes = drive.download_file_bytes(file_meta["id"])
-    return load_workbook(io.BytesIO(raw_bytes), data_only=True), file_meta
+    # read_only=True matters here, not just for memory: these files have
+    # heavily merged header cells, and openpyxl's normal (non-read_only)
+    # reader builds full Border/Style objects for every merged range while
+    # parsing, which has a known bug where certain border combinations
+    # trigger runaway recursive __eq__/__ne__ comparisons (openpyxl
+    # deduplicating style objects) - this can spin a worker until it's
+    # killed rather than raising a normal Python exception. read_only mode
+    # streams raw cell values without building those style objects at all,
+    # which is also all this module actually needs (values, not styling).
+    return load_workbook(io.BytesIO(raw_bytes), data_only=True, read_only=True), file_meta
 
 
 def _first_matching_sheet(wb, candidate_names):
@@ -64,14 +73,20 @@ def count_data_rows(ws, header_row=1):
 
 def get_mir_rm_row_count(plant):
     wb, _ = _load_workbook_for(plant, MIR_FILE_TITLES)
-    ws = _first_matching_sheet(wb, MIR_RM_SHEET_NAMES)
-    return count_data_rows(ws)
+    try:
+        ws = _first_matching_sheet(wb, MIR_RM_SHEET_NAMES)
+        return count_data_rows(ws)
+    finally:
+        wb.close()  # read_only workbooks hold a zip file handle open until closed
 
 
 def get_stock_row_count(plant):
     wb, _ = _load_workbook_for(plant, STOCK_FILE_TITLES)
-    ws = wb[wb.sheetnames[0]]
-    return count_data_rows(ws)
+    try:
+        ws = wb[wb.sheetnames[0]]
+        return count_data_rows(ws)
+    finally:
+        wb.close()
 
 
 def read_stock_rows_for_snapshot(plant):
@@ -80,35 +95,38 @@ def read_stock_rows_for_snapshot(plant):
     file during the Drive audit (2026-08) - re-verify if a plant's layout
     changes before the standard RM Stock template rolls out there."""
     wb, _ = _load_workbook_for(plant, STOCK_FILE_TITLES)
-    ws = wb[wb.sheetnames[0]]
-    header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
+    try:
+        ws = wb[wb.sheetnames[0]]
+        header = [c.value for c in next(ws.iter_rows(min_row=1, max_row=1))]
 
-    def col(*names):
-        for n in names:
-            for i, h in enumerate(header):
-                if h and n.lower() in str(h).lower():
-                    return i
-        return None
+        def col(*names):
+            for n in names:
+                for i, h in enumerate(header):
+                    if h and n.lower() in str(h).lower():
+                        return i
+            return None
 
-    idx_code = col("SAP Code", "SAP ITEM CODE", "Item Code")
-    idx_desc = col("NAME OF MATERIAL", "Description")
-    idx_cat = col("Category")
-    idx_qty = col("Closing", "Today Stock")
-    idx_rate = col("RATE", "Basic Rate")
-    idx_value = col("Value")
+        idx_code = col("SAP Code", "SAP ITEM CODE", "Item Code")
+        idx_desc = col("NAME OF MATERIAL", "Description")
+        idx_cat = col("Category")
+        idx_qty = col("Closing", "Today Stock")
+        idx_rate = col("RATE", "Basic Rate")
+        idx_value = col("Value")
 
-    rows = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        if idx_desc is None or idx_desc >= len(row) or not row[idx_desc]:
-            continue
-        rows.append(
-            {
-                "material_code": str(row[idx_code]) if idx_code is not None and row[idx_code] else "",
-                "description": str(row[idx_desc]),
-                "category": str(row[idx_cat]) if idx_cat is not None and row[idx_cat] else "",
-                "qty": row[idx_qty] if idx_qty is not None else None,
-                "rate": row[idx_rate] if idx_rate is not None else None,
-                "value": row[idx_value] if idx_value is not None else None,
-            }
-        )
-    return rows
+        rows = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if idx_desc is None or idx_desc >= len(row) or not row[idx_desc]:
+                continue
+            rows.append(
+                {
+                    "material_code": str(row[idx_code]) if idx_code is not None and row[idx_code] else "",
+                    "description": str(row[idx_desc]),
+                    "category": str(row[idx_cat]) if idx_cat is not None and row[idx_cat] else "",
+                    "qty": row[idx_qty] if idx_qty is not None else None,
+                    "rate": row[idx_rate] if idx_rate is not None else None,
+                    "value": row[idx_value] if idx_value is not None else None,
+                }
+            )
+        return rows
+    finally:
+        wb.close()
