@@ -22,14 +22,24 @@ from .plant_config import MIR_FILE_TITLES, MIR_RM_SHEET_NAMES, STOCK_FILE_TITLES
 
 
 def _find_folder_file(plant, titles_map):
+    """Lists ALL of the plant's Drive root children and matches the exact
+    file name in Python - previously this narrowed the search server-side
+    with `name contains '<title prefix>'`, which turned out to be the actual
+    cause of every "MIR/RM Stock file isn't available" error so far, not a
+    real Drive access problem. Drive's `contains` operator for the name
+    field does word/token-boundary matching rather than a true substring
+    match, so a truncated 20-character prefix that happened to cut off
+    mid-word could fail to match a file that was right there the whole time
+    (confirmed directly: an unfiltered list_children found every expected
+    file by its exact name on the first try). See the identical fix and
+    fuller explanation in drive.py's find_file_by_title."""
     root_id = _plant_root_id(plant)
     target_title = titles_map[plant]
-    children = drive.list_children(root_id, name_contains=target_title.split(".")[0][:20])
+    children = drive.list_children(root_id)
     for f in children:
         if f["name"] == target_title:
             return f
-    # fall back to the first close-enough match rather than failing outright
-    return children[0] if children else None
+    return None
 
 
 def _plant_root_id(plant):

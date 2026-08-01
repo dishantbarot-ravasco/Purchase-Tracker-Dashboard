@@ -120,8 +120,19 @@ def find_file_by_title(folder_id, exact_title):
     """Resolve a file by its exact title within a folder - used for the
     master CSVs, which get re-uploaded under the same title on every update
     (see the CSV versioning policy in project_automation_routines_live), so
-    the file ID isn't stable but the title always is."""
-    candidates = list_children(folder_id, name_contains=exact_title.split(".")[0][:30])
+    the file ID isn't stable but the title always is.
+
+    Deliberately lists ALL children and matches the exact name in Python,
+    rather than filtering server-side with `name contains '...'`. That
+    filter looked like a reasonable narrowing optimization, but Drive's
+    `contains` operator for the name field does word/token-boundary
+    matching, not a true substring search - a truncated fragment that cuts
+    off mid-word (e.g. "..._Domestic_P" partway into "Purchase") can fail to
+    match the real file even though the file is clearly right there. Listing
+    everything and comparing in Python sidesteps that entirely, and these
+    folders are small enough (a handful of files) that there's no real cost
+    to not filtering server-side."""
+    candidates = list_children(folder_id)
     for f in candidates:
         if f["name"] == exact_title:
             return f
