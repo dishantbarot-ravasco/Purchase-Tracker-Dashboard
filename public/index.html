@@ -4,11 +4,15 @@
 <meta charset="UTF-8">
 <title>Purchase Tracker</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" crossorigin="anonymous"></script>
 <style>
-  /* Same palette/visual language as the Purchase Tracker Cowork artifact,
-     kept intentionally simpler here (fewer views, plainer language in
-     errors/labels) since this screen is used by non-technical management,
-     not just the people who built it. */
+  /* CSS below is copied verbatim from the original Cowork "Purchase Tracker"
+     artifact (C:\Users\Admin\Claude\Artifacts\purchase-tracker\index.html),
+     so this page is visually identical to it, not a re-guessed approximation.
+     A few extra rules at the bottom (signin-screen, admin/task-runner panel,
+     status-material_inwarded/received_in_inventory pills) are additions this
+     Django app needs that the artifact didn't - it never had a login screen
+     or an admin/task-runner panel. */
   :root {
     color-scheme: light;
     --navy: #0f1b2d;
@@ -29,12 +33,19 @@
     --amber-soft: #fffbeb;
     --green: #16a34a;
     --green-soft: #f0fdf4;
+    --indigo: #6366f1;
+    --indigo-soft: #e0e7ff;
+    --purple: #7c3aed;
+    --purple-soft: #f3e8ff;
+    --gray: #64748b;
+    --gray-mid-soft: #eef1f5;
     --mono: ui-monospace, SFMono-Regular, 'Roboto Mono', Menlo, Consolas, monospace;
     --shadow: 0 1px 2px rgba(15,23,42,0.04), 0 2px 8px rgba(15,23,42,0.05);
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; min-width: 0; }
+  html, body { width:100%; overflow-x:hidden; }
   body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--slate); line-height:1.45; }
-  .wrap { max-width: 1200px; margin: 0 auto; padding: 22px clamp(12px, 2.5vw, 26px) 60px; }
+  .wrap { width:100%; max-width: 1600px; margin: 0 auto; padding: 22px clamp(12px, 2.5vw, 26px) 60px; }
 
   .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; padding-bottom:18px; margin-bottom:20px; border-bottom:1px solid var(--border); }
   .app-title { font-size:26px; margin:0; color:var(--navy); font-weight:800; letter-spacing:-0.015em; }
@@ -50,70 +61,112 @@
   .tab { padding:10px 20px; cursor:pointer; font-size:13.5px; font-weight:700; border-radius:9px; color:var(--slate-soft); background:var(--card); border:1px solid var(--border); }
   .tab.active { color:var(--on-accent); background:var(--navy); border-color:var(--navy); }
 
-  .load-banner { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:48px 20px; text-align:center; color:var(--slate-soft); font-size:14px; box-shadow:var(--shadow); }
+  .load-banner { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:48px 20px; text-align:center; color:var(--slate-soft); font-size:14px; margin-bottom:18px; box-shadow:var(--shadow); }
   .spinner { display:inline-block; width:22px; height:22px; border:3px solid var(--border); border-top-color:var(--blue); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:12px; }
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Errors are always short and in plain language - no file paths, no
-     Python exception text. Full technical detail only ever goes to
-     Render's server-side logs, never to this screen. */
   .notice-banner { background:var(--amber-soft); border:1px solid #fde68a; color:#92400e; border-radius:8px; padding:10px 14px; font-size:12.5px; margin-top:10px; }
   .notice-banner.info { background:var(--blue-soft); border-color:#dbeafe; color:#1e40af; }
+  .error-banner { background:var(--red-soft); border:1px solid #fecaca; color:#991b1b; border-radius:8px; padding:10px 14px; font-size:12.5px; margin-bottom:14px; }
   .noaccess { background:var(--amber-soft); border:1px solid #fde68a; border-radius:12px; padding:20px 22px; color:#92400e; font-size:13.5px; }
 
-  .plant-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; }
-  .plant-card { background:var(--card); border:1px solid var(--border); border-left:5px solid var(--blue); border-radius:13px; padding:18px 20px; box-shadow:var(--shadow); }
-  .plant-name { font-weight:800; font-size:16px; color:var(--navy); margin-bottom:14px; }
-  .stat-grid { display:grid; grid-template-columns: 1fr 1fr; gap:14px; }
-  .stat .val { font-family:var(--mono); font-size:24px; font-weight:800; color:var(--navy); font-variant-numeric: tabular-nums; }
-  .stat .label { font-size:10.5px; color:var(--slate-soft); margin-top:4px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
+  .view-tabs { display:flex; gap:8px; margin-bottom:18px; }
+  .view-tab { padding:10px 20px; cursor:pointer; font-size:13.5px; font-weight:700; border-radius:9px; color:var(--slate-soft); background:var(--card); border:1px solid var(--border); }
+  .view-tab.active { color:var(--on-accent); background:var(--navy); border-color:var(--navy); }
 
-  .signin-screen { text-align:center; padding:100px 20px; }
-  .signin-screen .app-title { font-size:30px; }
-  .signin-screen p { color:var(--slate-soft); font-size:13.5px; margin:8px 0 26px; }
+  .plant-tabs { display:flex; gap:6px; border-bottom: 2px solid var(--border); margin-bottom: 16px; }
+  .plant-tab { padding: 9px 18px; cursor:pointer; font-size:13.5px; font-weight:600; color:var(--slate-soft); border-bottom: 2px solid transparent; margin-bottom:-2px; }
+  .plant-tab.active { color:var(--navy); border-bottom-color:var(--blue); }
+  .sub-tabs { display:flex; gap:4px; margin-bottom:18px; }
+  .sub-tab { padding:6px 14px; font-size:12.5px; border-radius:7px; cursor:pointer; background:var(--gray-soft); color:var(--slate-soft); font-weight:600; }
+  .sub-tab.active { background:var(--navy); color:var(--on-accent); }
 
-  table { width:100%; border-collapse:collapse; font-size:13px; margin-top:12px; }
+  .filter-row { display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 15px; box-shadow:var(--shadow); }
+  .filter-row label { font-size:12px; color:var(--slate-soft); font-weight:600; }
+  .filter-row input[type=date], .filter-row input[type=text] { padding:6px 9px; border:1px solid #cbd5e1; border-radius:7px; font-size:12.5px; }
+  .filter-row button { padding:6px 13px; border-radius:7px; border:1px solid #cbd5e1; background:#fff; cursor:pointer; font-size:12px; font-weight:600; color:var(--slate); }
+  .filter-row button.primary { background:var(--navy); color:var(--on-accent); border-color:var(--navy); }
+
+  .kpi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:14px; margin-bottom:20px; }
+  .kpi-card { background:var(--card); border:1px solid var(--border); border-left:5px solid #cbd5e1; border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--shadow); }
+  .kpi-card:hover { transform:translateY(-2px); box-shadow:0 8px 20px rgba(15,23,42,0.10); }
+  .kpi-card.active { outline:2px solid var(--navy); outline-offset:-1px; }
+  .kpi-card .val { font-family:var(--mono); font-size:28px; font-weight:800; line-height:1.1; color:var(--navy); font-variant-numeric: tabular-nums; }
+  .kpi-card .label { font-size:11px; color:var(--slate-soft); margin-top:7px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
+  .chart-row { display:grid; grid-template-columns: minmax(280px, 1.3fr) minmax(240px, 1fr); gap:16px; margin-bottom:20px; }
+  @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
+  .chart-panel { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:16px 18px; box-shadow:var(--shadow); }
+  .chart-panel h4 { margin:0 0 10px; font-size:12.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; }
+  .chart-box { position:relative; height:220px; }
+  .no-data-note { color:#9ca3af; font-size:12px; font-style:italic; }
+  .chart-hint { font-size:11px; color:#9ca3af; margin-top:6px; text-align:center; font-style:italic; }
+
+  .list-toggle-row { display:flex; align-items:center; justify-content:space-between; margin: 20px 0 10px; }
+  .view-all-btn { padding:7px 15px; border-radius:8px; border:1px solid var(--navy); background:#fff; color:var(--navy); font-size:12px; font-weight:700; cursor:pointer; }
+  .view-all-btn:hover { background:var(--blue-soft); }
+
+  .section-title { font-size:14.5px; font-weight:700; margin: 20px 0 10px; color:var(--navy); }
+  .section-sub { font-size:12px; color:var(--slate-soft); margin:-6px 0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
   th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border-soft); }
   th { color:var(--slate-soft); font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700; }
   input, select { font-size:13px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:7px; font-family:inherit; }
-  .admin-form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:16px; padding-top:16px; border-top:1px solid var(--border-soft); }
-  .admin-form label { font-size:12px; color:var(--slate-soft); display:flex; align-items:center; gap:4px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px; box-shadow:var(--shadow); }
-  .section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); margin:0 0 4px; }
+  .table-wrap { border-radius:10px; overflow-x:auto; border:1px solid var(--border); box-shadow:var(--shadow); background:var(--card); }
+  .po-search { width:100%; max-width:340px; margin-bottom:14px; }
 
+  .status-pill { display:inline-block; padding:3px 9px; border-radius:99px; font-size:10.5px; font-weight:700; letter-spacing:0.02em; text-transform:uppercase; }
+  .status-received { background:var(--green-soft); color:#166534; }
+  .status-partial { background:#fff7ed; color:#9a3412; }
+  .status-pending { background:var(--amber-soft); color:#92400e; }
+  .status-overdue { background:var(--red-soft); color:#991b1b; }
+  .status-unknown { background:var(--indigo-soft); color:#3730a3; }
+  .flag-badge { display:inline-block; font-size:10px; font-weight:700; border-radius:99px; padding:2px 8px; margin-left:6px; background:var(--red-soft); color:#991b1b; }
+  .row-link { color:var(--blue); cursor:pointer; text-decoration:none; font-weight:700; font-size:12px; }
+  .row-link:hover { text-decoration:underline; }
+  .empty-state { padding:70px 20px; text-align:center; color:#9ca3af; font-size:14px; background:var(--card); border:1px dashed #d1d5db; border-radius:12px; }
   .back-link { color:var(--blue); cursor:pointer; font-size:12.5px; font-weight:600; margin-bottom:12px; display:inline-block; }
   .back-link:hover { text-decoration:underline; }
-  .po-search { width:100%; max-width:340px; margin-bottom:14px; }
-  .row-link { color:var(--blue); cursor:pointer; font-weight:700; }
-  .row-link:hover { text-decoration:underline; }
-  .status-pill { display:inline-block; padding:3px 9px; border-radius:999px; font-size:10.5px; font-weight:700; letter-spacing:0.02em; text-transform:uppercase; }
-  .status-ordered { background:var(--amber-soft); color:#92400e; }
-  .status-material_inwarded { background:var(--blue-soft); color:#1e40af; }
-  .status-received_in_inventory { background:var(--green-soft); color:#166534; }
-  .flag-badge { display:inline-block; font-size:10px; font-weight:700; border-radius:999px; padding:2px 8px; margin-left:6px; background:var(--red-soft); color:#991b1b; }
 
-  .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,0.55); display:none; align-items:flex-start; justify-content:center; z-index:100; padding:36px 16px; overflow:auto; }
+  .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,0.55); display:none; align-items:flex-start; justify-content:center; z-index:100; padding: 36px 16px; overflow:auto; }
   .modal-backdrop.open { display:flex; }
-  .modal { background:#fff; border-radius:14px; max-width:760px; width:100%; padding:24px 28px 28px; max-height:92vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.25); }
-  .modal h2 { margin:0 0 2px; font-size:19px; color:var(--navy); }
+  .modal { background:#fff; border-radius:14px; max-width: 900px; width:100%; padding:26px 32px 32px; max-height: 92vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.25); }
+  .modal h2 { margin:0 0 2px; font-size:20px; color:var(--navy); }
   .modal .close-btn { float:right; cursor:pointer; font-size:22px; color:#9ca3af; line-height:1; }
   .modal .close-btn:hover { color:var(--slate); }
-  .modal-meta { font-size:12.5px; color:var(--slate-soft); margin-bottom:14px; }
-  .field-grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:14px 0; }
-  @media (max-width:600px) { .field-grid { grid-template-columns:1fr; } }
-  .field-block { background:var(--gray-soft); border-radius:10px; padding:12px 14px; }
-  .field-block h4 { margin:0 0 6px; font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; }
-  .field-block div.line { font-size:13px; margin-bottom:3px; color:var(--slate); }
-  .items-table { width:100%; border-collapse:collapse; margin-top:6px; font-size:12.5px; }
-  .items-table th, .items-table td { border-bottom:1px solid var(--border); padding:6px 8px; text-align:left; }
-  .flags-box { background:var(--red-soft); border:1px solid #fecaca; border-radius:10px; padding:12px 14px; margin-top:14px; }
-  .flags-box h4 { margin:0 0 8px; font-size:10.5px; text-transform:uppercase; color:#991b1b; font-weight:700; }
-  .flags-box li { font-size:12.5px; margin-bottom:5px; color:#7f1d1d; }
+  .modal-meta { font-size:12.5px; color:var(--slate-soft); margin-bottom:6px; }
+  .modal-tabs { display:flex; gap:6px; margin:16px 0 18px; border-bottom:2px solid var(--border); flex-wrap:wrap; }
+  .modal-tab { padding:9px 18px; font-size:13px; font-weight:700; color:var(--slate-soft); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-2px; white-space:nowrap; }
+  .modal-tab:hover { color:var(--navy); }
+  .modal-tab.active { color:var(--navy); border-bottom-color:var(--blue); }
+  .modal-tab-panel { display:none; }
+  .modal-tab-panel.active { display:block; animation: fadeIn .12s ease; }
+  @keyframes fadeIn { from { opacity:0.4; } to { opacity:1; } }
+  .field-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top:4px; }
+  @media (max-width: 720px) { .field-grid { grid-template-columns: 1fr; } }
+  .field-block { background:var(--gray-soft); border-radius:10px; padding:14px 16px; }
+  .field-block h4 { margin:0 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
+  .field-block div.line { font-size:13px; margin-bottom:3px; color:var(--slate); font-family:var(--mono); }
+  .items-table { width:100%; border-collapse:collapse; margin-top:6px; font-size:12px; font-family:var(--mono); }
+  .items-table th, .items-table td { border-bottom:1px solid var(--border); padding:5px 7px; text-align:left; }
+  .items-table th { color:var(--slate-soft); font-family:-apple-system,BlinkMacSystemFont,sans-serif; text-transform:uppercase; font-size:10.5px; letter-spacing:0.03em; }
+  .flags-box { background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin-top:14px; }
+  .flags-box h4 { margin:0 0 8px; font-size:11px; text-transform:uppercase; color:#9a3412; font-weight:700; }
+  .flags-box li { font-size:12.5px; margin-bottom:5px; }
   .correction-box { background:var(--gray-soft); border:1px solid var(--border); border-radius:10px; padding:14px 16px; margin-top:14px; }
   .correction-box h4 { margin:0 0 8px; font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; }
   .correction-box textarea { width:100%; min-height:52px; resize:vertical; font-family:inherit; }
   .correction-status { font-size:12px; margin-top:8px; font-weight:600; }
   .correction-status.ok { color:var(--green); }
+  .full-width { grid-column: 1 / -1; }
+
+  /* --- Additions beyond the artifact: sign-in screen, admin panel --- */
+  .signin-screen { text-align:center; padding:100px 20px; }
+  .signin-screen .app-title { font-size:30px; }
+  .signin-screen p { color:var(--slate-soft); font-size:13.5px; margin:8px 0 26px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px; box-shadow:var(--shadow); }
+  .admin-form { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:16px; padding-top:16px; border-top:1px solid var(--border-soft); }
+  .admin-form label { font-size:12px; color:var(--slate-soft); display:flex; align-items:center; gap:4px; }
+  .status-material_inwarded { background:var(--blue-soft); color:#1e40af; }
+  .status-received_in_inventory { background:var(--green-soft); color:#166534; }
 </style>
 </head>
 <body>
@@ -121,9 +174,26 @@
     <div class="load-banner"><div class="spinner"></div><div>Loading&hellip;</div></div>
   </div>
 
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal" id="modalBody"></div>
+  </div>
+
   <script>
     const root = document.getElementById('root');
     let currentTab = 'dashboard';
+    const PLANTS = ['HRS', 'RTP_ACHHAD', 'RTP_VAPI'];
+    const PLANT_LABELS = { HRS: 'HRS', RTP_ACHHAD: 'RTP - Achhad', RTP_VAPI: 'RTP - Vapi' };
+    let pageCharts = [];
+    function destroyPageCharts() { pageCharts.forEach(c => { try { c.destroy(); } catch (e) {} }); pageCharts = []; }
+
+    // Per-plant PO data cache and the small piece of UI state the Domestic PO
+    // Tracker view needs - mirrors the state shape the artifact used, since
+    // the interaction model (plant tabs -> sub tabs -> KPI cards that filter
+    // the list -> chart row -> table -> drill-down modal) is being ported
+    // as-is, just reading from Postgres via the API instead of parsing CSVs
+    // live off Drive on every load.
+    let DATA = { HRS: [], RTP_ACHHAD: [], RTP_VAPI: [] };
+    let state = { plant: 'HRS', sub: 'Domestic', statusFilter: null, from: null, to: null, showAllPOs: false };
 
     function getCookie(name) {
       const match = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
@@ -134,9 +204,6 @@
       opts = opts || {};
       const method = (opts.method || 'GET').toUpperCase();
       const headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
-      // Django's CSRF protection is on for every POST/PUT/DELETE - the
-      // ensure_csrf_cookie wrapper on the index view (see core/urls.py)
-      // guarantees this cookie exists, we just read it back here.
       if (method !== 'GET' && method !== 'HEAD') {
         headers['X-CSRFToken'] = getCookie('csrftoken');
       }
@@ -205,155 +272,251 @@
       else loadAdmin();
     }
 
+    // ------------------------------------------------------------------
+    // Domestic/Import PO Tracker (view-tabs: PO Tracker / Materials /
+    // Licenses - only PO Tracker has real data wired up so far, the other
+    // two show an honest "not built yet" empty-state rather than fake data).
+    // ------------------------------------------------------------------
     async function loadDashboard() {
       const el = document.getElementById('tab-content');
       el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading plant data&hellip;</div></div>';
       try {
-        const data = await api('/api/dashboard');
-        if (!data.plants.length) {
-          el.innerHTML = '<div class="noaccess">No plants to show for this account yet.</div>';
-          return;
-        }
-        el.innerHTML = '<div class="plant-grid">' + data.plants.map(renderPlantCard).join('') + '</div>';
+        await Promise.all(PLANTS.map(async p => {
+          const data = await api('/api/plants/' + p + '/purchase-orders');
+          DATA[p] = data.purchaseOrders;
+        }));
+        el.innerHTML =
+          '<div class="view-tabs" id="viewTabs"></div>' +
+          '<div class="plant-tabs" id="plantTabs"></div>' +
+          '<div class="sub-tabs" id="subTabs"></div>' +
+          '<div id="viewContent"></div>';
+        renderViewTabs();
+        renderPlantTabs();
+        renderSubTabs();
+        renderPoContent();
       } catch (e) {
         el.innerHTML = '<div class="noaccess">Couldn\'t load the dashboard right now. Please refresh, or contact IT if this keeps happening.</div>';
       }
     }
 
-    function renderPlantCard(p) {
-      // Any file-read issues (e.g. a Drive file being temporarily
-      // unreachable) show as one short, plain-language line here - never
-      // raw error text. See core/views.py's _safe_call for where these
-      // messages are generated server-side.
-      const noticeHtml = p.errors.length
-        ? p.errors.map(e => '<div class="notice-banner">' + escapeHtml(e) + '</div>').join('')
-        : '';
-      return '<div class="plant-card" style="cursor:pointer" onclick="openPlantPos(\'' + p.plant + '\')">' +
-        '<div class="plant-name">' + escapeHtml(plantLabel(p.plant)) + '</div>' +
-        '<div class="stat-grid">' +
-          '<div class="stat"><div class="val">' + p.poCount + '</div><div class="label">Domestic POs</div></div>' +
-          '<div class="stat"><div class="val">' + formatInr(p.totalValue) + '</div><div class="label">Total PO Value</div></div>' +
-          '<div class="stat"><div class="val">' + p.mirRowCount + '</div><div class="label">MIR Rows</div></div>' +
-          '<div class="stat"><div class="val">' + p.stockRowCount + '</div><div class="label">RM Stock Rows</div></div>' +
-        '</div>' + noticeHtml +
-      '</div>';
+    function renderViewTabs() {
+      const el = document.getElementById('viewTabs');
+      el.innerHTML = '<div class="view-tab active">PO Tracker</div>' +
+        '<div class="view-tab" title="Coming next" style="opacity:.55;cursor:default;">Materials (coming soon)</div>' +
+        '<div class="view-tab" title="Coming next" style="opacity:.55;cursor:default;">Advance Licenses (coming soon)</div>';
     }
 
-    // --- Purchase Order list + drill-down (per plant) ------------------
-
-    let currentPlant = null;
-    let currentPos = [];
-
-    async function openPlantPos(plant) {
-      currentPlant = plant;
-      const el = document.getElementById('tab-content');
-      el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading purchase orders&hellip;</div></div>';
-      try {
-        const data = await api('/api/plants/' + plant + '/purchase-orders');
-        currentPos = data.purchaseOrders;
-        renderPoList();
-      } catch (e) {
-        el.innerHTML = '<div class="back-link" onclick="loadDashboard()">&larr; Back to dashboard</div>' +
-          '<div class="noaccess">Couldn\'t load purchase orders right now. Please try again, or contact IT if this keeps happening.</div>';
-      }
+    function renderPlantTabs() {
+      const el = document.getElementById('plantTabs');
+      el.innerHTML = PLANTS.map(p => '<div class="plant-tab ' + (p === state.plant ? 'active' : '') + '" data-plant="' + p + '">' + PLANT_LABELS[p] + '</div>').join('');
+      el.querySelectorAll('.plant-tab').forEach(t => t.onclick = () => {
+        state.plant = t.dataset.plant; state.statusFilter = null; state.showAllPOs = false;
+        renderPlantTabs(); renderPoContent();
+      });
     }
 
-    function renderPoList(searchTerm) {
-      const el = document.getElementById('tab-content');
-      searchTerm = (searchTerm || '').toLowerCase();
-      const filtered = !searchTerm ? currentPos : currentPos.filter(po =>
-        (po.poNumber + ' ' + po.vendorName).toLowerCase().includes(searchTerm)
-      );
+    function renderSubTabs() {
+      const el = document.getElementById('subTabs');
+      el.innerHTML = ['Domestic', 'Import'].map(s => '<div class="sub-tab ' + (s === state.sub ? 'active' : '') + '" data-sub="' + s + '">' + s + ' Purchases</div>').join('');
+      el.querySelectorAll('.sub-tab').forEach(t => t.onclick = () => {
+        state.sub = t.dataset.sub; state.statusFilter = null; state.showAllPOs = false;
+        renderSubTabs(); renderPoContent();
+      });
+    }
 
-      if (!currentPos.length) {
-        el.innerHTML = '<div class="back-link" onclick="loadDashboard()">&larr; Back to dashboard</div>' +
-          '<div class="noaccess">No purchase orders for ' + escapeHtml(plantLabel(currentPlant)) +
-          ' yet - the extraction pipeline hasn\'t loaded any in, or none exist for this plant.</div>';
+    // Same 5-status model as the artifact (received / partial / pending /
+    // overdue / unknown), computed from each item's delivery date. This is
+    // the "no MIR match yet" branch of the original reconciliation logic -
+    // real PO-vs-MIR item matching (which upgrades pending/overdue into
+    // received/partial once a matching MIR row is found) is tracked as a
+    // separate, still-pending piece of work, not silently skipped.
+    const STATUS_LABELS = { received: 'Received', partial: 'Partial Delivered', pending: 'Pending', overdue: 'Overdue', unknown: 'Delivery Date Unknown' };
+    function computeStatus(po) {
+      const items = po.items || [];
+      if (!items.length) return 'pending';
+      const dates = items.map(it => it.deliveryDate).filter(Boolean).sort();
+      if (!dates.length) return 'unknown';
+      const dd = new Date(dates[0] + 'T00:00:00');
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      return (!isNaN(dd.getTime()) && dd < today) ? 'overdue' : 'pending';
+    }
+
+    function renderPoContent() {
+      const el = document.getElementById('viewContent');
+      destroyPageCharts();
+      const docType = state.sub === 'Domestic' ? 'domestic' : 'import';
+      const all = (DATA[state.plant] || []).filter(po => po.docType === docType);
+      all.forEach(po => { po._status = computeStatus(po); });
+
+      if (!all.length) {
+        el.innerHTML = '<div class="empty-state">No ' + state.sub.toLowerCase() + ' purchase orders for ' + escapeHtml(PLANT_LABELS[state.plant]) + ' yet.</div>';
         return;
       }
 
-      const rows = filtered.map((po, i) => {
-        const originalIndex = currentPos.indexOf(po);
-        const flagCount = (po.flags || []).filter(f => !f.resolved).length;
-        return '<tr>' +
-          '<td><span class="row-link" onclick="openPoModal(' + originalIndex + ')">' + escapeHtml(po.poNumber) + '</span></td>' +
-          '<td>' + escapeHtml(po.vendorName || '—') + '</td>' +
-          '<td>' + escapeHtml(po.createdDate || '—') + '</td>' +
-          '<td>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '—') + '</td>' +
-          '<td><span class="status-pill status-' + po.status + '">' + escapeHtml((po.status || '').replace(/_/g, ' ')) + '</span>' +
-            (flagCount ? '<span class="flag-badge">' + flagCount + '</span>' : '') + '</td>' +
-        '</tr>';
-      }).join('');
+      const inRange = po => {
+        if (state.from && (!po.createdDate || po.createdDate < state.from)) return false;
+        if (state.to && (!po.createdDate || po.createdDate > state.to)) return false;
+        return true;
+      };
+      const filtered = all.filter(inRange);
+      const counts = { received: 0, partial: 0, pending: 0, overdue: 0, unknown: 0 };
+      filtered.forEach(po => counts[po._status]++);
+      const total = filtered.length;
+
+      const cardDef = [
+        { key: 'total', cls: '', label: "Total PO's Created", val: total },
+        { key: 'received', cls: 'received', label: 'Material Inward / Received', val: counts.received },
+        { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial },
+        { key: 'pending', cls: 'pending', label: 'Pending Deliveries', val: counts.pending },
+        { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue },
+        { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown },
+      ];
+      const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.statusFilter === c.key ? 'active' : '') + '" data-kpi="' + c.key + '">' +
+        '<div class="val">' + c.val + '</div><div class="label">' + escapeHtml(c.label) + '</div></div>').join('');
+
+      let tableRecs = state.statusFilter && state.statusFilter !== 'total'
+        ? filtered.filter(po => po._status === state.statusFilter)
+        : filtered;
+      tableRecs = tableRecs.slice().sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
+
+      const statusChartData = [
+        { label: STATUS_LABELS.received, val: counts.received, color: '#16a34a' },
+        { label: STATUS_LABELS.partial, val: counts.partial, color: '#2563eb' },
+        { label: STATUS_LABELS.pending, val: counts.pending, color: '#d97706' },
+        { label: STATUS_LABELS.overdue, val: counts.overdue, color: '#dc2626' },
+        { label: STATUS_LABELS.unknown, val: counts.unknown, color: '#64748b' },
+      ].filter(s => s.val > 0);
+
+      const monthTotals = {};
+      filtered.forEach(po => {
+        const m = (po.createdDate || '').slice(0, 7);
+        const v = po.totalInclTax != null ? po.totalInclTax : po.totalValue;
+        if (!m || v == null) return;
+        monthTotals[m] = (monthTotals[m] || 0) + v;
+      });
+      const months = Object.keys(monthTotals).sort();
+
+      const showingAll = state.showAllPOs;
+      const totalForList = tableRecs.length;
+      const listRecs = showingAll ? tableRecs : tableRecs.slice(0, 5);
 
       el.innerHTML =
-        '<div class="back-link" onclick="loadDashboard()">&larr; Back to dashboard</div>' +
-        '<div class="card">' +
-          '<div class="section-title">' + escapeHtml(plantLabel(currentPlant)) + ' - Purchase Orders</div>' +
-          '<input class="po-search" placeholder="Search PO number or vendor&hellip;" oninput="renderPoList(this.value)">' +
-          '<table><thead><tr><th>PO Number</th><th>Vendor</th><th>Date</th><th>Value (incl. tax)</th><th>Status</th></tr></thead>' +
-          '<tbody>' + rows + '</tbody></table>' +
-        '</div>';
+        '<div class="filter-row">' +
+          '<label>Date filter (Created on)</label>' +
+          '<input type="date" id="fromDate" value="' + (state.from || '') + '">' +
+          '<span style="color:#9ca3af;font-size:12px;">to</span>' +
+          '<input type="date" id="toDate" value="' + (state.to || '') + '">' +
+          '<button class="primary" id="applyFilter">Apply</button>' +
+          '<button id="clearFilter">Clear</button>' +
+        '</div>' +
+        '<div class="kpi-grid">' + kpiHtml + '</div>' +
+        ((statusChartData.length || months.length) ?
+          '<div class="chart-row">' +
+            '<div class="chart-panel"><h4>PO Value Trend by Month Created</h4>' +
+              (months.length ? '<div class="chart-box"><canvas id="poTrendChart"></canvas></div>' : '<div class="no-data-note">No dated POs in range to plot.</div>') +
+            '</div>' +
+            '<div class="chart-panel"><h4>Status Breakdown</h4>' +
+              (statusChartData.length ? '<div class="chart-box"><canvas id="poStatusChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
+            '</div>' +
+          '</div>' : '') +
+        '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Purchase Orders (' + totalForList + ')</div>' +
+          (totalForList > 5 ? '<button class="view-all-btn" id="toggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
+        '</div>' +
+        '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Date</th><th>Value (incl. tax)</th><th>Status</th></tr></thead>' +
+        '<tbody>' + listRecs.map(po => {
+          const flagCount = (po.flags || []).filter(f => !f.resolved).length;
+          return '<tr><td><span class="row-link" data-po="' + escapeHtml(po.poNumber) + '">' + escapeHtml(po.poNumber) + '</span></td>' +
+            '<td>' + escapeHtml(po.vendorName || '—') + '</td>' +
+            '<td>' + escapeHtml(po.createdDate || '—') + '</td>' +
+            '<td>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '—') + '</td>' +
+            '<td><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' +
+              (flagCount ? '<span class="flag-badge">' + flagCount + '</span>' : '') + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+
+      document.querySelectorAll('[data-kpi]').forEach(c => c.onclick = () => {
+        const key = c.dataset.kpi;
+        state.statusFilter = (state.statusFilter === key || key === 'total') ? null : key;
+        renderPoContent();
+      });
+      document.getElementById('applyFilter').onclick = () => {
+        state.from = document.getElementById('fromDate').value || null;
+        state.to = document.getElementById('toDate').value || null;
+        renderPoContent();
+      };
+      document.getElementById('clearFilter').onclick = () => { state.from = null; state.to = null; renderPoContent(); };
+      const toggleBtn = document.getElementById('toggleAllBtn');
+      if (toggleBtn) toggleBtn.onclick = () => { state.showAllPOs = !state.showAllPOs; renderPoContent(); };
+      document.querySelectorAll('[data-po]').forEach(el2 => el2.onclick = () => openPoModal(el2.dataset.po, docType));
+
+      if (months.length) {
+        const ctx = document.getElementById('poTrendChart');
+        pageCharts.push(new Chart(ctx, {
+          type: 'bar',
+          data: { labels: months, datasets: [{ data: months.map(m => monthTotals[m]), backgroundColor: '#2563eb' }] },
+          options: { plugins: { legend: { display: false } }, scales: { y: { ticks: { callback: v => '₹' + (v / 100000).toFixed(1) + 'L' } } } }
+        }));
+      }
+      if (statusChartData.length) {
+        const ctx = document.getElementById('poStatusChart');
+        pageCharts.push(new Chart(ctx, {
+          type: 'doughnut',
+          data: { labels: statusChartData.map(s => s.label), datasets: [{ data: statusChartData.map(s => s.val), backgroundColor: statusChartData.map(s => s.color) }] },
+          options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 10 } } } } }
+        }));
+      }
     }
 
-    function openPoModal(index) {
-      const po = currentPos[index];
+    function openPoModal(poNumber, docType) {
+      const po = (DATA[state.plant] || []).find(p => p.poNumber === poNumber);
+      if (!po) return;
       const flagsHtml = (po.flags || []).length
         ? '<div class="flags-box"><h4>Flags</h4><ul style="margin:0;padding-left:18px;">' +
             po.flags.map(f => '<li>' + escapeHtml(f.text) + (f.resolved ? ' (resolved)' : '') + '</li>').join('') +
-          '</ul></div>'
-        : '';
+          '</ul></div>' : '';
       const itemsHtml = (po.items || []).length
-        ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th></tr></thead><tbody>' +
+        ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th></tr></thead><tbody>' +
             po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '—') +
-              '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '—') + '</td></tr>').join('') +
-          '</tbody></table>'
+              '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '—') +
+              '</td><td>' + escapeHtml(it.deliveryDate || '—') + '</td></tr>').join('') + '</tbody></table>'
         : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
 
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop open';
-      backdrop.id = 'po-modal-backdrop';
-      backdrop.onclick = (e) => { if (e.target === backdrop) closePoModal(); };
-      backdrop.innerHTML =
-        '<div class="modal">' +
-          '<span class="close-btn" onclick="closePoModal()">&times;</span>' +
-          '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
-          '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(po.createdDate || 'no date') + '</div>' +
-          '<div class="field-grid">' +
-            '<div class="field-block"><h4>Vendor</h4>' +
-              '<div class="line">' + escapeHtml(po.vendorName || '—') + '</div>' +
-              '<div class="line">GSTIN: ' + escapeHtml(po.vendorGstin || '—') + '</div>' +
-            '</div>' +
-            '<div class="field-block"><h4>Commercials</h4>' +
-              '<div class="line">Total incl. tax: ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '—') + '</div>' +
-              '<div class="line">Payment terms: ' + escapeHtml(po.paymentTerms || '—') + '</div>' +
-              '<div class="line">Incoterms: ' + escapeHtml(po.incoterms || '—') + '</div>' +
-            '</div>' +
+      const backdrop = document.getElementById('modalBackdrop');
+      const body = document.getElementById('modalBody');
+      backdrop.classList.add('open');
+      backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+      body.innerHTML =
+        '<span class="close-btn" onclick="closeModal()">&times;</span>' +
+        '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
+        '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(po.createdDate || 'no date') + '</div>' +
+        '<div class="field-grid">' +
+          '<div class="field-block"><h4>Vendor</h4>' +
+            '<div class="line">' + escapeHtml(po.vendorName || '—') + '</div>' +
+            '<div class="line">GSTIN: ' + escapeHtml(po.vendorGstin || '—') + '</div>' +
           '</div>' +
-          '<div class="section-title">Items</div>' + itemsHtml +
-          flagsHtml +
-          '<div class="correction-box">' +
-            '<h4>Spot something wrong? Flag it</h4>' +
-            '<textarea id="correction-text" placeholder="e.g. Quantity should be 5000 KG, not 500 KG"></textarea>' +
-            '<div style="margin-top:8px;"><button class="btn small" onclick="submitCorrection(\'' + po.poNumber + '\')">Submit</button></div>' +
-            '<div id="correction-status" class="correction-status"></div>' +
+          '<div class="field-block"><h4>Commercials</h4>' +
+            '<div class="line">Total incl. tax: ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '—') + '</div>' +
+            '<div class="line">Payment terms: ' + escapeHtml(po.paymentTerms || '—') + '</div>' +
+            '<div class="line">Incoterms: ' + escapeHtml(po.incoterms || '—') + '</div>' +
           '</div>' +
+        '</div>' +
+        '<div class="section-title">Items</div>' + itemsHtml +
+        flagsHtml +
+        '<div class="correction-box">' +
+          '<h4>Spot something wrong? Flag it</h4>' +
+          '<textarea id="correction-text" placeholder="e.g. Quantity should be 5000 KG, not 500 KG"></textarea>' +
+          '<div style="margin-top:8px;"><button class="btn small" onclick="submitCorrection(\'' + po.poNumber + '\')">Submit</button></div>' +
+          '<div id="correction-status" class="correction-status"></div>' +
         '</div>';
-      document.body.appendChild(backdrop);
     }
 
-    function closePoModal() {
-      const el = document.getElementById('po-modal-backdrop');
-      if (el) el.remove();
-    }
+    function closeModal() { document.getElementById('modalBackdrop').classList.remove('open'); }
 
     async function submitCorrection(poNumber) {
       const text = document.getElementById('correction-text').value.trim();
       const statusEl = document.getElementById('correction-status');
       if (!text) { statusEl.className = 'correction-status'; statusEl.textContent = 'Please describe what looks wrong first.'; return; }
       try {
-        await api('/api/purchase-orders/' + encodeURIComponent(poNumber) + '/flags', {
-          method: 'POST', body: JSON.stringify({ flagText: text })
-        });
+        await api('/api/purchase-orders/' + encodeURIComponent(poNumber) + '/flags', { method: 'POST', body: JSON.stringify({ flagText: text }) });
         statusEl.className = 'correction-status ok';
         statusEl.textContent = 'Submitted - thank you.';
         document.getElementById('correction-text').value = '';
@@ -363,10 +526,9 @@
       }
     }
 
-    function plantLabel(code) {
-      return { HRS: 'HRS', RTP_ACHHAD: 'RTP - Achhad', RTP_VAPI: 'RTP - Vapi' }[code] || code;
-    }
-
+    // ------------------------------------------------------------------
+    // Admin tab: user/role management + manual task runner
+    // ------------------------------------------------------------------
     async function loadAdmin() {
       const el = document.getElementById('tab-content');
       el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading users&hellip;</div></div>';
@@ -379,7 +541,7 @@
           '<td><button class="btn secondary small" onclick="removeUser(\'' + escapeHtml(u.email) + '\')">Remove</button></td>' +
         '</tr>').join('');
         const roleOptions = data.validRoles.map(r => '<option value="' + r + '">' + r + '</option>').join('');
-        const plantChecks = data.plants.map(p => '<label><input type="checkbox" value="' + p + '" class="plant-check"> ' + escapeHtml(plantLabel(p)) + '</label>').join(' ');
+        const plantChecks = data.plants.map(p => '<label><input type="checkbox" value="' + p + '" class="plant-check"> ' + escapeHtml(PLANT_LABELS[p]) + '</label>').join(' ');
         el.innerHTML =
           '<div class="card">' +
             '<div class="section-title">Users</div>' +
@@ -398,12 +560,30 @@
       }
     }
 
-    // --- Manual task runner ---------------------------------------------
-    // Buttons for the 5 whitelisted management commands, since Render's
-    // Shell tab and one-off Job runner are both paid-tier and unavailable on
-    // this plan (see views.py's run_task). These same tasks also run on a
-    // schedule via a free external scheduler hitting the token-authed URL -
-    // this panel is just the manual/on-demand path for an admin.
+    async function addUser() {
+      const email = document.getElementById('new-email').value.trim();
+      const role = document.getElementById('new-role').value;
+      const plants = Array.from(document.querySelectorAll('.plant-check:checked')).map(c => c.value);
+      const errEl = document.getElementById('admin-err');
+      errEl.innerHTML = '';
+      try {
+        await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ email, role, plants }) });
+        loadAdmin();
+      } catch (e) {
+        errEl.innerHTML = '<div class="notice-banner">' + escapeHtml(e.message) + '</div>';
+      }
+    }
+
+    async function removeUser(email) {
+      if (!confirm('Remove access for ' + email + '?')) return;
+      try {
+        await api('/api/admin/users/' + encodeURIComponent(email), { method: 'DELETE' });
+        loadAdmin();
+      } catch (e) {
+        alert('Could not remove this user. Please try again.');
+      }
+    }
+
     const RUNNABLE_TASKS = [
       { name: 'backfill_from_master_csv', label: 'Backfill POs from master CSVs' },
       { name: 'scan_new_pos', label: 'Scan Drive for new POs' },
@@ -445,30 +625,6 @@
       } finally {
         btn.disabled = false;
         btn.textContent = originalText;
-      }
-    }
-
-    async function addUser() {
-      const email = document.getElementById('new-email').value.trim();
-      const role = document.getElementById('new-role').value;
-      const plants = Array.from(document.querySelectorAll('.plant-check:checked')).map(c => c.value);
-      const errEl = document.getElementById('admin-err');
-      errEl.innerHTML = '';
-      try {
-        await api('/api/admin/users', { method: 'POST', body: JSON.stringify({ email, role, plants }) });
-        loadAdmin();
-      } catch (e) {
-        errEl.innerHTML = '<div class="notice-banner">' + escapeHtml(e.message) + '</div>';
-      }
-    }
-
-    async function removeUser(email) {
-      if (!confirm('Remove access for ' + email + '?')) return;
-      try {
-        await api('/api/admin/users/' + encodeURIComponent(email), { method: 'DELETE' });
-        loadAdmin();
-      } catch (e) {
-        alert('Could not remove this user. Please try again.');
       }
     }
 

@@ -24,6 +24,7 @@ def serialize_po_item(item):
         "uom": item.uom,
         "netPrice": _decimal(item.net_price),
         "netValue": _decimal(item.net_value),
+        "deliveryDate": item.delivery_date.isoformat() if item.delivery_date else None,
     }
 
 
