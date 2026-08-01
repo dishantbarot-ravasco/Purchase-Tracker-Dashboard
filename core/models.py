@@ -31,7 +31,13 @@ class DocType(models.TextChoices):
 # ---------------------------------------------------------------------------
 
 class PurchaseOrder(models.Model):
-    po_number = models.CharField(max_length=50, unique=True, db_index=True)
+    # po_number, tax_type, and incoterms were all originally sized off a
+    # small sample of "typical" values (a plain PO number, "CGST_SGST"/"IGST",
+    # "FOB") - real data turned out messier (revision suffixes, GSTIN-style
+    # notes, full Incoterm phrases), which crashed the CSV backfill with a
+    # Postgres "value too long" error. Widened generously here rather than
+    # guessing at another too-tight number.
+    po_number = models.CharField(max_length=100, unique=True, db_index=True)
     plant = models.CharField(max_length=20, choices=Plant.choices)
     doc_type = models.CharField(max_length=20, choices=DocType.choices)
     drive_folder_id = models.CharField(max_length=100, blank=True)
@@ -40,11 +46,11 @@ class PurchaseOrder(models.Model):
     ship_to = models.TextField(blank=True)
     created_date = models.DateField(null=True, blank=True)
     total_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
-    tax_type = models.CharField(max_length=20, blank=True)  # CGST_SGST or IGST
+    tax_type = models.CharField(max_length=100, blank=True)  # CGST_SGST or IGST
     tax_amount = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     total_incl_tax = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     payment_terms = models.CharField(max_length=255, blank=True)
-    incoterms = models.CharField(max_length=50, blank=True)
+    incoterms = models.CharField(max_length=100, blank=True)
     delivery_mode = models.CharField(max_length=100, blank=True)
     remarks = models.TextField(blank=True)
     # Amazon-style status stepper, ported from the Cowork artifact
@@ -75,9 +81,9 @@ class PurchaseOrder(models.Model):
 
 class POItem(models.Model):
     purchase_order = models.ForeignKey(PurchaseOrder, related_name="items", on_delete=models.CASCADE)
-    item_code = models.CharField(max_length=50, blank=True)  # SAP item code, ties into the HSN master
+    item_code = models.CharField(max_length=100, blank=True)  # SAP item code, ties into the HSN master
     description = models.CharField(max_length=500)
-    hsn = models.CharField(max_length=20, blank=True)
+    hsn = models.CharField(max_length=30, blank=True)
     qty = models.DecimalField(max_digits=14, decimal_places=3, null=True, blank=True)
     uom = models.CharField(max_length=20, blank=True)
     delivery_date = models.DateField(null=True, blank=True)
