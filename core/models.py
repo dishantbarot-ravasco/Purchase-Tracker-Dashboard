@@ -89,6 +89,12 @@ class POItem(models.Model):
     delivery_date = models.DateField(null=True, blank=True)
     net_price = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     net_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+    # Set by the reconciliation engine (core/reconciliation.py, run via the
+    # reconcile_purchase_orders management command) - true once this line's
+    # Material Description + pre-tax amount (or PO number) is matched against
+    # a row in the plant's live MIR file. Drives both PurchaseOrder.status
+    # ("Material Inwarded") and the Received/Partial/Pending KPI status.
+    matched = models.BooleanField(default=False)
 
 
 class POFlag(models.Model):

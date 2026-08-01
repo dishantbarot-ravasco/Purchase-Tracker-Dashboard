@@ -175,6 +175,13 @@
   .license-po-table { width:100%; border-collapse:collapse; font-size:12px; margin-bottom:4px; }
   .license-po-table th, .license-po-table td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
   .license-po-table td.po-cell { font-family:var(--mono); font-weight:700; color:var(--navy); white-space:nowrap; }
+  .mini-stepper { display:flex; align-items:center; gap:0; }
+  .mini-stepper .step-dot { width:9px; height:9px; border-radius:50%; background:#cbd5e1; flex:none; }
+  .mini-stepper .step-dot.done { background:var(--green); }
+  .mini-stepper .step-line { width:16px; height:2px; background:#cbd5e1; flex:none; }
+  .mini-stepper .step-line.done { background:var(--green); }
+  .mini-stepper-wrap { display:flex; flex-direction:column; gap:3px; }
+  .mini-stepper-labels { font-size:9px; color:var(--slate-soft); white-space:nowrap; }
 
   /* --- Additions beyond the artifact: sign-in screen, admin panel --- */
   .signin-screen { text-align:center; padding:100px 20px; }
@@ -361,20 +368,46 @@
     }
 
     // Same 5-status model as the artifact (received / partial / pending /
-    // overdue / unknown), computed from each item's delivery date. This is
-    // the "no MIR match yet" branch of the original reconciliation logic -
-    // real PO-vs-MIR item matching (which upgrades pending/overdue into
-    // received/partial once a matching MIR row is found) is tracked as a
-    // separate, still-pending piece of work, not silently skipped.
+    // overdue / unknown). `item.matched` comes from the real PO-vs-MIR
+    // reconciliation engine (core/reconciliation.py, run via the
+    // reconcile_purchase_orders management command) - a PO is only ever
+    // "received"/"partial" once that engine has actually matched a line
+    // against a live MIR row. Until that job has run for a plant, every
+    // item.matched is false and every PO falls into the pending/overdue/
+    // unknown branch below, based on delivery date alone - which is
+    // accurate, not a placeholder: it correctly says "not yet confirmed
+    // inwarded" rather than guessing.
     const STATUS_LABELS = { received: 'Received', partial: 'Partial Delivered', pending: 'Pending', overdue: 'Overdue', unknown: 'Delivery Date Unknown' };
     function computeStatus(po) {
       const items = po.items || [];
       if (!items.length) return 'pending';
+      const matchedCount = items.filter(it => it.matched).length;
+      if (matchedCount === items.length) return 'received';
+      if (matchedCount > 0) return 'partial';
       const dates = items.map(it => it.deliveryDate).filter(Boolean).sort();
       if (!dates.length) return 'unknown';
       const dd = new Date(dates[0] + 'T00:00:00');
       const today = new Date(); today.setHours(0, 0, 0, 0);
       return (!isNaN(dd.getTime()) && dd < today) ? 'overdue' : 'pending';
+    }
+
+    // Ordered -> Material Inwarded -> Received in Inventory mini-stepper,
+    // shown per-row/in the modal. Reads po.status directly (set by the same
+    // reconciliation command), rather than recomputing it client-side -
+    // "Received in Inventory" additionally depends on the plant's live RM
+    // Stock snapshot, which isn't available in the PO payload at all.
+    function miniStepperHtml(po) {
+      const inwarded = po.status === 'material_inwarded' || po.status === 'received_in_inventory';
+      const stocked = po.status === 'received_in_inventory';
+      const title = 'Ordered' + (inwarded ? ' → Material Inwarded' : ' (awaiting MIR match)') + (stocked ? ' → Received in Inventory' : '');
+      return '<div class="mini-stepper-wrap" title="' + title + '">' +
+        '<div class="mini-stepper">' +
+          '<span class="step-dot done"></span><span class="step-line ' + (inwarded ? 'done' : '') + '"></span>' +
+          '<span class="step-dot ' + (inwarded ? 'done' : '') + '"></span><span class="step-line ' + (stocked ? 'done' : '') + '"></span>' +
+          '<span class="step-dot ' + (stocked ? 'done' : '') + '"></span>' +
+        '</div>' +
+        '<div class="mini-stepper-labels">Ordered / Inwarded / Stocked</div>' +
+      '</div>';
     }
 
     function renderPoContent() {
@@ -535,7 +568,7 @@
         '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Purchase Orders (' + totalForList + ')</div>' +
           (totalForList > 5 ? '<button class="view-all-btn" id="toggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
         '</div>' +
-        '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Date</th><th>Value (incl. tax)</th><th>Status</th></tr></thead>' +
+        '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th></tr></thead>' +
         '<tbody>' + listRecs.map(po => {
           const flagCount = (po.flags || []).filter(f => !f.resolved).length;
           return '<tr><td><span class="row-link" data-po="' + escapeHtml(po.poNumber) + '">' + escapeHtml(po.poNumber) + '</span></td>' +
@@ -543,7 +576,8 @@
             '<td>' + escapeHtml(po.createdDate || '—') + '</td>' +
             '<td>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '—') + '</td>' +
             '<td><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' +
-              (flagCount ? '<span class="flag-badge">' + flagCount + '</span>' : '') + '</td></tr>';
+              (flagCount ? '<span class="flag-badge">' + flagCount + '</span>' : '') + '</td>' +
+            '<td>' + miniStepperHtml(po) + '</td></tr>';
         }).join('') + '</tbody></table></div>';
 
       document.querySelectorAll('[data-kpi]').forEach(c => c.onclick = () => {
@@ -587,10 +621,10 @@
             po.flags.map(f => '<li>' + escapeHtml(f.text) + (f.resolved ? ' (resolved)' : '') + '</li>').join('') +
           '</ul></div>' : '';
       const itemsHtml = (po.items || []).length
-        ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th></tr></thead><tbody>' +
+        ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th><th>MIR Matched</th></tr></thead><tbody>' +
             po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '—') +
               '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '—') +
-              '</td><td>' + escapeHtml(it.deliveryDate || '—') + '</td></tr>').join('') + '</tbody></table>'
+              '</td><td>' + escapeHtml(it.deliveryDate || '—') + '</td><td>' + (it.matched ? '✓' : '—') + '</td></tr>').join('') + '</tbody></table>'
         : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
 
       const backdrop = document.getElementById('modalBackdrop');
@@ -601,6 +635,7 @@
         '<span class="close-btn" onclick="closeModal()">&times;</span>' +
         '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
         '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(po.createdDate || 'no date') + '</div>' +
+        '<div style="margin:10px 0 14px;">' + miniStepperHtml(po) + '</div>' +
         '<div class="field-grid">' +
           '<div class="field-block"><h4>Vendor</h4>' +
             '<div class="line">' + escapeHtml(po.vendorName || '—') + '</div>' +
@@ -829,6 +864,7 @@
       { name: 'ingest_extraction_results', label: 'Ingest extraction results' },
       { name: 'snapshot_rm_stock', label: 'Take RM Stock snapshot' },
       { name: 'refresh_plant_file_status', label: 'Refresh MIR/Stock dashboard cache' },
+      { name: 'reconcile_purchase_orders', label: 'Reconcile POs against MIR/Stock (Ordered/Inwarded/Received)' },
       { name: 'list_master_csv_folder', label: 'List master CSV folder (diagnostic)' },
     ];
 

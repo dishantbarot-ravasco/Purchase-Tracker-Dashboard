@@ -248,6 +248,7 @@ RUNNABLE_TASKS = {
     "ingest_extraction_results": "ingest_extraction_results",
     "snapshot_rm_stock": "snapshot_rm_stock",
     "refresh_plant_file_status": "refresh_plant_file_status",
+    "reconcile_purchase_orders": "reconcile_purchase_orders",
     # Temporary diagnostic for the master-CSV title mismatch - see
     # list_master_csv_folder.py's docstring. Safe to remove once fixed.
     "list_master_csv_folder": "list_master_csv_folder",

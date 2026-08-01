@@ -25,6 +25,7 @@ def serialize_po_item(item):
         "netPrice": _decimal(item.net_price),
         "netValue": _decimal(item.net_value),
         "deliveryDate": item.delivery_date.isoformat() if item.delivery_date else None,
+        "matched": item.matched,
     }
 
 
@@ -77,6 +78,44 @@ def serialize_dashboard_plant_card(plant, po_count, total_value, mir_row_count, 
         "mirRowCount": mir_row_count,
         "stockRowCount": stock_row_count,
         "errors": errors,
+    }
+
+
+def serialize_license_item(item):
+    return {
+        "itemType": item.item_type,
+        "materialDescription": item.material_description,
+        "sionNorm": item.sion_norm,
+        "authorisedQty": _decimal(item.authorised_qty),
+        "uom": item.uom,
+        "consumedQty": _decimal(item.consumed_qty),
+        "remainingQty": _decimal(item.remaining_qty()),
+    }
+
+
+def serialize_license_po_usage(usage):
+    return {
+        "poNumber": usage.purchase_order.po_number,
+        "materialDescription": usage.material_description,
+        "qtyUsed": _decimal(usage.qty_used),
+        "valueUsed": _decimal(usage.value_used),
+    }
+
+
+def serialize_advance_license(license_obj):
+    return {
+        "licenseNumber": license_obj.license_number,
+        "plant": license_obj.plant,
+        "issueDate": license_obj.issue_date.isoformat() if license_obj.issue_date else None,
+        "importValidityEnd": license_obj.import_validity_end.isoformat() if license_obj.import_validity_end else None,
+        "exportObligationEnd": license_obj.export_obligation_end.isoformat() if license_obj.export_obligation_end else None,
+        "extension1End": license_obj.extension_1_end.isoformat() if license_obj.extension_1_end else None,
+        "extension2End": license_obj.extension_2_end.isoformat() if license_obj.extension_2_end else None,
+        "autoExtensionEnd": license_obj.auto_extension_end.isoformat() if license_obj.auto_extension_end else None,
+        "eodcStatus": license_obj.eodc_status,
+        "totalAuthorisedCifValue": _decimal(license_obj.total_authorised_cif_value),
+        "items": [serialize_license_item(i) for i in license_obj.items.all()],
+        "poUsages": [serialize_license_po_usage(u) for u in license_obj.po_usages.select_related("purchase_order").all()],
     }
 
 

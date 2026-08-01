@@ -81,6 +81,66 @@ def count_data_rows(ws, header_row=1):
     return count
 
 
+def _header_col(header, *name_fragments):
+    """Same flexible header-matching approach already used in
+    read_stock_rows_for_snapshot below - each plant's MIR sheet has slightly
+    different column headers, so this matches on a substring rather than an
+    exact name."""
+    for frag in name_fragments:
+        for i, h in enumerate(header):
+            if h and frag.lower() in str(h).lower():
+                return i
+    return None
+
+
+def read_mir_rows(plant):
+    """Structured MIR (Material Inward Register) rows for reconciliation -
+    each row normalized to {party_name, po_number, material_desc, qty, rate,
+    taxable_value, invoice_date}, regardless of the plant's actual column
+    layout. po_number is None where a plant's MIR sheet has no PO number
+    column at all (some plants only ever record vendor + material, not the
+    PO) - the matching engine in core/reconciliation.py falls back to
+    vendor+material scoring in that case, same as when a PO number column
+    exists but happens to be blank for a given row."""
+    wb, _ = _load_workbook_for(plant, MIR_FILE_TITLES)
+    try:
+        ws = _first_matching_sheet(wb, MIR_RM_SHEET_NAMES)
+        rows_iter = ws.iter_rows(values_only=True)
+        header = [c for c in next(rows_iter, [])]
+
+        idx_party = _header_col(header, "party name", "vendor name", "party")
+        idx_po = _header_col(header, "po no", "po number", "sap po no")
+        idx_material = _header_col(header, "material desc", "item name", "description")
+        idx_qty = _header_col(header, "qty")
+        idx_rate = _header_col(header, "rate")
+        idx_taxable = _header_col(header, "taxable value", "taxable")
+        idx_invdate = _header_col(header, "invoice date")
+
+        out = []
+        for row in rows_iter:
+            if idx_material is None or idx_material >= len(row) or not row[idx_material]:
+                continue
+
+            def val(idx):
+                return row[idx] if (idx is not None and idx < len(row)) else None
+
+            out.append(
+                {
+                    "party_name": str(val(idx_party) or ""),
+                    "po_number": (str(val(idx_po)).strip() if val(idx_po) else None),
+                    "material_desc": str(val(idx_material) or ""),
+                    "qty": val(idx_qty),
+                    "rate": val(idx_rate),
+                    "taxable_value": val(idx_taxable),
+                    "invoice_date": val(idx_invdate),
+                    "_consumed": False,
+                }
+            )
+        return out
+    finally:
+        wb.close()
+
+
 def get_mir_rm_row_count(plant):
     wb, _ = _load_workbook_for(plant, MIR_FILE_TITLES)
     try:
