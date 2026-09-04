@@ -42,6 +42,18 @@
 
   <script src="{% static 'js/auth.js' %}"></script>
   <script src="{% static 'js/shared.js' %}"></script>
+  <!-- main.js was split into these per-concern modules 2026-09-04 (see
+       main.js's own header comment for what's in each) - order matters:
+       every file here must load before main.js, since main.js's init()
+       (bottom of that file) is the entry point and reaches into all of
+       them via plain shared globals (no bundler, no ES modules). -->
+  <script src="{% static 'js/charts.js' %}"></script>
+  <script src="{% static 'js/flags.js' %}"></script>
+  <script src="{% static 'js/po-list.js' %}"></script>
+  <script src="{% static 'js/po-modal.js' %}"></script>
+  <script src="{% static 'js/import-po.js' %}"></script>
+  <script src="{% static 'js/materials.js' %}"></script>
+  <script src="{% static 'js/material-modal.js' %}"></script>
   <script src="{% static 'js/main.js' %}"></script>
 </body>
 </html>

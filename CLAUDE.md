@@ -100,6 +100,20 @@ not from `apps.core` — if you're about to add `import ... from apps.services.p
 
 **Frontend is static HTML + vanilla JS**, served by WhiteNoise directly from `frontend/` (no
 build step, no bundler) — same pattern as the TDS app. `frontend/js/main.js` is the dashboard;
+
+**Superseded (2026-09-04): `main.js` was a single 3,460-line file; it's now split into one file
+per concern** — `main.js` (shared `state`, per-plant caches, filter-reset helpers, and the
+bootstrap/nav/sync-polling code `init()` calls directly), `charts.js` (Chart.js lifecycle +
+plugins), `flags.js` (PO status/match-badge/Data-Quality-Flag rendering, shared across every
+list/modal), `po-list.js`/`po-modal.js` (Domestic Purchases), `import-po.js` (Import Purchases
+list + modal), `materials.js`/`material-modal.js` (Raw Material Analysis). Every mention of
+"`main.js`'s `<function>`" elsewhere in this file may now actually live in one of these siblings
+instead — grep the `frontend/js/` directory rather than assuming `main.js` still has it. Still no
+bundler/ES modules: every file is a plain `<script>` tag in `index.html`, sharing one global scope
+(same pattern `shared.js`/`auth.js` already used) — `main.js`'s own header comment has the full
+module map and load-order rationale (every other file must load before `main.js`, since its
+`init()` reaches into all of them).
+
 `frontend/js/auth.js` (no imports, loads first) gates it behind `requireAuth()`;
 `frontend/login.html` + `frontend/js/login.js` is the sign-in page (password + email-OTP step +
 "Sign in with Google"). `frontend/css/style.css` is ported near-verbatim from the original
