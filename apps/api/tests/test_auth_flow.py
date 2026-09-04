@@ -64,6 +64,33 @@ class TestLogin:
         assert len(mail.outbox) == 1
         assert OTPCode.objects.filter(email=self.user.email).exists()
 
+    def test_login_throttle_is_scoped_per_email_not_shared_across_ip(self):
+        """Regression test for a real bug (found and fixed 2026-09-04):
+        LoginRateThrottle used to key on client IP, so one email's login
+        attempts could exhaust the whole IP's 5/minute bucket and lock out
+        every other account behind the same office/NAT IP. All requests in
+        this test share one APIClient (one source IP) but two different
+        emails - the second account's first attempt must not be throttled by
+        the first account's attempts."""
+        other_password = "An0therStr0ngPassw0rd!"
+        other_user = make_user(email="other@ravasco.com", password=other_password)
+
+        # Exhaust the first account's own 5/minute bucket with wrong passwords.
+        for _ in range(5):
+            response = self.client.post(
+                LOGIN_URL, {"email": self.user.email, "password": "wrong-password"}, format="json"
+            )
+            assert response.status_code == 400
+        throttled = self.client.post(
+            LOGIN_URL, {"email": self.user.email, "password": "wrong-password"}, format="json"
+        )
+        assert throttled.status_code == 429
+
+        # A different account, same client/IP, must still be able to log in.
+        response = self.client.post(LOGIN_URL, {"email": other_user.email, "password": other_password}, format="json")
+        assert response.status_code == 200
+        assert response.data["status"] == "device_verify"
+
 
 @pytest.mark.django_db
 class TestDeviceVerifyAndTrustedLogin:

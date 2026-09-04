@@ -39,9 +39,26 @@ log = logging.getLogger(__name__)
 
 
 class DeviceVerifyThrottle(AnonRateThrottle):
-    """10 OTP attempts per minute per IP - prevents brute-force of 6-digit codes."""
+    """10 OTP attempts per minute per pending login session, not per IP -
+    prevents brute-force of 6-digit codes without pooling every caller on
+    the same office/VPN/NAT exit IP into one shared bucket (see
+    LoginRateThrottle's docstring in apps/api/auth_views.py for the matching
+    bug this mirrors - found and fixed together, 2026-09-04). Keys on the
+    Django session's `pending_user_id` (set by
+    PTTokenObtainPairSerializer.validate() on a new-device login), which is
+    unique per in-flight login attempt, not shared across users. Falls back
+    to the inherited IP-based key only when there's no pending login in the
+    session at all (e.g. this endpoint hit directly with no prior
+    /api/auth/login call - the view itself already 401s that case, so the
+    fallback only needs to avoid crashing here, not be precise)."""
 
     scope = "otp_verify"
+
+    def get_cache_key(self, request, view):
+        pending_user_id = request.session.get("pending_user_id")
+        if not pending_user_id:
+            return super().get_cache_key(request, view)
+        return self.cache_format % {"scope": self.scope, "ident": f"pending:{pending_user_id}"}
 
 
 @api_view(["POST"])

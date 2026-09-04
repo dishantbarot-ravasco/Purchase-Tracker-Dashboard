@@ -28,9 +28,29 @@ logger = logging.getLogger(__name__)
 
 
 class LoginRateThrottle(AnonRateThrottle):
-    """5 login attempts per minute per IP - brute-force protection."""
+    """5 login attempts per minute per email, not per IP - brute-force
+    protection scoped to the account being attacked, not shared across every
+    caller on the same source IP.
+
+    A real bug, found and fixed 2026-09-04: this used to inherit
+    AnonRateThrottle's default IP-based get_cache_key() unchanged, which
+    means everyone behind the same office/VPN/NAT exit IP shared ONE 5-per-
+    minute bucket. A handful of colleagues signing in within the same minute
+    was enough to exhaust it, after which every subsequent login from that
+    IP - correct credentials or not - got a generic "Request was throttled"
+    error indistinguishable from a real failure. Keying on the submitted
+    email instead means one account's attempts can no longer starve everyone
+    else's. Falls back to the inherited IP-based key only when no email was
+    submitted at all (a malformed/empty request body has no account to key
+    on)."""
 
     scope = "login"
+
+    def get_cache_key(self, request, view):
+        email = str(request.data.get("email", "")).strip().lower()
+        if not email:
+            return super().get_cache_key(request, view)
+        return self.cache_format % {"scope": self.scope, "ident": f"email:{email}"}
 
 
 class PTLoginView(TokenObtainPairView):
