@@ -179,6 +179,33 @@ in-app Users panel (see "In-app user management" below) — this paragraph just 
 to match when those shipped. Don't trust an unqualified "no API yet"/"via Django Admin" claim
 anywhere else in this file without checking the dated sections below first.
 
+**A real bug, found and fixed, 2026-09-04: `LoginRateThrottle`/`DeviceVerifyThrottle` were keyed
+per-IP, not per-account — an office full of colleagues could lock each other out of login.**
+`AnonRateThrottle`'s default `get_cache_key()` keys its bucket on client IP. `PTLoginView`'s
+`LoginRateThrottle` (5/minute) and `device_verify`'s `DeviceVerifyThrottle` (10/minute) inherited
+that unchanged, which means every caller behind the same office router/VPN/NAT exit IP shared ONE
+bucket — a handful of people signing in within the same minute was enough to exhaust it, after
+which every subsequent login attempt from that IP got a generic `429 {"detail": "Request was
+throttled..."}` response indistinguishable, from the frontend's perspective, from a real failure —
+reported by the project owner as sign-in "misbehaving very much even [with] correct credentials."
+Confirmed as the real mechanism, not just a plausible theory: `test_auth_flow.py`'s `setup_method`
+already had to `cache.clear()` before every test specifically because this throttle's cache entries
+aren't part of the per-test DB transaction rollback — proof the bucket really was one shared,
+persistent counter, not scoped per test/account already.
+
+Fixed in `apps/api/auth_views.py`'s `LoginRateThrottle.get_cache_key()` (keys on the submitted
+`email`, falling back to the inherited IP-based key only when no email was submitted at all) and
+`apps/api/routers/device_views.py`'s `DeviceVerifyThrottle.get_cache_key()` (keys on the Django
+session's `pending_user_id`, set by `PTTokenObtainPairSerializer.validate()` on a new-device login
+— unique per in-flight login attempt, not shared across users, same reasoning). Brute-force
+protection is unchanged in strength per account; it just no longer pools unrelated accounts into
+the same bucket. Regression test:
+`test_auth_flow.py::TestLogin::test_login_throttle_is_scoped_per_email_not_shared_across_ip` (one
+`APIClient`/IP, two different accounts — exhausting the first account's bucket must not block the
+second's first attempt). **If you add another `AnonRateThrottle` subclass anywhere in the auth
+flow, key it the same way — per-account/per-session, not the inherited per-IP default — or this
+exact bug reappears.**
+
 **Bootstrap**: without at least one `PTUser`, nobody can log in to create more via Django Admin —
 use `manage.py create_pt_user --role admin` (see Commands above) to create the first account. Only
 an email ending in `@<ALLOWED_EMAIL_DOMAIN>` (default `ravasco.com`) may ever have an account or
@@ -757,6 +784,62 @@ ValueError)` in the view catches it like any other invalid value. Regression tes
 add a new decimal-coercing field anywhere, this is already handled — but if you write a *new*
 `_coerce_value`-shaped function from scratch elsewhere, remember `Decimal()`'s failure mode isn't
 a plain `ValueError`.
+
+**A real bug, found and fixed, 2026-09-04: the save/cancel ticks were always visible, hiding the pencil.**
+`frontend/css/style.css`'s `.edit-actions { position:absolute; ...; display:flex; }` has the same
+specificity as the browser's built-in `[hidden] { display:none }` rule, and this stylesheet loads
+after the browser default - so the class rule won its ties, and `actions.hidden = true`
+(`startFieldEdit`'s initial/reverted state) had no visible effect. The save (✓) / cancel (✗) icons
+rendered at all times, stacked exactly on top of the pencil (both `position:absolute; right:0;
+top:1px`) - reported by the project owner as "the right and wrong ticks" appearing instead of a
+pencil in the Domestic/Import PO detail modals. Fixed with `.edit-actions[hidden] { display:none
+!important; }`. **If you add a new absolutely-positioned class alongside a `hidden`-toggled
+element anywhere in this app, check this specifically** - `[hidden]` alone is not reliable once
+any same-or-higher-specificity display rule exists on that element.
+
+**Raw Material Analysis modal gained the same inline-edit capability, 2026-09-04** - it had none at
+all before this (unlike the PO detail modals, which already had it; the original artifact
+prototype's own material modal never had one either, so this is new ground, not a re-port).
+Category and Rate are now editable per Stock lot row in the "Stock by Plant" tab (`openMaterialModal`
+in `main.js`) - not on the Overview tab's own rolled-up Classification block, which shows one
+"first found" value across every sibling lot across all 3 plants and would be ambiguous about which
+underlying lot an edit should target. Each row edits its own specific lot (`shared.js`'s new
+`editableCell()`, a compact inline sibling of `editableLine()` for a table cell rather than a block
+`<div>` line), which is why `wireEditableLines()` (`shared.js`) now also accepts a `(lineEl) => url`
+function instead of only a fixed URL string - this table's rows span 3 different plants' own PATCH
+endpoints (`materialFieldsUrl()`), unlike a PO modal where every line targets the same one PO.
+**Backend**: `MaterialCorrection` (`apps/core/models.py`, migration `0013`) is the audit-row model,
+same append-only mutate+audit shape as `DomesticPOCorrection`, keyed on `(plant, lot_id)` since each
+plant's Stock lot table has its own independent id space. Each of `hrs_views.py`/`achhad_views.py`/
+`vapi_views.py` gained its own `correct_material_field` PATCH view + `_MATERIAL_EDITABLE_FIELDS`
+allow-list - genuinely different per plant, not copy-paste: HRS/Vapi's decimal rate field is
+`basic_rate`, Achhad's is `rate` (Achhad's `RTPAchhadStockLot` also has no `sub_category`/`uom`/
+vendor field at all - its own Stock sheet is material-shaped, not lot-shaped). Editing
+`description`/vendor/rate re-runs that plant's `run_full_match()` synchronously (same reasoning as
+the PO-side `_REMATCH_TRIGGER_FIELDS`) since those feed the MIR<->Stock match gate. New endpoints:
+`PATCH .../materials/<lot_id>/fields` for all three plants (`apps/api/urls.py`). Regression tests:
+`apps/api/tests/test_material_correct_field.py`.
+
+**Every PO-level flag can now be manually dismissed/reinstated, 2026-09-04** - not just PO<->MIR/
+MIR<->Stock match flags (which already had `dismissed_by_override`, see "Dismiss/override a
+flagged match" below). The Quantity/Rate-Value Discrepancy critical flags and the Data Quality
+Flag category (Domestic: `main.js`'s `computePoFlags()`/`categorizeFlag()`; Import: `apps/
+services/import_flags.py`'s `po_flags()`) are computed at read time from `remarks`/diff
+percentages, not stored rows, so there was no column anywhere to carry a dismissal the way a real
+match row can. `FlagDismissal` (`apps/core/models.py`, migration `0014`) is a new generic table -
+`(plant, po_number, flag_key)` unique, upserted in place by `apps/services/flag_dismiss.py`'s
+`dismiss_po_flag()`, same shape/audit fields as `dismiss_match()`. `flag_key` is Domestic's own
+flag label directly (e.g. `"Quantity Discrepancy"`, safe since a PO has at most one flag per label
+- `computePoFlags()`'s `Map` only ever holds one entry per label) or, for Import, `<code>:<item_id>`
+(e.g. `"F7:ITEM3"`, since `import_flags.py`'s flags are per-item and already carry a stable
+`code`). New endpoints: `PATCH .../purchase-orders/<po_number>/flags/dismiss` (all three Domestic
+plants) and `PATCH /api/imports/purchase-orders/<plant>/<po_number>/flags/dismiss`. Frontend:
+`shared.js`'s `dismissPoFlag()`, `main.js`'s `poFlagHtml()`/`importFlagHtml()` (rendered in each
+PO detail modal's Flags & Corrections tab, reading `po.flagDismissals` from the detail payload),
+and `wireDismissLinks()` grew a `data-match-type="po-flag"`/`"import-po-flag"` branch that routes
+to `dismissPoFlag()` instead of `dismissMatch()` - one shared dismiss-link wiring function for
+both flag families, not two near-duplicates. Regression tests:
+`apps/api/tests/test_dismiss_flag.py`.
 
 **A real bug, found and fixed, 2026-09-04: stale modal data from a fast row-switch.**
 `openImportPoModal()` and `openMaterialModal()` in `frontend/js/main.js` had no request-token

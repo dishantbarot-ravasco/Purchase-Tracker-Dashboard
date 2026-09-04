@@ -28,6 +28,7 @@ from rest_framework.response import Response
 
 from apps.api.permissions import IsAdmin, IsEditor, user_can_edit_plant
 from apps.core.models import (
+    FlagDismissal,
     HRSImportPOLineItem,
     HRSImportPOMirMatch,
     HRSImportPurchaseOrder,
@@ -41,6 +42,7 @@ from apps.core.models import (
     SyncRun,
 )
 from apps.services import import_flags as flags
+from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
 from apps.services.matching import run_full_match as _hrs_run_full_match
 from apps.services.matching_achhad import run_full_match as _achhad_run_full_match
@@ -173,6 +175,16 @@ def _correction_dict(c):
     }
 
 
+def _flag_dismissal_dict(fd):
+    return {
+        "flagKey": fd.flag_key,
+        "dismissed": fd.dismissed,
+        "dismissedBy": fd.dismissed_by_email,
+        "dismissedReason": fd.dismissed_reason,
+        "dismissedAt": fd.dismissed_at.isoformat() if fd.dismissed_at else None,
+    }
+
+
 def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None):
     items = list(po.items.all())
     today = datetime.date.today()
@@ -213,6 +225,10 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None):
             ImportPOCorrection.objects.filter(plant=sr_plant, po_number=po.po_number)
             if sr_plant else ImportPOCorrection.objects.none()
         )
+        flag_dismissals = (
+            FlagDismissal.objects.filter(plant=sr_plant, po_number=po.po_number)
+            if sr_plant else FlagDismissal.objects.none()
+        )
         d.update({
             "vendorAddress": po.vendor_address,
             "vendorGstin": po.vendor_gstin,
@@ -224,6 +240,7 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None):
             "totalValue": _f(po.total_value),
             "remarks": po.remarks,
             "corrections": [_correction_dict(c) for c in corrections],
+            "flagDismissals": [_flag_dismissal_dict(fd) for fd in flag_dismissals],
         })
     return d
 
@@ -412,3 +429,29 @@ def dismiss_import_po_mir_match(request, plant, match_id: int):
         "dismissedByOverride": match.dismissed_by_override,
         "dismissedReason": match.dismissed_reason,
     })
+
+
+@api_view(["PATCH"])
+@permission_classes([IsEditor])
+def dismiss_flag(request, plant, po_number):
+    """PATCH /api/imports/purchase-orders/<plant>/<po_number>/flags/dismiss
+    Body: {"flagKey": "<code>:<item_id|''>", "dismissed": true/false, "reason": "<optional>"}.
+    See hrs_views.dismiss_flag's docstring for why this is a separate
+    FlagDismissal row rather than a column on a match model - identical
+    reasoning, just for apps/services/import_flags.py's per-item flags
+    (`code`/`item_id`) instead of Domestic's per-category label. The
+    frontend builds flagKey as `f.code + ':' + (f.item_id || '')` from each
+    dataQualityFlags entry - this view treats it as an opaque string either way."""
+    resolved = _resolve_plant(plant)
+    if not resolved:
+        return Response({"error": "Unknown plant."}, status=404)
+    if not user_can_edit_plant(request.user, plant):
+        return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+    _po_model, _item_model, sr_plant, _label, _match_model = resolved
+    flag_key = (request.data.get("flagKey") or "").strip()
+    if not flag_key:
+        return Response({"error": "flagKey is required."}, status=400)
+    dismissed = bool(request.data.get("dismissed", True))
+    reason = (request.data.get("reason") or "").strip()
+    fd = dismiss_po_flag(sr_plant, po_number, flag_key, request.user, dismissed, reason)
+    return Response(_flag_dismissal_dict(fd))

@@ -143,9 +143,13 @@ already found and fixed along the way
 bug in GST rate fields, a pre-tax/post-tax mismatch in the value comparison,
 a Postgres numeric-rounding mismatch that broke change-detection
 idempotency for one plant's data, `.env` parsing gotchas, an uncaught
-`decimal.InvalidOperation` in the inline field-correction endpoints, and a
-stale-response race in the PO/material detail modals) came out of getting
-this far.
+`decimal.InvalidOperation` in the inline field-correction endpoints, a
+stale-response race in the PO/material detail modals, and a login/OTP
+throttle that was keyed per-IP instead of per-account, so a handful of
+colleagues signing in from the same office network within a minute could
+lock everyone else out of login with "Request was throttled" even with
+correct credentials - see CLAUDE.md's "Auth & security architecture") came
+out of getting this far.
 
 ## Frontend pages
 

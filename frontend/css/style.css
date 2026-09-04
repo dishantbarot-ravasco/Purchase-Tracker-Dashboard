@@ -96,6 +96,12 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .filter-row input[type=date], .filter-row input[type=text] { padding:6px 9px; border:1px solid #cbd5e1; border-radius:7px; font-size:12.5px; }
 .filter-row button { padding:6px 13px; border-radius:7px; border:1px solid #cbd5e1; background:#fff; cursor:pointer; font-size:12px; font-weight:600; color:var(--slate); }
 .filter-row button.primary { background:var(--navy); color:var(--on-accent); border-color:var(--navy); }
+/* Keeps a label glued to its own input/select when a .filter-row wraps onto
+   a second line on a narrow viewport - without this, flex-wrap can wrap
+   between a label and its control (e.g. "Filter by Sub Category" landing on
+   one line, the <select> itself on the next), which reads as broken rather
+   than just reflowed. */
+.filter-row .filter-group { display:inline-flex; align-items:center; gap:8px; }
 
 .kpi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:14px; margin-bottom:20px; }
 .kpi-card { position:relative; background:var(--card); border:1px solid var(--border); border-left:5px solid #cbd5e1; border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--shadow); }
@@ -162,44 +168,64 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 /* Top-5 (collapsed) list rows - individual rounded cards laid out on a
    shared CSS grid column template, NOT a plain HTML <table>. Ported
    verbatim from the reference artifact's .top5-list/.top5-row/
-   .list-header-row - this is a real, structural difference from a table
-   (no table borders/row-separator lines; each row is its own bordered,
-   shadowed card), not just a color/spacing tweak. "View all" still renders
-   as a plain <table> (frontend/js/main.js) - a disclosed simplification,
-   not a parity gap that matters as much as the primary 5-row view. */
+   .list-header-row for Purchase Orders/Import Purchases, and reused as-is
+   for Raw Material Analysis's own top-5 preview (project owner, 2026-09-04 -
+   Materials should match PO/Import's card structure, not the other way
+   around) - a real, structural difference from a table (no table borders/
+   row-separator lines; each row is its own bordered, shadowed card), not
+   just a color/spacing tweak. "View all" still renders as a plain <table>
+   for all three (frontend/js/main.js) - only the collapsed 5-row preview
+   uses this card layout. */
 .top5-list { display:flex; flex-direction:column; gap:8px; margin-bottom:6px; }
 .top5-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap:12px; align-items:center; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 14px; font-size:12.5px; box-shadow:var(--shadow); }
 @media (max-width: 1100px) { .top5-row { font-size:12px; } }
 .top5-row .po-num { font-family:var(--mono); font-weight:700; color:var(--navy); }
 .top5-row .row-link { font-weight:700; color:var(--blue); cursor:pointer; }
 .list-header-row { display:grid; gap:12px; padding:0 14px 6px; font-size:10px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
-.list-header-row.po-cols { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+/* Generic auto-fit column grid, named for what it does (not "po-cols") since
+   Purchase Orders, Import Purchases, and Raw Material Analysis's top-5
+   previews all share this same class - only the number of child columns
+   differs per view, the grid rule itself doesn't need to. */
+.list-header-row.grid-cols { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
 /* Compact top-5 view's own header filter row - same controls as the "View
-   all" table's <thead> filter row (see main.js's filterCells), just laid
-   out on the existing .list-header-row.po-cols grid instead of <th>s, so
-   filtering works from either view. Overrides the label row's uppercase
-   text-transform, which would otherwise be inherited into every input's
-   typed/placeholder text. */
+   all" table's <thead> filter row (see main.js's filterCells/matFilterCells),
+   just laid out on the existing .list-header-row.grid-cols grid instead of
+   <th>s, so filtering works from either view. Overrides the label row's
+   uppercase text-transform, which would otherwise be inherited into every
+   input's typed/placeholder text. */
 .list-header-row.col-filter-row-grid { text-transform:none; letter-spacing:normal; padding:6px 10px; background:var(--gray-soft); border-radius:8px; margin-bottom:8px; align-items:center; }
 
 .section-title { font-size:14.5px; font-weight:700; margin: 20px 0 10px; color:var(--navy); }
 .section-sub { font-size:12px; color:var(--slate-soft); margin:-6px 0 12px; }
-table { width:100%; border-collapse:collapse; font-size:13px; }
-th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border-soft); }
-th { color:var(--slate-soft); font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700; }
+/* Full grid borders (row + column dividers), not just a border-bottom
+   between rows - every plain <table> across the app (PO/Materials/Import
+   "View all" lists, PO detail modal tabs, etc.) reads as a properly
+   structured grid at a glance, not a loosely-separated list (project owner,
+   2026-09-04). border-collapse means each cell only needs its own
+   right/bottom border for a clean single-line grid - the table's own
+   left/top edge comes from .table-wrap's outer border below. */
+table { width:100%; border-collapse:collapse; font-size:13px; border:1px solid var(--border); }
+th, td { text-align:left; padding:9px 10px; border:1px solid var(--border-soft); }
+th { color:var(--slate-soft); font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700; background:var(--gray-soft); border-color:var(--border); }
 input, select { font-size:13px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:7px; font-family:inherit; }
 .table-wrap { border-radius:10px; overflow-x:auto; border:1px solid var(--border); box-shadow:var(--shadow); background:var(--card); }
+.table-wrap table { border:none; }
 
 /* Per-column header filter row on the "View all" PO table - see
    frontend/js/main.js's colFilterRow. A second <tr> of <th>s directly under
    the label row, one small control per column matching that column's data
    (text/date-range/number-range/select) - Details has no data of its own,
    so its cell is left empty for alignment. */
-.col-filter-row th { padding:6px 8px; background:var(--gray-soft); text-transform:none; letter-spacing:normal; }
+.col-filter-row th { padding:8px 8px; background:var(--gray-soft); text-transform:none; letter-spacing:normal; border-top:1px solid var(--border-soft); }
 .col-filter-input, .col-filter-num { width:100%; font-size:11.5px; padding:5px 7px; border-radius:6px; text-transform:none; }
 .col-filter-num { width:64px; }
 .col-filter-range { display:flex; gap:4px; align-items:center; }
 .col-filter-range input[type=date] { min-width:0; flex:1; font-size:10.5px; padding:4px 3px; text-transform:none; }
+/* Empty header-filter cells (Value, Details - neither column has a filter
+   control) get a centered placeholder dash instead of staying blank, so an
+   empty cell reads as "no filter here" rather than a missing/broken column -
+   same reasoning .list-header-row.col-filter-row-grid's empty cells follow. */
+.col-filter-row th:empty::after, .col-filter-row-grid > div:empty::after { content:'—'; display:block; text-align:center; color:#cbd5e1; font-size:12px; }
 
 /* "N filters active - Clear" chip next to "Purchase Orders (Latest first)" -
    summarizes every table-only filter currently narrowing the list (chart
@@ -300,9 +326,9 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid #cbd5e1; bord
 .field-block h4 { margin:0 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
 .vendor-pill { display:inline-block; background:var(--blue-soft); color:#1e40af; font-size:12px; font-weight:600; padding:5px 12px; border-radius:99px; margin:0 6px 6px 0; }
 .field-block div.line { font-size:13px; margin-bottom:3px; color:var(--slate); font-family:var(--mono); }
-.items-table { width:100%; border-collapse:collapse; margin-top:6px; font-size:12px; font-family:var(--mono); }
-.items-table th, .items-table td { border-bottom:1px solid var(--border); padding:5px 7px; text-align:left; }
-.items-table th { color:var(--slate-soft); font-family:-apple-system,BlinkMacSystemFont,sans-serif; text-transform:uppercase; font-size:10.5px; letter-spacing:0.03em; }
+.items-table { width:100%; border-collapse:collapse; margin-top:6px; font-size:12px; font-family:var(--mono); border:1px solid var(--border); }
+.items-table th, .items-table td { border:1px solid var(--border); padding:5px 7px; text-align:left; }
+.items-table th { color:var(--slate-soft); font-family:-apple-system,BlinkMacSystemFont,sans-serif; text-transform:uppercase; font-size:10.5px; letter-spacing:0.03em; background:var(--gray-soft); }
 .flags-box { background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin-top:14px; }
 .flags-box h4 { margin:0 0 8px; font-size:11px; text-transform:uppercase; color:#9a3412; font-weight:700; }
 .flags-box li { font-size:12.5px; margin-bottom:5px; }
@@ -327,11 +353,33 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid #cbd5e1; bord
 .editable-line .edit-pencil:hover { opacity:1; color:var(--blue); }
 .line-input { font-family:var(--mono); font-size:12.5px; padding:2px 6px; border:1px solid var(--blue); border-radius:5px; width:180px; max-width:100%; }
 .edit-actions { position:absolute; right:0; top:1px; display:flex; gap:6px; }
+/* A bare class selector (.edit-actions{display:flex}) has the same
+   specificity as the browser's built-in [hidden]{display:none} rule, and
+   since this stylesheet loads after the browser default, it was winning -
+   the save/cancel ticks rendered at all times, sitting on top of (and
+   visually replacing) the pencil instead of only appearing once editing
+   starts. Real bug, not a hypothetical - confirmed this is why the pencil
+   never appeared. */
+.edit-actions[hidden] { display:none !important; }
 .edit-actions span { cursor:pointer; font-size:12px; font-weight:700; opacity:.7; }
 .edit-actions span:hover { opacity:1; }
 .edit-save { color:var(--green, #16a34a); }
 .edit-cancel { color:var(--red, #dc2626); }
 .edit-warning { margin-top:3px; font-size:11px; color:var(--gold-dark, #b45309); }
+
+/* Compact inline variant of .editable-line for use inside a table cell
+   (Raw Material Analysis modal's Stock by Plant table) - the block-level
+   .editable-line's "Label: value" layout and absolute-positioned pencil
+   don't fit a narrow <td>, so this lays the pencil out inline instead of
+   overlapping the value. */
+.cell-editable { display:inline-flex; align-items:center; gap:5px; }
+.cell-editable .edit-pencil { opacity:.35; cursor:pointer; font-size:11px; }
+.cell-editable:hover .edit-pencil { opacity:.9; }
+.cell-editable .edit-pencil:hover { opacity:1; color:var(--blue); }
+.cell-editable .edit-actions { position:static; display:inline-flex; }
+.cell-editable .edit-actions[hidden] { display:none !important; }
+.cell-editable .line-input { width:100px; }
+.cell-editable .edit-warning { position:absolute; white-space:nowrap; }
 
 .mat-toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
 .mat-search { flex:1; min-width:220px; padding:9px 13px; border:1px solid #cbd5e1; border-radius:9px; font-size:13px; }

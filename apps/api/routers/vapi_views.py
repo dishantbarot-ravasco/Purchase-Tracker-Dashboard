@@ -18,6 +18,8 @@ from rest_framework.response import Response
 from apps.api.permissions import IsEditor, IsAdmin, user_can_edit_plant
 from apps.core.models import (
     DomesticPOCorrection,
+    FlagDismissal,
+    MaterialCorrection,
     RTPVapiMIREntry,
     RTPVapiMirStockMatch,
     RTPVapiPOLineItem,
@@ -27,6 +29,7 @@ from apps.core.models import (
     RTPVapiStockSnapshot,
     SyncRun,
 )
+from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
 from apps.services.matching_vapi import run_full_match
 from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
@@ -44,6 +47,15 @@ _ITEM_EDITABLE_FIELDS = {"description", "hsn", "qty", "uom", "delivery_date", "n
 _DATE_FIELDS = {"po_created_date", "delivery_date"}
 _DECIMAL_FIELDS = {"total_value", "total_inclusive_value", "qty", "net_price", "net_value"}
 _REMATCH_TRIGGER_FIELDS = {"vendor_name", "vendor_gstin", "description", "qty", "net_price", "net_value"}
+
+# See hrs_views.py's identical constants for the pattern this mirrors -
+# Vapi's RTPVapiStockLot has the same category/sub_category/uom/basic_rate
+# shape as HRS's, plus its own real vendor column (supplier_name, not
+# party_name - see that model's docstring for why it's still treated as
+# lot-shaped like HRS's Stock sheet).
+_MATERIAL_EDITABLE_FIELDS = {"description", "category", "sub_category", "uom", "basic_rate", "supplier_name"}
+_MATERIAL_DECIMAL_FIELDS = {"basic_rate"}
+_MATERIAL_REMATCH_TRIGGER_FIELDS = {"description", "supplier_name", "basic_rate"}
 
 
 def _line_item_dict(item):
@@ -87,9 +99,20 @@ def _correction_dict(c):
     }
 
 
+def _flag_dismissal_dict(fd):
+    return {
+        "flagKey": fd.flag_key,
+        "dismissed": fd.dismissed,
+        "dismissedBy": fd.dismissed_by_email,
+        "dismissedReason": fd.dismissed_reason,
+        "dismissedAt": fd.dismissed_at.isoformat() if fd.dismissed_at else None,
+    }
+
+
 def _po_dict(po):
     items = list(po.items.all())
     corrections = DomesticPOCorrection.objects.filter(plant=SyncRun.Plant.RTP_VAPI, po_number=po.po_number)
+    flag_dismissals = FlagDismissal.objects.filter(plant=SyncRun.Plant.RTP_VAPI, po_number=po.po_number)
     return {
         "poNumber": po.po_number,
         "vendorName": po.vendor_name,
@@ -110,6 +133,7 @@ def _po_dict(po):
         "isOldFormat": po.is_old_format_template,
         "items": [_line_item_dict(i) for i in items],
         "corrections": [_correction_dict(c) for c in corrections],
+        "flagDismissals": [_flag_dismissal_dict(fd) for fd in flag_dismissals],
     }
 
 
@@ -206,13 +230,25 @@ def _field_warning(field_name, value):
     return None
 
 
+def _material_correction_dict(c):
+    return {
+        "fieldName": c.field_name,
+        "oldValue": c.old_value,
+        "newValue": c.new_value,
+        "correctedBy": c.corrected_by_email,
+        "correctedAt": c.corrected_at.isoformat(),
+    }
+
+
 def _lot_dict(lot):
+    corrections = MaterialCorrection.objects.filter(plant=SyncRun.Plant.RTP_VAPI, lot_id=lot.id)
     return {
         "lotId": lot.id,
         "materialCode": lot.hsn_code or str(lot.id),
         "description": lot.description,
         "category": lot.category,
         "subCategory": lot.sub_category,
+        "corrections": [_material_correction_dict(c) for c in corrections],
         "uom": lot.uom,
         "qty": float(lot.todays_stock),
         "rate": float(lot.basic_rate) if lot.basic_rate is not None else None,
@@ -243,6 +279,60 @@ def materials(request):
     materials() view (see that view's docstring)."""
     qs = RTPVapiStockLot.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
     return Response({"materials": [_lot_dict(lot) for lot in qs]})
+
+
+@api_view(["PATCH"])
+@permission_classes([IsEditor])
+def correct_material_field(request, lot_id: int):
+    """See hrs_views.correct_material_field - identical shape, this plant's
+    model and its own _MATERIAL_EDITABLE_FIELDS."""
+    if not user_can_edit_plant(request.user, "vapi"):
+        return Response({"error": "You are not permitted to edit this plant's materials."}, status=403)
+
+    field_name = (request.data.get("field") or "").strip()
+    raw_value = request.data.get("value")
+
+    if field_name not in _MATERIAL_EDITABLE_FIELDS:
+        return Response({"error": f"{field_name!r} is not an editable material field."}, status=400)
+
+    lot = RTPVapiStockLot.objects.filter(id=lot_id, is_active=True).first()
+    if not lot:
+        return Response({"error": "Material lot not found."}, status=404)
+
+    old_value = getattr(lot, field_name)
+    try:
+        new_value = _coerce_material_value(field_name, raw_value)
+    except (TypeError, ValueError):
+        return Response({"error": f"Invalid value for {field_name!r}: {raw_value!r}"}, status=400)
+
+    with transaction.atomic():
+        setattr(lot, field_name, new_value)
+        lot.save(update_fields=[field_name])
+        MaterialCorrection.objects.create(
+            plant=SyncRun.Plant.RTP_VAPI,
+            lot_id=lot_id,
+            field_name=field_name,
+            old_value="" if old_value is None else str(old_value),
+            new_value="" if new_value is None else str(new_value),
+            corrected_by=request.user if getattr(request.user, "pk", None) else None,
+            corrected_by_email=getattr(request.user, "email", ""),
+        )
+
+    if field_name in _MATERIAL_REMATCH_TRIGGER_FIELDS:
+        run_full_match()
+
+    return Response({"status": "ok", "field": field_name, "value": _serialize(new_value)})
+
+
+def _coerce_material_value(field_name, raw_value):
+    if raw_value is None or raw_value == "":
+        return None
+    if field_name in _MATERIAL_DECIMAL_FIELDS:
+        try:
+            return Decimal(str(raw_value))
+        except decimal.InvalidOperation:
+            raise ValueError(f"{raw_value!r} is not a valid decimal")
+    return str(raw_value)
 
 
 @api_view(["GET"])
@@ -326,3 +416,18 @@ def dismiss_mir_stock_match(request, match_id: int):
         "dismissedByOverride": match.dismissed_by_override,
         "dismissedReason": match.dismissed_reason,
     })
+
+
+@api_view(["PATCH"])
+@permission_classes([IsEditor])
+def dismiss_flag(request, po_number):
+    """See hrs_views.dismiss_flag - identical shape, this plant."""
+    if not user_can_edit_plant(request.user, "vapi"):
+        return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+    flag_key = (request.data.get("flagKey") or "").strip()
+    if not flag_key:
+        return Response({"error": "flagKey is required."}, status=400)
+    dismissed = bool(request.data.get("dismissed", True))
+    reason = (request.data.get("reason") or "").strip()
+    fd = dismiss_po_flag(SyncRun.Plant.RTP_VAPI, po_number, flag_key, request.user, dismissed, reason)
+    return Response(_flag_dismissal_dict(fd))

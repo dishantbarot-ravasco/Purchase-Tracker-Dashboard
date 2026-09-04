@@ -127,9 +127,9 @@ let IMPORT_PO_DETAIL_CACHE = {}; // "plant|poNumber" -> full detail payload (Ite
 let state = {
   view: 'po',            // 'po' | 'materials'
   // 'all' ("All Plants") is valid for both views - see plantTabOptions().
-  // Starts on a real plant rather than 'all' so the very first paint has a
-  // single plant's worth of data to fetch, not all three at once.
-  plant: PLANT_KEYS[0],
+  // Defaults to 'all' so the dashboard lands on Purchase Orders / Domestic /
+  // All Plants on first paint (project owner request, 2026-09-04).
+  plant: 'all',
   purchaseType: 'domestic', // 'domestic' | 'import' (Purchase Orders only)
   statusFilter: null, from: null, to: null, showAllPOs: false, legendOpen: false,
   // chartMonthFilter is set by clicking a bar in the "PO Value Trend" chart
@@ -143,13 +143,18 @@ let state = {
   // reuses statusFilter above rather than a separate field, so the KPI
   // cards/pie chart/header dropdown can never disagree about which status
   // is selected.
-  colFilters: { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, valueMin: null, valueMax: null, progress: '' },
-  // Data Quality Flags category filter (see DISCREPANCY_LEGEND) - a single
-  // category label, or null for "All Categories". Rendered above the chart
-  // row, and unlike chartMonthFilter/colFilters this IS a "global" filter
-  // like from/to: it narrows `filtered` itself, so the KPI counts and both
-  // charts reflect only POs carrying that category, not just the table.
-  categoryFilter: null,
+  colFilters: { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' },
+  // Data Quality Flags filter, split into 3 dropdowns mirroring the
+  // Materials view's Category/Sub Category/Flags bar (see matCategoryFilter
+  // etc. below) - categoryFilter is the flag *severity* ('critical' or
+  // 'info', PO's closest equivalent of a material's Category field),
+  // subCategoryFilter cascades to a specific DISCREPANCY_LEGEND label within
+  // that severity, and flagsFilter is a coarse KPI-style shortcut
+  // ('qtydisc'/'ratedisc'/'flags') matching Materials' own Flags dropdown
+  // options 1:1. All three are "global" filters like from/to: they narrow
+  // `filtered` itself, so the KPI counts and both charts reflect the
+  // selection, not just the table. Rendered above the chart row.
+  categoryFilter: null, subCategoryFilter: null, flagsFilter: null,
   // "View all" table pagination - 1-indexed, 10 rows/page. Reset to 1 by
   // every handler that can change which rows match (see renderPoList()).
   tablePage: 1,
@@ -169,7 +174,12 @@ let state = {
   // colFilters/applyColFilters(). Material name text search lives here too
   // (table-only), not as a "global" filter like matCategoryFilter above -
   // matches PO Number/Vendor's own table-only text search on the PO table.
-  matColFilters: { material: '', stockMin: null, stockMax: null, valueMin: null, valueMax: null, rateMin: null, rateMax: null },
+  // Category/subCategory here mirror state.matCategoryFilter/
+  // matSubCategoryFilter (see those fields' own comment) - the table's own
+  // header-row selects write into those same global fields directly, not a
+  // separate table-only copy, same single-source-of-truth reasoning as
+  // Status below. progress is table-only, like PO's own Progress filter.
+  matColFilters: { material: '', progress: '' },
   // Drill-down chart nav (Inventory Value by Category -> Subcategory -> Material) -
   // see renderMaterialsChart().
   matChartLevel: 'category', matChartCategory: null, matChartSubcategory: null,
@@ -181,14 +191,20 @@ let state = {
   // filter bleeding into the other's differently-shaped status/stage model.
   importFrom: null, importTo: null,
   importStatusFilter: null, // one of the KPI-card / donut-slice keys in renderImportPoList()
+  // Category/Sub Category filters for Import, same severity/label pair as
+  // Domestic's categoryFilter/subCategoryFilter (see that field's own
+  // comment) - Flags reuses importStatusFilter above (qtydisc/qtydiscmir/
+  // ratedisc/flags, the same KPI-card keys), not a separate field.
+  importCategoryFilter: null, importSubCategoryFilter: null,
   importChartMonthFilter: null, importShowAllPOs: false, importTablePage: 1,
-  importColFilters: { poNumber: '', vendor: '', country: '', valueMin: null, valueMax: null, stage: '' },
+  importColFilters: { poNumber: '', vendor: '', country: '', stage: '' },
 };
 
 function resetImportFilters() {
   state.importFrom = null; state.importTo = null; state.importStatusFilter = null;
+  state.importCategoryFilter = null; state.importSubCategoryFilter = null;
   state.importChartMonthFilter = null; state.importShowAllPOs = false; state.importTablePage = 1;
-  state.importColFilters = { poNumber: '', vendor: '', country: '', valueMin: null, valueMax: null, stage: '' };
+  state.importColFilters = { poNumber: '', vendor: '', country: '', stage: '' };
 }
 
 function isAllPlants() { return state.plant === 'all'; }
@@ -202,11 +218,11 @@ function plantKeyFor(item) { return item._plantKey || state.plant; }
 
 function resetFilters() {
   state.statusFilter = null; state.from = null; state.to = null; state.showAllPOs = false;
-  state.chartMonthFilter = null; state.categoryFilter = null; state.tablePage = 1;
-  state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, valueMin: null, valueMax: null, progress: '' };
+  state.chartMonthFilter = null; state.categoryFilter = null; state.subCategoryFilter = null; state.flagsFilter = null; state.tablePage = 1;
+  state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
   state.matCategoryFilter = null; state.matSubCategoryFilter = null; state.matStatusFilter = null;
   state.showAllMaterials = false; state.matTablePage = 1;
-  state.matColFilters = { material: '', stockMin: null, stockMax: null, valueMin: null, valueMax: null, rateMin: null, rateMax: null };
+  state.matColFilters = { material: '', progress: '' };
   state.matChartLevel = 'category'; state.matChartCategory = null; state.matChartSubcategory = null;
   resetImportFilters();
 }
@@ -390,15 +406,20 @@ function mirStockMatchHtml(lot, plantKey) {
 }
 
 // Wires every .dismiss-link under `container` (rendered by matchStatusHtml()
-// above, or the equivalent MIR<->Stock badge in the materials modal) to
-// PATCH .../matches/<type>/<id>/dismiss and then re-run `onDone` to refresh
-// whatever view is showing the match. A plain confirm()/prompt() for the
+// above, or the equivalent MIR<->Stock badge in the materials modal, or
+// poFlagHtml()'s PO-level Quantity/Rate-Value/Data-Quality flags below) to
+// PATCH the right dismiss endpoint and then re-run `onDone` to refresh
+// whatever view is showing the flag. A plain confirm()/prompt() for the
 // optional reason - this app has no reusable modal-with-textarea component,
 // and a full one felt like overkill for a single optional text field.
+// data-match-type 'po-flag'/'import-po-flag' route to dismissPoFlag()
+// (apps/services/flag_dismiss.py, keyed by an opaque flagKey string) instead
+// of dismissMatch() (which needs a real match row's numeric id) - see
+// poFlagHtml()'s own comment for why these two flag families needed a
+// separate backend table in the first place.
 function wireDismissLinks(container, plantKey, onDone) {
   container.querySelectorAll('.dismiss-link').forEach(el => {
     el.onclick = async () => {
-      const matchId = el.dataset.matchId;
       const matchType = el.dataset.matchType;
       // data-plant overrides the passed-in plantKey for a cross-plant table
       // (the material modal's Stock by Plant rows, each possibly a
@@ -416,7 +437,11 @@ function wireDismissLinks(container, plantKey, onDone) {
       const original = el.textContent;
       el.textContent = '…';
       try {
-        await dismissMatch(rowPlantKey, matchType, matchId, dismissing, reason);
+        if (matchType === 'po-flag' || matchType === 'import-po-flag') {
+          await dismissPoFlag(rowPlantKey, el.dataset.poNumber, el.dataset.flagKey, dismissing, reason, matchType === 'import-po-flag');
+        } else {
+          await dismissMatch(rowPlantKey, matchType, el.dataset.matchId, dismissing, reason);
+        }
         if (onDone) await onDone();
       } catch (e) {
         alert('Could not update this flag: ' + e.message);
@@ -445,6 +470,59 @@ const FLAG_CATEGORY_RULES = [
   { label: 'Vendor code scheme inconsistency', test: t => /vendor code/i.test(t) },
   { label: 'Non raw material or different category', test: t => /(not raw material|different category|capital equipment|tooling)/i.test(t) },
 ];
+// Renders one PO-level flag (a Quantity/Rate-Value Discrepancy critical
+// flag, or the single Data Quality Flag category derived from `remarks`)
+// with a dismiss/reinstate control, reading the current dismissed state
+// from `po.flagDismissals` (apps/api/routers/hrs_views.py's/
+// achhad_views.py's/vapi_views.py's own _flag_dismissal_dict()). These
+// flags have no underlying match row to carry a dismissed_by_override
+// column the way PO<->MIR/MIR<->Stock flags do (see matchStatusHtml()) -
+// they're computed client-side from po.remarks/diff percentages, not
+// stored - so FlagDismissal (apps/services/flag_dismiss.py) is a separate
+// generic table keyed by the flag's own label, and wireDismissLinks()
+// above routes data-match-type="po-flag" here via dismissPoFlag() instead
+// of dismissMatch().
+function poFlagHtml(c, po, plantKey) {
+  const fd = (po.flagDismissals || []).find(f => f.flagKey === c.label);
+  const dismissed = !!(fd && fd.dismissed);
+  const dismissTag = dismissed
+    ? ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (fd.dismissedBy ? ' by ' + fd.dismissedBy : '') + (fd.dismissedReason ? ': ' + fd.dismissedReason : '')) + '">dismissed</span>'
+    : '';
+  const link = canEditField(plantKey)
+    ? ' <span class="dismiss-link" data-match-type="po-flag" data-plant="' + plantKey + '" data-po-number="' + escapeHtml(po.poNumber) + '" data-flag-key="' + escapeHtml(c.label) + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
+    : '';
+  return '<div class="field-block" style="margin-bottom:8px;' + (dismissed ? 'opacity:.6;' : '') + '">' +
+    flagIconHtml(categoryColor(c.label), 'row-flag-icon') +
+    ' <span class="lg-label ' + c.severity + '">' + (c.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span> ' +
+    '<b' + (dismissed ? ' style="text-decoration:line-through;"' : '') + '>' + escapeHtml(c.label) + '</b>' + dismissTag + link +
+  '</div>';
+}
+
+// Import-PO equivalent of poFlagHtml() above, for one entry of an Import
+// PO's `dataQualityFlags` (apps/services/import_flags.py's per-item flags -
+// `code`/`item_id`/`message`/`fields`, not Domestic's per-category label).
+// flagKey is built the same way the backend's dismiss_flag view docstring
+// says the frontend should: `code + ':' + (item_id || '')` - stable per
+// flag on this PO since import_flags.py always emits the same code for the
+// same underlying check on the same item.
+function importFlagHtml(f, po, plantKey) {
+  const flagKey = f.code + ':' + (f.item_id || '');
+  const fd = (po.flagDismissals || []).find(row => row.flagKey === flagKey);
+  const dismissed = !!(fd && fd.dismissed);
+  const dismissTag = dismissed
+    ? ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (fd.dismissedBy ? ' by ' + fd.dismissedBy : '') + (fd.dismissedReason ? ': ' + fd.dismissedReason : '')) + '">dismissed</span>'
+    : '';
+  const link = canEditField(plantKey)
+    ? ' <span class="dismiss-link" data-match-type="import-po-flag" data-plant="' + plantKey + '" data-po-number="' + escapeHtml(po.poNumber) + '" data-flag-key="' + escapeHtml(flagKey) + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
+    : '';
+  return '<div class="field-block" style="margin-bottom:10px;' + (dismissed ? 'opacity:.6;' : '') + '">' +
+    '<span class="status-pill status-overdue">' + escapeHtml(f.code) + '</span>' + dismissTag + link +
+    '<div style="margin-top:8px;font-size:13px;' + (dismissed ? 'text-decoration:line-through;' : '') + '">' + escapeHtml(f.message) + '</div>' +
+    '<div style="margin-top:6px;font-size:11px;color:var(--slate-soft);">Fields: ' + escapeHtml((f.fields || []).join(', ')) + '</div>' +
+    (f.item_id ? '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">Item: ' + escapeHtml(f.item_id) + '</div>' : '') +
+  '</div>';
+}
+
 function categorizeFlag(text) {
   for (const rule of FLAG_CATEGORY_RULES) if (rule.test(text)) return { label: rule.label, severity: 'info' };
   return { label: 'Other data quality issue', severity: 'info' };
@@ -724,8 +802,8 @@ function renderPurchaseTypeTabs() {
     if (t.dataset.ptype === state.purchaseType) return;
     state.purchaseType = t.dataset.ptype;
     state.statusFilter = null; state.showAllPOs = false; state.chartMonthFilter = null;
-    state.categoryFilter = null; state.tablePage = 1;
-    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, valueMin: null, valueMax: null, progress: '' };
+    state.categoryFilter = null; state.subCategoryFilter = null; state.flagsFilter = null; state.tablePage = 1;
+    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
     resetImportFilters();
     renderPurchaseTypeTabs();
     const content = document.getElementById('content');
@@ -972,8 +1050,6 @@ function applyColFilters(recs) {
     if (f.vendor && !(po.vendorName || '').toLowerCase().includes(f.vendor.toLowerCase())) return false;
     if (f.deliveryFrom && (!po._deliveryDate || po._deliveryDate < f.deliveryFrom)) return false;
     if (f.deliveryTo && (!po._deliveryDate || po._deliveryDate > f.deliveryTo)) return false;
-    if (f.valueMin != null && (po.totalInclTax == null || po.totalInclTax < f.valueMin)) return false;
-    if (f.valueMax != null && (po.totalInclTax == null || po.totalInclTax > f.valueMax)) return false;
     if (f.progress === 'inwarded' && !(po.items || []).some(it => it.matched)) return false;
     if (f.progress === 'not' && (po.items || []).some(it => it.matched)) return false;
     return true;
@@ -1038,17 +1114,31 @@ function renderPoList(el) {
   };
   let filtered = all.filter(inRange);
 
-  // Category counts computed BEFORE state.categoryFilter narrows `filtered`
-  // further, so the dropdown keeps showing every category's count (not just
-  // the selected one's) while a category is selected - same pattern as
-  // Raw Material Analysis's own category filter. Global filter, like
-  // from/to above it: narrows `filtered` itself, so the KPI counts and both
-  // charts below reflect only POs carrying the selected category, not just
-  // the table (see the category filter's own comment on state.categoryFilter).
+  // Category/Sub Category counts computed BEFORE state.categoryFilter/
+  // subCategoryFilter narrow `filtered` further, so the dropdowns keep
+  // showing every option's count while one is selected - same cascading
+  // pattern as Raw Material Analysis's own Category/Sub Category pair.
+  // Category here is flag *severity* (critical/info - a PO's closest
+  // equivalent of a material's Category field, see state.categoryFilter's
+  // own comment); Sub Category cascades to a specific DISCREPANCY_LEGEND
+  // label within the selected severity (or across all severities when none
+  // is selected). All are "global" filters like from/to above: they narrow
+  // `filtered` itself, so the KPI counts and both charts below reflect the
+  // selection, not just the table.
   const categoryCounts = {};
-  filtered.forEach(po => (po._categories || []).forEach(c => { categoryCounts[c.label] = (categoryCounts[c.label] || 0) + 1; }));
+  filtered.forEach(po => (po._categories || []).forEach(c => { categoryCounts[c.severity] = (categoryCounts[c.severity] || 0) + 1; }));
   const dateRangeCount = filtered.length; // "All Categories (N)" option's count - before category narrowing
-  if (state.categoryFilter) filtered = filtered.filter(po => (po._categories || []).some(c => c.label === state.categoryFilter));
+  const inSelectedSeverity = state.categoryFilter
+    ? filtered.filter(po => (po._categories || []).some(c => c.severity === state.categoryFilter))
+    : filtered;
+  const subCategoryCounts = {};
+  inSelectedSeverity.forEach(po => (po._categories || []).forEach(c => {
+    if (state.categoryFilter && c.severity !== state.categoryFilter) return;
+    subCategoryCounts[c.label] = (subCategoryCounts[c.label] || 0) + 1;
+  }));
+  const subCategoryBaseCount = inSelectedSeverity.length; // "All Sub Categories (N)" option's count
+  if (state.categoryFilter) filtered = filtered.filter(po => (po._categories || []).some(c => c.severity === state.categoryFilter));
+  if (state.subCategoryFilter) filtered = filtered.filter(po => (po._categories || []).some(c => c.label === state.subCategoryFilter));
 
   const counts = { received: 0, partial: 0, pending: 0, overdue: 0, unknown: 0 };
   filtered.forEach(po => counts[po._status]++);
@@ -1144,40 +1234,56 @@ function renderPoList(el) {
     (state.statusFilter && state.statusFilter !== 'total' ? 1 : 0) +
     (state.from || state.to ? 1 : 0) +
     (state.categoryFilter ? 1 : 0) +
+    (state.subCategoryFilter ? 1 : 0) +
     (cf.poNumber ? 1 : 0) +
     (cf.vendor ? 1 : 0) +
     (cf.deliveryFrom || cf.deliveryTo ? 1 : 0) +
-    (cf.valueMin != null || cf.valueMax != null ? 1 : 0) +
     (cf.progress ? 1 : 0);
   const statusOptionsHtml = Object.keys(STATUS_LABELS).map(k =>
     '<option value="' + k + '"' + (state.statusFilter === k ? ' selected' : '') + '>' + escapeHtml(STATUS_LABELS[k]) + '</option>'
   ).join('');
-  // Category filter dropdown, rendered just above the chart row (see
-  // el.innerHTML below) - sorted by count descending, same pattern as Raw
-  // Material Analysis's own category filter. Only categories actually
-  // present in the current date range are listed (categoryCounts is built
-  // from real data, not the full DISCREPANCY_LEGEND glossary), so the list
-  // never shows a category with nothing behind it.
+  // Category/Sub Category/Flags dropdowns, rendered just above the chart row
+  // (see el.innerHTML below) - same 3-dropdown pattern as Raw Material
+  // Analysis's own Category/Sub Category/Flags bar. Category = severity
+  // ('Critical Issues'/'Informational Issues'); Sub Category cascades to the
+  // specific DISCREPANCY_LEGEND label within the selected severity; Flags is
+  // a coarse KPI-style shortcut sharing state.statusFilter with the KPI
+  // cards above (see statusChartData's `key` comment - one source of truth,
+  // never disagreeing), same qtydisc/ratedisc/flags options the KPI row
+  // already computes. Only options actually present in the current date
+  // range are listed, so a dropdown never shows an option with nothing
+  // behind it.
+  const SEVERITY_LABELS = { critical: 'Critical Issues', info: 'Informational Issues' };
   const categoryOptionsHtml = Object.entries(categoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.categoryFilter === label ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + n + ')</option>')
+    .map(([sev, n]) => '<option value="' + sev + '"' + (state.categoryFilter === sev ? ' selected' : '') + '>' + escapeHtml(SEVERITY_LABELS[sev] || sev) + ' (' + n + ')</option>')
     .join('');
+  const subCategoryOptionsHtml = Object.entries(subCategoryCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.subCategoryFilter === label ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + n + ')</option>')
+    .join('');
+  const flagsOptionsHtml =
+    '<option value="qtydisc"' + (state.statusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy (' + qtyDiscCount + ')</option>' +
+    '<option value="ratedisc"' + (state.statusFilter === 'ratedisc' ? ' selected' : '') + '>Rate / Value Discrepancy (' + rateDiscCount + ')</option>' +
+    '<option value="flags"' + (state.statusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flagsCount + ')</option>';
   // Per-column header filter content - "as per their data": text (contains)
   // for PO Number/Vendor, date-range for Created On (bound directly to the
   // same state.from/state.to the top filter-row uses, not a duplicate
-  // field) and Delivery Date, min/max number for Value, and a <select> each
-  // for Status (bound to state.statusFilter - see statusChartData's `key`
-  // comment) and Progress. Details has no data of its own (just a link), so
-  // its cell is empty. One shared array of inner-cell HTML so both the
-  // "View all" table's <thead> AND the compact top-5 grid's header row
-  // render the identical controls - filtering works from either view, not
-  // just the expanded table.
+  // field) and Delivery Date, and a <select> each for Status (bound to
+  // state.statusFilter - see statusChartData's `key` comment) and Progress.
+  // No Value column filter here - min/max value narrowing was removed
+  // (project owner, 2026-09-04) to keep this header row to "as per their
+  // data" text/date/select controls only. Details has no data of its own
+  // (just a link), so its cell is empty. One shared array of inner-cell HTML
+  // so both the "View all" table's <thead> AND the compact top-5 grid's
+  // header row render the identical controls - filtering works from either
+  // view, not just the expanded table.
   const filterCells = [
     '<input type="text" class="col-filter-input" data-cf="poNumber" placeholder="Search..." value="' + escapeHtml(state.colFilters.poNumber) + '">',
     '<input type="text" class="col-filter-input" data-cf="vendor" placeholder="Search..." value="' + escapeHtml(state.colFilters.vendor) + '">',
     '<div class="col-filter-range"><input type="date" data-cf="createdFrom" value="' + (state.from || '') + '"><input type="date" data-cf="createdTo" value="' + (state.to || '') + '"></div>',
     '<div class="col-filter-range"><input type="date" data-cf="deliveryFrom" value="' + (state.colFilters.deliveryFrom || '') + '"><input type="date" data-cf="deliveryTo" value="' + (state.colFilters.deliveryTo || '') + '"></div>',
-    '<div class="col-filter-range"><input type="number" class="col-filter-num" data-cf="valueMin" placeholder="Min" value="' + (state.colFilters.valueMin != null ? state.colFilters.valueMin : '') + '"><input type="number" class="col-filter-num" data-cf="valueMax" placeholder="Max" value="' + (state.colFilters.valueMax != null ? state.colFilters.valueMax : '') + '"></div>',
+    '', // Value (incl. tax) - no header filter (min/max removed); keeps this array 1:1 with the 8 table columns
     '<select class="col-filter-input" data-cf="status"><option value="">All</option>' + statusOptionsHtml + '</select>',
     '<select class="col-filter-input" data-cf="progress"><option value="">All</option><option value="inwarded"' + (state.colFilters.progress === 'inwarded' ? ' selected' : '') + '>Inwarded</option><option value="not"' + (state.colFilters.progress === 'not' ? ' selected' : '') + '>Not Inwarded</option></select>',
     '',
@@ -1185,31 +1291,51 @@ function renderPoList(el) {
 
   el.innerHTML =
     '<div class="filter-row">' +
-      '<label>Date filter (Created on)</label>' +
-      '<input type="date" id="fromDate" value="' + (state.from || '') + '">' +
-      '<span style="color:#9ca3af;font-size:12px;">to</span>' +
-      '<input type="date" id="toDate" value="' + (state.to || '') + '">' +
+      '<div class="filter-group">' +
+        '<label>Date filter (Created on)</label>' +
+        '<input type="date" id="fromDate" value="' + (state.from || '') + '">' +
+        '<span style="color:#9ca3af;font-size:12px;">to</span>' +
+        '<input type="date" id="toDate" value="' + (state.to || '') + '">' +
+      '</div>' +
       '<button class="primary" id="applyFilter">Apply</button>' +
       '<button id="clearFilter">Clear</button>' +
     '</div>' +
     '<div class="kpi-grid">' + kpiHtml + '</div>' +
     '<span class="legend-toggle" id="legendToggle">What do these flags mean?</span>' +
     renderLegendHtml() +
-    // Category filter, placed right before the charts per the project
-    // owner's 2026-09-04 request - a "global" filter like the date-range
-    // bar above (narrows `filtered`, so it drives the KPI counts and both
-    // charts below it too, not just the table - see state.categoryFilter's
-    // own comment). Only rendered when at least one category is present in
-    // the current date range (an empty dropdown with just "All Categories"
+    // Category / Sub Category / Flags filters, placed right before the
+    // charts per the project owner's 2026-09-04 request (extended
+    // 2026-09-04 to the full 3-dropdown row, matching Raw Material
+    // Analysis's own Category/Sub Category/Flags bar) - "global" filters
+    // like the date-range bar above (narrow `filtered`, so they drive the
+    // KPI counts and both charts below too, not just the table - see
+    // state.categoryFilter's own comment). Only rendered when at least one
+    // category is present in the current date range (an empty dropdown row
     // would be dead weight).
     (Object.keys(categoryCounts).length ?
       '<div class="filter-row">' +
-        '<label>Filter by Category</label>' +
-        '<select id="categoryFilterSelect" style="min-width:280px;">' +
-          '<option value="">All Categories (' + dateRangeCount + ')</option>' +
-          categoryOptionsHtml +
-        '</select>' +
-        (state.categoryFilter ? '<button id="clearCategoryFilter">Clear</button>' : '') +
+        '<div class="filter-group">' +
+          '<label>Filter by Category</label>' +
+          '<select id="categoryFilterSelect" style="min-width:200px;">' +
+            '<option value="">All Categories (' + dateRangeCount + ')</option>' +
+            categoryOptionsHtml +
+          '</select>' +
+        '</div>' +
+        '<div class="filter-group">' +
+          '<label>Filter by Sub Category</label>' +
+          '<select id="subCategoryFilterSelect" style="min-width:240px;">' +
+            '<option value="">All Sub Categories (' + subCategoryBaseCount + ')</option>' +
+            subCategoryOptionsHtml +
+          '</select>' +
+        '</div>' +
+        '<div class="filter-group">' +
+          '<label>Filter by Flags</label>' +
+          '<select id="flagsFilterSelect" style="min-width:220px;">' +
+            '<option value="">All Flags</option>' +
+            flagsOptionsHtml +
+          '</select>' +
+        '</div>' +
+        ((state.categoryFilter || state.subCategoryFilter || ['qtydisc', 'ratedisc', 'flags'].includes(state.statusFilter)) ? '<button id="clearCategoryFilter">Clear</button>' : '') +
       '</div>' : '') +
     ((statusChartData.length || months.length) ?
       '<div class="chart-row">' +
@@ -1275,8 +1401,8 @@ function renderPoList(el) {
               '<td><span class="row-link" data-po="' + key + '">View details</span></td></tr>';
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row po-cols"><div>PO Number</div><div>Vendor</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
-        '<div class="list-header-row po-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+        '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="top5List">' + listRecs.map(po => {
           const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
           return '<div class="top5-row">' +
@@ -1316,15 +1442,23 @@ function renderPoList(el) {
   document.querySelectorAll('.page-num').forEach(btn => btn.onclick = () => { state.tablePage = Number(btn.dataset.page); renderPoList(el); });
 
   const categorySelect = document.getElementById('categoryFilterSelect');
-  if (categorySelect) categorySelect.onchange = () => { state.categoryFilter = categorySelect.value || null; state.tablePage = 1; renderPoList(el); };
+  if (categorySelect) categorySelect.onchange = () => { state.categoryFilter = categorySelect.value || null; state.subCategoryFilter = null; state.tablePage = 1; renderPoList(el); };
+  const subCategorySelect = document.getElementById('subCategoryFilterSelect');
+  if (subCategorySelect) subCategorySelect.onchange = () => { state.subCategoryFilter = subCategorySelect.value || null; state.tablePage = 1; renderPoList(el); };
+  const flagsSelect = document.getElementById('flagsFilterSelect');
+  if (flagsSelect) flagsSelect.onchange = () => { state.statusFilter = flagsSelect.value || null; state.tablePage = 1; renderPoList(el); };
   const clearCategoryBtn = document.getElementById('clearCategoryFilter');
-  if (clearCategoryBtn) clearCategoryBtn.onclick = () => { state.categoryFilter = null; state.tablePage = 1; renderPoList(el); };
+  if (clearCategoryBtn) clearCategoryBtn.onclick = () => {
+    state.categoryFilter = null; state.subCategoryFilter = null;
+    if (['qtydisc', 'ratedisc', 'flags'].includes(state.statusFilter)) state.statusFilter = null;
+    state.tablePage = 1; renderPoList(el);
+  };
 
   const clearListFiltersBtn = document.getElementById('clearListFilters');
   if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
     state.statusFilter = null; state.chartMonthFilter = null; state.from = null; state.to = null;
-    state.categoryFilter = null; state.tablePage = 1;
-    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, valueMin: null, valueMax: null, progress: '' };
+    state.categoryFilter = null; state.subCategoryFilter = null; state.tablePage = 1;
+    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
     renderPoList(el);
   };
   // Header filter row (only present when showingAll - see the colFilterRow
@@ -1342,7 +1476,6 @@ function renderPoList(el) {
       if (key === 'createdFrom') state.from = raw || null;
       else if (key === 'createdTo') state.to = raw || null;
       else if (key === 'status') state.statusFilter = raw || null;
-      else if (key === 'valueMin' || key === 'valueMax') state.colFilters[key] = raw !== '' ? Number(raw) : null;
       else if (key === 'deliveryFrom' || key === 'deliveryTo') state.colFilters[key] = raw || null;
       else state.colFilters[key] = raw;
       state.tablePage = 1;
@@ -1606,13 +1739,7 @@ async function openPoModal(compositeKey) {
     '<div class="section-title" style="margin-top:0;">Material / Product Details</div>' + itemsHtml;
 
   const catsHtml = (po._categories || []).length
-    ? po._categories.map(c =>
-        '<div class="field-block" style="margin-bottom:8px;">' +
-          flagIconHtml(categoryColor(c.label), 'row-flag-icon') +
-          ' <span class="lg-label ' + c.severity + '">' + (c.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span> ' +
-          '<b>' + escapeHtml(c.label) + '</b>' +
-        '</div>'
-      ).join('')
+    ? po._categories.map(c => poFlagHtml(c, po, plantKey)).join('')
     : '<div style="text-align:center;color:var(--slate-soft);padding:14px;">No data quality flags on this PO.</div>';
   const correctionsHtml = (po.corrections || []).length
     ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +
@@ -1698,14 +1825,46 @@ function importRowFlags(po) {
   ).join('');
 }
 
+// Short, stable label per import_flags.py flag code (F1-F7) - that module's
+// own `message` is per-item and often includes item-specific text (e.g. a
+// literal malformed HSN value), so it can't be used as a Sub Category option
+// label the way domestic's fixed DISCREPANCY_LEGEND labels can; this is the
+// import-side equivalent, keyed on the stable `code` instead.
+const IMPORT_FLAG_LABELS = {
+  F1: 'BOE filed, Qty (As Per BOE) missing',
+  F2: 'BOE filed, landed-cost fields incomplete',
+  F3: 'Inconsistent landed-cost completeness across a BOE',
+  F4: 'Laden on Board date without Bill of Lading number',
+  F5: 'Malformed HSN code',
+  F6: 'BOE filed, Currency (After Taxes) blank',
+  F7: 'Delivery date not parseable',
+};
+// Unified per-PO category list for Import, same shape/role as domestic's
+// po._categories (see computePoFlags()) - Category filter narrows by
+// severity, Sub Category cascades to a specific label within it. Critical =
+// the 3 discrepancy KPI cards (qty PO-vs-BOE, qty BOE-vs-MIR, rate
+// BOE-vs-MIR); info = the F1-F7 data quality flags, deduped by code (a PO
+// can carry the same code on more than one line item).
+function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
+  const cats = [];
+  if (po.qtyDiscrepancy) cats.push({ label: 'Qty Discrepancy (PO vs BOE)', severity: 'critical', key: 'qtydisc' });
+  if (poQtyDiscMir(po)) cats.push({ label: 'Qty Discrepancy (BOE vs MIR)', severity: 'critical', key: 'qtydiscmir' });
+  if (poRateDiscMir(po)) cats.push({ label: 'Rate Discrepancy (BOE vs MIR)', severity: 'critical', key: 'ratedisc' });
+  const seenCodes = new Set();
+  (po.dataQualityFlags || []).forEach(f => {
+    if (seenCodes.has(f.code)) return;
+    seenCodes.add(f.code);
+    cats.push({ label: IMPORT_FLAG_LABELS[f.code] || (f.code + ': ' + f.message), severity: 'info', key: 'flags' });
+  });
+  return cats;
+}
+
 function applyImportColFilters(recs) {
   const f = state.importColFilters;
   return recs.filter(po => {
     if (f.poNumber && !(po.poNumber || '').toLowerCase().includes(f.poNumber.toLowerCase())) return false;
     if (f.vendor && !(po.vendorName || '').toLowerCase().includes(f.vendor.toLowerCase())) return false;
     if (f.country && !(po.countryOfOrigin || '').toLowerCase().includes(f.country.toLowerCase())) return false;
-    if (f.valueMin != null && (po.totalInclusiveValue || 0) < f.valueMin) return false;
-    if (f.valueMax != null && (po.totalInclusiveValue || 0) > f.valueMax) return false;
     if (f.stage && po.shipmentStage !== f.stage) return false;
     return true;
   });
@@ -1728,8 +1887,8 @@ function renderImportPoList(el) {
     if (state.importTo && (!po.createdDate || po.createdDate > state.importTo)) return false;
     return true;
   };
-  const filtered = all.filter(inRange);
-  const total = filtered.length;
+  let filtered = all.filter(inRange);
+  const dateRangeCount = filtered.length; // "All Categories (N)" option's count - before category narrowing
 
   // A PO "has" a MIR condition if ANY of its line items does - same
   // any-item-triggers-the-PO-level-flag convention Domestic's own
@@ -1739,6 +1898,25 @@ function renderImportPoList(el) {
   const poInwarded = p => (p.items || []).some(i => i.mirMatch);
   const poQtyDiscMir = p => (p.items || []).some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0);
   const poRateDiscMir = p => (p.items || []).some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0);
+  filtered.forEach(po => { po._categories = importCategoriesFor(po, poQtyDiscMir, poRateDiscMir); });
+
+  // Category/Sub Category counts and narrowing - same cascading
+  // severity/label pattern as Domestic's renderPoList() (see its own
+  // comment on categoryCounts/subCategoryCounts for the full reasoning).
+  const categoryCounts = {};
+  filtered.forEach(po => po._categories.forEach(c => { categoryCounts[c.severity] = (categoryCounts[c.severity] || 0) + 1; }));
+  const inSelectedSeverity = state.importCategoryFilter
+    ? filtered.filter(po => po._categories.some(c => c.severity === state.importCategoryFilter))
+    : filtered;
+  const subCategoryCounts = {};
+  inSelectedSeverity.forEach(po => po._categories.forEach(c => {
+    if (state.importCategoryFilter && c.severity !== state.importCategoryFilter) return;
+    subCategoryCounts[c.label] = (subCategoryCounts[c.label] || 0) + 1;
+  }));
+  const subCategoryBaseCount = inSelectedSeverity.length;
+  if (state.importCategoryFilter) filtered = filtered.filter(po => po._categories.some(c => c.severity === state.importCategoryFilter));
+  if (state.importSubCategoryFilter) filtered = filtered.filter(po => po._categories.some(c => c.label === state.importSubCategoryFilter));
+  const total = filtered.length;
 
   const counts = {
     inwarded: filtered.filter(poInwarded).length,
@@ -1830,14 +2008,31 @@ function renderImportPoList(el) {
     (state.importChartMonthFilter ? 1 : 0) +
     (state.importStatusFilter ? 1 : 0) +
     (state.importFrom || state.importTo ? 1 : 0) +
-    (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.country ? 1 : 0) +
-    (cf.valueMin != null || cf.valueMax != null ? 1 : 0) + (cf.stage ? 1 : 0);
+    (state.importCategoryFilter ? 1 : 0) + (state.importSubCategoryFilter ? 1 : 0) +
+    (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
 
+  const SEVERITY_LABELS = { critical: 'Critical Issues', info: 'Informational Issues' };
+  const categoryOptionsHtml = Object.entries(categoryCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([sev, n]) => '<option value="' + sev + '"' + (state.importCategoryFilter === sev ? ' selected' : '') + '>' + escapeHtml(SEVERITY_LABELS[sev] || sev) + ' (' + n + ')</option>')
+    .join('');
+  const subCategoryOptionsHtml = Object.entries(subCategoryCounts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.importSubCategoryFilter === label ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + n + ')</option>')
+    .join('');
+  const flagsOptionsHtml =
+    '<option value="qtydisc"' + (state.importStatusFilter === 'qtydisc' ? ' selected' : '') + '>Qty Discrepancy - PO vs BOE (' + counts.qtyDisc + ')</option>' +
+    '<option value="qtydiscmir"' + (state.importStatusFilter === 'qtydiscmir' ? ' selected' : '') + '>Qty Discrepancy - BOE vs MIR (' + counts.qtyDiscMir + ')</option>' +
+    '<option value="ratedisc"' + (state.importStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy (' + counts.rateDiscMir + ')</option>' +
+    '<option value="flags"' + (state.importStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + counts.flags + ')</option>';
+
+  // No Value column filter here - min/max value narrowing was removed
+  // (project owner, 2026-09-04), same as Domestic's own table.
   const filterCells = [
     '<input type="text" class="col-filter-input" data-icf="poNumber" placeholder="Search..." value="' + escapeHtml(cf.poNumber) + '">',
     '<input type="text" class="col-filter-input" data-icf="vendor" placeholder="Search..." value="' + escapeHtml(cf.vendor) + '">',
     '<input type="text" class="col-filter-input" data-icf="country" placeholder="Search..." value="' + escapeHtml(cf.country) + '">',
-    '<div class="col-filter-range"><input type="number" class="col-filter-num" data-icf="valueMin" placeholder="Min" value="' + (cf.valueMin != null ? cf.valueMin : '') + '"><input type="number" class="col-filter-num" data-icf="valueMax" placeholder="Max" value="' + (cf.valueMax != null ? cf.valueMax : '') + '"></div>',
+    '',
     '',
     '<select class="col-filter-input" data-icf="stage"><option value="">All</option>' +
       IMPORT_STAGES.map(s => '<option value="' + s + '"' + (cf.stage === s ? ' selected' : '') + '>' + escapeHtml(IMPORT_STAGE_LABELS[s]) + '</option>').join('') +
@@ -1847,14 +2042,45 @@ function renderImportPoList(el) {
 
   el.innerHTML =
     '<div class="filter-row">' +
-      '<label>Date filter (Created on)</label>' +
-      '<input type="date" id="importFromDate" value="' + (state.importFrom || '') + '">' +
-      '<span style="color:#9ca3af;font-size:12px;">to</span>' +
-      '<input type="date" id="importToDate" value="' + (state.importTo || '') + '">' +
+      '<div class="filter-group">' +
+        '<label>Date filter (Created on)</label>' +
+        '<input type="date" id="importFromDate" value="' + (state.importFrom || '') + '">' +
+        '<span style="color:#9ca3af;font-size:12px;">to</span>' +
+        '<input type="date" id="importToDate" value="' + (state.importTo || '') + '">' +
+      '</div>' +
       '<button class="primary" id="importApplyFilter">Apply</button>' +
       '<button id="importClearFilter">Clear</button>' +
     '</div>' +
     '<div class="kpi-grid">' + kpiHtml + '</div>' +
+    // Category / Sub Category / Flags filters, same 3-dropdown pattern as
+    // Domestic's own renderPoList() and Raw Material Analysis - "global"
+    // filters that narrow `filtered` itself, so the KPI counts and both
+    // charts below reflect the selection, not just the table.
+    (Object.keys(categoryCounts).length ?
+      '<div class="filter-row">' +
+        '<div class="filter-group">' +
+          '<label>Filter by Category</label>' +
+          '<select id="importCategoryFilterSelect" style="min-width:200px;">' +
+            '<option value="">All Categories (' + dateRangeCount + ')</option>' +
+            categoryOptionsHtml +
+          '</select>' +
+        '</div>' +
+        '<div class="filter-group">' +
+          '<label>Filter by Sub Category</label>' +
+          '<select id="importSubCategoryFilterSelect" style="min-width:260px;">' +
+            '<option value="">All Sub Categories (' + subCategoryBaseCount + ')</option>' +
+            subCategoryOptionsHtml +
+          '</select>' +
+        '</div>' +
+        '<div class="filter-group">' +
+          '<label>Filter by Flags</label>' +
+          '<select id="importFlagsFilterSelect" style="min-width:240px;">' +
+            '<option value="">All Flags</option>' +
+            flagsOptionsHtml +
+          '</select>' +
+        '</div>' +
+        ((state.importCategoryFilter || state.importSubCategoryFilter || ['qtydisc', 'qtydiscmir', 'ratedisc', 'flags'].includes(state.importStatusFilter)) ? '<button id="importClearCategoryFilter">Clear</button>' : '') +
+      '</div>' : '') +
     ((stageChartData.length || months.length) ?
       '<div class="chart-row">' +
         '<div class="chart-panel"><h4>Import Value Trend by Month Created</h4>' +
@@ -1897,8 +2123,8 @@ function renderImportPoList(el) {
               '<td><span class="row-link" data-impo="' + key + '">View details</span></td></tr>';
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row po-cols"><div>PO Number</div><div>Vendor</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
-        '<div class="list-header-row po-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
+        '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
           const key = escapeHtml(po.plant + '::' + po.poNumber);
           return '<div class="top5-row">' +
@@ -1938,19 +2164,31 @@ function renderImportPoList(el) {
   if (nextPageBtn) nextPageBtn.onclick = () => { state.importTablePage = state.importTablePage + 1; renderImportPoList(el); };
   document.querySelectorAll('[data-impage]').forEach(btn => btn.onclick = () => { state.importTablePage = Number(btn.dataset.impage); renderImportPoList(el); });
 
+  const importCategorySelect = document.getElementById('importCategoryFilterSelect');
+  if (importCategorySelect) importCategorySelect.onchange = () => { state.importCategoryFilter = importCategorySelect.value || null; state.importSubCategoryFilter = null; state.importTablePage = 1; renderImportPoList(el); };
+  const importSubCategorySelect = document.getElementById('importSubCategoryFilterSelect');
+  if (importSubCategorySelect) importSubCategorySelect.onchange = () => { state.importSubCategoryFilter = importSubCategorySelect.value || null; state.importTablePage = 1; renderImportPoList(el); };
+  const importFlagsSelect = document.getElementById('importFlagsFilterSelect');
+  if (importFlagsSelect) importFlagsSelect.onchange = () => { state.importStatusFilter = importFlagsSelect.value || null; state.importTablePage = 1; renderImportPoList(el); };
+  const importClearCategoryBtn = document.getElementById('importClearCategoryFilter');
+  if (importClearCategoryBtn) importClearCategoryBtn.onclick = () => {
+    state.importCategoryFilter = null; state.importSubCategoryFilter = null;
+    if (['qtydisc', 'qtydiscmir', 'ratedisc', 'flags'].includes(state.importStatusFilter)) state.importStatusFilter = null;
+    state.importTablePage = 1; renderImportPoList(el);
+  };
+
   const clearListFiltersBtn = document.getElementById('importClearListFilters');
   if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
     state.importStatusFilter = null; state.importChartMonthFilter = null; state.importFrom = null; state.importTo = null;
-    state.importTablePage = 1;
-    state.importColFilters = { poNumber: '', vendor: '', country: '', valueMin: null, valueMax: null, stage: '' };
+    state.importCategoryFilter = null; state.importSubCategoryFilter = null; state.importTablePage = 1;
+    state.importColFilters = { poNumber: '', vendor: '', country: '', stage: '' };
     renderImportPoList(el);
   };
   document.querySelectorAll('[data-icf]').forEach(inp => {
     const key = inp.dataset.icf;
     const eventName = (inp.tagName === 'SELECT' || inp.type === 'number') ? 'change' : 'input';
     inp.addEventListener(eventName, () => {
-      const raw = inp.value;
-      state.importColFilters[key] = (key === 'valueMin' || key === 'valueMax') ? (raw !== '' ? Number(raw) : null) : raw;
+      state.importColFilters[key] = inp.value;
       state.importTablePage = 1;
       preserveFocus(el, () => renderImportPoList(el));
     });
@@ -2214,14 +2452,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const FLAG_DESCRIPTIONS_NOTE = 'Each flag below is a real data-quality check against this PO\'s own synced fields (apps/services/import_flags.py) - not a placeholder.';
   const flagsTabHtml = (po.dataQualityFlags || []).length
     ? '<div class="no-data-note" style="margin-bottom:12px;">' + FLAG_DESCRIPTIONS_NOTE + '</div>' +
-      po.dataQualityFlags.map(f =>
-        '<div class="field-block" style="margin-bottom:10px;">' +
-          '<span class="status-pill status-overdue">' + escapeHtml(f.code) + '</span>' +
-          '<div style="margin-top:8px;font-size:13px;">' + escapeHtml(f.message) + '</div>' +
-          '<div style="margin-top:6px;font-size:11px;color:var(--slate-soft);">Fields: ' + escapeHtml((f.fields || []).join(', ')) + '</div>' +
-          (f.item_id ? '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">Item: ' + escapeHtml(f.item_id) + '</div>' : '') +
-        '</div>'
-      ).join('')
+      po.dataQualityFlags.map(f => importFlagHtml(f, po, plantKey)).join('')
     : '<div style="text-align:center;color:var(--slate-soft);padding:20px;">No data quality flags on this PO.</div>';
   const correctionsHtml = (po.corrections || []).length
     ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +
@@ -2492,21 +2723,24 @@ function computeMaterialStatus(m, entry) {
   return 'instock';
 }
 
-// Table-only header filters (Material text search + Stock/Value/Rate
-// ranges) - never touch the KPI row/chart, only which rows the table shows.
-// Same role/shape as PO's applyColFilters()/state.colFilters. Status isn't
-// filtered here - it's applied separately in renderMaterialsView() itself
-// since it needs the `linkage` lookup, not just a plain field on `m`.
+// Table-only header filters (Material text search + Progress) - never touch
+// the KPI row/chart, only which rows the table shows. Same role/shape as
+// PO's applyColFilters()/state.colFilters. Category/Sub Category filter in
+// the header row too (see matFilterCells below) but write into
+// state.matCategoryFilter/matSubCategoryFilter directly, not here - they're
+// "global" filters that narrow `filtered` before this function ever runs
+// (KPI row + chart + table all reflect them), same as PO's Status. Status
+// isn't filtered here either - it's applied separately in
+// renderMaterialsView() itself since it needs the `linkage` lookup, not
+// just a plain field on `m`. No more Stock/Inventory Value/Latest Rate
+// range filters (project owner, 2026-09-04, removed to make room for
+// Category/Sub Category/Progress).
 function applyMatColFilters(recs) {
   const f = state.matColFilters;
   return recs.filter(m => {
     if (f.material && !(m.description || '').toLowerCase().includes(f.material.toLowerCase())) return false;
-    if (f.stockMin != null && (m.qty == null || m.qty < f.stockMin)) return false;
-    if (f.stockMax != null && (m.qty == null || m.qty > f.stockMax)) return false;
-    if (f.valueMin != null && (m.value == null || m.value < f.valueMin)) return false;
-    if (f.valueMax != null && (m.value == null || m.value > f.valueMax)) return false;
-    if (f.rateMin != null && (m.rate == null || m.rate < f.rateMin)) return false;
-    if (f.rateMax != null && (m.rate == null || m.rate > f.rateMax)) return false;
+    if (f.progress === 'mirmatched' && !m.mirMatched) return false;
+    if (f.progress === 'notmirmatched' && m.mirMatched) return false;
     return true;
   });
 }
@@ -2619,30 +2853,39 @@ function renderMaterialsView() {
   };
 
   // Header filter row inside the table, same pattern as PO's filterCells -
-  // text search for Material, min/max ranges for Stock/Value/Rate, a
-  // <select> for Status (shared with matStatusFilter, same single-source-
-  // of-truth reasoning as PO's own Status header select). Category/
-  // Sub Category have their own "Filter by" bar above the chart instead
-  // (see below) - not repeated here to avoid two controls for one filter.
-  // One entry per <th> in the table header (Material, Category, Sub
-  // Category, Stock, Inventory Value, Latest Rate, Status, Details) - even
-  // the columns with no header-row control of their own (Category/Sub
-  // Category use the "Filter by" bar above instead, Details has no data)
-  // need an empty placeholder entry, or every later cell silently shifts
-  // one column left under the wrong header.
+  // text search for Material, a <select> each for Category, Sub Category,
+  // Status, and Progress (project owner, 2026-09-04: added Category/Sub
+  // Category/Progress here, removed the old Stock/Inventory Value/Latest
+  // Rate min/max ranges). One entry per <th> in the table header (Material,
+  // Category, Sub Category, Stock, Inventory Value, Latest Rate, Status,
+  // Progress, Details) - Stock/Inventory Value/Latest Rate/Details have no
+  // header-row control of their own, so they still need an empty
+  // placeholder entry, or every later cell silently shifts one column left
+  // under the wrong header.
+  // Category/Sub Category header-row selects reuse catOptions/subCatOptions
+  // (already built above for the "Filter by" bar) and write into
+  // state.matCategoryFilter/matSubCategoryFilter directly - same field, two
+  // controls, same single-source-of-truth reasoning as Status. No more
+  // Stock/Inventory Value/Latest Rate range filters (project owner,
+  // 2026-09-04, removed to make room for these plus Progress).
+  const matCatColOptionsHtml = catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
+  const matSubCatColOptionsHtml = subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
   const matFilterCells = [
     '<input type="text" class="col-filter-input" data-mcf="material" placeholder="Search..." value="' + escapeHtml(state.matColFilters.material) + '">',
+    '<select class="col-filter-input" data-mcf="category"><option value="">All</option>' + matCatColOptionsHtml + '</select>',
+    '<select class="col-filter-input" data-mcf="subCategory"><option value="">All</option>' + matSubCatColOptionsHtml + '</select>',
     '',
     '',
-    '<div class="col-filter-range"><input type="number" class="col-filter-num" data-mcf="stockMin" placeholder="Min" value="' + (state.matColFilters.stockMin != null ? state.matColFilters.stockMin : '') + '"><input type="number" class="col-filter-num" data-mcf="stockMax" placeholder="Max" value="' + (state.matColFilters.stockMax != null ? state.matColFilters.stockMax : '') + '"></div>',
-    '<div class="col-filter-range"><input type="number" class="col-filter-num" data-mcf="valueMin" placeholder="Min" value="' + (state.matColFilters.valueMin != null ? state.matColFilters.valueMin : '') + '"><input type="number" class="col-filter-num" data-mcf="valueMax" placeholder="Max" value="' + (state.matColFilters.valueMax != null ? state.matColFilters.valueMax : '') + '"></div>',
-    '<div class="col-filter-range"><input type="number" class="col-filter-num" data-mcf="rateMin" placeholder="Min" value="' + (state.matColFilters.rateMin != null ? state.matColFilters.rateMin : '') + '"><input type="number" class="col-filter-num" data-mcf="rateMax" placeholder="Max" value="' + (state.matColFilters.rateMax != null ? state.matColFilters.rateMax : '') + '"></div>',
+    '',
     '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
       '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy</option>' +
       '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy</option>' +
       '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag</option>' +
     '</select>',
-    '',
+    '<select class="col-filter-input" data-mcf="progress"><option value="">All</option>' +
+      '<option value="mirmatched"' + (state.matColFilters.progress === 'mirmatched' ? ' selected' : '') + '>MIR Matched</option>' +
+      '<option value="notmirmatched"' + (state.matColFilters.progress === 'notmirmatched' ? ' selected' : '') + '>Not MIR Matched</option>' +
+    '</select>',
     '',
   ];
   const colFilterRow = '<tr class="col-filter-row">' + matFilterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
@@ -2674,51 +2917,82 @@ function renderMaterialsView() {
     // from a KPI-card click or the table's own Status header select - one
     // shared field, three ways to set it, same pattern as PO's Status).
     '<div class="filter-row">' +
-      '<label>Filter by Category</label>' +
-      '<select id="matCatSelect" style="min-width:220px;">' +
-        '<option value="">All categories (' + all.length + ')</option>' +
-        catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
-      '</select>' +
-      '<label>Filter by Sub Category</label>' +
-      '<select id="matSubCatSelect" style="min-width:220px;">' +
-        '<option value="">All sub-categories (' + inSelectedCategory.length + ')</option>' +
-        subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
-      '</select>' +
-      '<label>Filter by Flags</label>' +
-      '<select id="matFlagsSelect" style="min-width:200px;">' +
-        '<option value="">All flags</option>' +
-        '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy (' + qtyDiscMats.length + ')</option>' +
-        '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy (' + rateDiscMats.length + ')</option>' +
-        '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flaggedMats.length + ')</option>' +
-      '</select>' +
+      '<div class="filter-group">' +
+        '<label>Filter by Category</label>' +
+        '<select id="matCatSelect" style="min-width:220px;">' +
+          '<option value="">All categories (' + all.length + ')</option>' +
+          catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="filter-group">' +
+        '<label>Filter by Sub Category</label>' +
+        '<select id="matSubCatSelect" style="min-width:220px;">' +
+          '<option value="">All sub-categories (' + inSelectedCategory.length + ')</option>' +
+          subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="filter-group">' +
+        '<label>Filter by Flags</label>' +
+        '<select id="matFlagsSelect" style="min-width:200px;">' +
+          '<option value="">All flags</option>' +
+          '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy (' + qtyDiscMats.length + ')</option>' +
+          '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy (' + rateDiscMats.length + ')</option>' +
+          '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flaggedMats.length + ')</option>' +
+        '</select>' +
+      '</div>' +
       ((state.matCategoryFilter || state.matSubCategoryFilter || state.matStatusFilter) ? '<button id="matClearCategoryFilter">Clear</button>' : '') +
     '</div>' +
     renderMaterialsChart(filtered) +
     '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Materials by Stock Quantity - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
       (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all ' + sorted.length + ' materials') + '</button>' : '') +
     '</div>' +
-    '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Sub Category</th><th>Stock' + stockAllPlantsSuffix + '</th><th>Inventory Value' + stockAllPlantsSuffix + '</th><th>Latest Rate</th><th>Status</th><th>Progress</th><th>Details</th></tr>' +
-      // Header filter row shown in both the compact top-5 preview and the
-      // full "View all" table - same as PO's own filter row, which appears
-      // above its compact top5-list too, not just the expanded table (see
-      // renderPoList()'s own list-header-row/col-filter-row-grid).
-      colFilterRow +
-    '</thead><tbody>' +
-    listRecs.map(m => {
-      const anchor = m.anchorLot;
-      const key = escapeHtml(plantKeyFor(anchor) + '::' + anchor.lotId);
-      const entry = linkageByKey.get(normalizeMaterial(m.description));
-      return '<tr><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></td>' +
-      '<td>' + escapeHtml(m.category || '-') + '</td>' +
-      '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
-      '<td>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</td>' +
-      '<td>' + formatInr(m.value || 0) + '</td>' +
-      '<td>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</td>' +
-      (() => { const st = computeMaterialStatus(m, entry); return '<td><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry) + '</td>'; })() +
-      '<td>' + materialStepperHtml(m) + '</td>' +
-      '<td><span class="row-link" data-lot="' + key + '">View analysis</span></td></tr>';
-    }).join('') +
-    '</tbody></table></div>' + paginationHtml;
+    (() => {
+      // Compact top-5 preview renders as CSS-grid card rows, same
+      // .list-header-row/.top5-list/.top5-row structure as Purchase
+      // Orders'/Import Purchases' own top-5 preview (project owner,
+      // 2026-09-04: Materials should match PO/Import's card structure, not
+      // the other way around - see renderPoList()'s equivalent branch for
+      // the fuller reasoning). "View all" still renders as a plain <table>
+      // for all three views.
+      if (showingAll) {
+        return '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Sub Category</th><th>Stock' + stockAllPlantsSuffix + '</th><th>Inventory Value' + stockAllPlantsSuffix + '</th><th>Latest Rate</th><th>Status</th><th>Progress</th><th>Details</th></tr>' +
+          colFilterRow +
+        '</thead><tbody>' +
+        listRecs.map(m => {
+          const anchor = m.anchorLot;
+          const key = escapeHtml(plantKeyFor(anchor) + '::' + anchor.lotId);
+          const entry = linkageByKey.get(normalizeMaterial(m.description));
+          return '<tr><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></td>' +
+          '<td>' + escapeHtml(m.category || '-') + '</td>' +
+          '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
+          '<td>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</td>' +
+          '<td>' + formatInr(m.value || 0) + '</td>' +
+          '<td>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</td>' +
+          (() => { const st = computeMaterialStatus(m, entry); return '<td><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry) + '</td>'; })() +
+          '<td>' + materialStepperHtml(m) + '</td>' +
+          '<td><span class="row-link" data-lot="' + key + '">View analysis</span></td></tr>';
+        }).join('') +
+        '</tbody></table></div>' + paginationHtml;
+      }
+      return '<div class="list-header-row grid-cols"><div>Material</div><div>Category</div><div>Sub Category</div><div>Stock' + stockAllPlantsSuffix + '</div><div>Inventory Value' + stockAllPlantsSuffix + '</div><div>Latest Rate</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+        '<div class="list-header-row grid-cols col-filter-row-grid">' + matFilterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
+        '<div class="top5-list" id="matTop5List">' + listRecs.map(m => {
+          const anchor = m.anchorLot;
+          const key = escapeHtml(plantKeyFor(anchor) + '::' + anchor.lotId);
+          const entry = linkageByKey.get(normalizeMaterial(m.description));
+          const st = computeMaterialStatus(m, entry);
+          return '<div class="top5-row">' +
+            '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></div>' +
+            '<div>' + escapeHtml(m.category || 'Not available') + '</div>' +
+            '<div>' + escapeHtml(m.subCategory || 'Not available') + '</div>' +
+            '<div>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</div>' +
+            '<div>' + formatInr(m.value || 0) + '</div>' +
+            '<div>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</div>' +
+            '<div><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry) + '</div>' +
+            '<div>' + materialStepperHtml(m) + '</div>' +
+            '<div><span class="row-link" data-lot="' + key + '">View analysis</span></div></div>';
+        }).join('') + '</div>';
+    })();
 
   document.querySelectorAll('[data-matkpi]').forEach(c => c.onclick = () => {
     const key = c.dataset.matkpi;
@@ -2755,7 +3029,9 @@ function renderMaterialsView() {
       const raw = inp.value;
       if (key === 'status') { state.matStatusFilter = raw || null; }
       else if (key === 'material') { state.matColFilters.material = raw; }
-      else { state.matColFilters[key] = raw !== '' ? Number(raw) : null; }
+      else if (key === 'category') { state.matCategoryFilter = raw || null; state.matSubCategoryFilter = null; }
+      else if (key === 'subCategory') { state.matSubCategoryFilter = raw || null; }
+      else { state.matColFilters[key] = raw; }
       state.matTablePage = 1;
       preserveFocus(el, () => renderMaterialsView());
     });
@@ -2973,11 +3249,22 @@ async function openMaterialModal(compositeKey) {
     '<div class="line">Total inventory value: ' + formatInr(valueAllPlants) + '</div>' +
     '<div class="line">Ordered, not yet delivered: ' + formatInr(openValue) + ' across ' + openLinked.length + ' open PO(s)</div>';
 
+  // Category/Sub Category are editable here against the anchor lot
+  // specifically (anchor.category/anchor.subCategory - this row's own
+  // value, NOT the `category`/`subCategory` rolled-up "first found across
+  // every sibling" variables used elsewhere on this page, which can differ
+  // from the anchor's own value and would silently edit the wrong lot's
+  // field otherwise). Sub Category has no real column on Achhad's Stock
+  // sheet at all (see RTPAchhadStockLot's docstring - achhad_views.py's
+  // _lot_dict always returns "" for it, not a real value), so it stays
+  // plain there rather than offering a pencil that would 400.
   const overviewHtml =
     '<div class="field-grid">' +
       '<div class="field-block"><h4>Classification</h4>' +
-        '<div class="line">Category: ' + escapeHtml(category || 'Not available') + '</div>' +
-        '<div class="line">Sub Category: ' + escapeHtml(subCategory || 'Not available') + '</div>' +
+        editableLine(plantKey, 'Category', anchor.category, 'category', lotId, 'text') +
+        (plantKey === 'achhad'
+          ? plainLine('Sub Category', anchor.subCategory)
+          : editableLine(plantKey, 'Sub Category', anchor.subCategory, 'sub_category', lotId, 'text')) +
         '<div class="line">Also known as: ' + (aliases.length ? escapeHtml(aliases.slice(0, 5).join('; ')) + (aliases.length > 5 ? ' (+' + (aliases.length - 5) + ' more)' : '') : 'Not available') + '</div>' +
       '</div>' +
       '<div class="field-block"><h4>Vendors (from POs and Stock Supplier History)</h4>' +
@@ -2986,12 +3273,25 @@ async function openMaterialModal(compositeKey) {
     '</div>' +
     '<div class="field-block full-width" style="margin-top:14px;"><h4>At a Glance</h4>' + atAGlanceHtml + '</div>';
 
+  // Category/Rate are also editable per-row here, one row per sibling lot
+  // across all 3 plants (unlike the Overview tab's Category/Sub Category
+  // pencils above, which only ever target the modal's own anchor lot).
+  // editableCell()'s plantKey argument is this row's own l._plantKey, not
+  // the modal's anchor plant, since siblingLots spans all 3 plants - each
+  // row gates/targets its own plant's lot independently. A material with
+  // stock at more than one plant can therefore have a different Category
+  // per plant's lot until someone corrects them to match - same "each row
+  // is its own real row, corrections don't auto-propagate" situation the
+  // artifact's own multi-field correction UX never had to deal with either.
   const stockByPlantHtml = siblingLots.length
-    ? '<div class="table-wrap"><table><thead><tr><th>Plant</th><th>Qty</th><th>Rate</th><th>Value</th><th>MIR↔Stock Match</th></tr></thead><tbody>' +
-        siblingLots.map(l => '<tr><td>' + escapeHtml(l._plantLabel) + '</td><td>' + (l.qty != null ? l.qty : '-') +
-          '</td><td>' + (l.rate != null ? formatInr(l.rate) : '-') + '</td><td>' + (l.value != null ? formatInr(l.value) : '-') +
-          '</td><td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>').join('') +
-        '<tr style="font-weight:700;"><td>Total</td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
+    ? '<div class="table-wrap"><table><thead><tr><th>Plant</th><th>Category</th><th>Qty</th><th>Rate</th><th>Value</th><th>MIR↔Stock Match</th></tr></thead><tbody>' +
+        siblingLots.map(l => '<tr><td>' + escapeHtml(l._plantLabel) + '</td>' +
+          '<td>' + editableCell(l._plantKey, l.category, 'category', l.lotId, 'text') + '</td>' +
+          '<td>' + (l.qty != null ? l.qty : '-') + '</td>' +
+          '<td>' + editableCell(l._plantKey, l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
+          '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
+          '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>').join('') +
+        '<tr style="font-weight:700;"><td>Total</td><td></td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
       '</tbody></table></div>'
     : '<div class="no-data-note">No stock found for this material at any plant.</div>';
 
@@ -3034,6 +3334,16 @@ async function openMaterialModal(compositeKey) {
     await openMaterialModal(compositeKey);
   });
 
+  // Each row's .editable-line carries its own data-plant (see the
+  // stockByPlantHtml row template above) - wireEditableLines' fieldsUrl
+  // function reads that back per line instead of one fixed URL, since this
+  // table's rows can target 3 different plants' own PATCH endpoints.
+  wireEditableLines(body, (lineEl) => materialFieldsUrl(lineEl.dataset.plant, lineEl.dataset.item), async () => {
+    PLANT_KEYS.forEach(key => { MATERIALS_BY_PLANT[key] = null; });
+    await openMaterialModal(compositeKey);
+    renderMaterialsView();
+  });
+
   const panelIds = { overview: 'matModalOverview', stockplant: 'matModalStockPlant', poactivity: 'matModalPoActivity', pricetrend: 'matModalPriceTrend' };
   body.querySelectorAll('[data-tab]').forEach(tab => tab.onclick = () => {
     body.querySelectorAll('[data-tab]').forEach(t => t.classList.remove('active'));
@@ -3043,10 +3353,19 @@ async function openMaterialModal(compositeKey) {
 
   // Price Trend: net price of every linked PO line item (all statuses, not
   // just open ones) plotted over the PO's own createdDate, with 21/50/100-
-  // day trailing moving averages (see trailingPriceAvg()).
+  // day trailing moving averages (see trailingPriceAvg()). Some real line
+  // items carry a net value/qty but no explicit unit netPrice - derive one
+  // from netValue/qty rather than dropping the point outright, so a
+  // material isn't misreported as having "no PO price history" just
+  // because that one field was left blank upstream.
   const points = linked
-    .filter(l => l.item.netPrice != null && l.po.createdDate)
-    .map(l => ({ date: l.po.createdDate, price: l.item.netPrice, poNumber: l.po.poNumber }))
+    .map(l => {
+      const price = l.item.netPrice != null ? l.item.netPrice
+        : (l.item.netValue != null && l.item.qty) ? l.item.netValue / l.item.qty
+        : null;
+      return { date: l.po.createdDate, price, poNumber: l.po.poNumber };
+    })
+    .filter(p => p.price != null && p.date)
     .sort((a, b) => a.date.localeCompare(b.date));
   const trendBox = document.getElementById('matPriceTrendBox');
   if (!points.length) {
@@ -3054,21 +3373,33 @@ async function openMaterialModal(compositeKey) {
   } else {
     trendBox.innerHTML = '<canvas id="matPriceTrendChart"></canvas>';
     try {
+      // Moving averages need >=2 points to mean anything - with just one PO,
+      // still plot that single price (a real, visible dot) rather than
+      // showing nothing; only add the trend-line datasets once there's
+      // enough history to actually average.
+      const datasets = [
+        { label: 'Net price per PO', data: points.map(p => p.price), borderColor: '#2563eb', backgroundColor: '#2563eb', tension: 0.15, pointRadius: 4, showLine: points.length > 1 },
+      ];
+      if (points.length >= 2) {
+        datasets.push(
+          { label: '21-day moving avg', data: points.map((p, i) => trailingPriceAvg(points, i, 21)), borderColor: '#16a34a', borderDash: [5, 3], pointRadius: 0, tension: 0.15 },
+          { label: '50-day moving avg', data: points.map((p, i) => trailingPriceAvg(points, i, 50)), borderColor: '#d97706', borderDash: [5, 3], pointRadius: 0, tension: 0.15 },
+          { label: '100-day moving avg', data: points.map((p, i) => trailingPriceAvg(points, i, 100)), borderColor: '#7c3aed', borderDash: [5, 3], pointRadius: 0, tension: 0.15 },
+        );
+      }
+      // A single point has no natural y-range for Chart.js to pad around,
+      // so give it one explicitly (+/-10%) rather than risk a collapsed axis.
+      const singlePointPadding = points.length === 1 ? { suggestedMin: points[0].price * 0.9, suggestedMax: points[0].price * 1.1 } : {};
       modalCharts.push(new Chart(document.getElementById('matPriceTrendChart'), {
         type: 'line',
         data: {
           labels: points.map(p => formatDateIN(p.date)),
-          datasets: [
-            { label: 'Net price per PO', data: points.map(p => p.price), borderColor: '#2563eb', backgroundColor: '#2563eb', tension: 0.15, pointRadius: 3 },
-            { label: '21-day moving avg', data: points.map((p, i) => trailingPriceAvg(points, i, 21)), borderColor: '#16a34a', borderDash: [5, 3], pointRadius: 0, tension: 0.15 },
-            { label: '50-day moving avg', data: points.map((p, i) => trailingPriceAvg(points, i, 50)), borderColor: '#d97706', borderDash: [5, 3], pointRadius: 0, tension: 0.15 },
-            { label: '100-day moving avg', data: points.map((p, i) => trailingPriceAvg(points, i, 100)), borderColor: '#7c3aed', borderDash: [5, 3], pointRadius: 0, tension: 0.15 },
-          ],
+          datasets,
         },
         options: {
           plugins: { legend: { position: 'bottom', labels: { boxWidth: 9, boxHeight: 9, font: { size: 10.5 } } },
             tooltip: { backgroundColor: '#0f1b2d', padding: 10, cornerRadius: 8, callbacks: { label: c => c.dataset.label + ': ' + formatInr(c.parsed.y) } } },
-          scales: { y: { ticks: { callback: v => formatInr(v) } } },
+          scales: { y: { ticks: { callback: v => formatInr(v) }, ...singlePointPadding } },
         },
       }));
     } catch (e) {

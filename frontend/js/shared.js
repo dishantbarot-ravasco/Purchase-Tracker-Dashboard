@@ -20,6 +20,22 @@ const PLANTS = {
 const PLANT_KEYS = Object.keys(PLANTS);
 const ALL_PLANTS_LABEL = 'All Plants';
 
+// A Stock lot's PATCH endpoint - see hrs_views.py/achhad_views.py/
+// vapi_views.py's correct_material_field. Used by openMaterialModal's
+// Stock by Plant table (main.js), where each row can be a different
+// plant's own lot - see editableCell()'s data-plant below.
+function materialFieldsUrl(plantKey, lotId) {
+  return PLANTS[plantKey].apiPrefix + '/materials/' + lotId + '/fields';
+}
+// Achhad's Stock lot model names this column "rate" (its own Stock sheet
+// has no vendor/uom columns at all - see RTPAchhadStockLot's docstring);
+// HRS/Vapi both name it "basic_rate". Same reasoning as the backend's own
+// per-plant _MATERIAL_EDITABLE_FIELDS sets - not a typo, a real per-plant
+// schema difference.
+function materialRateFieldName(plantKey) {
+  return plantKey === 'achhad' ? 'rate' : 'basic_rate';
+}
+
 // Every page's own fetches go through this - handles the 401-means-cookie-
 // expired case identically everywhere (bounce to /login.html) instead of
 // each page reinventing that check slightly differently.
@@ -144,8 +160,16 @@ function editableLine(plantKey, label, value, fieldName, itemId, fieldType, opti
   if (!canEditField(plantKey)) return plainLine(label, value);
   const display = (value === null || value === undefined || value === '') ? 'Not available' : escapeHtml(String(value));
   const optsAttr = options && options.length ? ' data-options="' + escapeHtml(encodeURIComponent(JSON.stringify(options))) + '"' : '';
+  // data-plant lets a container whose lines span more than one plant (the
+  // material modal's Overview tab, once its Category/Sub Category lines
+  // target the anchor lot's own plant) resolve each line's own fieldsUrl -
+  // see wireEditableLines()'s function-form fieldsUrl and editableCell()'s
+  // identical attribute below. Harmless/unused for every other existing
+  // caller (Domestic/Import PO modals), which always pass one fixed
+  // fieldsUrl string for their whole container.
   return '<div class="line editable-line" data-field="' + escapeHtml(fieldName) + '"' +
     (itemId ? ' data-item="' + escapeHtml(itemId) + '"' : '') +
+    ' data-plant="' + escapeHtml(plantKey) + '"' +
     ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + '>' +
     escapeHtml(label) + ': <span class="line-val">' + display + '</span>' +
     '<span class="edit-pencil" title="Edit">&#9998;</span>' +
@@ -174,6 +198,21 @@ async function dismissMatch(plantKey, matchType, matchId, dismissed, reason) {
     return apiImports('/matches/po-mir/' + plantKey + '/' + matchId + '/dismiss', opts);
   }
   return apiForPlant(plantKey, '/matches/' + matchType + '/' + matchId + '/dismiss', opts);
+}
+
+// Manual dismiss/reinstate for a PO-level flag (Quantity/Rate-Value
+// Discrepancy, Data Quality Flag category) in a PO detail modal's Flags &
+// Corrections tab - see apps/services/flag_dismiss.py. `isImport` picks the
+// cross-plant /api/imports router (plant as a path segment) the same way
+// dismissMatch()'s matchType==='import-po-mir' branch does, since Import
+// POs live under a different URL shape than Domestic's per-plant prefix.
+async function dismissPoFlag(plantKey, poNumber, flagKey, dismissed, reason, isImport) {
+  const body = JSON.stringify({ flagKey: flagKey, dismissed: dismissed, reason: reason || '' });
+  const opts = { method: 'PATCH', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: body };
+  if (isImport) {
+    return apiImports('/purchase-orders/' + plantKey + '/' + encodeURIComponent(poNumber) + '/flags/dismiss', opts);
+  }
+  return apiForPlant(plantKey, '/purchase-orders/' + encodeURIComponent(poNumber) + '/flags/dismiss', opts);
 }
 
 // Distinct, already-seen values for a field across an already-loaded PO
@@ -214,14 +253,43 @@ async function savePoField(fieldsUrl, itemId, field, value) {
   return data;
 }
 
+// Compact inline sibling of editableLine() for a table cell (the Raw
+// Material Analysis modal's Stock by Plant table renders one row per Stock
+// lot, each cell needing just "value + pencil", not editableLine()'s
+// block-level "Label: value" line) - see .cell-editable in style.css for why
+// this needed its own CSS instead of reusing .editable-line's absolute
+// positioning. `itemId` here is a lot id, `plantKey` is that row's own
+// plant (materials can list lots from all 3 plants in one table - see
+// openMaterialModal's siblingLots), stashed on the element as data-plant so
+// a per-row caller can build the right per-plant fieldsUrl.
+function editableCell(plantKey, value, fieldName, itemId, fieldType, options) {
+  const display = (value === null || value === undefined || value === '') ? '-' : escapeHtml(String(value));
+  if (!canEditField(plantKey)) return display;
+  const optsAttr = options && options.length ? ' data-options="' + escapeHtml(encodeURIComponent(JSON.stringify(options))) + '"' : '';
+  return '<span class="editable-line cell-editable" data-field="' + escapeHtml(fieldName) + '" data-item="' + escapeHtml(String(itemId)) + '" data-plant="' + escapeHtml(plantKey) + '"' +
+    ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + '>' +
+    '<span class="line-val">' + display + '</span>' +
+    '<span class="edit-pencil" title="Edit">&#9998;</span>' +
+    '<span class="edit-actions" hidden><span class="edit-save" title="Save">&#10003;</span><span class="edit-cancel" title="Cancel">&#10005;</span></span>' +
+    '<div class="edit-warning" hidden></div>' +
+  '</span>';
+}
+
 // Wires every .editable-line under `container` to swap into edit mode on
 // pencil click. `onSaved(fieldName, itemId)` runs after a successful PATCH -
 // each PO-type's caller re-fetches/re-renders differently (Domestic
 // invalidates the whole-plant list cache; Import invalidates its own list +
 // per-PO detail cache), so that stays a callback instead of baked in here.
+// `fieldsUrl` is either the one URL every line in `container` shares (a
+// single PO's fields endpoint - Domestic/Import's own usage), or a function
+// `(lineEl) => url` for a container whose lines target different endpoints
+// (the material modal's Stock by Plant table, where each row is a different
+// plant's own lot - see editableCell()'s data-plant above and
+// materialFieldsUrl() in main.js).
 function wireEditableLines(container, fieldsUrl, onSaved) {
+  const resolveUrl = typeof fieldsUrl === 'function' ? fieldsUrl : () => fieldsUrl;
   container.querySelectorAll('.editable-line').forEach(lineEl => {
-    lineEl.querySelector('.edit-pencil').onclick = () => startFieldEdit(lineEl, fieldsUrl, onSaved);
+    lineEl.querySelector('.edit-pencil').onclick = () => startFieldEdit(lineEl, resolveUrl(lineEl), onSaved);
   });
 }
 

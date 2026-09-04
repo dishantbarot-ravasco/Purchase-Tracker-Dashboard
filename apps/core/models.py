@@ -1357,6 +1357,80 @@ class DomesticPOCorrection(models.Model):
         return f"{self.plant}/{self.po_number}/{self.field_name} -> {self.new_value!r} ({self.corrected_by_email})"
 
 
+class MaterialCorrection(models.Model):
+    """Audit trail for inline field edits made against a Stock lot from the
+    Raw Material Analysis modal's Stock by Plant table - same append-only
+    mutate+audit pattern as DomesticPOCorrection/ImportPOCorrection (see
+    ImportPOCorrection's docstring for the "why append-only" rationale).
+    Shared across plants rather than split per plant model, same reasoning
+    those two corrections already use: this is a generic log table, not a
+    plant-shaped data table.
+
+    `lot_id` is the target HRSStockLot/RTPAchhadStockLot/RTPVapiStockLot's
+    own pk - unique only combined with `plant` (each plant's Stock lot table
+    has its own independent autoincrement id space, so lot_id alone can
+    collide across plants)."""
+
+    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    lot_id = models.IntegerField()
+    field_name = models.CharField(max_length=100)
+    old_value = models.TextField(blank=True)
+    new_value = models.TextField(blank=True)
+
+    corrected_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="material_corrections")
+    corrected_by_email = models.CharField(max_length=255, blank=True)
+    corrected_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-corrected_at"]
+        indexes = [models.Index(fields=["plant", "lot_id"])]
+
+    def __str__(self):
+        return f"{self.plant}/lot {self.lot_id}/{self.field_name} -> {self.new_value!r} ({self.corrected_by_email})"
+
+
+class FlagDismissal(models.Model):
+    """Manual dismiss/reinstate for a PO-level flag shown in the Flags &
+    Corrections tab - the Quantity/Rate-Value Discrepancy critical flags and
+    the Data Quality Flag category (main.js's computePoFlags()/
+    categorizeFlag() for Domestic, apps/services/import_flags.py's
+    po_flags() for Import). Unlike DomesticPOCorrection/ImportPOCorrection/
+    MaterialCorrection (append-only logs of a mutation to a real row),
+    there's no underlying row to mutate here - these flags are computed at
+    read time, not stored - so this table IS the current dismissed state,
+    upserted in place, same shape as `dismissed_by_override` on
+    *POMirMatch/*MirStockMatch (see apps/services/match_dismiss.py), just
+    for a flag that has no match row of its own to carry that column on.
+
+    `flag_key` is a stable, opaque identifier for one flag on one PO -
+    Domestic uses the flag's own display label directly (e.g. "Quantity
+    Discrepancy", "Vendor GSTIN anomaly" - safe since computePoFlags() only
+    ever produces at most one flag per label per PO); Import uses
+    `<code>:<item_id>` (e.g. "F7:ITEM3", or "F3:" for a PO-level flag with no
+    item_id) since apps/services/import_flags.py's flags are per-item and
+    already carry a stable `code`. Either shape is just a string to this
+    table - it never inspects or validates flag_key content."""
+
+    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    po_number = models.CharField(max_length=100)
+    flag_key = models.CharField(max_length=150)
+
+    dismissed = models.BooleanField(default=True)
+    dismissed_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="flag_dismissals")
+    dismissed_by_email = models.CharField(max_length=255, blank=True)
+    dismissed_reason = models.TextField(blank=True)
+    dismissed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plant", "po_number", "flag_key"], name="uniq_flag_dismissal")
+        ]
+        indexes = [models.Index(fields=["plant", "po_number"])]
+
+    def __str__(self):
+        return f"{self.plant}/{self.po_number}/{self.flag_key} dismissed={self.dismissed}"
+
+
 # ===========================================================================
 # Auth: device-aware 2FA, mirroring the TDS Automation App's architecture
 # (TDSUser/OTPCode/TrustedDevice in that app's apps/core/models.py). See
