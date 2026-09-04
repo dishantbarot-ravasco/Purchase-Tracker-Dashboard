@@ -93,6 +93,8 @@ _DECIMAL_FIELDS = {
 }
 
 
+# ── Serialization helpers ─────────────────────────────────────────────────────
+
 def _f(v):
     return float(v) if v is not None else None
 
@@ -249,11 +251,15 @@ def _resolve_plant(plant_key):
     return _PLANTS.get(plant_key)
 
 
+# ── Purchase order list/detail ────────────────────────────────────────────────
+
 @api_view(["GET"])
 def purchase_orders(request):
-    """All three plants combined - spec section 1's "single dataset with a
-    Plant field". Two of three plants have 0 rows today; that's fine, they
-    just contribute nothing to the combined list rather than erroring."""
+    """GET /api/imports/purchase-orders - all three plants combined, list
+    shape (see _po_dict's non-detail fields). Spec section 1's "single
+    dataset with a Plant field". Two of three plants have 0 rows today;
+    that's fine, they just contribute nothing to the combined list rather
+    than erroring. IsAuthenticated by default (any role)."""
     result = []
     for plant_key, (po_model, _item_model, _sr_plant, label, _match_model) in _PLANTS.items():
         qs = po_model.objects.prefetch_related(
@@ -266,6 +272,10 @@ def purchase_orders(request):
 
 @api_view(["GET"])
 def purchase_order_detail(request, plant, po_number):
+    """GET /api/imports/purchase-orders/<plant>/<po_number> - one PO, detail
+    shape (adds vendor/billing fields, corrections, flag dismissals - see
+    _po_dict's detail=True branch). 404s on an unknown `plant` segment or a
+    po_number that doesn't exist for that plant."""
     resolved = _resolve_plant(plant)
     if not resolved:
         return Response({"error": "Unknown plant."}, status=404)
@@ -277,6 +287,8 @@ def purchase_order_detail(request, plant, po_number):
         return Response({"error": "Purchase order not found."}, status=404)
     return Response(_po_dict(po, plant, label, detail=True, sr_plant=sr_plant))
 
+
+# ── Inline field corrections ──────────────────────────────────────────────────
 
 @api_view(["PATCH"])
 @permission_classes([IsEditor])
@@ -376,8 +388,14 @@ def _coerce_value(field_name, raw_value):
     return str(raw_value)
 
 
+# ── Sync status/trigger ────────────────────────────────────────────────────────
+
 @api_view(["GET"])
 def sync_status(request):
+    """GET /api/imports/sync-status - latest IMPORT_PO_CSV SyncRun per plant,
+    plus each plant's own in-progress flag (see is_imports_sync_in_progress)
+    - same "last synced, not just trust stale data" reasoning as the domestic
+    routers' own sync_status views."""
     latest_by_plant = {}
     for plant_key, (_po_model, _item_model, sr_plant, _label, _match_model) in _PLANTS.items():
         run = SyncRun.objects.filter(plant=sr_plant, source=SyncRun.Source.IMPORT_PO_CSV).order_by("-started_at").first()
@@ -395,6 +413,10 @@ def sync_status(request):
 @api_view(["POST"])
 @permission_classes([IsAdmin])
 def sync_trigger(request, plant):
+    """POST /api/imports/sync-trigger/<plant> - kicks off that plant's
+    Imports CSV sync (+ match_<plant>, see apps/services/sync_trigger.py's
+    _IMPORT_PLANT_COMMANDS) on a background thread. Admin-only: a real Drive
+    API call, not just a read."""
     if plant not in _PLANTS:
         return Response({"error": "Unknown plant."}, status=404)
     started = trigger_plant_imports_sync(plant)
@@ -402,6 +424,8 @@ def sync_trigger(request, plant):
         return Response({"status": "already_running"}, status=409)
     return Response({"status": "started"}, status=202)
 
+
+# ── Match dismiss / flag dismiss ──────────────────────────────────────────────
 
 @api_view(["PATCH"])
 @permission_classes([IsEditor])

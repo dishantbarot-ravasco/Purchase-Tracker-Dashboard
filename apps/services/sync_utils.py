@@ -3,6 +3,8 @@
 from decimal import ROUND_HALF_UP, Decimal
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
 def unchanged(model_cls, existing, parsed, fields: list[str]) -> bool:
     """Field-by-field equality between a saved model instance and a freshly
     parsed value, quantizing Decimal fields to the model field's own

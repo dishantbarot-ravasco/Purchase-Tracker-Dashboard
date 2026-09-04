@@ -28,6 +28,8 @@ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _BLANK_PLACEHOLDERS = {"", "not available", "n/a", "na", "none"}
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
 def is_valid_gstin(value: str | None) -> bool:
     """True for a well-formed 15-char GSTIN, or for a blank/"Not available"
     value (spec: "or allow 'Not available'"). False otherwise - callers treat

@@ -27,6 +27,10 @@ STAGE_CLEARED = "Cleared (BOE)"
 
 
 def shipment_stage(item) -> str:
+    """One item's customs-clearance stage, inferred from which fields are
+    filled rather than a stored status column - BOE number present means
+    cleared, else a bill-of-lading/laden-on-board date means shipped, else
+    it's still just placed."""
     if item.boe_number:
         return STAGE_CLEARED
     if item.bill_of_lading_number or item.laden_on_board_date:
@@ -61,6 +65,9 @@ def qty_discrepancy(item) -> tuple[bool, float | None]:
 
 
 def po_has_qty_discrepancy(items) -> bool:
+    """PO-level rollup: true if any item's BOE quantity disagrees with its
+    ordered quantity - drives the Import KPI row's "Qty Discrepancies (BOE
+    vs MIR)" style cards."""
     return any(qty_discrepancy(i)[0] for i in items)
 
 
@@ -73,6 +80,10 @@ STATUS_DELIVERED = "Delivered"
 
 
 def delivery_date_status(item, today: datetime.date) -> str:
+    """A cleared item is always "Delivered" regardless of its own delivery
+    date field (customs clearance is a stronger, later signal than a
+    planned delivery date); otherwise Unknown/Overdue/On Order based on
+    whether delivery_date is set and in the past."""
     if shipment_stage(item) == STAGE_CLEARED:
         return STATUS_DELIVERED
     if item.delivery_date is None:
@@ -98,6 +109,10 @@ def po_delivery_date_status(items, today: datetime.date) -> str:
 # ── Partial delivery (spec section 2, PO level) ─────────────────────────────
 
 def partial_delivery(items) -> bool:
+    """True if any item's cleared BOE quantity is strictly less than what
+    was ordered - a real partial shipment, not just any qty mismatch
+    (qty_discrepancy() above also flags a BOE qty that's *higher* than
+    ordered, which isn't a "partial" delivery)."""
     return any(
         i.qty_as_per_boe is not None and i.qty_as_per_po is not None and i.qty_as_per_boe < i.qty_as_per_po
         for i in items
@@ -107,6 +122,9 @@ def partial_delivery(items) -> bool:
 # ── Data quality flags F1-F7 (spec section 4) ───────────────────────────────
 
 def _hsn_malformed(hsn: str) -> bool:
+    """A valid Indian HSN code is all-digit and either 6 or 8 characters
+    long - anything else (blank is exempted, not flagged as malformed;
+    "blank" is its own separate data-quality signal elsewhere) trips F5."""
     if not hsn:
         return False
     digits = hsn.strip()

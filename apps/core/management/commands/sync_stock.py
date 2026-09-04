@@ -1,8 +1,9 @@
 """
-Syncs HRS RAW MATERIAL STOCK.xlsx ('Stock' sheet) from Drive into
-HRSStockLot, keyed by source_row_ref (the sheet row number), and captures
-today's HRSStockSnapshot for every lot synced - this is the daily-history
-mechanism that replaces Drive's dated whole-file copies.
+apps/core/management/commands/sync_stock.py — syncs HRS RAW MATERIAL
+STOCK.xlsx ('Stock' sheet) from Drive into HRSStockLot, keyed by
+source_row_ref (the sheet row number), and captures today's
+HRSStockSnapshot for every lot synced - this is the daily-history mechanism
+that replaces Drive's dated whole-file copies.
 
 source_row_ref is a sheet ROW NUMBER, not a stable business key - see
 sync_mir.py's module docstring for the full row-shift reasoning. A lot whose
@@ -10,6 +11,14 @@ source_row_ref no longer appears in the freshly parsed file is deactivated
 (is_active=False), not deleted, so its HRSStockSnapshot history survives
 (stock_lot's FK is on_delete=CASCADE) and it stops appearing as a matching
 candidate - see HRSStockLot.is_active's help_text.
+
+Change detection reuses sync_utils.unchanged() (same quantized-Decimal
+reasoning as sync_mir.py). The snapshot itself is a separate update_or_create
+keyed on (stock_lot, snapshot_date) - re-running --no-snapshot the same day
+after a fix won't create a second, conflicting snapshot row.
+
+Drive folder: settings.HRS_MIR_STOCK_FOLDER_ID - the same per-plant MIR/
+Stock folder sync_mir.py reads from, not the shared PO-master folder.
 
 Usage:
     python manage.py sync_stock
@@ -36,6 +45,15 @@ _SNAPSHOT_FIELDS = ["opening_stock", "received", "issued", "todays_stock", "basi
 
 
 class Command(BaseCommand):
+    """Sync the HRS Stock xlsx from Drive (or --file) into HRSStockLot,
+    capture today's HRSStockSnapshot for every synced lot (unless
+    --no-snapshot), and record the outcome as a SyncRun row.
+
+    Idempotent: lots unchanged per sync_utils.unchanged() are skipped for
+    the lot upsert; the snapshot write is a separate update_or_create keyed
+    on (stock_lot, date) so it's always safe to re-run, snapshot or not.
+    """
+
     help = "Sync the HRS Stock xlsx from Drive into HRSStockLot and capture today's snapshot."
 
     def add_arguments(self, parser):
@@ -43,6 +61,9 @@ class Command(BaseCommand):
         parser.add_argument("--no-snapshot", action="store_true", help="Skip daily snapshot capture.")
 
     def handle(self, *args, **options):
+        """Parse the xlsx, upsert every lot (and today's snapshot) in one
+        transaction, deactivate lots no longer seen, then always record a
+        SyncRun regardless of outcome."""
         started_at = timezone.now()
         t0 = time.monotonic()
         rows_seen = 0
@@ -100,6 +121,7 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_bytes(self, local_path: str | None) -> bytes:
+        """--file, or fetched from Drive by settings.HRS_STOCK_FILE_TITLE."""
         if local_path:
             with open(local_path, "rb") as f:
                 return f.read()
@@ -108,6 +130,8 @@ class Command(BaseCommand):
         return download_file_bytes(file_id)
 
     def _upsert_lot(self, parsed) -> tuple[HRSStockLot, bool]:
+        """Upsert one parsed stock lot by source_row_ref; returns (lot,
+        False) with a no-op when the lot is unchanged and still active."""
         existing = HRSStockLot.objects.filter(source_row_ref=parsed.source_row_ref).first()
         if existing and existing.is_active and unchanged(HRSStockLot, existing, parsed, _FIELDS):
             return existing, False
@@ -119,6 +143,8 @@ class Command(BaseCommand):
         return lot, True
 
     def _upsert_snapshot(self, lot: HRSStockLot, snapshot_date) -> None:
+        """Record/overwrite today's snapshot for this lot - keyed on
+        (stock_lot, snapshot_date), so a same-day re-run just overwrites."""
         HRSStockSnapshot.objects.update_or_create(
             stock_lot=lot,
             snapshot_date=snapshot_date,

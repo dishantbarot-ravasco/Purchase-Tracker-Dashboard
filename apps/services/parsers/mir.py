@@ -1,6 +1,7 @@
 """
-Parses HRS MIR FILE 2026-2027.xlsx, 'RAW MATERIAL' sheet, into a flat list
-of row dicts ready to upsert into HRSMIREntry.
+apps/services/parsers/mir.py — parses HRS's MIR FILE 2026-2027.xlsx,
+'RAW MATERIAL' sheet, into a flat list of row dicts ready to upsert into
+HRSMIREntry.
 
 Exact header (row 6; data from row 7), verified against the live file this
 session:
@@ -19,7 +20,7 @@ HRSMIREntry.po_number_raw warns about - confirmed unreliable by audit
 (~30% blank, ~25% non-standard format) and never used as a sole join key.
 
 Columns A ("Month") and B ("MIR. No.") have the identical Excel
-autoconvert quirk documented in apps/core/parsers/achhad_mir.py's module
+autoconvert quirk documented in apps/services/parsers/achhad_mir.py's module
 docstring - confirmed against the live file this session (previously
 undocumented and unhandled here, unlike achhad_mir.py): typed text like
 "April-26" / "01/04" gets silently turned into a real datetime cell by
@@ -42,6 +43,8 @@ import openpyxl
 
 from apps.services.parsers.common import to_date, to_decimal, to_str
 
+# ── Column/row layout constants ─────────────────────────────────────────────
+
 SHEET_NAME = "RAW MATERIAL"
 HEADER_ROW = 6
 DATA_START_ROW = 7
@@ -58,6 +61,8 @@ EXPECTED_HEADERS = {
     "AI": "Dept. Uses", "AJ": "Category material", "AK": "Remarks",
 }
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedMirEntry:
@@ -105,6 +110,8 @@ def _strip(v):
     return (v or "").strip() if isinstance(v, str) else v
 
 
+# ── Excel-autoconvert workarounds (Month/MIR No. columns) ───────────────────
+
 def _month_label(cell) -> str:
     """See module docstring - reconstructs the originally-typed 'Mon-YY'
     text from a cell Excel silently turned into a date, using the cell's
@@ -128,7 +135,13 @@ def _mir_no_label(cell) -> str:
     return f"{v.month:02d}/{v.day:02d}"
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_mir_xlsx(file_bytes: bytes) -> list[ParsedMirEntry]:
+    """Reads the 'RAW MATERIAL' sheet and returns one ParsedMirEntry per data
+    row. Raises HeaderMismatch immediately if the sheet name or any header
+    cell doesn't match what this parser was built against, rather than
+    silently reading misaligned columns."""
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
@@ -151,7 +164,7 @@ def parse_mir_xlsx(file_bytes: bytes) -> list[ParsedMirEntry]:
                 mir_no=_mir_no_label(ws[f"B{r}"]),
                 mir_date=to_date(ws[f"C{r}"].value),
                 sap_grn_number=to_str(ws[f"D{r}"].value),
-                po_number_raw=to_str(ws[f"J{r}"].value),
+                po_number_raw=to_str(ws[f"J{r}"].value),  # unreliable join key, see module docstring - never used alone
                 party_name=party_name,
                 state=to_str(ws[f"F{r}"].value),
                 invoice_no=to_str(ws[f"G{r}"].value),

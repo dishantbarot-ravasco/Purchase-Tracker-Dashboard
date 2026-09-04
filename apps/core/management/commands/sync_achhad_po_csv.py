@@ -1,8 +1,15 @@
 """
-Syncs Master_RTP_Achhad_Domestic_Purchase_Data.csv from Drive into
-RTPAchhadPurchaseOrder / RTPAchhadPOLineItem. Identical CSV shape to HRS's
-PO master (apps/core/parsers/po_csv.py is reused as-is) - only the target
-models and the Drive file title differ.
+apps/core/management/commands/sync_achhad_po_csv.py — syncs
+Master_RTP_Achhad_Domestic_Purchase_Data.csv from Drive into
+RTPAchhadPurchaseOrder / RTPAchhadPOLineItem.
+
+Same shape as sync_po_csv.py for HRS - see that file for the general design
+(whole-order hash for change detection, delete-and-rebuild line items,
+--file for offline testing). What's different for this plant: the Drive
+file title comes from settings.ACHHAD_PO_CSV_TITLE (still read from the same
+shared settings.PURCHASE_TRACKER_DB_FOLDER_ID as HRS/Vapi - all three
+plants' PO master CSVs live in one common folder), and the target models are
+RTPAchhadPurchaseOrder/RTPAchhadPOLineItem plus SyncRun.Plant.RTP_ACHHAD.
 
 Usage:
     python manage.py sync_achhad_po_csv
@@ -20,6 +27,8 @@ from apps.core.models import RTPAchhadPOLineItem, RTPAchhadPurchaseOrder, SyncRu
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
+# See sync_po_csv.py's _po_hash for why this is a whole-order hash rather
+# than a per-field comparison.
 def _po_hash(order) -> str:
     parts = [
         order.po_drive_folder_name, order.po_number, str(order.po_created_date),
@@ -37,6 +46,10 @@ def _po_hash(order) -> str:
 
 
 class Command(BaseCommand):
+    """Sync the RTP-Achhad PO master CSV from Drive (or --file) into
+    RTPAchhadPurchaseOrder/RTPAchhadPOLineItem. See sync_po_csv.py's Command
+    docstring for the idempotency design (unchanged from HRS)."""
+
     help = "Sync the RTP-Achhad Purchase Order master CSV from Drive into RTPAchhadPurchaseOrder/RTPAchhadPOLineItem."
 
     def add_arguments(self, parser):
@@ -88,6 +101,7 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_csv_text(self, local_path: str | None) -> str:
+        """--file, or fetched from Drive by settings.ACHHAD_PO_CSV_TITLE."""
         if local_path:
             with open(local_path, encoding="utf-8") as f:
                 return f.read()
@@ -96,6 +110,7 @@ class Command(BaseCommand):
         return download_file_bytes(file_id).decode("utf-8")
 
     def _upsert_order(self, parsed) -> bool:
+        """See sync_po_csv.py's _upsert_order - same hash-and-skip logic."""
         row_hash = _po_hash(parsed)
         existing = RTPAchhadPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
         if existing and existing.synced_from_row_hash == row_hash:

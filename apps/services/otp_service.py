@@ -36,20 +36,38 @@ _OTP_TTL_MINUTES = 10
 _MAX_ATTEMPTS = 5
 
 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
 def _hash_code(code: str) -> str:
+    """Return a bcrypt hash of the OTP code (rounds=10 - fast enough for a
+    short-lived 6-digit code; this isn't a long-term password hash, just
+    enough that a stolen DB row can't be reversed to the plaintext code)."""
     return bcrypt.hashpw(code.encode(), bcrypt.gensalt(rounds=10)).decode()
 
 
 def _check_code(code: str, hashed: str) -> bool:
+    """bcrypt comparison, wrapped so a malformed/corrupt stored hash fails
+    closed (returns False) instead of raising and turning a bad DB row into
+    an unhandled 500 on every verify attempt for that email."""
     try:
         return bcrypt.checkpw(code.encode(), hashed.encode())
     except Exception:
         return False
 
 
+# ── Public API ────────────────────────────────────────────────────────────────
+
 def generate_otp(email: str) -> str:
-    """Generate a 6-digit OTP, persist its hash to the DB, and return the
-    plaintext code (which gets emailed to the user)."""
+    """Generate a cryptographically secure 6-digit OTP, persist its hash to
+    the DB, and return the plaintext code (which gets emailed to the user by
+    the caller - this function never sends anything itself).
+
+    Any previous OTP for this email is silently replaced (the unique `email`
+    column plus update_or_create below enforce one active code per address
+    at a time - a user who requests a fresh code mid-flow shouldn't have two
+    valid codes floating around). Expired rows for *other* addresses are
+    pruned opportunistically here too, rather than needing a separate
+    scheduled cleanup job for a table this small and short-lived."""
     from apps.core.models import OTPCode
 
     now = timezone.now()
@@ -81,8 +99,11 @@ def verify_otp(email: str, code: str) -> bool:
     """True if `code` matches the stored hash for `email` and the OTP has
     not expired, been used, or exceeded the attempt limit.
 
-    On success -> row is deleted (single-use).
-    On failure -> attempt counter incremented; row deleted at MAX_ATTEMPTS.
+    On success -> row is deleted (single-use, so a captured/replayed code
+    can never be verified twice even within its TTL).
+    On failure -> attempt counter incremented; row deleted at MAX_ATTEMPTS
+    (bounds brute-force guessing of the 6-digit code to a fixed number of
+    tries per generated code, independent of the 10-minute TTL).
     """
     from apps.core.models import OTPCode
 
@@ -101,6 +122,9 @@ def verify_otp(email: str, code: str) -> bool:
         log.debug("verify_otp: OTP expired for %s", key)
         return False
 
+    # Increment the attempt counter before checking the code, not after -
+    # so a request that crashes/times out mid-bcrypt-check still counts
+    # against the limit rather than being retried for free.
     entry.attempts += 1
 
     if entry.attempts > _MAX_ATTEMPTS:
@@ -108,11 +132,14 @@ def verify_otp(email: str, code: str) -> bool:
         log.warning("verify_otp: too many attempts for %s - OTP invalidated", key)
         return False
 
+    # bcrypt comparison (constant-time by construction - no separate
+    # constant-time wrapper needed here).
     if not _check_code(code.strip(), entry.code_hash):
         entry.save(update_fields=["attempts"])
         log.debug("verify_otp: wrong code for %s (attempt %d)", key, entry.attempts)
         return False
 
+    # Success - consume the OTP immediately so it can't be replayed.
     entry.delete()
     log.info("verify_otp: success for %s", key)
     return True

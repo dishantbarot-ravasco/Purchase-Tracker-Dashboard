@@ -25,6 +25,9 @@ class TestPasswordReset:
         self._original_hash = self.user.password_hash
 
     def test_admin_can_reset_password(self):
+        """An admin PATCHing a `password` field onto another user's record
+        must produce a fresh bcrypt hash that actually verifies against the
+        new plaintext password."""
         response = self.client.patch(
             f"/api/auth/users/{self.user.user_id}", {"password": "NewStr0ngPassw0rd!"}, format="json"
         )
@@ -34,6 +37,9 @@ class TestPasswordReset:
         assert bcrypt.checkpw(b"NewStr0ngPassw0rd!", self.user.password_hash.encode("utf-8"))
 
     def test_blank_password_leaves_existing_password_untouched(self):
+        """An explicit empty-string password must be treated as "no change
+        requested", not as "set the password to blank" - other fields in the
+        same PATCH (fullName here) still apply normally."""
         response = self.client.patch(
             f"/api/auth/users/{self.user.user_id}", {"password": "", "fullName": "Renamed"}, format="json"
         )
@@ -43,6 +49,8 @@ class TestPasswordReset:
         assert self.user.full_name == "Renamed"
 
     def test_omitted_password_leaves_existing_password_untouched(self):
+        """A PATCH that doesn't mention `password` at all (editing only
+        designation here) must never touch the existing password hash."""
         response = self.client.patch(
             f"/api/auth/users/{self.user.user_id}", {"designation": "Buyer"}, format="json"
         )
@@ -51,6 +59,8 @@ class TestPasswordReset:
         assert self.user.password_hash == self._original_hash
 
     def test_short_password_rejected(self):
+        """A password under the 8-char minimum must be rejected with a 400,
+        and the existing password hash must be left in place."""
         response = self.client.patch(
             f"/api/auth/users/{self.user.user_id}", {"password": "short"}, format="json"
         )
@@ -59,6 +69,8 @@ class TestPasswordReset:
         assert self.user.password_hash == self._original_hash
 
     def test_non_admin_cannot_reset_password(self):
+        """Only an admin may reset another user's password - an editor
+        attempting the same PATCH must be forbidden and the hash left alone."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="editor@ravasco.com", role="editor"))
         response = client.patch(
@@ -69,6 +81,9 @@ class TestPasswordReset:
         assert self.user.password_hash == self._original_hash
 
     def test_reset_password_actually_authenticates(self):
+        """End-to-end check that a reset password isn't just a differently-
+        hashed value sitting in the DB - Django's own authenticate() (backed
+        by PTUserBackend) must accept the new plaintext password."""
         self.client.patch(f"/api/auth/users/{self.user.user_id}", {"password": "FreshPassw0rd!"}, format="json")
         from django.contrib.auth import authenticate
         authed = authenticate(request=None, email="target@ravasco.com", password="FreshPassw0rd!")

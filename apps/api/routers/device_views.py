@@ -38,6 +38,8 @@ from apps.services.otp_service import verify_otp
 log = logging.getLogger(__name__)
 
 
+# ── Throttling ─────────────────────────────────────────────────────────────────
+
 class DeviceVerifyThrottle(AnonRateThrottle):
     """10 OTP attempts per minute per pending login session, not per IP -
     prevents brute-force of 6-digit codes without pooling every caller on
@@ -60,6 +62,8 @@ class DeviceVerifyThrottle(AnonRateThrottle):
             return super().get_cache_key(request, view)
         return self.cache_format % {"scope": self.scope, "ident": f"pending:{pending_user_id}"}
 
+
+# ── Device verify / logout endpoints ────────────────────────────────────────────
 
 @api_view(["POST"])
 @permission_classes([AllowAny])

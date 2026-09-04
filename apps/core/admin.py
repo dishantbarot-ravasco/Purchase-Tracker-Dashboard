@@ -1,3 +1,17 @@
+"""
+apps/core/admin.py — Django Admin registrations for the core models.
+
+This is a developer/debugging surface, not the app's real user-facing admin
+UX - end users manage PTUsers and inline PO/material corrections through the
+in-app Admin Panel (frontend/admin.html + apps/api/routers/*) instead (see
+CLAUDE.md's "In-app user management"/"Inline 'Edit Everywhere'" sections for
+why: the project owner explicitly rejected linking out to Django Admin for
+that). Most models below get the plain `admin.site.register(Model)` default
+(no custom ModelAdmin) since nobody is expected to browse them here day to
+day; only the models where the default read/write behavior would actively
+work against the model's own design (append-only audit logs, the password
+hash field) get a custom ModelAdmin below.
+"""
 from django.contrib import admin
 
 from apps.core.audit_log import PTAuditLog
@@ -36,6 +50,9 @@ from apps.core.models import (
     TrustedDevice,
 )
 
+# ── Per-plant domestic PO / MIR / Stock / match tables ─────────────────────
+# Plain default ModelAdmin for all of these - read-only browsing/spot-checks
+# only, no bespoke list_display/search needed for a debugging surface.
 admin.site.register(HRSPurchaseOrder)
 admin.site.register(HRSPOLineItem)
 admin.site.register(HRSMIREntry)
@@ -59,6 +76,7 @@ admin.site.register(RTPVapiPOMirMatch)
 admin.site.register(RTPVapiMirStockMatch)
 admin.site.register(SyncRun)
 
+# ── Per-plant import PO tables ──────────────────────────────────────────────
 admin.site.register(HRSImportPurchaseOrder)
 admin.site.register(HRSImportPOLineItem)
 admin.site.register(RTPAchhadImportPurchaseOrder)
@@ -67,6 +85,10 @@ admin.site.register(RTPVapiImportPurchaseOrder)
 admin.site.register(RTPVapiImportPOLineItem)
 
 
+# ── Append-only correction trail: real ModelAdmin, all writes disabled ────
+# (DomesticPOCorrection/MaterialCorrection/FlagDismissal have no ModelAdmin
+# at all yet - only ImportPOCorrection got one; browse those via the ORM/
+# shell if needed, same as any other model with the plain default above.)
 @admin.register(ImportPOCorrection)
 class ImportPOCorrectionAdmin(admin.ModelAdmin):
     """Read-only in the admin UI - like PTAuditLogAdmin, this is an
@@ -88,6 +110,7 @@ class ImportPOCorrectionAdmin(admin.ModelAdmin):
         return False
 
 
+# ── Auth: PTUser / TrustedDevice / OTPCode ─────────────────────────────────
 @admin.register(PTUser)
 class PTUserAdmin(admin.ModelAdmin):
     list_display = ("user_id", "email", "full_name", "role", "designation", "is_active", "created_at", "last_login_at")
@@ -109,6 +132,10 @@ class PTUserAdmin(admin.ModelAdmin):
 
 @admin.register(TrustedDevice)
 class TrustedDeviceAdmin(admin.ModelAdmin):
+    # device_token is the bearer credential for this device's trust - never
+    # editable through the form, same reasoning as PTUserAdmin excluding
+    # password_hash outright (this one is merely readonly, not excluded,
+    # since seeing which token is active per row is still useful for support).
     list_display = ("user", "device_name", "ip_address", "created_at", "last_used_at")
     search_fields = ("user__email", "device_name", "ip_address")
     readonly_fields = ("device_token", "created_at", "last_used_at")
@@ -117,6 +144,7 @@ class TrustedDeviceAdmin(admin.ModelAdmin):
 admin.site.register(OTPCode)
 
 
+# ── Audit log: read-only, same reasoning as ImportPOCorrectionAdmin above ──
 @admin.register(PTAuditLog)
 class PTAuditLogAdmin(admin.ModelAdmin):
     """Read-only in the admin UI - the audit log is append-only by design

@@ -1,6 +1,7 @@
 """
-Parses HRS RAW MATERIAL STOCK.xlsx, 'Stock' sheet, into a flat list of row
-dicts ready to upsert into HRSStockLot.
+apps/services/parsers/stock.py — parses HRS's RAW MATERIAL STOCK.xlsx,
+'Stock' sheet, into a flat list of row dicts ready to upsert into
+HRSStockLot.
 
 Exact header (row 6; data from row 7), verified against the live file this
 session:
@@ -14,7 +15,19 @@ source sheet (REC/ISSUE pull from that file's own Receipt/Issue tabs by
 fixed row position - see project history). Reading with data_only=True
 gives the cached computed value, which is what we want here; we are not
 trying to re-derive or validate those formulas, just capture the number
-the sheet is currently showing.
+the sheet is currently showing. Note that `received` (REC) reads 0 for
+nearly every real lot in the live file - it appears to clear once a lot's
+receipt is allocated rather than holding a running total, which is why
+PO<->MIR<->Stock matching never compares stock quantity, only rate (see
+apps/services/matching.py).
+
+Column O ("Party Name") is one row per (material, vendor) lot, not one row
+per material - the same material can appear many times from different
+vendors at different rates. Its value carries a city suffix in the live
+file (e.g. "Rubamin Private Limited - Vadodara") that MIR/PO data never
+does, which is why vendor-name matching against this column uses
+containment rather than exact equality (see common.py's normalize_vendor()
+and matching.py's _vendor_matches()).
 """
 
 import io
@@ -23,6 +36,8 @@ from dataclasses import dataclass
 import openpyxl
 
 from apps.services.parsers.common import to_date, to_decimal, to_str
+
+# ── Column/row layout constants ─────────────────────────────────────────────
 
 SHEET_NAME = "Stock"
 HEADER_ROW = 6
@@ -37,6 +52,8 @@ EXPECTED_HEADERS = {
     "J": "Today\nStock", "K": "Basic Rate", "L": "Value", "M": "Rec. DT.", "N": "No of Days",
 }
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedStockLot:
@@ -67,7 +84,12 @@ def _strip(v):
     return (v or "").strip() if isinstance(v, str) else v
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_stock_xlsx(file_bytes: bytes) -> list[ParsedStockLot]:
+    """Reads the 'Stock' sheet and returns one ParsedStockLot per lot row.
+    Raises HeaderMismatch immediately if the sheet name or any checked
+    header cell doesn't match what this parser was built against."""
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")

@@ -1,13 +1,19 @@
 """
-Syncs RAVASCO ACHHAD RM STOCK FILE.xlsx from Drive into RTPAchhadStockLot,
-keyed by source_row_ref (the sheet row number), and captures today's
-RTPAchhadStockSnapshot for every lot synced.
+apps/core/management/commands/sync_achhad_stock.py — syncs RAVASCO ACHHAD RM
+STOCK FILE.xlsx from Drive into RTPAchhadStockLot, keyed by source_row_ref
+(the sheet row number), and captures today's RTPAchhadStockSnapshot for
+every lot synced.
 
-source_row_ref is a sheet ROW NUMBER, not a stable business key - see
-sync_mir.py's module docstring for the full row-shift reasoning. A lot whose
-source_row_ref no longer appears in the freshly parsed file is deactivated
-(is_active=False), not deleted, so its RTPAchhadStockSnapshot history
-survives (stock_lot's FK is on_delete=CASCADE) - see RTPAchhadStockLot.is_active.
+Same shape as sync_stock.py for HRS - see that file for the general design
+(row-shift reasoning, sync_utils.unchanged(), the separate per-day snapshot
+upsert, --file/--no-snapshot). What's genuinely different for this plant:
+the Drive folder is settings.ACHHAD_MIR_STOCK_FOLDER_ID; the file's single
+tab is renamed every month (e.g. 'Aug 26-27'), so the parser reads
+wb.sheetnames[0] instead of matching a literal tab name; and Achhad's Stock
+sheet is one row per material full stop, with no vendor column at all
+(_FIELDS below has no party_name, unlike HRS's HRSStockLot) - a materially
+weaker match guarantee for MIR<->Stock than HRS's/Vapi's (material, vendor)
+gate, documented in apps/services/matching_achhad.py's module docstring.
 
 Usage:
     python manage.py sync_achhad_stock
@@ -34,6 +40,11 @@ _SNAPSHOT_FIELDS = ["opening_stock", "received", "issued", "todays_stock", "rate
 
 
 class Command(BaseCommand):
+    """Sync the RTP-Achhad Stock xlsx from Drive (or --file) into
+    RTPAchhadStockLot, capturing today's snapshot per lot unless
+    --no-snapshot. See sync_stock.py's Command docstring for the
+    idempotency design (unchanged from HRS)."""
+
     help = "Sync the RTP-Achhad Stock xlsx from Drive into RTPAchhadStockLot and capture today's snapshot."
 
     def add_arguments(self, parser):
@@ -98,6 +109,8 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_bytes(self, local_path: str | None) -> bytes:
+        """--file, or fetched from Drive by settings.ACHHAD_STOCK_FILE_TITLE
+        (from settings.ACHHAD_MIR_STOCK_FOLDER_ID)."""
         if local_path:
             with open(local_path, "rb") as f:
                 return f.read()
@@ -106,6 +119,7 @@ class Command(BaseCommand):
         return download_file_bytes(file_id)
 
     def _upsert_lot(self, parsed) -> tuple[RTPAchhadStockLot, bool]:
+        """See sync_stock.py's _upsert_lot - same unchanged()-and-skip logic."""
         existing = RTPAchhadStockLot.objects.filter(source_row_ref=parsed.source_row_ref).first()
         if existing and existing.is_active and unchanged(RTPAchhadStockLot, existing, parsed, _FIELDS):
             return existing, False
@@ -117,6 +131,7 @@ class Command(BaseCommand):
         return lot, True
 
     def _upsert_snapshot(self, lot: RTPAchhadStockLot, snapshot_date) -> None:
+        """Record/overwrite today's snapshot for this lot."""
         RTPAchhadStockSnapshot.objects.update_or_create(
             stock_lot=lot,
             snapshot_date=snapshot_date,

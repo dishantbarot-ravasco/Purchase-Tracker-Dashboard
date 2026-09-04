@@ -15,6 +15,8 @@ from django.utils import timezone
 from apps.core.models import FlagDismissal
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
 def dismiss_po_flag(plant, po_number, flag_key, user, dismissed: bool, reason: str):
     """Upserts the FlagDismissal row for (plant, po_number, flag_key).
     Returns the row. Clearing a dismissal (dismissed=False) also clears

@@ -1,16 +1,30 @@
-// frontend/js/auth.js — must load first on index.html (the protected
-// dashboard page), before main.js. No imports - plain script tag, same
-// convention as the TDS Automation App's frontend/js/auth.js.
-//
-// Auth is cookie-based (httpOnly pt_access, set by the server on login/
-// device-verify) - there is no token for this script to hold or attach
-// itself; every fetch() already carries the cookie automatically since the
-// frontend and API are same-origin. The one thing the client genuinely
-// needs to check is "is my cookie still valid", which is what
-// GET /api/auth/me is for (apps/api/auth_views.py#whoami).
+/**
+ * frontend/js/auth.js — gates every protected page behind a valid session
+ * and renders the shared top-nav chrome (user badge, nav tabs).
+ *
+ * Must load first on every protected page (index.html, home.html,
+ * search-po.html, admin.html), before that page's own script. No imports -
+ * plain script tag, same convention as the TDS Automation App's own
+ * frontend/js/auth.js.
+ *
+ * Auth is cookie-based (httpOnly pt_access, set by the server on login/
+ * device-verify) - there is no token for this script to hold or attach
+ * itself; every fetch() already carries the cookie automatically since the
+ * frontend and API are same-origin. The one thing the client genuinely
+ * needs to check is "is my cookie still valid", which is what
+ * GET /api/auth/me is for (apps/api/auth_views.py#whoami).
+ */
 
+// ── Session state ───────────────────────────────────────────────────────
 let CURRENT_USER = null;
 
+/**
+ * Confirms the browser's httpOnly session cookie is still valid by asking
+ * the server (GET /api/auth/me), populating CURRENT_USER on success.
+ * Any failure - real 401, or a genuine network error - bounces to
+ * /login.html, since there's nothing a protected page can usefully render
+ * without a resolved user.
+ */
 async function requireAuth() {
   try {
     const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
@@ -29,6 +43,12 @@ async function requireAuth() {
   }
 }
 
+/**
+ * Best-effort server-side logout (clears the httpOnly cookies), then always
+ * redirects to /login.html regardless of whether the call succeeded - the
+ * cookies are server-controlled anyway, so there's nothing else useful to
+ * do client-side if the request fails.
+ */
 async function logout() {
   try {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
@@ -42,6 +62,7 @@ async function logout() {
   window.location.href = '/login.html';
 }
 
+// ── User badge (avatar + dropdown) ──────────────────────────────────────
 // Circle-avatar user menu (initials + role-colored background, stacked
 // name/role, click-to-open dropdown with Logout) - same visual pattern as
 // the TDS Automation App's own top nav. Avatar color is keyed off role
@@ -50,6 +71,9 @@ async function logout() {
 // than an arbitrary per-user color.
 const ROLE_AVATAR_COLOR = { admin: 'var(--gold-light)', editor: 'var(--blue)', viewer: 'var(--navy-mid)' };
 
+/** Derives 1-2 uppercase initials from the user's full name (first+last
+ * initial), or their first two characters if no name is set, falling back
+ * to the email's first two characters as a last resort. */
 function userInitials(user) {
   const name = (user.fullName || '').trim();
   if (name) {
@@ -60,6 +84,12 @@ function userInitials(user) {
   return (user.email || '?').slice(0, 2).toUpperCase();
 }
 
+/**
+ * Renders the avatar/name/role/dropdown user menu into `container` and
+ * wires its click-to-open behavior (a document-level click listener closes
+ * it again, since it has no backdrop of its own). No-op until CURRENT_USER
+ * has been populated by requireAuth().
+ */
 function renderUserBadge(container) {
   if (!container || !CURRENT_USER) return;
   const label = CURRENT_USER.fullName || CURRENT_USER.email;
@@ -87,6 +117,7 @@ function renderUserBadge(container) {
   document.getElementById('logoutBtn').onclick = logout;
 }
 
+// ── Shared nav tabs ─────────────────────────────────────────────────────
 // Shared top-nav tabs (Home / Dashboard / Search PO / Admin) - rendered the
 // same way on every protected page (home.html, index.html, search-po.html,
 // admin.html) so the header looks and behaves identically everywhere, same
@@ -99,6 +130,11 @@ function renderUserBadge(container) {
 // tab is hidden entirely for non-admin roles rather than shown-then-denied,
 // admin.html's own access-denied state is defense in depth for anyone who
 // navigates there directly, not the primary gate.
+/**
+ * Renders the 4 shared nav tabs into `container`, marking `activePage`
+ * (e.g. 'home', 'dashboard', 'search', 'admin') as the active one. The
+ * Admin tab is only added to the list at all for role === 'admin'.
+ */
 function renderNavTabs(container, activePage) {
   if (!container || !CURRENT_USER) return;
   const tabs = [
@@ -112,8 +148,10 @@ function renderNavTabs(container, activePage) {
   ).join('');
 }
 
+// ── Local helpers ───────────────────────────────────────────────────────
 // Local copy - auth.js loads before main.js and must have no imports/
 // dependency on it (same rule the TDS app documents for its own auth.js).
+/** Escapes a value for safe interpolation into innerHTML. */
 function escapeHtmlAuth(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }

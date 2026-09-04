@@ -1,11 +1,18 @@
 """
-Syncs RTP ACHHAD MIR FILE 2026-27.xlsx ('R.M. ' sheet) from Drive into
+apps/core/management/commands/sync_achhad_mir.py — syncs RTP ACHHAD MIR FILE
+2026-27.xlsx ('R.M. ' sheet - note the trailing space) from Drive into
 RTPAchhadMIREntry, keyed by source_row_ref (the sheet row number).
 
-source_row_ref is a sheet ROW NUMBER, not a stable business key - see
-sync_mir.py's module docstring for the full row-shift reasoning. A row whose
-source_row_ref no longer appears in the freshly parsed file is deactivated
-(is_active=False) rather than deleted - see RTPAchhadMIREntry.is_active.
+Same shape as sync_mir.py for HRS - see that file for the general design
+(row-shift reasoning for source_row_ref, sync_utils.unchanged()'s quantized-
+Decimal comparison, --file for offline testing). What's genuinely different
+for this plant: the Drive folder is settings.ACHHAD_MIR_STOCK_FOLDER_ID (its
+own separate MIR/Stock folder, not HRS's), the sheet tab is 'R.M. ' rather
+than 'RAW MATERIAL', and Achhad's sheet has exactly one PO-number/PO-date
+pair with no SAP GRN column at all - unlike HRS, which has 4 PO-related
+columns (Purchase Order No./Date + SAP P.O. No./Date) plus a GRN column (see
+CLAUDE.md's "Per-plant models, not a shared schema" for the full column
+comparison). _FIELDS below reflects that narrower column set.
 
 Usage:
     python manage.py sync_achhad_mir
@@ -33,6 +40,10 @@ _FIELDS = [
 
 
 class Command(BaseCommand):
+    """Sync the RTP-Achhad MIR xlsx from Drive (or --file) into
+    RTPAchhadMIREntry. See sync_mir.py's Command docstring for the
+    idempotency design (unchanged from HRS)."""
+
     help = "Sync the RTP-Achhad MIR xlsx from Drive into RTPAchhadMIREntry."
 
     def add_arguments(self, parser):
@@ -92,6 +103,9 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_bytes(self, local_path: str | None) -> bytes:
+        """--file, or fetched from Drive by settings.ACHHAD_MIR_FILE_TITLE
+        (from settings.ACHHAD_MIR_STOCK_FOLDER_ID, Achhad's own MIR/Stock
+        folder)."""
         if local_path:
             with open(local_path, "rb") as f:
                 return f.read()
@@ -100,6 +114,7 @@ class Command(BaseCommand):
         return download_file_bytes(file_id)
 
     def _upsert_entry(self, parsed) -> bool:
+        """See sync_mir.py's _upsert_entry - same unchanged()-and-skip logic."""
         existing = RTPAchhadMIREntry.objects.filter(source_row_ref=parsed.source_row_ref).first()
         if existing and existing.is_active and unchanged(RTPAchhadMIREntry, existing, parsed, _FIELDS):
             return False

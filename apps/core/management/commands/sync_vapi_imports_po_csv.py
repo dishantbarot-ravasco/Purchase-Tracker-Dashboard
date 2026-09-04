@@ -1,7 +1,16 @@
 """
-Syncs Master_RTP_VAPI_Imports_Purchase_Data.csv from Drive into
-RTPVapiImportPurchaseOrder / RTPVapiImportPOLineItem. This is the plant with
-real data today (29 POs / 37 line items confirmed live 2026-09-04).
+apps/core/management/commands/sync_vapi_imports_po_csv.py — syncs
+Master_RTP_VAPI_Imports_Purchase_Data.csv from Drive into
+RTPVapiImportPurchaseOrder / RTPVapiImportPOLineItem.
+
+Same shape as sync_hrs_imports_po_csv.py - see that file for the general
+design (shared parser and shared apps.services.import_sync.sync_orders()
+upsert helper across all three plants). What's different for this plant:
+the Drive file title is settings.VAPI_IMPORTS_PO_CSV_TITLE (still the
+shared settings.PURCHASE_TRACKER_DB_FOLDER_ID), and the target models are
+RTPVapiImportPurchaseOrder/RTPVapiImportPOLineItem plus
+SyncRun.Plant.RTP_VAPI. Unlike HRS/Achhad, this is the plant with real data
+today (29 POs / 37 line items confirmed live 2026-09-04).
 
 Usage:
     python manage.py sync_vapi_imports_po_csv
@@ -20,6 +29,11 @@ from apps.services.parsers.import_po_csv import HeaderMismatch, parse_import_po_
 
 
 class Command(BaseCommand):
+    """Sync the RTP-Vapi Import PO master CSV from Drive (or --file) into
+    RTPVapiImportPurchaseOrder/RTPVapiImportPOLineItem. See
+    sync_hrs_imports_po_csv.py's Command docstring for the idempotency
+    design (unchanged from HRS)."""
+
     help = "Sync the RTP-Vapi Import Purchase Order master CSV from Drive into RTPVapiImportPurchaseOrder/RTPVapiImportPOLineItem."
 
     def add_arguments(self, parser):
@@ -66,6 +80,7 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_csv_text(self, local_path: str | None) -> str:
+        """--file, or fetched from Drive by settings.VAPI_IMPORTS_PO_CSV_TITLE."""
         if local_path:
             with open(local_path, encoding="utf-8") as f:
                 return f.read()

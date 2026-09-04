@@ -21,6 +21,7 @@ LIST_URL = "/api/imports/purchase-orders"
 
 
 def _make_po(po_number="1000009001", **overrides):
+    """Build a minimal real RTPVapiImportPurchaseOrder."""
     defaults = dict(
         po_drive_folder_name=po_number,
         po_number=po_number,
@@ -33,6 +34,7 @@ def _make_po(po_number="1000009001", **overrides):
 
 
 def _make_item(po, item_id="1", **overrides):
+    """Build a minimal real RTPVapiImportPOLineItem attached to `po`."""
     defaults = dict(
         purchase_order=po,
         item_id=item_id,
@@ -56,10 +58,14 @@ class TestPurchaseOrdersList:
         self.client.force_authenticate(user=self.user)
 
     def test_requires_auth(self):
+        """An anonymous request to the imports list must 401."""
         anon = APIClient()
         assert anon.get(LIST_URL).status_code == 401
 
     def test_combines_plants_and_computes_derived_fields(self):
+        """The list response reports the owning plant and derives
+        shipmentStage/countryOfOrigin from the line item's own fields rather
+        than requiring the frontend to recompute them."""
         po = _make_po()
         _make_item(po, boe_number="BOE1", bill_of_lading_number="BL1", country_of_origin="China")
 
@@ -73,6 +79,9 @@ class TestPurchaseOrdersList:
         assert row["countryOfOrigin"] == "China"
 
     def test_qty_discrepancy_flagged_only_when_boe_qty_present_and_differs(self):
+        """A PO with no BOE quantity yet (not cleared through customs) must
+        never show a qty discrepancy - only once qty_as_per_boe is present
+        and actually differs from qty_as_per_po does the flag turn on."""
         po = _make_po()
         _make_item(po, qty_as_per_po="100", qty_as_per_boe=None)  # not yet cleared - no discrepancy
         row = self.client.get(LIST_URL).json()["purchaseOrders"][0]
@@ -93,6 +102,7 @@ class TestCorrectField:
         self.url = f"/api/imports/purchase-orders/vapi/{self.po.po_number}/fields"
 
     def test_viewer_cannot_correct(self):
+        """A viewer must be forbidden from correcting an Import PO field."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="v@ravasco.com", role="viewer"))
         response = client.patch(self.url, {"field": "vendor_name", "value": "New Name"}, format="json")
@@ -101,6 +111,9 @@ class TestCorrectField:
         assert self.po.vendor_name == "Test Vendor Ltd"
 
     def test_editor_can_correct_po_field_and_audit_row_is_written(self):
+        """An editor's correction is applied and recorded in an
+        ImportPOCorrection audit row - the Import-side equivalent of
+        DomesticPOCorrection."""
         client = APIClient()
         editor = make_user(email="e@ravasco.com", role="editor")
         client.force_authenticate(user=editor)
@@ -118,6 +131,8 @@ class TestCorrectField:
         assert correction.corrected_by_email == "e@ravasco.com"
 
     def test_editor_can_correct_item_field(self):
+        """An editor can correct a line-item field (qty_as_per_boe), not just
+        PO-level fields."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e2@ravasco.com", role="editor"))
 
@@ -129,12 +144,16 @@ class TestCorrectField:
         assert self.item.qty_as_per_boe == 95
 
     def test_rejects_non_editable_field(self):
+        """po_number is an identity field, not in the editable allow-list -
+        must 400."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e3@ravasco.com", role="editor"))
         response = client.patch(self.url, {"field": "po_number", "value": "hacked"}, format="json")
         assert response.status_code == 400
 
     def test_editor_scoped_to_a_different_plant_is_forbidden(self):
+        """An editor scoped to ["hrs"] must not be able to correct a Vapi
+        Import PO's field."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e4@ravasco.com", role="editor", plants=["hrs"]))
         response = client.patch(self.url, {"field": "vendor_name", "value": "Nope"}, format="json")
@@ -143,6 +162,8 @@ class TestCorrectField:
         assert self.po.vendor_name == "Test Vendor Ltd"
 
     def test_invalid_vendor_email_saves_with_a_warning(self):
+        """A malformed vendor_email is still saved, but the response flags a
+        warning - same "save but warn" pattern as the HRS GSTIN check."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e5@ravasco.com", role="editor"))
         response = client.patch(self.url, {"field": "vendor_email", "value": "not-an-email"}, format="json")
@@ -150,6 +171,9 @@ class TestCorrectField:
         assert "warning" in response.json()
 
     def test_correction_history_appears_in_detail_payload(self):
+        """A correction made via PATCH must show up in the PO detail
+        endpoint's own `corrections` list - confirms the audit trail is
+        actually surfaced to the frontend, not just written to the DB."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e6@ravasco.com", role="editor"))
         client.patch(self.url, {"field": "vendor_name", "value": "Corrected Vendor"}, format="json")

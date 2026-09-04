@@ -1,6 +1,13 @@
-"""Shared parsing helpers used by all three parsers (po_csv, mir, stock).
+"""
+apps/services/parsers/common.py — shared cell/CSV-value coercion and name-
+normalization helpers used by every plant's parser module (mir/stock/po_csv
+and their achhad_/vapi_ variants).
+
 Kept dependency-free (no Django imports) so these can be unit-tested with
-nothing but plain Python.
+nothing but plain Python, and so a parser module never has to special-case a
+plant's own quirky raw value - each plant's parser calls the same handful of
+`to_*()` helpers and gets back a clean, uniform Python type regardless of
+which spreadsheet layout it came from.
 """
 
 import datetime
@@ -9,6 +16,8 @@ from decimal import Decimal, InvalidOperation
 
 _DATE_FORMATS = ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%m/%d/%y", "%d.%m.%Y", "%d.%m.%y"]
 
+
+# ── Cell/CSV-value coercion helpers ─────────────────────────────────────────
 
 def to_decimal(value) -> Decimal | None:
     """Coerces a raw cell/CSV value to Decimal, or None. 'NULL' (the literal
@@ -61,6 +70,8 @@ def to_date(value) -> datetime.date | None:
     return None
 
 
+# ── Vendor/material name normalization (used by PO<->MIR<->Stock matching) ──
+
 def normalize_vendor(name: str) -> str:
     """Strips common legal suffixes and punctuation so "Kedar Metals Pvt
     Ltd" and "KEDAR METALS PVT. LTD." compare equal. Used as the hard gate
@@ -85,6 +96,8 @@ def normalize_material(name: str) -> str:
 
 
 def tokenize(text: str) -> list[str]:
+    """Splits a normalized material description into words, for the token-
+    overlap component of the PO<->MIR weighted match score."""
     return [t for t in normalize_material(text).split(" ") if t]
 
 

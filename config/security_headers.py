@@ -58,6 +58,7 @@ class SecurityHeadersMiddleware:
         return response
 
     def _add_headers(self, response):
+        """Mutate `response` in place, adding every header this middleware owns."""
         h = response
 
         h["X-Content-Type-Options"] = "nosniff"
@@ -74,6 +75,8 @@ class SecurityHeadersMiddleware:
         h["Content-Security-Policy"] = self._build_csp()
 
     def _build_csp(self):
+        """Assemble the Content-Security-Policy header value (see module
+        docstring's "CSP notes" for why each directive/origin is here)."""
         directives = [
             "default-src 'self'",
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",

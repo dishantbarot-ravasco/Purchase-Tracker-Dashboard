@@ -24,6 +24,8 @@ class DriveNotConfigured(Exception):
     should surface this as a clear SyncRun failure, not a stack trace."""
 
 
+# ── Credentials & per-thread service client ─────────────────────────────────
+
 def _load_credentials():
     if settings.GOOGLE_SERVICE_ACCOUNT_JSON:
         info = json.loads(settings.GOOGLE_SERVICE_ACCOUNT_JSON)
@@ -55,6 +57,10 @@ _thread_local = threading.local()
 
 
 def get_drive_service():
+    """Returns this thread's cached Drive API client, building one on first
+    use. Deliberately per-thread (not a module-level singleton) - see the
+    threading.local comment above for the SSL corruption this avoids when
+    multiple plants' syncs run concurrently on separate threads."""
     service = getattr(_thread_local, "service", None)
     if service is None:
         creds = _load_credentials()
@@ -62,6 +68,8 @@ def get_drive_service():
         _thread_local.service = service
     return service
 
+
+# ── Public API ───────────────────────────────────────────────────────────────
 
 def find_file_id_by_title(title: str, parent_id: str | None = None, mime_type: str | None = None) -> str:
     """Returns the Drive file id for the first file matching `title`
@@ -87,6 +95,10 @@ def find_file_id_by_title(title: str, parent_id: str | None = None, mime_type: s
 
 
 def _escape(value: str) -> str:
+    """Escape backslash/single-quote for safe interpolation into a Drive
+    API query string literal (the query is built by string formatting, not
+    a parameterized API, so an unescaped title containing a quote would
+    break out of the `name = '...'` clause)."""
     return value.replace("\\", "\\\\").replace("'", "\\'")
 
 

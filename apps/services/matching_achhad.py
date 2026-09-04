@@ -41,7 +41,16 @@ _WEIGHT_RATE = Decimal("0.20")
 _WEIGHT_VALUE = Decimal("0.30")
 
 
+# ── Internal scoring/gating helpers ─────────────────────────────────────────
+# Byte-for-byte identical to matching.py's copies (a deliberate, documented
+# duplication, not an oversight - see matching.py's own module docstring and
+# test_matching.py's docstring for why only HRS's copy is directly
+# unit-tested). Keep any fix mirrored across all three plants' files.
+
 def _closeness(a, b) -> Decimal | None:
+    """1.0 for an exact match, decaying linearly to 0 at a >=50% relative
+    difference; None when either side is missing. See matching.py's own
+    copy for the full rationale."""
     if a is None or b is None:
         return None
     a, b = Decimal(a), Decimal(b)
@@ -58,6 +67,10 @@ _MAX_DIFF_PCT = Decimal("9999.99")  # *_diff_pct columns are DecimalField(max_di
 
 
 def _diff_pct(a, b) -> Decimal | None:
+    """Percent difference of b relative to a, or None if either side is
+    missing (never flaggable). Found and fixed here first, then ported to
+    matching.py/matching_vapi.py identically - see CLAUDE.md's "*_diff_pct
+    columns need a clamp" section."""
     if a is None or b is None:
         return None
     a, b = Decimal(a), Decimal(b)
@@ -71,6 +84,9 @@ def _diff_pct(a, b) -> Decimal | None:
 
 
 def _token_overlap(a: str, b: str) -> Decimal:
+    """Jaccard similarity of the two strings' normalized token sets - the
+    30%-weighted material-description factor. 0 (not a ZeroDivisionError)
+    when either side has no tokens at all."""
     ta, tb = set(tokenize(a)), set(tokenize(b))
     if not ta or not tb:
         return Decimal("0")
@@ -78,6 +94,10 @@ def _token_overlap(a: str, b: str) -> Decimal:
 
 
 def _vendor_matches(a: str, b: str) -> bool:
+    """Containment, not equality, so a MIR/PO vendor name still matches a
+    Stock-sheet vendor name carrying an extra suffix (city, branch, etc.) -
+    see matching.py's own copy for the concrete example that forced this.
+    Hard gate either way: vendor never contributes a partial/scored value."""
     if not a or not b or len(a) < 4 or len(b) < 4:
         return False
     shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
@@ -85,12 +105,20 @@ def _vendor_matches(a: str, b: str) -> bool:
 
 
 def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
+    """Exact match or substring - MIR's own PO-number field is free text,
+    not a guaranteed clean value (some rows type two PO numbers together)."""
     if not po_number or not po_number_raw:
         return False
     return po_number.strip().upper() in po_number_raw.strip().upper()
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
 def match_po_mir_line_item(po_line_item) -> "RTPAchhadPOMirMatch | None":
+    """Finds the best MIR match for one RTPAchhadPOLineItem and upserts
+    RTPAchhadPOMirMatch, or deletes any existing match if nothing clears
+    MATCH_THRESHOLD. Same tier-1/tier-2 approach as matching.py's HRS
+    version - see that module's docstring for the full rationale."""
     po = po_line_item.purchase_order
     po_vendor = normalize_vendor(po.vendor_name)
 
@@ -267,6 +295,10 @@ def match_mir_entry_stock(mir_entry) -> list["RTPAchhadMirStockMatch"]:
 
 @transaction.atomic
 def run_full_match() -> dict:
+    """Re-runs both matching passes over every Achhad record - domestic and
+    import PO line items (both against the shared RTPAchhadMIREntry table),
+    plus MIR<->Stock. Idempotent upserts, safe to call repeatedly; wired to
+    match_achhad and the sync-trigger pipeline."""
     from apps.core.models import RTPAchhadImportPOLineItem, RTPAchhadPOLineItem
 
     po_matched = 0

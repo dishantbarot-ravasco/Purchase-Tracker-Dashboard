@@ -1,13 +1,21 @@
 """
-Syncs RAVASCO VAPI RM STOCK FILE.xlsx from Drive into RTPVapiStockLot,
-keyed by source_row_ref (the sheet row number), and captures today's
-RTPVapiStockSnapshot for every lot synced.
+apps/core/management/commands/sync_vapi_stock.py — syncs RAVASCO VAPI RM
+STOCK FILE.xlsx from Drive into RTPVapiStockLot, keyed by source_row_ref
+(the sheet row number), and captures today's RTPVapiStockSnapshot for every
+lot synced.
 
-source_row_ref is a sheet ROW NUMBER, not a stable business key - see
-sync_mir.py's module docstring for the full row-shift reasoning. A lot whose
-source_row_ref no longer appears in the freshly parsed file is deactivated
-(is_active=False), not deleted, so its RTPVapiStockSnapshot history survives
-(stock_lot's FK is on_delete=CASCADE) - see RTPVapiStockLot.is_active.
+Same shape as sync_stock.py for HRS - see that file for the general design
+(row-shift reasoning, sync_utils.unchanged(), the separate per-day snapshot
+upsert, --file/--no-snapshot). What's genuinely different for this plant:
+the Drive folder is settings.VAPI_MIR_STOCK_FOLDER_ID; the sheet keeps a
+fixed 'Stock' tab name (like HRS) but its header sits one row lower, behind
+a 5-row document-control title block HRS's sheet doesn't have (see
+apps/services/parsers/vapi_stock.py's docstring for the exact layout); the
+file is a real shared multi-plant ledger (plant_tag captures real PLANT
+column values like RTP-1/HRS/RTP-2, not filtered out); and unlike Achhad's
+Stock sheet, Vapi's does have a genuine vendor column (supplier_name,
+confirmed not just an echo of PLANT), so RTPVapiMirStockMatch uses the
+stronger (material, vendor) gate, same as HRS.
 
 Usage:
     python manage.py sync_vapi_stock
@@ -34,6 +42,11 @@ _SNAPSHOT_FIELDS = ["opening_stock", "received", "issued", "todays_stock", "basi
 
 
 class Command(BaseCommand):
+    """Sync the RTP-Vapi Stock xlsx from Drive (or --file) into
+    RTPVapiStockLot, capturing today's snapshot per lot unless
+    --no-snapshot. See sync_stock.py's Command docstring for the
+    idempotency design (unchanged from HRS)."""
+
     help = "Sync the RTP-Vapi Stock xlsx from Drive into RTPVapiStockLot and capture today's snapshot."
 
     def add_arguments(self, parser):
@@ -98,6 +111,8 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_bytes(self, local_path: str | None) -> bytes:
+        """--file, or fetched from Drive by settings.VAPI_STOCK_FILE_TITLE
+        (from settings.VAPI_MIR_STOCK_FOLDER_ID)."""
         if local_path:
             with open(local_path, "rb") as f:
                 return f.read()
@@ -106,6 +121,7 @@ class Command(BaseCommand):
         return download_file_bytes(file_id)
 
     def _upsert_lot(self, parsed) -> tuple[RTPVapiStockLot, bool]:
+        """See sync_stock.py's _upsert_lot - same unchanged()-and-skip logic."""
         existing = RTPVapiStockLot.objects.filter(source_row_ref=parsed.source_row_ref).first()
         if existing and existing.is_active and unchanged(RTPVapiStockLot, existing, parsed, _FIELDS):
             return existing, False
@@ -117,6 +133,7 @@ class Command(BaseCommand):
         return lot, True
 
     def _upsert_snapshot(self, lot: RTPVapiStockLot, snapshot_date) -> None:
+        """Record/overwrite today's snapshot for this lot."""
         RTPVapiStockSnapshot.objects.update_or_create(
             stock_lot=lot,
             snapshot_date=snapshot_date,

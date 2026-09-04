@@ -19,6 +19,9 @@ from apps.core.models import HRSMIREntry, HRSMirStockMatch, HRSPOLineItem, HRSPO
 
 
 def _make_po_mir_match():
+    """Build a real PO line item + MIR entry that line up well enough to
+    re-match above MATCH_THRESHOLD, plus the HRSPOMirMatch row itself -
+    shared fixture for TestDismissPoMirMatch."""
     po = HRSPurchaseOrder.objects.create(
         po_drive_folder_name="1000009999", po_number="1000009999", vendor_name="Test Vendor Ltd",
     )
@@ -40,6 +43,8 @@ def _make_po_mir_match():
 
 
 def _make_mir_stock_match():
+    """Build a MIR entry + Stock lot and the HRSMirStockMatch linking them -
+    shared fixture for TestDismissMirStockMatch."""
     mir = HRSMIREntry.objects.create(mir_no="MIR-2", party_name="Vendor B", material_description="Gadget", source_row_ref="11")
     lot = HRSStockLot.objects.create(description="Gadget", party_name="Vendor B", source_row_ref="20")
     return HRSMirStockMatch.objects.create(mir_entry=mir, stock_lot=lot, rate_diff_pct="8.00", is_flagged=True)
@@ -52,6 +57,8 @@ class TestDismissPoMirMatch:
         self.url = f"/api/matches/po-mir/{self.match.id}/dismiss"
 
     def test_viewer_cannot_dismiss(self):
+        """A viewer must be forbidden from dismissing a match, and the
+        match's dismissed_by_override flag must remain untouched."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="v@ravasco.com", role="viewer"))
         response = client.patch(self.url, {"dismissed": True}, format="json")
@@ -60,6 +67,13 @@ class TestDismissPoMirMatch:
         assert self.match.dismissed_by_override is False
 
     def test_editor_can_dismiss_with_reason_and_it_survives_rematch(self):
+        """Regression test for the gap closed 2026-09-04: before this
+        endpoint existed, apps/api/permissions.py's IsEditor docstring
+        promised dismiss/override capability that had no backing endpoint.
+        Also proves the fix holds against re-matching - run_full_match()'s
+        update_or_create `defaults` dict deliberately never touches
+        dismissed_* fields, so a dismissal made here must still be set after
+        a full re-match recomputes this exact match."""
         client = APIClient()
         editor = make_user(email="e@ravasco.com", role="editor")
         client.force_authenticate(user=editor)
@@ -82,6 +96,9 @@ class TestDismissPoMirMatch:
         assert self.match.dismissed_by_override is True
 
     def test_reinstate_clears_dismissal_fields(self):
+        """Un-dismissing a previously dismissed match must clear all of
+        dismissed_reason/dismissed_by/dismissed_at, not just the boolean flag
+        - a reinstated match shouldn't keep showing stale provenance."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e2@ravasco.com", role="editor"))
         client.patch(self.url, {"dismissed": True, "reason": "test"}, format="json")
@@ -95,12 +112,15 @@ class TestDismissPoMirMatch:
         assert self.match.dismissed_at is None
 
     def test_unknown_match_id_returns_404(self):
+        """A nonexistent match id must 404 rather than error or silently no-op."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e3@ravasco.com", role="editor"))
         response = client.patch("/api/matches/po-mir/999999/dismiss", {"dismissed": True}, format="json")
         assert response.status_code == 404
 
     def test_editor_scoped_to_a_different_plant_is_forbidden(self):
+        """Per-plant scoping applies here too - an editor restricted to
+        Achhad must not be able to dismiss an HRS match."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e4@ravasco.com", role="editor", plants=["achhad"]))
         response = client.patch(self.url, {"dismissed": True}, format="json")
@@ -114,6 +134,8 @@ class TestDismissMirStockMatch:
         self.url = f"/api/matches/mir-stock/{self.match.id}/dismiss"
 
     def test_editor_can_dismiss(self):
+        """Same dismiss capability as PO<->MIR matches above, exercised
+        against a MIR<->Stock match via the separate mir-stock endpoint."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e5@ravasco.com", role="editor"))
         response = client.patch(self.url, {"dismissed": True, "reason": "Known rounding diff"}, format="json")

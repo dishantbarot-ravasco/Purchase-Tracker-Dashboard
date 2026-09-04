@@ -10,6 +10,18 @@ isn't a column, it's computed from its line items' match state) in a way a
 straight ModelSerializer wouldn't save much over just building the dict
 directly. sync_trigger is IsAdmin-only - it kicks off a real Google Drive
 sync (external API calls, real time/cost), not just a read.
+
+This file is the "reference" plant of a deliberate three-way sibling set -
+achhad_views.py and vapi_views.py are byte-for-byte-shaped ports of this
+file (same function names, same response field shapes), not accidental
+duplication. See CLAUDE.md's "Per-plant models, not a shared schema" for
+why HRS/Achhad/Vapi get their own model classes, matching modules, and
+routers instead of one shared, plant-discriminated table: their real
+MIR/Stock spreadsheets have genuinely different column layouts, so a
+shared schema would mean permanently-null columns for whichever plant
+doesn't have that field. Because this file carries the full docstrings,
+achhad_views.py/vapi_views.py mostly just point back here and call out
+what's genuinely different for their own plant.
 """
 
 import datetime
@@ -74,6 +86,8 @@ _MATERIAL_DECIMAL_FIELDS = {"basic_rate"}
 # compared against MIR - same reasoning as _REMATCH_TRIGGER_FIELDS above.
 _MATERIAL_REMATCH_TRIGGER_FIELDS = {"description", "party_name", "basic_rate"}
 
+
+# ── Serialization helpers ─────────────────────────────────────────────────────
 
 def _line_item_dict(item):
     match = getattr(item, "mir_match", None)
@@ -164,8 +178,12 @@ def _po_dict(po):
     }
 
 
+# ── Purchase order list / inline field corrections ───────────────────────────
+
 @api_view(["GET"])
 def purchase_orders(request):
+    """GET /api/hrs/purchase-orders - every HRS domestic PO with its line
+    items and PO<->MIR match state. IsAuthenticated by default (any role)."""
     qs = HRSPurchaseOrder.objects.prefetch_related(
         "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
     )
@@ -322,12 +340,15 @@ def _lot_dict(lot):
     }
 
 
+# ── Material corrections (Raw Material Analysis modal) ────────────────────────
+
 @api_view(["GET"])
 def materials(request):
-    """One row per Stock lot, not one row per material - HRS's real Stock
-    sheet is lot-shaped (multiple vendors/rates for the same material), and
-    collapsing that into a fake per-material aggregate would hide exactly
-    the vendor-lot detail the matching engine relies on."""
+    """GET /api/hrs/materials - one row per Stock lot, not one row per
+    material - HRS's real Stock sheet is lot-shaped (multiple vendors/rates
+    for the same material), and collapsing that into a fake per-material
+    aggregate would hide exactly the vendor-lot detail the matching engine
+    relies on. IsAuthenticated by default (any role)."""
     qs = HRSStockLot.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
     return Response({"materials": [_lot_dict(lot) for lot in qs]})
 
@@ -392,8 +413,13 @@ def _coerce_material_value(field_name, raw_value):
     return str(raw_value)
 
 
+# ── Stock trend / sync status / sync trigger ──────────────────────────────────
+
 @api_view(["GET"])
 def stock_trend(request, lot_id: int):
+    """GET /api/hrs/materials/<lot_id>/trend - daily HRSStockSnapshot history
+    for one lot (qty/rate/value over time), used by the Raw Material
+    Analysis modal's trend chart. IsAuthenticated by default (any role)."""
     snapshots = HRSStockSnapshot.objects.filter(stock_lot_id=lot_id).order_by("snapshot_date")
     return Response({
         "snapshots": [
@@ -446,6 +472,8 @@ def sync_trigger(request):
         return Response({"status": "already_running"}, status=409)
     return Response({"status": "started"}, status=202)
 
+
+# ── Match dismiss / override, flag dismissal ──────────────────────────────────
 
 @api_view(["PATCH"])
 @permission_classes([IsEditor])

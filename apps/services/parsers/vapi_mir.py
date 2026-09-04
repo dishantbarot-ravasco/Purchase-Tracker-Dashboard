@@ -1,7 +1,8 @@
 """
-Parses RTP VAPI MIR FILE 2026-27.xlsx, ' MIR FILE 26-27 RM' sheet (note the
-leading space - confirmed against the live file), into a flat list of row
-dicts ready to upsert into RTPVapiMIREntry.
+apps/services/parsers/vapi_mir.py — parses RTP VAPI MIR FILE 2026-27.xlsx,
+' MIR FILE 26-27 RM' sheet (note the leading space - confirmed against the
+live file), into a flat list of row dicts ready to upsert into
+RTPVapiMIREntry.
 
 Exact header (row 1; data from row 2), verified against the live file this
 session:
@@ -36,6 +37,8 @@ import openpyxl
 
 from apps.services.parsers.common import to_code_str, to_date, to_decimal, to_str
 
+# ── Column/row layout constants ─────────────────────────────────────────────
+
 SHEET_NAME = " MIR FILE 26-27 RM"
 HEADER_ROW = 1
 DATA_START_ROW = 2
@@ -50,6 +53,8 @@ EXPECTED_HEADERS = {
     "AB": "DATE SEND TO OFFICE", "AC": "DATE SEND TO H O",
 }
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedVapiMirEntry:
@@ -93,6 +98,8 @@ def _strip(v):
     return (v or "").strip() if isinstance(v, str) else v
 
 
+# ── Excel-autoconvert workaround (Month column) ─────────────────────────────
+
 def _month_label(cell) -> str:
     """MONTH is always a real datetime in the live file (confirmed this
     session - no Achhad-style typed-text cells to reconstruct), so this just
@@ -104,7 +111,12 @@ def _month_label(cell) -> str:
     return v.strftime("%b-%y")
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_vapi_mir_xlsx(file_bytes: bytes) -> list[ParsedVapiMirEntry]:
+    """Reads the ' MIR FILE 26-27 RM' sheet and returns one ParsedVapiMirEntry
+    per data row. Raises HeaderMismatch immediately if the sheet name or any
+    header cell doesn't match what this parser was built against."""
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
@@ -126,7 +138,7 @@ def parse_vapi_mir_xlsx(file_bytes: bytes) -> list[ParsedVapiMirEntry]:
                 month=_month_label(ws[f"A{r}"]),
                 mir_no=to_str(ws[f"B{r}"].value),
                 mir_date=to_date(ws[f"C{r}"].value),
-                po_number_raw=to_code_str(ws[f"D{r}"].value),
+                po_number_raw=to_code_str(ws[f"D{r}"].value),  # ~100% blank on real data - matching runs on the weighted score alone for Vapi
                 sap_grn_number=to_code_str(ws[f"E{r}"].value),
                 park_invoice_no=to_code_str(ws[f"F{r}"].value),
                 post=to_str(ws[f"G{r}"].value),
@@ -142,6 +154,8 @@ def parse_vapi_mir_xlsx(file_bytes: bytes) -> list[ParsedVapiMirEntry]:
                 rate=to_decimal(ws[f"Q{r}"].value),
                 taxable_value=to_decimal(ws[f"R{r}"].value),
                 others_with_gst=to_decimal(ws[f"S{r}"].value),
+                # a whole percentage (18.00 = 18%), not a fraction like HRS/Achhad's 0.18 -
+                # RTPVapiMIREntry.gst_rate_pct is decimal_places=2 for this reason, don't "fix" it to match
                 gst_rate_pct=to_decimal(ws[f"T{r}"].value),
                 igst_amt=to_decimal(ws[f"U{r}"].value),
                 cgst_amt=to_decimal(ws[f"V{r}"].value),

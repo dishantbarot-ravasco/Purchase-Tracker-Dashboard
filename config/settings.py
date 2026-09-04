@@ -26,6 +26,12 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key-change-i
 DEBUG = os.environ.get("DJANGO_DEBUG", "true").lower() == "true"
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
 
+# No django-cors-headers app/middleware anywhere in this file, deliberately:
+# the frontend is same-origin (WhiteNoise serves frontend/ from the same
+# process the API runs on), so there is no cross-origin request for CORS to
+# solve here — unlike the TDS Automation App, which historically ran its
+# frontend from a separate dev origin. Don't add it back without a real
+# cross-origin use case first.
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -121,6 +127,15 @@ else:
 # CLAUDE.md for why (this app's read endpoints are the business data the
 # auth layer exists to protect, not public reference data), but the
 # infrastructure is wired up and test-safe for when one does.
+#
+# IMPORTANT if a future endpoint ever adds @cache_page: it must never sit
+# above a permission check, and the view it wraps must be AllowAny.
+# cache_page short-circuits on a cache hit and returns the stored response
+# without re-invoking the view at all, so a permission check inside the view
+# body only actually runs on the request that misses the cache — every
+# request after that gets served the same cached response regardless of who
+# they are or whether they're authenticated. This bit the TDS Automation App
+# in production on a real endpoint; don't repeat it here.
 # ---------------------------------------------------------------------------
 if "pytest" in sys.modules:
     # DatabaseCache's table isn't created by a migration (createcachetable
@@ -200,7 +215,18 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Every request/error already goes to the console (runserver, or whatever
 # process manager runs `manage.py runserver` in prod); this adds a rotating
 # file on top so history survives past the console's scrollback, capped at
-# 10MB x 5 backups so it can't grow unbounded on disk.
+# 10MB x 5 backups (see the "file" handler below) so it can't grow unbounded
+# on disk.
+#
+# This is a separate concern from the pt_audit_log DB table
+# (apps/core/audit_log.py): logs/app.log is an operational trace of
+# everything the server did (every INFO+ line from Django itself plus every
+# apps.* logger - parsers, matching, auth, sync commands - e.g. a plain
+# "[WARNING] ... Unauthorized: /api/purchase-orders" line), rotated and
+# eventually discarded. pt_audit_log is a permanent, security-relevant
+# record of who logged in/out and from where (ACTION_LOGIN/ACTION_LOGOUT
+# only). Neither substitutes for the other - don't assume one covers what
+# the other is for.
 # ---------------------------------------------------------------------------
 LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)

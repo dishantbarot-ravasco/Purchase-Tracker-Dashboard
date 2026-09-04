@@ -1,6 +1,7 @@
 """
-Parses RAVASCO VAPI RM STOCK FILE.xlsx, 'Stock' sheet, into a flat list of
-row dicts ready to upsert into RTPVapiStockLot.
+apps/services/parsers/vapi_stock.py — parses RAVASCO VAPI RM STOCK
+FILE.xlsx, 'Stock' sheet, into a flat list of row dicts ready to upsert
+into RTPVapiStockLot.
 
 Exact header (row 6; data from row 7), verified against the live file this
 session:
@@ -36,6 +37,8 @@ import openpyxl
 
 from apps.services.parsers.common import to_code_str, to_date, to_decimal, to_str
 
+# ── Column/row layout constants ─────────────────────────────────────────────
+
 SHEET_NAME = "Stock"
 HEADER_ROW = 6
 DATA_START_ROW = 7
@@ -47,6 +50,8 @@ EXPECTED_HEADERS = {
     "O": "BILLING ON PLANT", "P": "MATERIAL LOCATION", "Q": "HSN CODE",
 }
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedVapiStockLot:
@@ -78,7 +83,12 @@ def _strip(v):
     return (v or "").strip() if isinstance(v, str) else v
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_vapi_stock_xlsx(file_bytes: bytes) -> list[ParsedVapiStockLot]:
+    """Reads the 'Stock' sheet and returns one ParsedVapiStockLot per lot row.
+    Raises HeaderMismatch immediately if the sheet name or any header cell
+    doesn't match what this parser was built against."""
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
@@ -101,7 +111,7 @@ def parse_vapi_stock_xlsx(file_bytes: bytes) -> list[ParsedVapiStockLot]:
         lots.append(
             ParsedVapiStockLot(
                 sr_no=sr_no,
-                plant_tag=to_str(ws[f"B{r}"].value),
+                plant_tag=to_str(ws[f"B{r}"].value),  # this sheet is a shared multi-plant ledger (RTP-1/HRS/RTP-2 rows all seen live), not Vapi-exclusive
                 description=description,
                 category=to_str(ws[f"D{r}"].value),
                 sub_category=to_str(ws[f"E{r}"].value),

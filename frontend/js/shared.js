@@ -1,17 +1,20 @@
-// frontend/js/shared.js — cross-page constants and helpers.
-//
-// Loaded on every protected page (index.html, home.html, search-po.html,
-// admin.html) right after auth.js and before that page's own script. Holds
-// the one copy of things every page independently needed: the per-plant API
-// prefix map, the authenticated fetch wrapper, and the small formatting
-// helpers (escapeHtml/formatInr/formatDateIN). Previously each of these was
-// defined once inline in js/main.js only, since it was the only script that
-// needed them - now that the landing page, PO search, and admin pages all
-// need the same per-plant fetch/formatting logic, keeping one copy here
-// avoids four slightly-drifting duplicates (see CLAUDE.md's "modular"
-// requirement). No imports/exports - plain globals, same no-build-step
-// convention as every other script in this app.
+/**
+ * frontend/js/shared.js — cross-page constants and helpers.
+ *
+ * Loaded on every protected page (index.html, home.html, search-po.html,
+ * admin.html) right after auth.js and before that page's own script. Holds
+ * the one copy of things every page independently needed: the per-plant API
+ * prefix map, the authenticated fetch wrapper, and the small formatting
+ * helpers (escapeHtml/formatInr/formatDateIN). Previously each of these was
+ * defined once inline in js/main.js only, since it was the only script that
+ * needed them - now that the landing page, PO search, and admin pages all
+ * need the same per-plant fetch/formatting logic, keeping one copy here
+ * avoids four slightly-drifting duplicates (see CLAUDE.md's "modular"
+ * requirement). No imports/exports - plain globals, same no-build-step
+ * convention as every other script in this app.
+ */
 
+// ── Per-plant constants ─────────────────────────────────────────────────
 const PLANTS = {
   hrs: { label: 'HRS, Silvassa', apiPrefix: '/api', hasVendorOnMaterials: true, syncCmdPoCsv: 'sync_po_csv', syncCmdStock: 'sync_stock' },
   achhad: { label: 'RTP-Achhad', apiPrefix: '/api/achhad', hasVendorOnMaterials: false, syncCmdPoCsv: 'sync_achhad_po_csv', syncCmdStock: 'sync_achhad_stock' },
@@ -36,9 +39,14 @@ function materialRateFieldName(plantKey) {
   return plantKey === 'achhad' ? 'rate' : 'basic_rate';
 }
 
+// ── API fetch helpers ───────────────────────────────────────────────────
 // Every page's own fetches go through this - handles the 401-means-cookie-
 // expired case identically everywhere (bounce to /login.html) instead of
 // each page reinventing that check slightly differently.
+/** Authenticated fetch wrapper scoped to one plant's API prefix. Redirects
+ * to /login.html on a 401 (expired/missing session cookie) instead of
+ * returning it to the caller, since every caller would otherwise have to
+ * handle that case identically anyway. */
 async function apiForPlant(plantKey, path, opts) {
   opts = opts || {};
   const res = await fetch(PLANTS[plantKey].apiPrefix + path, opts);
@@ -94,6 +102,8 @@ function vendorContains(a, b) {
   return longer.indexOf(shorter) !== -1;
 }
 
+// ── Formatting helpers ──────────────────────────────────────────────────
+/** Escapes a value for safe interpolation into innerHTML. */
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
@@ -145,6 +155,9 @@ function canEditField(plantKey) {
   return !plants.length || plants.includes(plantKey);
 }
 
+/** Renders a static (non-editable) "Label: value" line, used for a field a
+ * viewer can't edit at all, or as editableLine()'s fallback for a user who
+ * lacks edit rights on that plant. */
 function plainLine(label, value) {
   const display = (value === null || value === undefined || value === '') ? 'Not available' : escapeHtml(String(value));
   return '<div class="line">' + escapeHtml(label) + ': ' + display + '</div>';
@@ -293,6 +306,12 @@ function wireEditableLines(container, fieldsUrl, onSaved) {
   });
 }
 
+/** Swaps one wired .editable-line/.cell-editable element into edit mode:
+ * builds the right input control for its fieldType, shows the save/cancel
+ * icons, and wires Enter/Escape/blur plus the icons themselves to save() or
+ * revert(). save() PATCHes via savePoField() and calls `onSaved` on
+ * success; a failed save alerts the error and reverts back to display mode
+ * rather than leaving the input stuck mid-edit. */
 function startFieldEdit(lineEl, fieldsUrl, onSaved) {
   const valueEl = lineEl.querySelector('.line-val');
   const pencil = lineEl.querySelector('.edit-pencil');

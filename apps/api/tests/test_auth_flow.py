@@ -25,6 +25,8 @@ TOKEN_REFRESH_URL = "/api/auth/token/refresh"
 
 
 def _extract_otp_from_outbox():
+    """Pull the 6-digit OTP out of the most recently sent email's body, so
+    tests can drive device-verify without a real inbox."""
     body = mail.outbox[-1].body
     match = re.search(r"\b(\d{6})\b", body)
     assert match, f"No 6-digit OTP found in email body: {body!r}"
@@ -43,20 +45,28 @@ class TestLogin:
         self.user = make_user(password=self.password)
 
     def test_wrong_password_returns_error(self):
+        """A correct email with the wrong password must be rejected with a plain 400."""
         response = self.client.post(LOGIN_URL, {"email": self.user.email, "password": "wrong-password"}, format="json")
         assert response.status_code == 400
 
     def test_unknown_email_does_not_leak_which_field_was_wrong(self):
+        """An email with no matching account gets the same generic 400 as a
+        wrong password - the response must not reveal whether the account exists."""
         response = self.client.post(LOGIN_URL, {"email": "nobody@ravasco.com", "password": "whatever"}, format="json")
         assert response.status_code == 400
 
     def test_inactive_user_cannot_login(self):
+        """A deactivated PTUser (admin toggled isActive off) must be refused
+        login even with the correct password."""
         self.user.is_active = False
         self.user.save()
         response = self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
         assert response.status_code == 400
 
     def test_new_device_triggers_otp_challenge_not_a_jwt(self):
+        """A first-time login from an unrecognized device must return the
+        device_verify challenge (and email an OTP) instead of granting a JWT
+        outright - the whole point of the device-aware 2FA gate."""
         response = self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
         assert response.status_code == 200
         assert response.data["status"] == "device_verify"
@@ -101,9 +111,15 @@ class TestDeviceVerifyAndTrustedLogin:
         self.user = make_user(password=self.password)
 
     def _login_new_device(self):
+        """Drive the password step only, leaving the OTP challenge unanswered
+        - shared setup for every test in this class that needs a pending
+        device-verify session to exist."""
         return self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
 
     def test_full_new_device_flow_sets_cookies_and_grants_access(self):
+        """End-to-end: password login -> OTP verify -> httpOnly JWT + device-
+        trust cookies are both set -> the cookie alone (no Authorization
+        header) authenticates a protected endpoint."""
         self._login_new_device()
         otp = _extract_otp_from_outbox()
 
@@ -122,16 +138,23 @@ class TestDeviceVerifyAndTrustedLogin:
         assert protected.status_code == 200
 
     def test_wrong_otp_code_is_rejected(self):
+        """An incorrect 6-digit code must be rejected and must not create a
+        TrustedDevice row - a wrong guess should never grant device trust."""
         self._login_new_device()
         response = self.client.post(DEVICE_VERIFY_URL, {"code": "000000"}, format="json")
         assert response.status_code == 400
         assert not TrustedDevice.objects.filter(user_id=self.user.user_id).exists()
 
     def test_device_verify_without_prior_login_session_is_rejected(self):
+        """Hitting device-verify directly, with no pending login session
+        (no prior password step), must 401 rather than accept a guessed code."""
         response = self.client.post(DEVICE_VERIFY_URL, {"code": "123456"}, format="json")
         assert response.status_code == 401
 
     def test_otp_is_single_use(self):
+        """A correct OTP is consumed on first use (verify_otp deletes the row)
+        - replaying the same code from a second, otherwise-independent login
+        attempt must fail."""
         self._login_new_device()
         otp = _extract_otp_from_outbox()
         first = self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")
@@ -146,6 +169,9 @@ class TestDeviceVerifyAndTrustedLogin:
         assert replay.status_code == 400
 
     def test_trusted_device_skips_otp_on_next_login(self):
+        """Once a device has verified once (pt_device cookie set), a second
+        login from the same client must skip straight to a JWT with no new
+        OTP challenge and no new email - the entire point of device trust."""
         self._login_new_device()
         otp = _extract_otp_from_outbox()
         self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")
@@ -172,10 +198,14 @@ class TestLogoutAndProtectedAccess:
         self.user = make_user(password=self.password)
 
     def test_protected_endpoint_401s_with_no_cookie_or_header(self):
+        """A completely anonymous request (no cookie, no Authorization
+        header) must be refused, not silently treated as some default user."""
         response = self.client.get(PO_LIST_URL)
         assert response.status_code == 401
 
     def test_logout_clears_access_cookie_and_revokes_access(self):
+        """After logout, the previously-authenticated client must lose access
+        to a protected endpoint - the access cookie itself is cleared server-side."""
         self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
         otp = _extract_otp_from_outbox()
         self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")

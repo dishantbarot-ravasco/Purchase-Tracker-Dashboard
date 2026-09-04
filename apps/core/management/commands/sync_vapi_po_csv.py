@@ -1,9 +1,15 @@
 """
-Syncs Master_RTP_VAPI_Domestic_Purchase_Data.csv from Drive into
-RTPVapiPurchaseOrder / RTPVapiPOLineItem. Identical CSV shape to HRS's/
-Achhad's PO master (apps/core/parsers/po_csv.py is reused as-is, confirmed
-against the live file this session - header matched EXPECTED_HEADER exactly)
-- only the target models and the Drive file title differ.
+apps/core/management/commands/sync_vapi_po_csv.py — syncs
+Master_RTP_VAPI_Domestic_Purchase_Data.csv from Drive into
+RTPVapiPurchaseOrder / RTPVapiPOLineItem.
+
+Same shape as sync_po_csv.py for HRS - see that file for the general design.
+What's different for this plant: the Drive file title comes from
+settings.VAPI_PO_CSV_TITLE (still the shared settings.PURCHASE_TRACKER_DB_
+FOLDER_ID), and the target models are RTPVapiPurchaseOrder/
+RTPVapiPOLineItem plus SyncRun.Plant.RTP_VAPI. The reused po_csv parser was
+confirmed against Vapi's live file this session - its header matched
+EXPECTED_HEADER exactly, same as HRS/Achhad.
 
 Usage:
     python manage.py sync_vapi_po_csv
@@ -21,6 +27,8 @@ from apps.core.models import RTPVapiPOLineItem, RTPVapiPurchaseOrder, SyncRun
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
+# See sync_po_csv.py's _po_hash for why this is a whole-order hash rather
+# than a per-field comparison.
 def _po_hash(order) -> str:
     parts = [
         order.po_drive_folder_name, order.po_number, str(order.po_created_date),
@@ -38,6 +46,10 @@ def _po_hash(order) -> str:
 
 
 class Command(BaseCommand):
+    """Sync the RTP-Vapi PO master CSV from Drive (or --file) into
+    RTPVapiPurchaseOrder/RTPVapiPOLineItem. See sync_po_csv.py's Command
+    docstring for the idempotency design (unchanged from HRS)."""
+
     help = "Sync the RTP-Vapi Purchase Order master CSV from Drive into RTPVapiPurchaseOrder/RTPVapiPOLineItem."
 
     def add_arguments(self, parser):
@@ -89,6 +101,7 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_csv_text(self, local_path: str | None) -> str:
+        """--file, or fetched from Drive by settings.VAPI_PO_CSV_TITLE."""
         if local_path:
             with open(local_path, encoding="utf-8") as f:
                 return f.read()
@@ -97,6 +110,7 @@ class Command(BaseCommand):
         return download_file_bytes(file_id).decode("utf-8")
 
     def _upsert_order(self, parsed) -> bool:
+        """See sync_po_csv.py's _upsert_order - same hash-and-skip logic."""
         row_hash = _po_hash(parsed)
         existing = RTPVapiPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
         if existing and existing.synced_from_row_hash == row_hash:

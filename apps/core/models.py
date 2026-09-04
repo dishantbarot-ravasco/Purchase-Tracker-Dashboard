@@ -1,5 +1,6 @@
 """
-Core data model for the Purchase Tracker Dashboard.
+apps/core/models.py — Django ORM models for every plant's PO/MIR/Stock data,
+their reconciliation (*Match) tables, and the auth/audit/correction tables.
 
 Deliberately NOT one shared schema with a `plant` discriminator column.
 HRS, RTP-Vapi, and RTP-Achhad's MIR/Stock files have genuinely different
@@ -7,13 +8,26 @@ column layouts (Vapi/Achhad's Stock file covers several sub-plants in one
 file with extra columns - Billing on Plant, Material Location, HSN Code -
 that HRS's file doesn't have at all). Forcing them into one shared table
 would mean a pile of always-null columns for whichever plants don't have
-that field. Each plant gets its own model classes instead.
+that field, and would tempt matching logic that silently assumes a field
+exists uniformly across plants when it doesn't. Each plant gets its own
+model classes instead - see CLAUDE.md's "Per-plant models, not a shared
+schema" section for the full, confirmed-against-real-files reasoning.
 
-Three independent Drive-sourced record types (PurchaseOrder/POLineItem,
-MIREntry, StockLot), each synced by its own management command, plus the
-reconciliation layer that links them (*Match) and a daily snapshot table
-that replaces the "copy the whole xlsx to Drive with today's date in the
-filename" habit with real queryable history.
+Three independent Drive-sourced record types per plant (PurchaseOrder/
+POLineItem, MIREntry, StockLot), each synced by its own management command,
+plus the reconciliation layer that links them (*POMirMatch/*MirStockMatch)
+and a daily snapshot table that replaces the "copy the whole xlsx to Drive
+with today's date in the filename" habit with real queryable history.
+
+Because HRS/Achhad/Vapi's Domestic PO, MIR, Stock, and match models are
+near-identical triplets by design (same real-world shape, genuinely
+different only where a plant's source spreadsheet is genuinely different -
+see each section's own header comment), only the FIRST plant's version of
+each model family (always HRS) carries a full field-by-field docstring/
+comment set below. The other two plants' equivalent classes carry a short
+"same shape as HRS<Model> - see that class" docstring and comment only the
+fields that are genuinely different for that plant - re-deriving the same
+explanation three times would drift out of sync with itself over time.
 
 All three plants (HRS, RTP-Achhad, RTP-Vapi) are now built.
 """
@@ -59,9 +73,9 @@ class SyncRun(models.Model):
         return f"{self.plant}/{self.source} @ {self.started_at:%Y-%m-%d %H:%M} ({self.status})"
 
 
-# ===========================================================================
-# HRS
-# ===========================================================================
+# ── HRS: Purchase Orders, MIR, Stock, and their reconciliation matches ─────
+# The reference plant - every other plant's equivalent model below is
+# documented relative to this section rather than repeating itself.
 
 class HRSPurchaseOrder(models.Model):
     """Synced from Master_HRS_SILVASSA_Domestic_Purchase_Data.csv (the CSV
@@ -115,6 +129,13 @@ class HRSPurchaseOrder(models.Model):
 
 
 class HRSPOLineItem(models.Model):
+    """One line of an HRSPurchaseOrder (one row per material/qty/price on
+    the PO). `item_id` is the PO's own item/line identifier as printed on
+    the source document - not a Django PK and, per the "Domestic line items
+    have no stable natural key" note in CLAUDE.md, not guaranteed unique or
+    even present; a plant's sync command deletes and recreates every line
+    item belonging to a PO on any change rather than diffing item-by-item."""
+
     purchase_order = models.ForeignKey(HRSPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
@@ -293,6 +314,22 @@ class HRSStockSnapshot(models.Model):
 
 
 class HRSPOMirMatch(models.Model):
+    """Reconciliation result linking one HRSPOLineItem to the HRSMIREntry
+    it was matched against (see apps/services/matching.py's module
+    docstring for the full scoring approach). `tier` records HOW the match
+    was found - PO_NUMBER is a free exact/substring shortcut on MIR's own
+    (unreliable) po_number_raw field, WEIGHTED is the vendor-gated scored
+    match used whenever the shortcut isn't available or doesn't fire.
+    OneToOneField on po_line_item (not ForeignKey) because a line item has
+    at most one MIR match; mir_entry is a plain ForeignKey since one MIR row
+    can, in principle, be the best match for more than one line item run
+    (matching.py doesn't enforce MIR-side uniqueness).
+    `dismissed_by_override` and friends let an editor manually mark a
+    flagged match as reviewed-and-fine without changing the underlying
+    data - see CLAUDE.md's "Dismiss/override a flagged match" section;
+    `update_or_create()`'s `defaults` in matching.py never touches these
+    columns, so a dismissal survives every re-match."""
+
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
         WEIGHTED = "weighted", "Vendor-gated weighted match"
@@ -318,6 +355,18 @@ class HRSPOMirMatch(models.Model):
 
 
 class HRSMirStockMatch(models.Model):
+    """Reconciliation result linking one HRSMIREntry to the HRSStockLot it
+    was matched against, gated on (material description, vendor) - see
+    apps/services/matching.py. No `tier`/`match_score` here unlike
+    *POMirMatch - this pairing only ever has one matching strategy (no
+    exact-shortcut tier to distinguish), and no qty comparison either:
+    HRSStockLot.received reads 0 for nearly every real lot (evidently
+    clearing once allocated rather than holding a running total), so only
+    `rate_diff_pct` is meaningful; `qty_diff_pct` is kept for schema
+    symmetry with *POMirMatch but is not populated by the matcher.
+    UniqueConstraint on (mir_entry, stock_lot) makes update_or_create()'s
+    upsert idempotent across repeated match runs."""
+
     mir_entry = models.ForeignKey(HRSMIREntry, on_delete=models.CASCADE, related_name="stock_matches")
     stock_lot = models.ForeignKey(HRSStockLot, on_delete=models.CASCADE, related_name="mir_matches")
 
@@ -340,8 +389,7 @@ class HRSMirStockMatch(models.Model):
         return f"{self.mir_entry} <-> {self.stock_lot}"
 
 
-# ===========================================================================
-# RTP-Achhad
+# ── RTP-Achhad: Purchase Orders, MIR, Stock, and their reconciliation matches
 #
 # Purchase Order CSV (Master_RTP_Achhad_Domestic_Purchase_Data.csv) has the
 # identical column layout to HRS's PO CSV - same parser (apps/core/parsers/
@@ -357,7 +405,6 @@ class HRSMirStockMatch(models.Model):
 #     sheet is one row per material, not one row per (material, vendor)
 #     lot like HRS's - see apps/core/matching_achhad.py for what that means
 #     for MIR<->Stock matching confidence.
-# ===========================================================================
 
 class RTPAchhadPurchaseOrder(models.Model):
     """Synced from Master_RTP_Achhad_Domestic_Purchase_Data.csv - identical
@@ -401,6 +448,8 @@ class RTPAchhadPurchaseOrder(models.Model):
 
 
 class RTPAchhadPOLineItem(models.Model):
+    """Same shape as HRSPOLineItem - see that class's docstring."""
+
     purchase_order = models.ForeignKey(RTPAchhadPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
@@ -553,6 +602,10 @@ class RTPAchhadStockLot(models.Model):
 
 
 class RTPAchhadStockSnapshot(models.Model):
+    """Same shape/purpose as HRSStockSnapshot - see that class's docstring.
+    Carries `rate` (Achhad's Stock sheet field name) instead of HRS's
+    `basic_rate`, matching RTPAchhadStockLot's own field naming."""
+
     snapshot_date = models.DateField()
     stock_lot = models.ForeignKey(RTPAchhadStockLot, on_delete=models.CASCADE, related_name="snapshots")
 
@@ -574,6 +627,8 @@ class RTPAchhadStockSnapshot(models.Model):
 
 
 class RTPAchhadPOMirMatch(models.Model):
+    """Same shape as HRSPOMirMatch - see that class's docstring."""
+
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
         WEIGHTED = "weighted", "Vendor-gated weighted match"
@@ -627,8 +682,7 @@ class RTPAchhadMirStockMatch(models.Model):
         return f"{self.mir_entry} <-> {self.stock_lot}"
 
 
-# ===========================================================================
-# RTP-Vapi
+# ── RTP-Vapi: Purchase Orders, MIR, Stock, and their reconciliation matches
 #
 # Purchase Order CSV (Master_RTP_VAPI_Domestic_Purchase_Data.csv) has the
 # identical column layout to HRS/Achhad's PO CSV - same parser (apps/core/
@@ -695,7 +749,6 @@ class RTPAchhadMirStockMatch(models.Model):
 #     Achhad's matcher has to. RTPVapiMirStockMatch therefore uses HRS's
 #     stronger (material, vendor) gate, not Achhad's material-only gate -
 #     see apps/core/matching_vapi.py.
-# ===========================================================================
 
 class RTPVapiPurchaseOrder(models.Model):
     """Synced from Master_RTP_VAPI_Domestic_Purchase_Data.csv - identical
@@ -739,6 +792,8 @@ class RTPVapiPurchaseOrder(models.Model):
 
 
 class RTPVapiPOLineItem(models.Model):
+    """Same shape as HRSPOLineItem - see that class's docstring."""
+
     purchase_order = models.ForeignKey(RTPVapiPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
@@ -878,6 +933,8 @@ class RTPVapiStockLot(models.Model):
 
 
 class RTPVapiStockSnapshot(models.Model):
+    """Same shape/purpose as HRSStockSnapshot - see that class's docstring."""
+
     snapshot_date = models.DateField()
     stock_lot = models.ForeignKey(RTPVapiStockLot, on_delete=models.CASCADE, related_name="snapshots")
 
@@ -899,6 +956,12 @@ class RTPVapiStockSnapshot(models.Model):
 
 
 class RTPVapiPOMirMatch(models.Model):
+    """Same shape as HRSPOMirMatch - see that class's docstring. In
+    practice this plant's matches are almost always tier WEIGHTED, since
+    Vapi's own po_number_raw was 100% blank across every row checked (see
+    the RTP-Vapi section header comment) - the PO_NUMBER tier is kept for
+    forward compatibility, not because it currently fires."""
+
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
         WEIGHTED = "weighted", "Vendor-gated weighted match"
@@ -950,8 +1013,7 @@ class RTPVapiMirStockMatch(models.Model):
         return f"{self.mir_entry} <-> {self.stock_lot}"
 
 
-# ===========================================================================
-# Import Purchase Orders (HRS / RTP-Achhad / RTP-Vapi)
+# ── Import Purchase Orders (HRS / RTP-Achhad / RTP-Vapi) ───────────────────
 #
 # Synced from each plant's own "Imports Purchase Data" master CSV - a
 # genuinely different document from the domestic PO CSVs above (BOE/customs
@@ -973,9 +1035,18 @@ class RTPVapiMirStockMatch(models.Model):
 # with different clearance data per item - putting these on the PO would
 # silently collapse that real per-item variation to whichever row happened
 # to be seen first.
-# ===========================================================================
 
 class HRSImportPurchaseOrder(models.Model):
+    """PO-level fields for an HRS import purchase, synced from that plant's
+    Imports Purchase Data master CSV. Deliberately its own model, not a
+    subtype/extension of HRSPurchaseOrder - `tax_type`/exchange-rate/BOE-
+    customs fields live on the LINE ITEM instead of here (see this section's
+    header comment for why: a single PO can clear customs in multiple
+    partial BOE shipments with different clearance data per item), so this
+    PO-level model is intentionally a subset of HRSPurchaseOrder's own
+    field set, not a superset - sharing one table would mean always-null
+    columns on whichever side doesn't have a given field."""
+
     po_drive_folder_name = models.CharField(max_length=100)
     po_number = models.CharField(max_length=100, unique=True)
     po_created_date = models.DateField(null=True, blank=True)
@@ -1009,6 +1080,14 @@ class HRSImportPurchaseOrder(models.Model):
 
 
 class HRSImportPOLineItem(models.Model):
+    """One line of an HRSImportPurchaseOrder, carrying both the ordered
+    quantity (`qty_as_per_po`) and what customs actually cleared
+    (`qty_as_per_boe`) - matching against MIR compares the latter, since a
+    partial/split shipment means the two can legitimately differ (see
+    CLAUDE.md's "Import PO <-> MIR reconciliation"). BOE/bill-of-lading/
+    exchange-rate/license fields live here rather than on the PO for the
+    same per-item-can-differ reason - see this section's header comment."""
+
     purchase_order = models.ForeignKey(HRSImportPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
@@ -1130,6 +1209,8 @@ class RTPAchhadImportPurchaseOrder(models.Model):
 
 
 class RTPAchhadImportPOLineItem(models.Model):
+    """Same shape as HRSImportPOLineItem - see that class's docstring."""
+
     purchase_order = models.ForeignKey(RTPAchhadImportPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
@@ -1229,6 +1310,11 @@ class RTPVapiImportPurchaseOrder(models.Model):
 
 
 class RTPVapiImportPOLineItem(models.Model):
+    """Same shape as HRSImportPOLineItem - see that class's docstring. Vapi
+    is the plant with real, non-header-only data in this table (29 POs / 37
+    line items confirmed live 2026-09-04) - HRS's and Achhad's own Import
+    CSVs were still header-only as of that date."""
+
     purchase_order = models.ForeignKey(RTPVapiImportPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
@@ -1291,6 +1377,12 @@ class RTPVapiImportPOMirMatch(models.Model):
     def __str__(self):
         return f"{self.po_line_item} <-> {self.mir_entry} ({self.tier})"
 
+
+# ── Shared: corrections/dismissals audit trail (cross-plant, generic logs) ─
+# Unlike everything above, these tables are NOT split per plant - each one
+# carries its own `plant` CharField instead, same reasoning SyncRun already
+# uses: a correction/dismissal row is a generic log entry, not a plant-
+# shaped data table with per-plant column differences to protect.
 
 class ImportPOCorrection(models.Model):
     """Audit trail for inline field edits made against an Import PO/line item
@@ -1431,25 +1523,26 @@ class FlagDismissal(models.Model):
         return f"{self.plant}/{self.po_number}/{self.flag_key} dismissed={self.dismissed}"
 
 
-# ===========================================================================
-# Auth: device-aware 2FA, mirroring the TDS Automation App's architecture
-# (TDSUser/OTPCode/TrustedDevice in that app's apps/core/models.py). See
-# apps/api/auth_backend.py's module docstring for why AUTH_USER_MODEL stays
-# Django's default and every real auth path resolves PTUser directly instead
-# of get_user_model() - PTUser is not an AbstractBaseUser, it's a plain model
+# ── Auth: PTUser, OTPCode, TrustedDevice (device-aware 2FA) ────────────────
+# Mirrors the TDS Automation App's own architecture (TDSUser/OTPCode/
+# TrustedDevice in that app's apps/core/models.py). See apps/api/
+# auth_backend.py's module docstring for why AUTH_USER_MODEL stays Django's
+# default and every real auth path resolves PTUser directly instead of
+# get_user_model() - PTUser is not an AbstractBaseUser, it's a plain model
 # exactly like TDSUser, for the same reason.
 #
 # Unlike TDSUser/OTPCode/TrustedDevice, these tables have no pre-Django
 # history to work around - plain AutoField PKs, no managed=False baggage.
-# ===========================================================================
 
 class PTUser(models.Model):
     """Application user, completely independent of Django's auth.User.
 
     Roles: 'admin' (full access, incl. user management) | 'editor' (full
-    dashboard access, plus dismissing/overriding a flagged match once that
-    endpoint exists) | 'viewer' (read-only dashboard access - view POs,
-    materials, sync status). password_hash is bcrypt (see
+    dashboard access, plus dismissing/overriding a flagged match and the
+    inline "Edit Everywhere" field corrections - see CLAUDE.md's "Dismiss/
+    override a flagged match" and "Inline 'Edit Everywhere'" sections) |
+    'viewer' (read-only dashboard access - view POs, materials, sync
+    status). password_hash is bcrypt (see
     apps/api/auth_backend.py's _verify_password) - never returned by any API
     response and excluded from the Django Admin form (PTUserAdmin).
 

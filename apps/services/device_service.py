@@ -48,6 +48,8 @@ REFRESH_COOKIE_NAME = "pt_refresh"
 REFRESH_COOKIE_PATH = "/api/auth/"
 
 
+# ── Request/device info helpers ─────────────────────────────────────────────
+
 def get_client_ip(request) -> str:
     """Extract the client IP, honouring X-Forwarded-For for the app's
     reverse proxy (Render).
@@ -78,6 +80,8 @@ def _get_device_name(request) -> str:
     return "".join(ch if ch.isprintable() else " " for ch in raw).strip() or "Unknown device"
 
 
+# ── Email dispatch helper ────────────────────────────────────────────────────
+
 def _dispatch_email(send_fn) -> None:
     """Run send_fn() on a background thread in production, inline under the
     test runner (mirrors config/settings.py's "pytest" in sys.modules checks
@@ -91,6 +95,8 @@ def _dispatch_email(send_fn) -> None:
     else:
         threading.Thread(target=send_fn, daemon=False).start()
 
+
+# ── JWT cookie helpers ───────────────────────────────────────────────────────
 
 def set_access_cookie(response, access_token: str) -> None:
     """Set the httpOnly pt_access cookie carrying the JWT access token.
@@ -123,6 +129,8 @@ def set_refresh_cookie(response, refresh_token: str) -> None:
         path=REFRESH_COOKIE_PATH,
     )
 
+
+# ── Trusted-device management ────────────────────────────────────────────────
 
 def is_trusted_device(request, user_id: int) -> bool:
     """True if the incoming request carries a valid pt_device cookie that
@@ -168,6 +176,8 @@ def register_device(response, user_id: int, request) -> str:
     log.info("register_device: new device registered user_id=%s ip=%s", user_id, ip)
     return device_token
 
+
+# ── OTP challenge & notification emails ─────────────────────────────────────
 
 def send_device_otp(user) -> str:
     """Generate a 6-digit OTP, store its hash in pt_otp_codes, and email the

@@ -48,6 +48,14 @@ def frontend_cache_headers(headers, path, url):
 
 
 class NoCacheMiddleware:
+    """Dev-only: stamp every response with headers that forbid caching at all.
+
+    Only inserted into MIDDLEWARE when DEBUG=True (see settings.py) — in
+    production, static assets should cache; in dev, a stale cached copy of a
+    frontend .js/.css file masking an in-progress edit is a worse failure
+    mode than always refetching.
+    """
+
     def __init__(self, get_response):
         self.get_response = get_response
 

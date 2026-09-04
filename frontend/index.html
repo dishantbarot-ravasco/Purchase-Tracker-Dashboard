@@ -1,4 +1,6 @@
 {% load static %}
+<!-- frontend/index.html — the real PO<->MIR<->Stock reconciliation dashboard
+     ("/"), rendered entirely client-side by js/main.js into #root below. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -26,10 +28,14 @@
     <div class="nav-user" id="navUser"></div>
   </nav>
 
+  <!-- #root's entire contents are replaced by main.js once data loads - the
+       spinner below is only ever seen briefly on first paint. -->
   <div class="wrap" id="root">
     <div class="load-banner"><div class="spinner"></div><div>Loading&hellip;</div></div>
   </div>
 
+  <!-- Shared modal shell for PO/material detail - main.js swaps #modalBody's
+       innerHTML per open() call rather than templating a new modal each time. -->
   <div class="modal-backdrop" id="modalBackdrop">
     <div class="modal" id="modalBody"></div>
   </div>

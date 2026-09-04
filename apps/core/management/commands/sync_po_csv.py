@@ -1,6 +1,31 @@
 """
-Syncs Master_HRS_SILVASSA_Domestic_Purchase_Data.csv from Drive into
+apps/core/management/commands/sync_po_csv.py — syncs
+Master_HRS_SILVASSA_Domestic_Purchase_Data.csv from Drive into
 HRSPurchaseOrder / HRSPOLineItem.
+
+The PO master CSV format is identical across HRS/Achhad/Vapi (confirmed
+byte-for-byte identical header against real files), so apps/services/
+parsers/po_csv.py's parse_po_csv() is reused as-is for all three plants -
+only the target model classes, the Drive file title
+(settings.HRS_PO_CSV_TITLE), and the SyncRun.Plant tag differ per plant's
+sync_*_po_csv command. See sync_achhad_po_csv.py / sync_vapi_po_csv.py for
+those thin variants.
+
+Change detection here is a whole-order SHA-256 hash (_po_hash), not
+sync_utils.unchanged()'s per-field Decimal-quantized comparison used by
+sync_mir.py/sync_stock.py - a PO and all its line items are always rewritten
+together as one unit (line items are deleted and bulk_created fresh on any
+change), so a single hash over every field that matters is enough to decide
+whether to skip the write; there's no per-field "what changed" tracking to
+lose. po_number is used as the natural key (POs don't shift rows the way
+MIR/Stock sheet rows do), so no soft-deactivation logic is needed either.
+
+Drive folder: PURCHASE_TRACKER_DB_FOLDER_ID - all three plants' PO master
+CSVs live in one shared folder, distinct from each plant's own MIR/Stock
+folder (see CLAUDE.md's "Two Drive folders per plant, not one").
+
+--file lets this run against a local CSV copy instead of hitting Drive -
+useful for offline dev/testing without live service-account credentials.
 
 Usage:
     python manage.py sync_po_csv                # fetch from Drive
@@ -17,6 +42,8 @@ from django.utils import timezone
 from apps.core.models import HRSPOLineItem, HRSPurchaseOrder, SyncRun
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
+
+# ── Internal helpers ──────────────────────────────────────────────────────
 
 def _po_hash(order) -> str:
     """Hashes every field that would need a re-save, including line items, so
@@ -36,13 +63,25 @@ def _po_hash(order) -> str:
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
+# ── Command ────────────────────────────────────────────────────────────────
+
 class Command(BaseCommand):
+    """Sync the HRS PO master CSV from Drive (or --file) into HRSPurchaseOrder/
+    HRSPOLineItem, and record the outcome as a SyncRun row.
+
+    Idempotent: an order whose _po_hash matches the stored
+    synced_from_row_hash is left untouched; only orders that changed (or are
+    new) get their line items deleted and rebuilt. Safe to re-run any time.
+    """
+
     help = "Sync the HRS Purchase Order master CSV from Drive into HRSPurchaseOrder/HRSPOLineItem."
 
     def add_arguments(self, parser):
         parser.add_argument("--file", help="Parse a local CSV file instead of fetching from Drive.")
 
     def handle(self, *args, **options):
+        """Parse the CSV, upsert every order in one transaction, then always
+        record a SyncRun (SUCCESS or FAILED) regardless of outcome."""
         started_at = timezone.now()
         t0 = time.monotonic()
         rows_seen = 0
@@ -89,6 +128,8 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_csv_text(self, local_path: str | None) -> str:
+        """Return the CSV's raw text: from --file if given, otherwise fetched
+        from the shared PO-master Drive folder by file title."""
         if local_path:
             with open(local_path, encoding="utf-8") as f:
                 return f.read()
@@ -97,6 +138,8 @@ class Command(BaseCommand):
         return download_file_bytes(file_id).decode("utf-8")
 
     def _upsert_order(self, parsed) -> bool:
+        """Upsert one parsed PO by po_number; returns False (no-op) when the
+        whole-order hash matches what's already stored."""
         row_hash = _po_hash(parsed)
         existing = HRSPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
         if existing and existing.synced_from_row_hash == row_hash:
@@ -126,6 +169,8 @@ class Command(BaseCommand):
                 last_synced_at=timezone.now(),
             ),
         )
+        # Line items have no independent identity worth diffing - simplest
+        # correct approach is delete-and-rebuild rather than per-item upsert.
         order.items.all().delete()
         HRSPOLineItem.objects.bulk_create([
             HRSPOLineItem(

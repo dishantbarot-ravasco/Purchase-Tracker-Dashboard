@@ -15,7 +15,19 @@ from django.db import transaction
 from django.utils import timezone
 
 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
 def _order_hash(order) -> str:
+    """Hash of every order + line-item field the parser produces, used by
+    _upsert_order() as the "did anything actually change" check - same
+    change-detection idea as apps/services/sync_utils.py's unchanged(), but
+    a plain hash instead of a per-field Decimal-quantizing comparison. That
+    difference is deliberate, not an oversight: an Import PO's line items
+    are always fully deleted and recreated on any change (see
+    _upsert_order() below), so there's no persisted row to compare a single
+    field against field-by-field the way sync_utils.unchanged() can against
+    an existing model instance - hashing the whole parsed shape is the only
+    way to tell "changed" from "unchanged" before touching the DB at all."""
     parts = [
         order.po_drive_folder_name, order.po_number, str(order.po_created_date),
         order.vendor_name, order.vendor_address, order.vendor_gstin, order.vendor_email,
@@ -32,6 +44,8 @@ def _order_hash(order) -> str:
         ]
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
+
+# ── Public API ───────────────────────────────────────────────────────────────
 
 def sync_orders(po_model, line_item_model, parsed_orders: list) -> tuple[int, int]:
     """Upserts every parsed order (skipping unchanged ones via a row hash,
@@ -50,6 +64,15 @@ def sync_orders(po_model, line_item_model, parsed_orders: list) -> tuple[int, in
 
 
 def _upsert_order(po_model, line_item_model, parsed) -> bool:
+    """Upserts one order + its line items, skipping the write entirely if
+    the row hash is unchanged. Line items have no stable natural key on
+    their own within a PO the way the PO itself does (po_number) - see
+    CLAUDE.md's "Domestic line items have no stable natural key" section
+    for the same limitation on the domestic side - so on any real change
+    every existing item under this PO is deleted and bulk-recreated rather
+    than diffed and updated in place; simpler and safe since Import line
+    items aren't individually FK'd from anywhere that would orphan on
+    delete."""
     row_hash = _order_hash(parsed)
     existing = po_model.objects.filter(po_number=parsed.po_number).first()
     if existing and existing.synced_from_row_hash == row_hash:

@@ -14,6 +14,8 @@ just wires it to that plant's own match model classes.
 from django.utils import timezone
 
 
+# ── Public API ───────────────────────────────────────────────────────────────
+
 def dismiss_match(model_cls, match_id, user, dismissed: bool, reason: str):
     """Set/clear dismissed_by_override on a *POMirMatch or *MirStockMatch
     row. Returns the updated instance, or None if match_id doesn't exist.

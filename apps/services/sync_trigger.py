@@ -97,6 +97,8 @@ _IMPORT_PLANT_COMMANDS = {
 }
 
 
+# ── Cache lock keys ──────────────────────────────────────────────────────────
+
 def _lock_key(plant_key: str) -> str:
     return f"sync_trigger_in_progress:{plant_key}"
 
@@ -111,6 +113,8 @@ def _imports_lock_key(plant_key: str) -> str:
 def is_sync_in_progress(plant_key: str) -> bool:
     return bool(cache.get(_lock_key(plant_key)))
 
+
+# ── Domestic sync+match pipeline ─────────────────────────────────────────────
 
 def _run_pipeline(plant_key: str) -> None:
     try:
@@ -144,6 +148,8 @@ def trigger_plant_sync(plant_key: str) -> bool:
         async_task(_run_pipeline, plant_key)
     return True
 
+
+# ── Import PO sync+match pipeline ────────────────────────────────────────────
 
 def is_imports_sync_in_progress(plant_key: str) -> bool:
     return bool(cache.get(_imports_lock_key(plant_key)))

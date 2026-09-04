@@ -11,14 +11,20 @@ for every account after that first one.
 
 Endpoints
 ---------
-GET  /api/auth/users              List all users. Admin only.
-POST /api/auth/users              Create a user (email + password + role +
+GET   /api/auth/users             List all users. Admin only.
+POST  /api/auth/users/create      Create a user (email + password + role +
                                    plants). Admin only. Bcrypt-hashes the
                                    password server-side - the plaintext never
                                    touches the database.
 PATCH /api/auth/users/<id>        Update role / is_active / full_name /
                                    designation / plants / password. Admin
                                    only.
+
+URL naming (see CLAUDE.md's "In-app user management"): GET and POST are
+split by path segment (`/auth/users` vs. `/auth/users/create`), not by
+trailing slash alone the way TDS's own users_urls.py disambiguates them -
+deliberately clearer/less fragile, not a functional deviation from the
+pattern being ported.
 
 Deliberately NOT ported from TDS, and why
 ------------------------------------------
@@ -61,6 +67,8 @@ _VALID_ROLES = {choice[0] for choice in PTUser.Role.choices}
 _VALID_PLANTS = {"hrs", "achhad", "vapi"}
 
 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
 def _clean_plants(raw) -> list:
     """Validates an incoming `plants` array against _VALID_PLANTS. `None`/
     omitted is left to the caller (means "don't change this field" on
@@ -94,6 +102,8 @@ def _user_out(u: PTUser) -> dict:
         "lastLoginAt": u.last_login_at.isoformat() if u.last_login_at else None,
     }
 
+
+# ── User list/create/update endpoints ─────────────────────────────────────────
 
 @api_view(["GET"])
 @permission_classes([IsAdmin])

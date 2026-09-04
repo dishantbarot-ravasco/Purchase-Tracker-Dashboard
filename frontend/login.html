@@ -197,7 +197,12 @@
               <div class="login-error" id="loginError"></div>
             </form>
 
-            <!-- ── Step 2: Device Verification (new device) ── -->
+            <!-- ── Step 2: Device Verification (new device) ──
+                 Starts hidden - js/login.js's showOtpStep()/showPasswordStep()
+                 toggle these two forms' inline display style directly (not a
+                 [hidden] attribute) after a password-step submit returns
+                 status:'device_verify', or on the Google OAuth redirect's
+                 own ?step=device_verify. -->
             <form id="otpStep" style="display:none;">
               <div style="text-align:center;margin-bottom:24px;">
                 <div class="otp-icon">&#128231;</div>

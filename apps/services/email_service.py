@@ -25,6 +25,8 @@ uses it).
 import html
 
 
+# ── Public API ────────────────────────────────────────────────────────────────
+
 def render_email(
     greeting: str,
     body_paragraphs: list,
@@ -34,7 +36,17 @@ def render_email(
     closing: str = "Regards,",
     signature: str = "Ravasco Transmission and Packing Pvt Ltd.",
 ) -> tuple:
-    """Build (html_body, text_body) for a formal, consistently-branded email."""
+    """Build (html_body, text_body) for a formal, consistently-branded email.
+
+    Returns both representations rather than just HTML because not every
+    caller sends html_message today (see this module's own docstring) - a
+    caller that only sends plain text still gets a correctly-escaped,
+    consistently-worded body without duplicating the paragraph-joining
+    logic itself. `highlight_value`/`highlight_label` exist as a distinct
+    parameter (not just another paragraph) so the OTP/verification code
+    always renders visually distinct (bold, letter-spaced) in HTML and on
+    its own line in plain text - every caller in this app uses this for a
+    one-time code, but the parameter itself doesn't assume that."""
     after_highlight_paragraphs = after_highlight_paragraphs or []
 
     def _paragraphs_html(paragraphs, small=False):

@@ -1,10 +1,14 @@
-/* ============================================================
-   Purchase Tracker — Brand Stylesheet (login.html + home.html only)
+/* frontend/css/brand.css — shared Gold/Navy/White top-nav and page chrome
+   (login.html, home.html, and the shared header on every other protected
+   page: index.html, search-po.html, admin.html).
+   ============================================================
    Ported from the TDS Automation App's frontend/css/style.css so both
    Ravasco internal apps share one visual identity (Gold / Navy / White).
    Deliberately separate from css/style.css, which is the dashboard's own
    stylesheet (frontend/index.html + js/main.js) — do not merge the two;
-   the dashboard is intentionally left untouched by this pass.
+   this file owns only .topnav/.nav-tabs/.nav-user and shared page chrome,
+   the dashboard's own content below the nav is intentionally untouched by
+   this pass and keeps its separate navy/blue/red palette.
    ============================================================ */
 
 @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;900&family=Inter:wght@300;400;500;600&display=swap');

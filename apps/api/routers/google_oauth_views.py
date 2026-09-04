@@ -55,6 +55,8 @@ _SCOPES = ["openid", "email", "profile"]
 _FRONTEND_LOGIN = "/login.html"
 
 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
 def _make_flow() -> Flow:
     return Flow.from_client_config(
         {
@@ -69,6 +71,8 @@ def _make_flow() -> Flow:
         scopes=_SCOPES,
     )
 
+
+# ── OAuth login/callback/session-token endpoints ────────────────────────────────
 
 def google_login(request):
     """Redirect the browser to Google's OAuth consent screen. Stores the

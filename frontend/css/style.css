@@ -1,4 +1,8 @@
-/*
+/* frontend/css/style.css — the PO<->MIR<->Stock reconciliation dashboard's
+   own stylesheet (index.html + js/main.js), separate navy/blue/red palette
+   from brand.css's Gold/Navy top-nav chrome - the two are loaded together
+   but deliberately not merged (see brand.css's own header comment).
+
 CSS ported verbatim (colors, spacing, radii) from the original "Purchase
 Tracker" Claude artifact this dashboard's UI is modeled on, minus the
 components this build doesn't have data for yet: Domestic/Import sub-tabs
@@ -62,6 +66,12 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .refresh-btn:hover { background:var(--navy-hover); }
 .refresh-btn[disabled] { opacity:.5; cursor:default; }
 
+/* ── Nav tabs (3-level: view / plant / purchase-type) ──────────────────
+   Three structurally different components, not one class reused across
+   levels - see CLAUDE.md's "Artifact-parity decisions": an earlier pass
+   incorrectly reused .view-tab everywhere and invented an override for
+   level 3, which visually mismatched the reference design. Keep each
+   level's own class/markup; don't consolidate them back into one. */
 /* Level 1 (Purchase Orders / Raw Material Analysis) - filled pill tabs.
    Ported verbatim from the reference artifact's .view-tabs/.view-tab. */
 .view-tabs { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
@@ -103,6 +113,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    than just reflowed. */
 .filter-row .filter-group { display:inline-flex; align-items:center; gap:8px; }
 
+/* ── KPI cards ───────────────────────────────────────────────────────── */
 .kpi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:14px; margin-bottom:20px; }
 .kpi-card { position:relative; background:var(--card); border:1px solid var(--border); border-left:5px solid #cbd5e1; border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--shadow); }
 /* Colored flag icon (top-right corner of the card) - see main.js's
@@ -135,6 +146,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    money-or-quantity problems that need action first - see CLAUDE.md's
    flag-categorization section. Ported verbatim from the reference artifact. */
 .kpi-card.flags { border-left-color:var(--slate-soft); }
+/* ── Charts ──────────────────────────────────────────────────────────── */
 .chart-row { display:grid; grid-template-columns: minmax(320px, 1.4fr) minmax(280px, 1fr); gap:16px; margin-bottom:20px; }
 @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
 .chart-panel { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px 14px; box-shadow:var(--shadow); }
@@ -204,6 +216,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    2026-09-04). border-collapse means each cell only needs its own
    right/bottom border for a clean single-line grid - the table's own
    left/top edge comes from .table-wrap's outer border below. */
+/* ── Tables ──────────────────────────────────────────────────────────── */
 table { width:100%; border-collapse:collapse; font-size:13px; border:1px solid var(--border); }
 th, td { text-align:left; padding:9px 10px; border:1px solid var(--border-soft); }
 th { color:var(--slate-soft); font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700; background:var(--gray-soft); border-color:var(--border); }
@@ -308,6 +321,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid #cbd5e1; bord
 .row-link:hover { text-decoration:underline; }
 .empty-state { padding:70px 20px; text-align:center; color:#9ca3af; font-size:14px; background:var(--card); border:1px dashed #d1d5db; border-radius:12px; }
 
+/* ── Modal (PO / material detail) ───────────────────────────────────── */
 .modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,0.55); display:none; align-items:flex-start; justify-content:center; z-index:100; padding: 36px 16px; overflow:auto; }
 .modal-backdrop.open { display:flex; }
 .modal { background:#fff; border-radius:14px; max-width: 900px; width:100%; padding:26px 32px 32px; max-height: 92vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.25); }

@@ -1,12 +1,16 @@
-// frontend/js/login.js — drives login.html: password step -> optional
-// email-OTP device-verify step -> redirect to home.html. Also picks up
-// the Google OAuth redirect's query params (?oauth_ready=1 / ?step=device_verify
-// / ?oauth_error=...). No imports - plain script tag.
+/**
+ * frontend/js/login.js — drives login.html: password step -> optional
+ * email-OTP device-verify step -> redirect to home.html. Also picks up
+ * the Google OAuth redirect's query params (?oauth_ready=1 / ?step=device_verify
+ * / ?oauth_error=...). No imports - plain script tag.
+ */
 
+// ── DOM refs & state ────────────────────────────────────────────────────
 const passwordStep = document.getElementById('passwordStep');
 const otpStep = document.getElementById('otpStep');
 const errorBox = document.getElementById('loginError');
 
+// ── "Remember me" via the browser's Credential Management API ─────────
 // "Remember me" hands the credential to the BROWSER's own password manager
 // via the standard Credential Management API, rather than caching it
 // ourselves - unlike the TDS Automation App's old (removed) approach of
@@ -23,6 +27,9 @@ const errorBox = document.getElementById('loginError');
 // 365 days as TDS's own tds_device cookie.
 const supportsCredentialAPI = () => 'PasswordCredential' in window && 'credentials' in navigator;
 
+/** Stores the just-used credential in the browser's password vault if
+ * "Remember me" is checked and the browser supports the Credential
+ * Management API; silently does nothing otherwise (best-effort only). */
 async function storeCredentialIfRemembered(email, password) {
   if (!document.getElementById('rememberMe').checked || !supportsCredentialAPI()) return;
   try {
@@ -54,6 +61,7 @@ async function storeCredentialIfRemembered(email, password) {
   }
 })();
 
+// ── Small UI-state helpers ──────────────────────────────────────────────
 function showError(message) {
   errorBox.textContent = message;
   errorBox.classList.add('show');
@@ -62,6 +70,7 @@ function clearError() {
   errorBox.textContent = '';
   errorBox.classList.remove('show');
 }
+/** Swaps the card into the OTP-entry step (new-device verification). */
 function showOtpStep() {
   passwordStep.style.display = 'none';
   otpStep.style.display = '';
@@ -69,6 +78,7 @@ function showOtpStep() {
   document.getElementById('cardSub').textContent = 'Enter the code we emailed you';
   document.getElementById('otpCode').focus();
 }
+/** Swaps the card back to the password step (e.g. "back to login" link). */
 function showPasswordStep() {
   otpStep.style.display = 'none';
   passwordStep.style.display = '';
@@ -77,6 +87,9 @@ function showPasswordStep() {
   document.getElementById('otpCode').value = '';
 }
 
+/** POSTs JSON to `url` and returns the parsed response body; throws with
+ * the server's `detail` message (or a generic fallback) on a non-OK
+ * response, so callers can drive showError() from a single catch. */
 async function postJson(url, body) {
   const res = await fetch(url, {
     method: 'POST',
@@ -93,6 +106,7 @@ async function postJson(url, body) {
   return data;
 }
 
+// ── Form submit handlers ────────────────────────────────────────────────
 passwordStep.addEventListener('submit', async (e) => {
   e.preventDefault();
   clearError();

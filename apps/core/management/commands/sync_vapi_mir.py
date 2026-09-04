@@ -1,11 +1,20 @@
 """
-Syncs RTP VAPI MIR FILE 2026-27.xlsx (' MIR FILE 26-27 RM' sheet) from Drive
-into RTPVapiMIREntry, keyed by source_row_ref (the sheet row number).
+apps/core/management/commands/sync_vapi_mir.py — syncs RTP VAPI MIR FILE
+2026-27.xlsx (' MIR FILE 26-27 RM' sheet) from Drive into RTPVapiMIREntry,
+keyed by source_row_ref (the sheet row number).
 
-source_row_ref is a sheet ROW NUMBER, not a stable business key - see
-sync_mir.py's module docstring for the full row-shift reasoning. A row whose
-source_row_ref no longer appears in the freshly parsed file is deactivated
-(is_active=False) rather than deleted - see RTPVapiMIREntry.is_active.
+Same shape as sync_mir.py for HRS - see that file for the general design
+(row-shift reasoning for source_row_ref, sync_utils.unchanged()'s quantized-
+Decimal comparison, --file for offline testing). What's genuinely different
+for this plant: the Drive folder is settings.VAPI_MIR_STOCK_FOLDER_ID, and
+Vapi's MIR sheet is the most structurally different of the three plants -
+no Net/discount columns at all, GST split into one overall rate column
+(gst_rate_pct, stored as a whole percentage like 18.00, NOT a fraction like
+HRS/Achhad's 0.18 - confirmed by cross-checking Taxable Value x GST% / 100 =
+IGST against a real row) plus three amount-only IGST/CGST/SGST columns
+(no per-component rate columns), and a single TCS amount instead of a
+rate+amount pair. _FIELDS below reflects that different column set - don't
+assume it should line up field-for-field with HRS's/Achhad's _FIELDS.
 
 Usage:
     python manage.py sync_vapi_mir
@@ -33,6 +42,10 @@ _FIELDS = [
 
 
 class Command(BaseCommand):
+    """Sync the RTP-Vapi MIR xlsx from Drive (or --file) into
+    RTPVapiMIREntry. See sync_mir.py's Command docstring for the
+    idempotency design (unchanged from HRS)."""
+
     help = "Sync the RTP-Vapi MIR xlsx from Drive into RTPVapiMIREntry."
 
     def add_arguments(self, parser):
@@ -92,6 +105,9 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def _load_bytes(self, local_path: str | None) -> bytes:
+        """--file, or fetched from Drive by settings.VAPI_MIR_FILE_TITLE
+        (from settings.VAPI_MIR_STOCK_FOLDER_ID, Vapi's own MIR/Stock
+        folder)."""
         if local_path:
             with open(local_path, "rb") as f:
                 return f.read()
@@ -100,6 +116,7 @@ class Command(BaseCommand):
         return download_file_bytes(file_id)
 
     def _upsert_entry(self, parsed) -> bool:
+        """See sync_mir.py's _upsert_entry - same unchanged()-and-skip logic."""
         existing = RTPVapiMIREntry.objects.filter(source_row_ref=parsed.source_row_ref).first()
         if existing and existing.is_active and unchanged(RTPVapiMIREntry, existing, parsed, _FIELDS):
             return False

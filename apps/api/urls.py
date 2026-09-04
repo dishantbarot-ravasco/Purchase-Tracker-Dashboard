@@ -1,3 +1,16 @@
+"""
+apps/api/urls.py — URL routing for the `apps.api` app, mounted under /api/.
+
+Auth endpoints are defined directly here (auth_views.py); everything
+plant-specific is deliberately split into its own router module under
+apps/api/routers/ (hrs_views.py / achhad_views.py / vapi_views.py /
+imports_views.py) with its own URL prefix per plant, rather than one
+shared router keyed on a `?plant=` query param - see urlpatterns below and
+the "Per-plant models, not a shared schema" note in this app's CLAUDE.md
+for why each plant gets its own everything (models, parsers, matching
+module, router) instead of one generic table/view with a plant column.
+"""
+
 from django.urls import include, path
 
 from apps.api import views

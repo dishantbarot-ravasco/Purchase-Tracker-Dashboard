@@ -1,10 +1,20 @@
 """
-Read-only API surface for the RTP-Vapi Purchase Tracker dashboard. Mirrors
-apps/api/routers/hrs_views.py's shape (Vapi's Stock sheet is lot-shaped with
-a real vendor column, like HRS's, not material-shaped like Achhad's - see
-the RTP-Vapi section header comment in apps/core/models.py) so the frontend
-can reuse one rendering path for all three plants - see
-frontend/js/main.js's plant switch.
+Read-only API surface for the RTP-Vapi Purchase Tracker dashboard, plus
+sync_trigger/dismiss/correction write endpoints - byte-for-byte-shaped
+sibling of apps/api/routers/hrs_views.py/achhad_views.py (same function
+names, same response field shapes), ported deliberately rather than
+accidentally duplicated. See CLAUDE.md's "Per-plant models, not a shared
+schema" for why HRS/Achhad/Vapi each get their own model set and router -
+their real MIR/Stock spreadsheets have genuinely different column layouts.
+Vapi's Stock sheet is lot-shaped with a real vendor column (`supplier_name`,
+not HRS's `party_name`), like HRS's, not material-shaped like Achhad's -
+see the RTP-Vapi section header comment in apps/core/models.py. Vapi is
+also the plant with the most structurally different MIR/Imports data
+(near-100%-blank PO-number field, USD-priced imports needing conversion
+via exchange_rate) - but neither of those affects this domestic-dashboard
+router directly, see apps/services/matching_vapi.py and imports_views.py
+for where they're actually handled. The frontend reuses one rendering path
+for all three plants - see frontend/js/main.js's plant switch.
 """
 
 import datetime
@@ -57,6 +67,8 @@ _MATERIAL_EDITABLE_FIELDS = {"description", "category", "sub_category", "uom", "
 _MATERIAL_DECIMAL_FIELDS = {"basic_rate"}
 _MATERIAL_REMATCH_TRIGGER_FIELDS = {"description", "supplier_name", "basic_rate"}
 
+
+# ── Serialization helpers ─────────────────────────────────────────────────────
 
 def _line_item_dict(item):
     match = getattr(item, "mir_match", None)
@@ -137,8 +149,11 @@ def _po_dict(po):
     }
 
 
+# ── Purchase order list / inline field corrections ───────────────────────────
+
 @api_view(["GET"])
 def purchase_orders(request):
+    """See hrs_views.purchase_orders - identical shape, this plant's model."""
     qs = RTPVapiPurchaseOrder.objects.prefetch_related(
         "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
     )
@@ -272,6 +287,8 @@ def _lot_dict(lot):
     }
 
 
+# ── Material corrections (Raw Material Analysis modal) ────────────────────────
+
 @api_view(["GET"])
 def materials(request):
     """One row per Stock lot - Vapi's real Stock sheet has a genuine
@@ -335,8 +352,11 @@ def _coerce_material_value(field_name, raw_value):
     return str(raw_value)
 
 
+# ── Stock trend / sync status / sync trigger ──────────────────────────────────
+
 @api_view(["GET"])
 def stock_trend(request, lot_id: int):
+    """See hrs_views.stock_trend - identical shape, this plant's snapshot model."""
     snapshots = RTPVapiStockSnapshot.objects.filter(stock_lot_id=lot_id).order_by("snapshot_date")
     return Response({
         "snapshots": [
@@ -353,6 +373,7 @@ def stock_trend(request, lot_id: int):
 
 @api_view(["GET"])
 def sync_status(request):
+    """See hrs_views.sync_status - identical shape, this plant's key."""
     latest_by_source = {}
     for run in SyncRun.objects.filter(plant=SyncRun.Plant.RTP_VAPI).order_by("source", "-started_at"):
         if run.source not in latest_by_source:
@@ -379,6 +400,8 @@ def sync_trigger(request):
         return Response({"status": "already_running"}, status=409)
     return Response({"status": "started"}, status=202)
 
+
+# ── Match dismiss / override, flag dismissal ──────────────────────────────────
 
 @api_view(["PATCH"])
 @permission_classes([IsEditor])

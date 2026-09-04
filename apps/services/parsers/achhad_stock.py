@@ -1,9 +1,11 @@
 """
-Parses RAVASCO ACHHAD RM STOCK FILE.xlsx into a flat list of row dicts
-ready to upsert into RTPAchhadStockLot.
+apps/services/parsers/achhad_stock.py — parses RAVASCO ACHHAD RM STOCK
+FILE.xlsx into a flat list of row dicts ready to upsert into
+RTPAchhadStockLot.
 
-Genuinely different shape from HRS's Stock file (apps/core/parsers/stock.py),
-confirmed against the live file this session - not just relabeled columns:
+Genuinely different shape from HRS's Stock file (apps/services/parsers/
+stock.py), confirmed against the live file this session - not just
+relabeled columns:
 
   - The sheet is a single tab named after the current month (e.g.
     'Aug 26-27'), re-titled every month rather than kept at a fixed name
@@ -15,7 +17,8 @@ confirmed against the live file this session - not just relabeled columns:
     there is no per-vendor split to key off of. This is why
     RTPAchhadMirStockMatch (apps/core/matching_achhad.py) can only gate on
     normalized material description, not (material, vendor) the way HRS's
-    matcher does - a real, weaker-confidence difference, not an oversight.
+    matcher does (see apps/services/matching_achhad.py) - a real,
+    weaker-confidence difference, not an oversight.
   - Header sits across two rows for the numbered day-of-month columns
     (a 'Recp./Issue' sub-header under a bare day number), and the sheet
     embeds a full daily receipt/issue transaction matrix (one Recp/Issue
@@ -52,6 +55,8 @@ import openpyxl
 
 from apps.services.parsers.common import to_code_str, to_date, to_decimal, to_str
 
+# ── Column/row layout constants ─────────────────────────────────────────────
+
 HEADER_ROW = 2
 DATA_START_ROW = 5
 
@@ -63,6 +68,8 @@ EXPECTED_HEADERS = {
     "L": "Closing", "M": "Value", "N": "Physical",
 }
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedAchhadStockLot:
@@ -92,11 +99,17 @@ def _strip(v):
     return (v or "").strip() if isinstance(v, str) else v
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_achhad_stock_xlsx(file_bytes: bytes) -> list[ParsedAchhadStockLot]:
+    """Reads the workbook's single tab and returns one ParsedAchhadStockLot
+    per material row, skipping category-divider and totals-footer rows.
+    Raises HeaderMismatch immediately if the workbook has no sheets or any
+    checked header cell doesn't match what this parser was built against."""
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     if not wb.sheetnames:
         raise HeaderMismatch("Workbook has no sheets.")
-    ws = wb[wb.sheetnames[0]]
+    ws = wb[wb.sheetnames[0]]  # tab is renamed every month (e.g. 'Aug 26-27') - see module docstring
 
     for col, expected in EXPECTED_HEADERS.items():
         actual = _strip(ws[f"{col}{HEADER_ROW}"].value)

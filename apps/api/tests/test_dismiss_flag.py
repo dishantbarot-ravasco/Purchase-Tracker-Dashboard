@@ -28,6 +28,8 @@ class TestDismissDomesticFlag:
         self.url = f"/api/purchase-orders/{self.po.po_number}/flags/dismiss"
 
     def test_viewer_cannot_dismiss(self):
+        """A viewer (read-only role) must be forbidden from dismissing a flag,
+        and no FlagDismissal row should be created by the attempt."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="v@ravasco.com", role="viewer"))
         response = client.patch(self.url, {"flagKey": "Quantity Discrepancy", "dismissed": True}, format="json")
@@ -35,6 +37,9 @@ class TestDismissDomesticFlag:
         assert not FlagDismissal.objects.exists()
 
     def test_editor_can_dismiss_and_reinstate(self):
+        """An editor can dismiss a flag with a reason (audit fields recorded),
+        then reinstate it - reinstating must clear the reason/who/when audit
+        fields, mirroring dismiss_match()'s own reinstate behavior."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e@ravasco.com", role="editor"))
 
@@ -64,12 +69,17 @@ class TestDismissDomesticFlag:
         assert fd.dismissed_at is None
 
     def test_missing_flag_key_returns_400(self):
+        """flagKey is required to identify which flag is being dismissed -
+        omitting it must return a clean 400, not a server error."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e2@ravasco.com", role="editor"))
         response = client.patch(self.url, {"dismissed": True}, format="json")
         assert response.status_code == 400
 
     def test_editor_scoped_to_a_different_plant_is_forbidden(self):
+        """An editor whose PTUser.plants list doesn't include this PO's plant
+        (HRS) must be forbidden, even though their role is otherwise
+        sufficient - per-plant scoping applies on top of role."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e3@ravasco.com", role="editor", plants=["achhad"]))
         response = client.patch(self.url, {"flagKey": "Quantity Discrepancy", "dismissed": True}, format="json")
@@ -86,6 +96,9 @@ class TestDismissImportFlag:
         self.url = f"/api/imports/purchase-orders/vapi/{self.po.po_number}/flags/dismiss"
 
     def test_editor_can_dismiss(self):
+        """Same dismiss capability as the Domestic endpoint above, but through
+        the cross-plant Imports router (plant supplied in the URL) - confirms
+        the shared FlagDismissal plumbing works from that entry point too."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e@ravasco.com", role="editor"))
         response = client.patch(self.url, {"flagKey": "F7:ITEM1", "dismissed": True}, format="json")
@@ -95,6 +108,8 @@ class TestDismissImportFlag:
         assert fd.flag_key == "F7:ITEM1"
 
     def test_unknown_plant_returns_404(self):
+        """An unrecognized plant segment in the Imports URL must 404, not
+        fall through to some default plant's data."""
         client = APIClient()
         client.force_authenticate(user=make_user(email="e2@ravasco.com", role="editor"))
         response = client.patch(

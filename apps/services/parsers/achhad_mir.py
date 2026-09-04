@@ -1,7 +1,8 @@
 """
-Parses RTP ACHHAD MIR FILE 2026-27.xlsx, 'R.M. ' sheet (note the trailing
-space - confirmed against the live file), into a flat list of row dicts
-ready to upsert into RTPAchhadMIREntry.
+apps/services/parsers/achhad_mir.py — parses RTP ACHHAD MIR FILE
+2026-27.xlsx, 'R.M. ' sheet (note the trailing space - confirmed against
+the live file), into a flat list of row dicts ready to upsert into
+RTPAchhadMIREntry.
 
 Exact header (row 2; data from row 3), verified against the live file this
 session:
@@ -13,7 +14,7 @@ U CGST Rate | V CGST AMT | W SGST RATE | X SGST AMT | Y Other exclu. gst |
 Z Total Amount | AA TCS RATE | AB TCS Amt. | AC Inv. Final Value | AD Plant |
 AE Dept. Uses | AF Category material | AG Remarks
 
-Genuinely different from HRS's MIR layout (see apps/core/parsers/mir.py's
+Genuinely different from HRS's MIR layout (see apps/services/parsers/mir.py's
 docstring for HRS's columns), not just a relabeling:
   - No SAP GRN Number column at all - Achhad's own register never records
     one, confirmed against the live file (HRS's column D has no Achhad
@@ -48,6 +49,8 @@ import openpyxl
 
 from apps.services.parsers.common import to_code_str, to_date, to_decimal, to_str
 
+# ── Column/row layout constants ─────────────────────────────────────────────
+
 SHEET_NAME = "R.M. "
 HEADER_ROW = 2
 DATA_START_ROW = 3
@@ -63,6 +66,8 @@ EXPECTED_HEADERS = {
     "AF": "Category material", "AG": "Remarks",
 }
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedAchhadMirEntry:
@@ -109,6 +114,8 @@ def _strip(v):
     return (v or "").strip() if isinstance(v, str) else v
 
 
+# ── Excel-autoconvert workarounds (Month/MIR No. columns) ───────────────────
+
 def _month_label(cell) -> str:
     """See module docstring - reconstructs the originally-typed 'Mon-YY'
     text from a cell Excel silently turned into a date, using the cell's
@@ -130,7 +137,12 @@ def _mir_no_label(cell) -> str:
     return f"{v.month:02d}/{v.day:02d}"
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_achhad_mir_xlsx(file_bytes: bytes) -> list[ParsedAchhadMirEntry]:
+    """Reads the 'R.M. ' sheet and returns one ParsedAchhadMirEntry per data
+    row. Raises HeaderMismatch immediately if the sheet name or any header
+    cell doesn't match what this parser was built against."""
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")

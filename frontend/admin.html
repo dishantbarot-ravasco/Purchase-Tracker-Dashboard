@@ -5,14 +5,14 @@
   Admin. See js/auth.js's renderNavTabs()/renderUserBadge() for the shared
   topnav + circle-avatar user menu used across every protected page.
 
-  `manage.py create_pt_user` still exists and is still the only way to (a)
-  create the very first account before any admin exists to use this panel,
-  and (b) reset an existing user's forgotten password - this page's "+ Add
-  User" creates every account after that first one, and its Edit action
-  covers role/status/name/designation changes, but there is deliberately no
-  password-reset action here (see apps/api/routers/users_views.py's header
-  comment - the TDS admin panel this was ported from has the same gap, not
-  invented here).
+  `manage.py create_pt_user` remains the only way to create the very first
+  account, before any admin exists to use this panel at all. Every account
+  after that is managed right here: "+ Add User" creates one, and Edit
+  covers role/status/name/designation/plants AND password reset - the
+  optional password field in the modal below (added 2026-09-04, see
+  CLAUDE.md's "In-app password reset") - this used to be a real gap ported
+  from the TDS admin panel's own limitation, but PATCH /api/auth/users/<id>
+  now accepts an optional password, closing it.
 
   Admin-only. GET /api/auth/users is IsAdmin-gated server-side - the
   access-denied state below is defense in depth for a non-admin who
@@ -172,6 +172,7 @@
       await Promise.all([loadSyncCards(), loadUsers()]);
     })();
 
+    // ── Sync status cards ────────────────────────────────────────────
     async function loadSyncCards() {
       const el = document.getElementById('syncPlantCards');
       const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM' };

@@ -169,6 +169,10 @@
           </div>
           <span class="action-card-cta">Search Now &rarr;</span>
         </a>
+        <!-- Hidden by default; the inline script below reveals it only for
+             role === 'admin' - same defense-in-depth pattern as the Admin
+             nav tab (auth.js's renderNavTabs()), not the real access gate
+             (the 3 admin-only endpoints enforcing IsAdmin server-side are). -->
         <a href="/admin.html" class="action-card" id="adminCard" style="display:none;">
           <div class="action-card-icon">&#9881;&#65039;</div>
           <div class="action-card-title">Admin Panel</div>

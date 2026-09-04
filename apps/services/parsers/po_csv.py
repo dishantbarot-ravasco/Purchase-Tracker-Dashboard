@@ -1,7 +1,15 @@
 """
-Parses Master_HRS_SILVASSA_Domestic_Purchase_Data.csv into one record per
-PO (grouping the one-row-per-line-item CSV), ready to upsert into
-HRSPurchaseOrder/HRSPOLineItem.
+apps/services/parsers/po_csv.py — parses a plant's domestic PO master CSV
+(Master_HRS_SILVASSA_Domestic_Purchase_Data.csv / the Achhad/Vapi
+equivalents) into one record per PO (grouping the one-row-per-line-item
+CSV), ready to upsert into HRSPurchaseOrder/HRSPOLineItem or the
+per-plant model equivalent.
+
+Reused as-is for all three plants - confirmed live that HRS's, Achhad's,
+and Vapi's domestic PO CSVs share a byte-for-byte identical header, unlike
+MIR/Stock which genuinely differ per plant. Only the target model class and
+the Drive file title differ per plant's own sync_*_po_csv command; this
+module itself never branches on plant.
 
 Exact header, in order (verified against the live file this session):
 PO Drive Folder Name, PO Number, PO Created Date, Vendor Name,
@@ -17,6 +25,8 @@ from dataclasses import dataclass, field
 
 from apps.services.parsers.common import to_date, to_decimal, to_str
 
+# ── Column layout constant ──────────────────────────────────────────────────
+
 EXPECTED_HEADER = [
     "PO Drive Folder Name", "PO Number", "PO Created Date", "Vendor Name", "Vendor Address",
     "Vendor GSTIN", "Vendor Email", "Vendor Code", "Billing Address", "ShipTo", "Item Id",
@@ -25,6 +35,8 @@ EXPECTED_HEADER = [
     "Remarks", "PO Number | Item Id",
 ]
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedLineItem:
@@ -66,11 +78,25 @@ class HeaderMismatch(Exception):
     built against - better to fail loudly than silently misread columns."""
 
 
+# ── Row-level helpers ────────────────────────────────────────────────────────
+
 def _is_old_format(po_number: str, folder_name: str) -> bool:
+    """Flags a PO as coming from the legacy PO template rather than the
+    current one, purely from shape of the PO number itself (a slash, or an
+    'HRS'/'HO' marker) - there is no explicit template-version field in the
+    source data to key off of instead. `folder_name` is accepted for a
+    future refinement but unused today; heuristic, not authoritative."""
     return "/" in po_number or "HRS" in po_number.upper() or "HO" in po_number.upper()
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_po_csv(csv_text: str) -> list[ParsedPurchaseOrder]:
+    """Parses the domestic PO master CSV into one ParsedPurchaseOrder per
+    distinct PO Number, with its line items grouped underneath. Raises
+    HeaderMismatch immediately if the header row doesn't match exactly what
+    this parser was built against, rather than silently misreading columns.
+    Rows with a blank PO Number are skipped (not a real order line)."""
     reader = csv.DictReader(io.StringIO(csv_text))
     if reader.fieldnames is None or [h.strip() for h in reader.fieldnames] != [h.strip() for h in EXPECTED_HEADER]:
         raise HeaderMismatch(

@@ -58,6 +58,13 @@ _WEIGHT_RATE = Decimal("0.20")
 _WEIGHT_VALUE = Decimal("0.30")
 
 
+# ── Internal scoring/gating helpers ─────────────────────────────────────────
+# Unit-tested directly (apps/services/tests/test_matching.py) precisely
+# because they're dependency-free pure functions - see that test module's own
+# docstring for why this file's HRS copy is the one actually exercised while
+# matching_achhad.py/matching_vapi.py carry deliberate byte-for-byte
+# duplicates (a change here doesn't get caught there automatically).
+
 def _closeness(a, b) -> Decimal | None:
     """1.0 for an exact match, decaying linearly to 0 at a >=50% relative
     difference. None (treated as 0 in scoring) when either side is missing -
@@ -78,6 +85,11 @@ _MAX_DIFF_PCT = Decimal("9999.99")  # *_diff_pct columns are DecimalField(max_di
 
 
 def _diff_pct(a, b) -> Decimal | None:
+    """Percent difference of b relative to a, or None if either side is
+    missing (a missing side means "nothing to compare yet", not "0% off" -
+    callers must not treat None as a flaggable diff). a == 0 with a nonzero
+    b has no finite percentage, so it's clamped to _MAX_DIFF_PCT instead of
+    raising a ZeroDivisionError."""
     if a is None or b is None:
         return None
     a, b = Decimal(a), Decimal(b)
@@ -92,6 +104,11 @@ def _diff_pct(a, b) -> Decimal | None:
 
 
 def _token_overlap(a: str, b: str) -> Decimal:
+    """Jaccard similarity (intersection / union) of the two strings'
+    normalized token sets - the 30%-weighted "material description" factor
+    in the scored match. An empty token set on either side scores 0 rather
+    than dividing by zero, since a blank description can never be considered
+    a real match on this factor."""
     ta, tb = set(tokenize(a)), set(tokenize(b))
     if not ta or not tb:
         return Decimal("0")
@@ -122,6 +139,13 @@ def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
         return False
     return po_number.strip().upper() in po_number_raw.strip().upper()
 
+
+# ── Public API ───────────────────────────────────────────────────────────────
+# Every function below writes to the DB (upsert-or-delete a match row) and is
+# safe to call repeatedly - run_full_match() is the entry point every
+# match_hrs/sync-trigger call goes through, but each per-item function is
+# also called individually from the "Edit Everywhere" correct_field views so
+# a single edited field can re-match without a full plant-wide re-run.
 
 def match_po_mir_line_item(po_line_item) -> "HRSPOMirMatch | None":
     """Finds the best MIR match for one HRSPOLineItem and upserts

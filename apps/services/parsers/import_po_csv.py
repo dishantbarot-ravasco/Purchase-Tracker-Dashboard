@@ -1,8 +1,9 @@
 """
-Parses a plant's "Imports Purchase Data" master CSV (Master_HRS_SILVASSA_
-Imports_Purchase_Data.csv / Master_RTP_Achhad_Imports_Purchase_Data.csv /
-Master_RTP_VAPI_Imports_Purchase_Data.csv) into one record per PO, ready to
-upsert into <Plant>ImportPurchaseOrder/<Plant>ImportPOLineItem.
+apps/services/parsers/import_po_csv.py — parses a plant's "Imports
+Purchase Data" master CSV (Master_HRS_SILVASSA_Imports_Purchase_Data.csv /
+Master_RTP_Achhad_Imports_Purchase_Data.csv /
+Master_RTP_VAPI_Imports_Purchase_Data.csv) into one record per PO, ready
+to upsert into <Plant>ImportPurchaseOrder/<Plant>ImportPOLineItem.
 
 Reused as-is for all three plants - confirmed live (2026-09-04) that all
 three files share a byte-for-byte identical header, same reasoning po_csv.py
@@ -20,6 +21,14 @@ Total Value (As per PO), Tax Type, Currency (After Taxes), Exchange Rate,
 Total Inclusive Value (Final Bill Paid to get shipment from Port), REMARKS,
 BOE Number, Bill Of Lading Number, Laden on Board Date, Country of Origin,
 License Type, License Number
+
+Reconciliation note: `qty_as_per_boe` (Bill of Entry quantity - what
+customs recorded as actually clearing/arriving) is the quantity compared
+against MIR downstream, not `qty_as_per_po` (only the originally ordered
+amount, which can legitimately differ from what arrives on a partial or
+split shipment). Both are still captured here since the parser's job is to
+preserve the source data faithfully; the choice of which one to compare
+lives in the matching modules, not here.
 """
 
 import csv
@@ -27,6 +36,8 @@ import io
 from dataclasses import dataclass, field
 
 from apps.services.parsers.common import to_date, to_decimal, to_str
+
+# ── Column layout constant ──────────────────────────────────────────────────
 
 EXPECTED_HEADER = [
     "PO Drive Folder Name", "PO Number", "PO Created Date", "Vendor Name", "Vendor Address",
@@ -39,6 +50,8 @@ EXPECTED_HEADER = [
     "License Number",
 ]
 
+
+# ── Parsed-row shape ─────────────────────────────────────────────────────────
 
 @dataclass
 class ParsedImportLineItem:
@@ -89,7 +102,15 @@ class HeaderMismatch(Exception):
     built against - better to fail loudly than silently misread columns."""
 
 
+# ── Public entry point ───────────────────────────────────────────────────────
+
 def parse_import_po_csv(csv_text: str) -> list[ParsedImportPurchaseOrder]:
+    """Parses the Imports PO master CSV into one ParsedImportPurchaseOrder
+    per distinct PO Number, with its line items grouped underneath. Shared
+    verbatim across all three plants (see module docstring) - the caller
+    supplies plant-specific model classes when persisting the result, this
+    function stays plant-agnostic. Raises HeaderMismatch immediately on a
+    header mismatch; rows with a blank PO Number are skipped."""
     reader = csv.DictReader(io.StringIO(csv_text))
     if reader.fieldnames is None or [h.strip() for h in reader.fieldnames] != [h.strip() for h in EXPECTED_HEADER]:
         raise HeaderMismatch(
@@ -133,7 +154,7 @@ def parse_import_po_csv(csv_text: str) -> list[ParsedImportPurchaseOrder]:
                 description=to_str(row["Material Description"]),
                 hsn=to_str(row["HSN"]),
                 qty_as_per_po=to_decimal(row["QTY (As Per PO)"]),
-                qty_as_per_boe=to_decimal(row["QTY (As Per BOE)"]),
+                qty_as_per_boe=to_decimal(row["QTY (As Per BOE)"]),  # the one compared to MIR downstream - see module docstring
                 uom=to_str(row["UOM"]),
                 delivery_date=parsed_delivery_date,
                 # Free text like "End Mar/Early Apr 2026" fails to_date() and

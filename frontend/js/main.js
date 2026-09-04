@@ -1,4 +1,7 @@
-// Purchase Tracker Dashboard - HRS, RTP-Achhad, and RTP-Vapi.
+/**
+ * frontend/js/main.js — the PO<->MIR<->Stock reconciliation dashboard
+ * ("/"), for HRS, RTP-Achhad, and RTP-Vapi.
+ */
 //
 // Navigation hierarchy (top to bottom): Purchase Orders / Raw Material
 // Analysis (level 1) -> plant (level 2) -> Domestic / Import Purchases
@@ -84,6 +87,7 @@ const PURCHASE_TYPES = [
   { key: 'import', label: 'Import Purchases' },
 ];
 
+// ── Constants & state ───────────────────────────────────────────────────
 const root = document.getElementById('root');
 // pageCharts = charts owned by the page behind the modal (PO trend/status,
 // materials drill-down) - only ever destroyed right before that same view
@@ -523,6 +527,11 @@ function importFlagHtml(f, po, plantKey) {
   '</div>';
 }
 
+/** Matches `text` (a PO's own `remarks` field) against FLAG_CATEGORY_RULES
+ * in order, returning the first rule's label, or a generic fallback
+ * category when nothing matches. Every result is severity 'info' - the 2
+ * 'critical' categories (Quantity/Rate-Value Discrepancy) are computed
+ * separately from diff percentages, not from this regex pass. */
 function categorizeFlag(text) {
   for (const rule of FLAG_CATEGORY_RULES) if (rule.test(text)) return { label: rule.label, severity: 'info' };
   return { label: 'Other data quality issue', severity: 'info' };
@@ -620,6 +629,10 @@ function computePoFlags(po) {
   po._hasInfoFlag = po._categories.some(c => c.severity === 'info');
 }
 
+// ── Bootstrap ───────────────────────────────────────────────────────────
+/** Entry point, invoked once at the bottom of this file. Gates the whole
+ * dashboard behind requireAuth(), then renders the shared nav chrome and
+ * kicks off the first data load. */
 async function init() {
   const user = await requireAuth();  // frontend/js/auth.js - redirects to /login.html on failure
   if (!user) return;
@@ -879,6 +892,7 @@ async function loadAndRender() {
   }
 }
 
+// ── API fetch helpers & per-plant caches ────────────────────────────────
 async function ensurePOsLoaded(plantKeys) {
   await Promise.all(plantKeys.map(async key => {
     if (!PURCHASE_ORDERS_BY_PLANT[key]) {
@@ -1077,6 +1091,12 @@ function preserveFocus(container, renderFn) {
   }
 }
 
+// ── PO list rendering (Domestic Purchases) ──────────────────────────────
+/** Renders the whole Purchase Orders view for the current plant/filter
+ * selection: KPI row, chart row, and either the top-5 preview or the full
+ * "View all" table, wiring every click/filter handler to re-render itself.
+ * Delegates to renderImportPoList() when purchaseType is 'import' (see that
+ * function's own header comment for why it's separate, not a branch here). */
 function renderPoList(el) {
   // Import Purchases render through the exact same KPI-row -> chart-row ->
   // list -> drill-down-modal scaffold as Domestic (this function), just
@@ -1637,6 +1657,7 @@ function renderPoList(el) {
   }
 }
 
+// ── PO detail modal (Domestic) ──────────────────────────────────────────
 // compositeKey is "<plantKey>::<poNumber>" (see plantKeyFor()) - always
 // looked up in that specific plant's own cache, never the merged "All
 // Plants" array, since PO numbers aren't guaranteed unique across plants.
@@ -1788,7 +1809,7 @@ async function openPoModal(compositeKey) {
 
 function closeModal() { document.getElementById('modalBackdrop').classList.remove('open'); destroyModalCharts(); }
 
-// ------------------------------------------------------------------
+// ── PO list rendering & detail modal (Import Purchases) ─────────────────
 // Import Purchases (purchaseType 'import') - same KPI-row / chart-row /
 // list / drill-down-modal scaffold as Domestic (renderPoList()/openPoModal()
 // above), fed from apps/api/routers/imports_views.py instead of PO<->MIR
@@ -2508,11 +2529,10 @@ async function onImportFieldSaved(plantKey, poNumber) {
   if (content && state.purchaseType === 'import') renderImportPoList(content);
 }
 
-// ------------------------------------------------------------------
-// Raw Material Analysis - one row per Stock lot (see file header). No
-// purchase-type split here (see the module docstring at the top of this
-// file for why) - only the plant/All-Plants axis applies.
-// ------------------------------------------------------------------
+// ── Raw Material Analysis (list rendering) ──────────────────────────────
+// One row per Stock lot (see file header). No purchase-type split here (see
+// the module docstring at the top of this file for why) - only the
+// plant/All-Plants axis applies.
 function currentMaterials() {
   const keys = selectedPlantKeys();
   if (keys.length === 1) return MATERIALS_BY_PLANT[keys[0]] || [];
@@ -3170,6 +3190,7 @@ function trailingPriceAvg(points, i, days) {
   return inWindow.length ? inWindow.reduce((s, p) => s + p.price, 0) / inWindow.length : null;
 }
 
+// ── Material modal ───────────────────────────────────────────────────────
 // compositeKey is "<plantKey>::<lotId>" (see plantKeyFor()) - resolves the
 // anchor lot against that specific plant (Stock-lot ids are per-plant
 // autoincrement PKs, NOT unique across plants), then rolls up to every

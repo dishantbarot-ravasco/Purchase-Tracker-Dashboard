@@ -1,8 +1,19 @@
 """
-Read-only API surface for the RTP-Achhad Purchase Tracker dashboard.
-Mirrors apps/api/routers/hrs_views.py's shape exactly (same response
-fields, same IsAuthenticated-by-default posture) so the frontend can reuse
-one rendering path for both plants - see frontend/js/main.js's plant switch.
+Read-only API surface for the RTP-Achhad Purchase Tracker dashboard, plus
+sync_trigger/dismiss/correction write endpoints - byte-for-byte-shaped
+sibling of apps/api/routers/hrs_views.py (same function names, same
+response field shapes, same IsAuthenticated-by-default posture), ported
+deliberately rather than accidentally duplicated. See CLAUDE.md's
+"Per-plant models, not a shared schema" for why HRS/Achhad/Vapi each get
+their own model set and router instead of one shared, plant-discriminated
+table - the short version: their real MIR/Stock spreadsheets have
+genuinely different column layouts, not just different values in the same
+columns. This file mostly points back to hrs_views.py for the parts that
+are identical, and calls out only what's genuinely different for Achhad:
+no vendor column on Stock (RTPAchhadStockLot has no party_name field - see
+_lot_dict below), and a real `msl` (Minimum Stock Level) field HRS's sheet
+has no equivalent of. The frontend reuses one rendering path for all three
+plants - see frontend/js/main.js's plant switch.
 """
 
 import datetime
@@ -59,6 +70,8 @@ _MATERIAL_DECIMAL_FIELDS = {"rate", "msl"}
 # description/rate can move a match outcome here; msl never feeds matching.
 _MATERIAL_REMATCH_TRIGGER_FIELDS = {"description", "rate"}
 
+
+# ── Serialization helpers ─────────────────────────────────────────────────────
 
 def _line_item_dict(item):
     match = getattr(item, "mir_match", None)
@@ -139,8 +152,11 @@ def _po_dict(po):
     }
 
 
+# ── Purchase order list / inline field corrections ───────────────────────────
+
 @api_view(["GET"])
 def purchase_orders(request):
+    """See hrs_views.purchase_orders - identical shape, this plant's model."""
     qs = RTPAchhadPurchaseOrder.objects.prefetch_related(
         "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
     )
@@ -277,8 +293,13 @@ def _lot_dict(lot):
     }
 
 
+# ── Material corrections (Raw Material Analysis modal) ────────────────────────
+
 @api_view(["GET"])
 def materials(request):
+    """See hrs_views.materials - same lot-shaped reasoning, but note Achhad's
+    Stock sheet is material-shaped, not lot-shaped in the vendor sense (no
+    party_name column at all - see _lot_dict's `vendor` field below)."""
     qs = RTPAchhadStockLot.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
     return Response({"materials": [_lot_dict(lot) for lot in qs]})
 
@@ -337,8 +358,11 @@ def _coerce_material_value(field_name, raw_value):
     return str(raw_value)
 
 
+# ── Stock trend / sync status / sync trigger ──────────────────────────────────
+
 @api_view(["GET"])
 def stock_trend(request, lot_id: int):
+    """See hrs_views.stock_trend - identical shape, this plant's snapshot model."""
     snapshots = RTPAchhadStockSnapshot.objects.filter(stock_lot_id=lot_id).order_by("snapshot_date")
     return Response({
         "snapshots": [
@@ -355,6 +379,7 @@ def stock_trend(request, lot_id: int):
 
 @api_view(["GET"])
 def sync_status(request):
+    """See hrs_views.sync_status - identical shape, this plant's key."""
     latest_by_source = {}
     for run in SyncRun.objects.filter(plant=SyncRun.Plant.RTP_ACHHAD).order_by("source", "-started_at"):
         if run.source not in latest_by_source:
@@ -381,6 +406,8 @@ def sync_trigger(request):
         return Response({"status": "already_running"}, status=409)
     return Response({"status": "started"}, status=202)
 
+
+# ── Match dismiss / override, flag dismissal ──────────────────────────────────
 
 @api_view(["PATCH"])
 @permission_classes([IsEditor])
