@@ -59,6 +59,17 @@ jobs:
       - name: Django system check
         run: uv run python manage.py check
 
+      - name: Production security check
+        # A real gate, not advisory - plain `check --deploy` never fails the
+        # build on its own (Django's default --fail-level is ERROR, and
+        # every deploy check is Warning-level), so a DEBUG=True or
+        # dev-default-SECRET_KEY misconfiguration would otherwise pass CI
+        # silently. --fail-level WARNING makes it real; security.W003 is
+        # silenced deliberately in config/settings.py's SILENCED_SYSTEM_CHECKS
+        # (see that setting's own comment) - a JWT-auth API has no need for
+        # Django's session CSRF middleware app-wide.
+        run: uv run python manage.py check --deploy --fail-level WARNING
+
       - name: Run migrations (fresh database)
         run: uv run python manage.py migrate --noinput
 

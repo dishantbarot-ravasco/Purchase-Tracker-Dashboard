@@ -290,7 +290,16 @@ async function init() {
       await loadSyncStatus();
       await loadAndRender();
     } catch (e) {
+      // Real bug, found and fixed 2026-09-04: this used to only
+      // console.error() and silently reset the button back to "Refresh
+      // Data" - a viewer clicking it would see the button briefly say
+      // "Refreshing…" then flip right back with nothing to show for it and
+      // no indication anything went wrong, indistinguishable from "already
+      // up to date". Matches the admin branch's own triggerRealSyncAndRefresh()
+      // failure handling just above (alert() - this page has no toast
+      // system, unlike admin.html).
       console.error('Refresh Data failed:', e);
+      alert('Could not refresh the data right now: ' + (e.message || 'unknown error'));
     } finally {
       btn.disabled = false;
       btn.textContent = 'Refresh Data';
@@ -452,10 +461,17 @@ async function loadSyncStatus() {
       const perPlant = await Promise.all(PLANT_KEYS.map(async key => {
         const data = await apiForPlant(key, '/sync-status');
         const times = Object.values(data.sync).map(r => r.startedAt).filter(Boolean).sort();
+        // Collect every failed source's own error_detail (not just the
+        // fact that something failed) so a hover on the "failed" badge
+        // tells an admin WHY, not just that they need to go dig through
+        // server logs/Django Admin to find out - see errorDetail's own
+        // comment on the single-plant branch below for the same fix.
+        const failedDetails = Object.values(data.sync).filter(r => r.status !== 'success' && r.errorDetail).map(r => r.errorDetail);
         return {
           label: PLANTS[key].label,
           latest: times.length ? times[times.length - 1] : null,
           anyFailed: Object.values(data.sync).some(r => r.status !== 'success'),
+          failedTitle: failedDetails.join(' | '),
           inProgress: !!data.syncInProgress,
         };
       }));
@@ -467,18 +483,32 @@ async function loadSyncStatus() {
         const syncingBadge = p.inProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '';
         if (!p.latest) return '<span class="badge stale">' + escapeHtml(p.label) + ': never synced</span>' + syncingBadge;
         const when = new Date(p.latest).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-        return '<span class="badge ' + (p.anyFailed ? 'failed' : '') + '">' + escapeHtml(p.label) + ': ' + when + '</span>' + syncingBadge;
+        const titleAttr = p.anyFailed && p.failedTitle ? ' title="' + escapeHtml(p.failedTitle) + '"' : '';
+        return '<span class="badge ' + (p.anyFailed ? 'failed' : '') + '"' + titleAttr + '>' + escapeHtml(p.label) + ': ' + when + '</span>' + syncingBadge;
       }).join('');
     } else {
       const data = await apiForPlant(state.plant, '/sync-status');
-      const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM' };
+      // 'match' added 2026-09-04 - previously the matching pass (which
+      // actually produces every discrepancy flag/confidence badge on this
+      // dashboard) had no SyncRun tracking at all, so a real failure there
+      // was invisible here even with every other source showing green -
+      // see SyncRun.Source.MATCH's own comment (apps/core/models.py).
+      const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM', match: 'Matching' };
       const syncingBadge = data.syncInProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '';
       el.innerHTML = Object.keys(labels).map(src => {
         const run = data.sync[src];
         if (!run) return '<span class="badge stale">' + labels[src] + ': never synced</span>';
         const cls = run.status === 'success' ? '' : 'failed';
         const when = new Date(run.startedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-        return '<span class="badge ' + cls + '">' + labels[src] + ': ' + when + '</span>';
+        // errorDetail (SyncRun.error_detail, apps/core/models.py) was
+        // always recorded server-side on a sync failure, but never
+        // returned by /sync-status until now - an admin used to see only a
+        // red "failed" badge with no way to find out why short of Django
+        // Admin/server log access. A plain title tooltip is enough here;
+        // this is a diagnostic aid for the (rare) failure case, not
+        // something that needs its own dedicated UI.
+        const titleAttr = cls === 'failed' && run.errorDetail ? ' title="' + escapeHtml(run.errorDetail) + '"' : '';
+        return '<span class="badge ' + cls + '"' + titleAttr + '>' + labels[src] + ': ' + when + '</span>';
       }).join('') + syncingBadge;
     }
   } catch (e) {
@@ -534,7 +564,17 @@ function currentPOs() {
 async function apiImports(path, opts) {
   const res = await fetch('/api/imports' + path, opts || {});
   if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Not authenticated'); }
-  const data = await res.json();
+  // See shared.js's apiForPlant() for why res.json() is guarded - same fix
+  // applied here for consistency (this is the imports-router equivalent of
+  // that same fetch wrapper).
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    const err = new Error('The server sent an unexpected response. Please try again, or contact IT if this keeps happening.');
+    err.status = res.status;
+    throw err;
+  }
   if (!res.ok) {
     const err = new Error(data.error || data.detail || 'Something went wrong. Please try again.');
     err.status = res.status;

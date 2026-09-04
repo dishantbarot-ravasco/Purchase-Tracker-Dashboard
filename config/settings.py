@@ -463,3 +463,22 @@ if "pytest" in sys.modules:
     # 301-redirect every single test request before it reaches a view. See
     # the CACHES block above for why this checks sys.modules, not sys.argv.
     SECURE_SSL_REDIRECT = False
+
+# ---------------------------------------------------------------------------
+# `manage.py check --deploy --fail-level WARNING` (see CLAUDE.md's Commands
+# section, and ci.yml's "Production security check" step) - a real gate,
+# not advisory: DEBUG defaulting to True (settings.py's own DEBUG line
+# above) or SECRET_KEY defaulting to the hardcoded dev-only string would
+# otherwise fail OPEN with no error anywhere, since neither is checked at
+# startup. `--fail-level WARNING` makes every security.W0xx warning (W004/
+# W008/W012/W018 - missing HSTS/SSL-redirect/secure-cookie/DEBUG=True, all
+# gated behind `if not DEBUG` above) a real CI failure if it ever
+# reappears. security.W003 (no CsrfViewMiddleware in MIDDLEWARE) is
+# silenced deliberately, not an oversight - this app's API surface
+# authenticates via JWT (cookie or Bearer), never Django's session CSRF
+# token; AdminOnlyCsrfMiddleware (config/middleware.py) already restores
+# the real, unmodified check for /admin/, the one place that still uses
+# session auth + {% csrf_token %} forms. See MIDDLEWARE's own comment
+# above for the full reasoning - don't remove this silence entry without
+# also reading that.
+SILENCED_SYSTEM_CHECKS = ["security.W003"]

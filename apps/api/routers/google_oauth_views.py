@@ -77,20 +77,34 @@ def _make_flow() -> Flow:
 def google_login(request):
     """Redirect the browser to Google's OAuth consent screen. Stores the
     OAuth `state` AND the PKCE `code_verifier` in the Django session for use
-    in google_callback."""
-    flow = _make_flow()
-    flow.redirect_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
+    in google_callback.
 
-    auth_url, state = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="select_account",
-    )
+    Real bug, found and fixed 2026-09-04: this whole function used to have
+    no error handling at all - unlike every failure path in google_callback
+    below (which each redirect back to the login page with a specific,
+    readable ?oauth_error=... message), a failure here (e.g. a
+    misconfigured GOOGLE_CLIENT_ID/SECRET, or google-auth-oauthlib itself
+    raising) was a plain Django view with nothing catching it, so it fell
+    straight through to Django's raw, generic 500 error page instead of a
+    clear message on the sign-in screen a user actually understands."""
+    try:
+        flow = _make_flow()
+        flow.redirect_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
 
-    request.session["google_oauth_state"] = state
-    request.session["google_oauth_code_verifier"] = flow.code_verifier
-    request.session.modified = True
-    request.session.save()  # force-save before the browser leaves our domain
+        auth_url, state = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="select_account",
+        )
+
+        request.session["google_oauth_state"] = state
+        request.session["google_oauth_code_verifier"] = flow.code_verifier
+        request.session.modified = True
+        request.session.save()  # force-save before the browser leaves our domain
+    except Exception as exc:
+        log.error("Google OAuth: could not start sign-in: %s", exc, exc_info=True)
+        return HttpResponseRedirect(f"{_FRONTEND_LOGIN}?oauth_error=start_failed")
+
     log.info("Google OAuth: redirecting to consent screen")
     return HttpResponseRedirect(auth_url)
 
@@ -154,32 +168,44 @@ def google_callback(request):
     log.info("Google OAuth: %s authenticated, checking device trust", email)
 
     if is_trusted_device(request, user.user_id):
-        from apps.api.auth_serializers import PTTokenObtainPairSerializer
+        # Real bug, found and fixed 2026-09-04: this whole branch used to
+        # have no error handling, unlike every other failure path in this
+        # function - a JWT-signing/session-save failure here would raise
+        # straight out of a plain (non-DRF) Django view with nothing to
+        # catch it, producing a raw, generic 500 page instead of a readable
+        # message on the login screen. log_pt_action() is exempt from this
+        # try/except - it already never raises by design (see its own
+        # docstring), so wrapping it here would be redundant.
+        try:
+            from apps.api.auth_serializers import PTTokenObtainPairSerializer
 
-        refresh = PTTokenObtainPairSerializer.get_token(user)
-        access = str(refresh.access_token)
-        log.info("Google OAuth: trusted device for user_id=%s - issuing JWT", user.user_id)
+            refresh = PTTokenObtainPairSerializer.get_token(user)
+            access = str(refresh.access_token)
+            log.info("Google OAuth: trusted device for user_id=%s - issuing JWT", user.user_id)
 
-        # The JWT is handed off through the server-side session (never as a
-        # URL query param - that would land in browser history, proxy/access
-        # logs, and Referer headers). The frontend collects it via a
-        # one-time GET to /api/auth/google/session-token, which pops it from
-        # the session so it can't be replayed.
-        request.session["oauth_delivery"] = {
-            "access_token": access,
-            "user_id": user.user_id,
-            "role": user.role,
-            "full_name": user.full_name or "",
-            "email": user.email,
-        }
-        request.session.modified = True
-        request.session.save()
+            # The JWT is handed off through the server-side session (never as
+            # a URL query param - that would land in browser history, proxy/
+            # access logs, and Referer headers). The frontend collects it via
+            # a one-time GET to /api/auth/google/session-token, which pops it
+            # from the session so it can't be replayed.
+            request.session["oauth_delivery"] = {
+                "access_token": access,
+                "user_id": user.user_id,
+                "role": user.role,
+                "full_name": user.full_name or "",
+                "email": user.email,
+            }
+            request.session.modified = True
+            request.session.save()
 
-        redirect_response = HttpResponseRedirect(f"{_FRONTEND_LOGIN}?oauth_ready=1")
-        from apps.services.device_service import set_access_cookie, set_refresh_cookie
+            redirect_response = HttpResponseRedirect(f"{_FRONTEND_LOGIN}?oauth_ready=1")
+            from apps.services.device_service import set_access_cookie, set_refresh_cookie
 
-        set_access_cookie(redirect_response, access)
-        set_refresh_cookie(redirect_response, str(refresh))
+            set_access_cookie(redirect_response, access)
+            set_refresh_cookie(redirect_response, str(refresh))
+        except Exception as exc:
+            log.error("Google OAuth: could not complete trusted-device login for user_id=%s: %s", user.user_id, exc, exc_info=True)
+            return HttpResponseRedirect(f"{_FRONTEND_LOGIN}?oauth_error=login_failed")
 
         from apps.core.audit_log import PTAuditLog, log_pt_action
 

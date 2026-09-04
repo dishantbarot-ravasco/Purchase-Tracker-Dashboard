@@ -57,7 +57,8 @@ from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, ValidationError
 
 from apps.api.permissions import IsAdmin, is_allowed_email_domain
-from apps.core.models import PTUser
+from apps.core.audit_log import PTAuditLog, log_pt_action
+from apps.core.models import PTUser, TrustedDevice
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,10 @@ def create_user(request):
         is_active=True,
     )
     logger.info("users_views: admin %s created PTUser %s (role=%s)", request.user.email, user.email, user.role)
+    log_pt_action(
+        request, PTAuditLog.ACTION_USER_CREATED, actor=request.user,
+        detail=f"created {user.email} (role={user.role})",
+    )
     return Response(_user_out(user), status=201)
 
 
@@ -168,12 +173,20 @@ def update_user(request, user_id):
     if not user:
         raise NotFound(f"User {user_id} not found.")
 
+    # Captured before any field is mutated below, purely to build an audit
+    # `detail` string afterwards - role changes and password resets are the
+    # two security-sensitive cases worth calling out explicitly rather than
+    # a generic "user updated" row (see log_pt_action() call at the bottom).
+    prev_role, prev_is_active = user.role, user.is_active
+    password_was_reset = False
+
     data = request.data
     if "password" in data and data["password"]:
         password = data["password"]
         if len(password) < 8:
             raise ValidationError({"detail": "Password must be at least 8 characters."})
         user.password_hash = _hash_password(password)
+        password_was_reset = True
 
     new_role = user.role
     if "role" in data and data["role"] is not None:
@@ -204,4 +217,76 @@ def update_user(request, user_id):
     user.save()
 
     logger.info("users_views: admin %s updated PTUser %s", request.user.email, user.email)
+
+    detail_parts = []
+    if new_role != prev_role:
+        detail_parts.append(f"role: {prev_role} -> {new_role}")
+    if new_is_active != prev_is_active:
+        detail_parts.append(f"isActive: {prev_is_active} -> {new_is_active}")
+    if password_was_reset:
+        detail_parts.append("password reset")
+    log_pt_action(
+        request, PTAuditLog.ACTION_USER_UPDATED, actor=request.user,
+        detail=f"updated {user.email}" + (f" ({'; '.join(detail_parts)})" if detail_parts else ""),
+    )
     return Response(_user_out(user))
+
+
+# ── Trusted devices (Admin Panel > Edit User > Trusted Devices) ───────────────
+# Closes a real gap: notify_admins_new_device_login() (apps/services/
+# device_service.py) already promises "...or revoke the device from the
+# admin panel" in its own email body, but until now no such revoke existed
+# anywhere - the only way to remove a TrustedDevice row was a manual DB
+# delete. Admin-only, same as every other user-management endpoint in this
+# file - a device is a credential for signing in AS a given account, so
+# viewing/revoking one is exactly as sensitive as editing that account.
+
+def _device_out(d: TrustedDevice) -> dict:
+    return {
+        "id": d.pk,
+        "deviceName": d.device_name,
+        "ipAddress": d.ip_address,
+        "createdAt": d.created_at.isoformat() if d.created_at else None,
+        "lastUsedAt": d.last_used_at.isoformat() if d.last_used_at else None,
+    }
+    # Deliberately never includes device_token_hash - even a hash of the
+    # real credential has no reason to reach the frontend/an API response;
+    # it exists purely for the server's own equality lookup.
+
+
+@api_view(["GET"])
+@permission_classes([IsAdmin])
+def list_user_devices(request, user_id):
+    """GET /api/auth/users/<id>/devices - every trusted device currently
+    registered for this account. Admin only."""
+    if not PTUser.objects.filter(pk=user_id).exists():
+        raise NotFound(f"User {user_id} not found.")
+    devices = TrustedDevice.objects.filter(user_id=user_id).order_by("-last_used_at")
+    return Response({"devices": [_device_out(d) for d in devices]})
+
+
+@api_view(["DELETE"])
+@permission_classes([IsAdmin])
+def revoke_user_device(request, user_id, device_id):
+    """DELETE /api/auth/users/<id>/devices/<device_id> - revoke one trusted
+    device. Admin only. That device's browser loses trust immediately (its
+    pt_device cookie no longer matches any row) - its next login attempt
+    (if the access/refresh cookies have also expired or are cleared) goes
+    through the email-OTP challenge again, same as a genuinely new device."""
+    device = TrustedDevice.objects.filter(pk=device_id, user_id=user_id).first()
+    if not device:
+        raise NotFound(f"Device {device_id} not found for user {user_id}.")
+
+    user = device.user
+    device_name = device.device_name
+    device.delete()
+
+    logger.info(
+        "users_views: admin %s revoked device %r for PTUser %s",
+        request.user.email, device_name, user.email,
+    )
+    log_pt_action(
+        request, PTAuditLog.ACTION_DEVICE_REVOKED, actor=request.user,
+        detail=f"revoked device {device_name!r} for {user.email}",
+    )
+    return Response(status=204)

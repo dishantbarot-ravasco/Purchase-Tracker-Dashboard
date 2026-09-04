@@ -195,6 +195,8 @@ const OAUTH_ERROR_MESSAGES = {
   domain_not_allowed: 'This Google account is outside the allowed organization.',
   not_registered: 'No Purchase Tracker account exists for this email. Contact an administrator.',
   email_failed: 'Could not send the verification email. Please try again or contact an administrator.',
+  start_failed: 'Could not start Google sign-in right now. Please try again.',
+  login_failed: 'Something went wrong completing sign-in. Please try again.',
 };
 
 (async function handleOAuthRedirect() {

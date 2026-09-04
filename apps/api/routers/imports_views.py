@@ -405,6 +405,7 @@ def sync_status(request):
             "finishedAt": run.finished_at.isoformat() if run and run.finished_at else None,
             "rowsSeen": run.rows_seen if run else 0,
             "rowsChanged": run.rows_changed if run else 0,
+            "errorDetail": (run.error_detail or None) if run else None,
             "syncInProgress": is_imports_sync_in_progress(plant_key),
         }
     return Response({"sync": latest_by_plant})

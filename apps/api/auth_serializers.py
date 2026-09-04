@@ -86,7 +86,28 @@ class PTTokenObtainPairSerializer(TokenObtainPairSerializer):
             try:
                 send_device_otp(user)
             except Exception as exc:
+                # Real bug, found and fixed 2026-09-04: this used to log the
+                # failure and still return {"status": "device_verify"} below
+                # regardless - telling the frontend "a code was sent, go
+                # ahead and enter it" even though it wasn't. A transient
+                # SMTP failure genuinely can't reach here (send_device_otp()
+                # dispatches the actual send_mail() call on a background
+                # thread that swallows its own delivery failures - see that
+                # function's own docstring/comments), so an exception this
+                # far up can only mean generate_otp() itself (the DB write
+                # that creates the checkable code) or the email template
+                # never ran at all - there is no code for the user to enter,
+                # by any path, DEBUG console fallback included. Silently
+                # sending them to a code-entry screen that can never accept
+                # any code is worse than a clear error up front. Matches the
+                # Google OAuth login path's own handling of this exact same
+                # failure (google_callback() in google_oauth_views.py),
+                # which already did this correctly.
                 logger.error("auth: failed to send device OTP for user_id=%s: %s", user.user_id, exc)
+                raise serializers.ValidationError(
+                    {"detail": "Could not send the verification code. Please try again in a moment or contact your administrator."},
+                    code="otp_send_failed",
+                )
             else:
                 logger.info("auth: new device - OTP sent for user_id=%s", user.user_id)
             return {"status": "device_verify"}

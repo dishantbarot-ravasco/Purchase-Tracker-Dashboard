@@ -31,6 +31,7 @@ uv run python manage.py migrate            # apply migrations
 uv run python manage.py makemigrations core
 uv run python manage.py createcachetable   # one-off: creates DatabaseCache's table (pt_cache_table)
 uv run pytest                              # test suite (real Postgres, no mocking - see below)
+uv run python manage.py check --deploy --fail-level WARNING  # production security check - also runs in CI, see below
 
 # Create/update a PTUser (bcrypt-hashes the password) - the only way to
 # create the first admin account; re-running against an existing email

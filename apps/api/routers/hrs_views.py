@@ -451,6 +451,7 @@ def sync_status(request):
                 "finishedAt": run.finished_at.isoformat() if run.finished_at else None,
                 "rowsSeen": run.rows_seen,
                 "rowsChanged": run.rows_changed,
+                "errorDetail": run.error_detail or None,
             }
     return Response({
         "sync": latest_by_source,

@@ -54,7 +54,25 @@ async function apiForPlant(plantKey, path, opts) {
     window.location.href = '/login.html';
     throw new Error('Not authenticated');
   }
-  const data = await res.json();
+  // Real bug, found and fixed 2026-09-04: `await res.json()` used to run
+  // unguarded here - every DRF endpoint always returns JSON (see apps/api/
+  // exceptions.py's custom_exception_handler), but a response that never
+  // reached Django at all (Render's edge/proxy returning a plain-text or
+  // HTML error page during a deploy, a request too large/malformed to
+  // reach a view, etc.) does not, and JSON.parse() on that threw a raw,
+  // cryptic error ("Unexpected token '<'...") straight up to whatever
+  // alert()/toast the caller shows - a confusing message for something
+  // that's really just "couldn't reach the server". Every caller of this
+  // function already expects a plain Error with a readable .message, so
+  // this failure mode is normalized to look exactly like any other one.
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    const err = new Error('The server sent an unexpected response. Please try again, or contact IT if this keeps happening.');
+    err.status = res.status;
+    throw err;
+  }
   if (!res.ok) {
     const err = new Error(data.error || data.detail || 'Something went wrong. Please try again.');
     // Exposed so a caller can tell apart e.g. a 409 ("already in progress",
@@ -257,7 +275,16 @@ async function savePoField(fieldsUrl, itemId, field, value) {
     window.location.href = '/login.html';
     throw new Error('Not authenticated');
   }
-  const data = await res.json();
+  // See apiForPlant()'s own comment (above in this file) for why res.json()
+  // is guarded here - same fix, same reasoning.
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    const err = new Error('The server sent an unexpected response. Please try again, or contact IT if this keeps happening.');
+    err.status = res.status;
+    throw err;
+  }
   if (!res.ok) {
     const err = new Error(data.error || data.detail || 'Something went wrong. Please try again.');
     err.status = res.status;

@@ -132,13 +132,17 @@ class PTUserAdmin(admin.ModelAdmin):
 
 @admin.register(TrustedDevice)
 class TrustedDeviceAdmin(admin.ModelAdmin):
-    # device_token is the bearer credential for this device's trust - never
-    # editable through the form, same reasoning as PTUserAdmin excluding
-    # password_hash outright (this one is merely readonly, not excluded,
-    # since seeing which token is active per row is still useful for support).
+    # device_token_hash is a one-way SHA-256 digest, not the bearer
+    # credential itself (fixed 2026-09-04 - see TrustedDevice's own
+    # docstring) - safe to display read-only since it can't be reversed
+    # back into a usable cookie value, unlike the plaintext token this used
+    # to store (which effectively let anyone with Django Admin read access
+    # here copy a live device-trust credential for any account). Use the
+    # in-app Admin Panel's Edit User > Trusted Devices instead of this page
+    # to actually revoke a device - see users_views.py's revoke_user_device().
     list_display = ("user", "device_name", "ip_address", "created_at", "last_used_at")
     search_fields = ("user__email", "device_name", "ip_address")
-    readonly_fields = ("device_token", "created_at", "last_used_at")
+    readonly_fields = ("device_token_hash", "created_at", "last_used_at")
 
 
 admin.site.register(OTPCode)

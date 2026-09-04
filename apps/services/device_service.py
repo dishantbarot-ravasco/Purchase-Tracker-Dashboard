@@ -24,6 +24,7 @@ notify_admins_new_device_login(user, request) -> None (informational only)
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 import sys
@@ -66,6 +67,15 @@ def get_client_ip(request) -> str:
         if parts:
             return parts[-1]
     return request.META.get("REMOTE_ADDR", "") or ""
+
+
+def _hash_device_token(token: str) -> str:
+    """SHA-256 hex digest of a plaintext device token - see TrustedDevice's
+    own docstring (apps/core/models.py) for why plain SHA-256, not bcrypt,
+    is the right hash here (the token already has 256 bits of entropy, and
+    is_trusted_device() needs an indexed equality lookup, not a per-row
+    bcrypt.checkpw() scan)."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def _get_device_name(request) -> str:
@@ -136,12 +146,18 @@ def is_trusted_device(request, user_id: int) -> bool:
     """True if the incoming request carries a valid pt_device cookie that
     matches a TrustedDevice row owned by user_id. Bumps last_used_at via a
     targeted .update() (not a full save()) so a trusted device's every
-    request doesn't pay for a full row rewrite just to record a timestamp."""
+    request doesn't pay for a full row rewrite just to record a timestamp.
+
+    Looks up by the cookie's own SHA-256 hash, never the plaintext value -
+    see TrustedDevice's own docstring (apps/core/models.py) for why the
+    stored column is device_token_hash, not the raw token."""
     device_token = request.COOKIES.get(DEVICE_COOKIE_NAME, "").strip()
     if not device_token:
         return False
     try:
-        device = TrustedDevice.objects.only("pk").get(device_token=device_token, user_id=user_id)
+        device = TrustedDevice.objects.only("pk").get(
+            device_token_hash=_hash_device_token(device_token), user_id=user_id
+        )
         TrustedDevice.objects.filter(pk=device.pk).update(last_used_at=timezone.now())
         return True
     except TrustedDevice.DoesNotExist:
@@ -151,14 +167,15 @@ def is_trusted_device(request, user_id: int) -> bool:
 def register_device(response, user_id: int, request) -> str:
     """Create a new TrustedDevice row and set the pt_device httpOnly cookie
     on the given Response object. Returns the plaintext device token (only
-    for logging - never expose it)."""
+    for logging - never expose it, and never store it anywhere but the
+    cookie - only its SHA-256 hash is persisted, see _hash_device_token())."""
     device_token = secrets.token_hex(32)  # 64 hex chars, 256-bit entropy
     ip = get_client_ip(request) or None
     device_name = _get_device_name(request)
 
     TrustedDevice.objects.create(
         user_id=user_id,
-        device_token=device_token,
+        device_token_hash=_hash_device_token(device_token),
         device_name=device_name,
         ip_address=ip,
     )

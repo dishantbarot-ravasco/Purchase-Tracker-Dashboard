@@ -50,6 +50,16 @@ class SyncRun(models.Model):
         MIR = "mir", "MIR (Material Inward Register)"
         STOCK = "stock", "Raw Material Stock"
         IMPORT_PO_CSV = "import_po_csv", "Import Purchase Order master CSV"
+        # Added 2026-09-04: match_hrs/match_achhad/match_vapi previously had
+        # no SyncRun tracking at all - a real failure inside run_full_match()
+        # (apps/services/matching*.py) was only ever logged to logs/app.log,
+        # completely invisible anywhere in the app itself. The sync badges
+        # (frontend/js/main.js's loadSyncStatus(), admin.html's
+        # loadSyncCards()) would show every source green even when matching
+        # - the step that actually produces every discrepancy flag/badge on
+        # the dashboard - had silently failed. See each match_*.py command's
+        # own header comment for the fix.
+        MATCH = "match", "PO<->MIR<->Stock matching"
 
     class Status(models.TextChoices):
         SUCCESS = "success", "Success"
@@ -1614,13 +1624,41 @@ class OTPCode(models.Model):
 
 class TrustedDevice(models.Model):
     """A verified device token for a PTUser (Instagram-style device trust -
-    see apps/services/device_service.py). device_token is a 64-char hex
-    string (secrets.token_hex(32), 256-bit entropy), set in an httpOnly
-    SameSite=Lax pt_device cookie on the browser. last_used_at is bumped on
-    every successful is_trusted_device() check."""
+    see apps/services/device_service.py). The real bearer credential is a
+    64-char hex string (secrets.token_hex(32), 256-bit entropy), set in an
+    httpOnly SameSite=Lax pt_device cookie on the browser - only its SHA-256
+    hex digest (also 64 chars, hence no column-width change) is ever
+    persisted here, in device_token_hash.
+
+    Security fix, 2026-09-04: this column used to store the raw plaintext
+    token directly (named device_token) - inconsistent with this same
+    module's OTPCode.code_hash, which was already correctly hash-only for
+    exactly this reason ("even direct DB access cannot reveal a valid
+    code" - see apps/services/otp_service.py's module docstring). A device-
+    trust token is a MORE valuable target than a 6-digit OTP (it bypasses
+    the OTP step entirely, for up to DEVICE_COOKIE_MAX_AGE = 1 year), so a
+    leaked DB backup or a compromised Postgres instance used to hand an
+    attacker a ready-to-use, no-cracking-required 2FA bypass for every
+    trusted device. Plain SHA-256 (not bcrypt) is the right hash here,
+    unlike OTPCode - a 6-digit OTP has only 10^6 possible values and MUST
+    use a slow hash to resist brute-forcing the hash itself; this token
+    already has 2^256 possible values, so a fast hash is not brute-
+    forceable regardless of speed, and a fast hash is required anyway since
+    is_trusted_device() does an equality lookup (WHERE device_token_hash =
+    ...) on every authenticated request - bcrypt has no equivalent
+    "look up by hash" operation without checking every stored row.
+    Migration 0015 renamed the column and hashed every existing row's
+    already-known plaintext value in place - no forced re-verification for
+    already-trusted devices.
+
+    last_used_at is bumped on every successful is_trusted_device() check.
+    Revocable via apps/api/routers/users_views.py's revoke_user_device()
+    (Admin Panel > Edit User > Trusted Devices) - previously the admin
+    "new device" alert email promised a revoke option here that did not
+    yet exist; it does now."""
 
     user = models.ForeignKey(PTUser, on_delete=models.CASCADE, related_name="trusted_devices")
-    device_token = models.CharField(max_length=64, unique=True)
+    device_token_hash = models.CharField(max_length=64, unique=True)
     device_name = models.TextField()
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

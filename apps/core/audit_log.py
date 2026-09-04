@@ -1,25 +1,39 @@
 """
-apps/core/audit_log.py — Lightweight audit trail for authentication events.
+apps/core/audit_log.py — Lightweight audit trail for authentication and
+user-management events.
 
-Ported from the TDS Automation App's apps/core/audit_log.py, scoped down to
-what this app actually has: Purchase Tracker is a read-only reporting/
-reconciliation dashboard (no create/approve/decline/delete workflow the way
-TDS has), so only ACTION_LOGIN and ACTION_LOGOUT exist here. Don't add
-CREATE/UPDATE/APPROVE/DELETE-style actions unless a real mutating endpoint
-is added first - see CLAUDE.md's note on not copying TDS's domain-specific
-scope, only its architectural scaffolding.
+Ported from the TDS Automation App's apps/core/audit_log.py, originally
+scoped down to just ACTION_LOGIN/ACTION_LOGOUT on the reasoning that
+Purchase Tracker had no create/approve/decline/delete workflow the way TDS
+does. That premise no longer holds: in-app user management (create/edit/
+role-change/password-reset, apps/api/routers/users_views.py) and trusted-
+device revocation both now exist and are real, security-sensitive mutating
+endpoints - exactly the case this file's own original docstring said
+warranted adding a new action type. PO/material field corrections and flag/
+match dismissals already have their own dedicated audit tables
+(DomesticPOCorrection, MaterialCorrection, the *_dismissed_by/_at/_reason
+columns, etc. - see CLAUDE.md's "Inline 'Edit Everywhere'"/"Dismiss/
+override a flagged match" sections) and deliberately are NOT duplicated
+into PTAuditLog too - this file's remaining job is auth-and-account-level
+events that had no audit trail anywhere else. Still don't add a new
+ACTION_* speculatively for something with no real endpoint behind it yet.
 
 WHAT IT LOGS
   Every successful login (trusted-device fast path, new-device email-OTP
-  verify, and Google OAuth trusted-device path) and every logout. The log
-  is append-only - rows are never updated or deleted.
+  verify, and Google OAuth trusted-device path), every logout, and every
+  admin user-management mutation (account created, account updated -
+  role/status/password/plants/name changes, detail text says which -
+  and a trusted device revoked). The log is append-only - rows are never
+  updated or deleted.
 
 SETUP
   1. Migration already created for this table (apps/core/migrations/) -
      run `manage.py migrate` if it hasn't been applied yet.
-  2. Call log_pt_action() from the three login call sites and the logout
-     view - already wired in apps/api/auth_views.py, apps/api/routers/
-     device_views.py and apps/api/routers/google_oauth_views.py.
+  2. Call log_pt_action() from the three login call sites, the logout
+     view, and every users_views.py mutation - already wired in
+     apps/api/auth_views.py, apps/api/routers/device_views.py,
+     apps/api/routers/google_oauth_views.py, and
+     apps/api/routers/users_views.py.
   3. Registered read-only in apps/core/admin.py.
 """
 
@@ -49,10 +63,16 @@ class PTAuditLog(models.Model):
 
     ACTION_LOGIN = "login"
     ACTION_LOGOUT = "logout"
+    ACTION_USER_CREATED = "user_created"
+    ACTION_USER_UPDATED = "user_updated"
+    ACTION_DEVICE_REVOKED = "device_revoked"
 
     ACTION_CHOICES = [
         (ACTION_LOGIN, "Login"),
         (ACTION_LOGOUT, "Logout"),
+        (ACTION_USER_CREATED, "User created"),
+        (ACTION_USER_UPDATED, "User updated"),
+        (ACTION_DEVICE_REVOKED, "Trusted device revoked"),
     ]
 
     timestamp = models.DateTimeField(default=timezone.now, db_index=True)
