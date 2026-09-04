@@ -1,0 +1,41 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Purchase Tracker Dashboard</title>
+  <link rel="stylesheet" href="{% static 'css/brand.css' %}">
+  <link rel="stylesheet" href="{% static 'css/style.css' %}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <!-- Shared top nav (brand.css) - same on home.html/search-po.html/admin.html,
+       see js/auth.js's renderNavTabs(). Everything below this is the
+       dashboard's own content (js/main.js), on its own stylesheet. -->
+  <nav class="topnav">
+    <a href="/home.html" class="nav-brand">
+      <img src="{% static 'img/indus_logo.png' %}" alt="Ravasco" class="nav-logo" onerror="this.style.display='none'">
+      <div class="nav-brand-text">
+        <h1>Purchase Tracker</h1>
+        <p>Ravasco Transmission &amp; Packing</p>
+      </div>
+    </a>
+    <div class="nav-tabs" id="navTabs"></div>
+    <div class="nav-spacer"></div>
+    <div class="nav-user" id="navUser"></div>
+  </nav>
+
+  <div class="wrap" id="root">
+    <div class="load-banner"><div class="spinner"></div><div>Loading&hellip;</div></div>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal" id="modalBody"></div>
+  </div>
+
+  <script src="{% static 'js/auth.js' %}"></script>
+  <script src="{% static 'js/shared.js' %}"></script>
+  <script src="{% static 'js/main.js' %}"></script>
+</body>
+</html>

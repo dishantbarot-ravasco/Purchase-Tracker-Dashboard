@@ -1,178 +1,176 @@
 # Purchase Tracker Dashboard
 
-Purchase Order / MIR / RM Stock / Advance License dashboard for Ravasco
-Transmission and Packing (HRS, RTP-Achhad, RTP-Vapi). Backend: Django +
-Postgres. Frontend: vanilla HTML/CSS/JS (`public/index.html`), served
-directly by Django, no build step.
+Standalone Django service reconciling Purchase Orders, MIR (Material Inward
+Register), and Raw Material Stock for Ravasco's plants. Built to replace the
+Claude Artifact prototype of the same name, which re-fetches and re-parses
+every Drive file live on every page load with no persistence - this app
+syncs into Postgres instead, so it works for every viewer without depending
+on their own Drive session. Syncing is currently a manual management-command
+run, not yet on an automatic schedule - see "Status" below.
 
-An earlier Node/Express prototype (`server.js`, `package.json`, `lib/`)
-lives alongside this for reference and is not used by the Django app -
-safe to ignore, harmless to leave in the repo.
+**HRS, RTP-Achhad, and RTP-Vapi are all built.** Each plant's MIR/Stock files
+were inspected directly before writing any code for it, and each turned out
+to have a genuinely different column layout - not just relabeled columns:
+Achhad's MIR has no SAP GRN number and no vendor column in Stock at all;
+Vapi's MIR has no Net/discount columns and a 100%-blank PO-number field
+(worse than HRS's ~30% blank), and its Stock file is a real shared
+multi-plant ledger with an extra `PLANT` column plus a genuine vendor
+column HRS's own Stock file also has (see
+`apps/services/parsers/achhad_mir.py` / `achhad_stock.py` / `vapi_mir.py` /
+`vapi_stock.py` docstrings and `apps/services/matching_achhad.py` /
+`matching_vapi.py` for what each difference means for match confidence).
+Each plant got its own parsers/models/matcher/views rather than being
+force-fit into a shared shape.
 
-## What this replaces, and why
+## Architecture
 
-- **PO data**: previously 6 CSVs on Drive (one per plant, domestic +
-  imports), edited by hand which risked Google Sheets creating duplicate
-  copies on open. Now lives in Postgres (`PurchaseOrder`/`POItem`/`POFlag`),
-  with the CSVs read-only during the transition.
-- **RM Stock history**: the raw Stock file has no date column and gets
-  overwritten daily by factory staff, so there was no way to do
-  consumption trend analysis. `StockSnapshot` captures one row per
-  material per plant per day, safe to rerun (unique constraint on
-  plant+material+date).
-- **MIR**: intentionally NOT stored as its own table. It's read live off
-  Drive (`core/mir_stock.py`) purely to cross-check PO/Stock data and
-  surface qty/rate discrepancies - Dishant's call, since MIR itself isn't
-  a system of record that needs history.
-- **Advance Licenses**: previously re-parsed from the license PDF live on
-  every dashboard load, with usage against POs best-effort guessed from
-  linked PO text. Now a real ledger (`AdvanceLicense`/`LicenseItem`/
-  `LicensePOUsage`), so "which PO used this license, for how much, what's
-  left" is a stored fact, not a re-computation.
-- **Extraction (new POs / license letters)**: does NOT call the Anthropic
-  API directly (cost reasons). Instead: `scan_new_pos` finds new PO
-  folders on Drive and writes a uniquely-named request batch file to a
-  shared Drive folder; a Claude scheduled task (set up separately, outside
-  this codebase) reads that batch, extracts the documents, and writes a
-  uniquely-named result batch back; `ingest_extraction_results` reads that
-  and upserts into Postgres. `ExtractionQueue` in Postgres is the real
-  source of truth for "what's still pending" - the Drive files are just
-  the hand-off inbox/outbox, never mutated in place, so there's no race
-  between the two sides.
+- **Django + Postgres + WhiteNoise**, same conventions as the TDS Automation
+  app: static frontend served directly from `frontend/` with no build step,
+  `apps/core` for models, `apps/api` for HTTP views, `apps/services` for
+  Drive access/parsing/matching and the auth-adjacent services.
+- **Device-aware 2FA + JWT-in-httpOnly-cookie auth**, ported from the TDS
+  Automation App's own auth architecture - see CLAUDE.md's "Auth & security
+  architecture" and ARCHITECTURE.md's auth flow diagram.
+- **Google Drive/Sheets access via a service account**, not a user OAuth
+  session, since sync jobs need to run without a human/Claude session in
+  the loop. Share the relevant Drive folders/files with the service
+  account's email. Scheduling (Render Cron Job or similar) isn't set up
+  yet - commands currently only run when invoked manually.
+- **Three independent sync sources per plant**, one management command each:
+  - HRS: `sync_po_csv`, `sync_mir`, `sync_stock`, then `match_hrs`
+  - RTP-Achhad: `sync_achhad_po_csv`, `sync_achhad_mir`, `sync_achhad_stock`,
+    then `match_achhad`
+  - RTP-Vapi: `sync_vapi_po_csv`, `sync_vapi_mir`, `sync_vapi_stock`, then
+    `match_vapi`
+- **Reconciliation runs after sync**, not live on page load - `POMirMatch`
+  and `MirStockMatch` are computed and stored, so a viewer opening the
+  dashboard reads pre-computed results, not something recalculated per view.
 
-## Project layout
+## Why the data model looks the way it does
 
-```
-manage.py
-purchase_tracker/          Django project (settings, urls, wsgi)
-core/
-  models.py                 All persisted tables (see its module docstring)
-  plant_config.py            One place for Drive folder IDs / file titles / sheet names
-  drive.py                   Service-account Drive access (read + hand-off file writes)
-  mir_stock.py                Live MIR/RM Stock file readers, per-plant column adapters
-  auth_views.py               Google Sign-In, restricted to @ravasco.com
-  decorators.py                Server-side login/role/plant-access enforcement
-  serializers.py                 Model -> JSON dict shaping, kept out of views.py
-  views.py                        Request handling, thin - delegates to the above
-  admin.py                         Django admin (admin-only fallback, not the plant-staff UI)
-  management/commands/
-    snapshot_rm_stock.py           Daily RM Stock snapshot job
-    scan_new_pos.py                 Extraction pipeline, step 1 (queue + request batch)
-    ingest_extraction_results.py     Extraction pipeline, step 2 (ingest result batch)
-    test_drive_access.py             One-off: confirms the service account can read Drive
-public/index.html            Frontend (vanilla JS, no build step)
-secrets/service_account.json  Git-ignored - Drive service account key (never commit)
-```
+Two audits (see project history) found real problems the schema is built
+around, not against:
+
+- **HRS's own PO Number field in MIR is unreliable** (~30% blank, ~25% in a
+  non-standard format that won't string-match the CSV's PO Number). Vendor
+  name is used as a hard gate in matching, never a scored factor - two
+  different vendors are never the same PO. PO Number match is a free "tier
+  1" shortcut when it happens to be present and valid, not the primary key.
+- **HRS's Stock file is one row per (material, vendor lot), not one row per
+  material.** `StockLot` reflects that directly, and `MirStockMatch` joins
+  on (material, vendor) instead of material name alone - the earlier
+  Artifact prototype aggregated everything by material name only, which
+  blends different vendors' different rates into one number and can hide or
+  manufacture discrepancies that aren't real.
+- **`StockSnapshot` is a real daily row per stock lot**, not a dated copy of
+  the whole file (which is what Drive's `RM_Stock_Daily_Snapshots` /
+  `RM Stock Snapshots` folders currently do, inconsistently - only one dated
+  snapshot exists in each as of this writing). This makes "what was the rate
+  on this material two weeks ago" an actual query instead of a manual diff
+  across xlsx files.
+- **PO Item Id is not always a trustworthy join key** - audit found one code
+  (`11287940`) reused across three chemically unrelated materials from two
+  different vendors on the same PO source data. The PO<->MIR matcher never
+  relies on Item Id; it scores on material description + qty + rate +
+  total/final value, gated by vendor name.
+
+## PO<->MIR matching
+
+Built and verified against real Drive data - see `apps/services/matching.py` /
+`matching_achhad.py` / `matching_vapi.py`.
+
+- Vendor name: hard gate (normalized, legal suffixes stripped, matched by
+  containment rather than exact equality - see CLAUDE.md for why)
+- Material description token overlap: 30%
+- Qty closeness: 20%
+- Rate closeness: 20%
+- Pre-tax value closeness: 30%
+
+Extended from the Artifact prototype's 55/45 description+amount split - qty
+and rate are now real signals, not folded into one blended total, since a
+coincidental amount match is much less likely to fool the matcher when qty
+and rate both have to line up too. MIR<->Stock matching runs alongside it,
+gated on (material, vendor) for HRS and Vapi (both have a real vendor column
+on their Stock sheet) and material alone for Achhad (its Stock sheet has no
+vendor column) - see CLAUDE.md for the full breakdown of what's genuinely
+different between each plant's matcher and why.
+
+## Status
+
+**HRS, RTP-Achhad, and RTP-Vapi are all fully wired and verified end-to-end
+against real Drive data**, not just local test files: sync commands,
+matching, API, and the frontend's plant tabs (HRS, Silvassa / RTP-Achhad /
+RTP-Vapi) sharing one rendering path for Purchase Orders and Raw Material
+Analysis. The Google service account has real Viewer access to all three
+plants' Drive folders and every plant's `sync_*`/`match_*` commands have
+been run successfully against the live files (not just `--file` against
+downloaded copies).
+
+**Updated 2026-09-04 - the paragraph below is stale in several ways; see the corrections that
+follow it.** Import POs are now built for all three plants (not just domestic), including a real
+reconciliation layer, and a custom in-app user-management UI exists. What's still genuinely not
+built: Licenses (Advance Authorisation tracking) and scheduling (every sync/match command is still
+manual, triggered by hand or via the admin panel's sync-trigger buttons).
+
+~~Not yet built: import POs for any plant (only domestic is parsed so far -
+each plant has its own separate Imports CSV on Drive with a different
+column set), scheduling (every sync/match command is still manual), and a
+custom user-management UI (accounts are created via `manage.py
+create_pt_user` or Django Admin for now - see "Local setup" below).~~
+**Corrections (2026-09-04):**
+- **Import POs are built for HRS, RTP-Achhad, and RTP-Vapi alike.** All three plants' Imports
+  CSVs turned out to share one identical column layout (BOE number, bill of lading, exchange
+  rate, dual PO/BOE quantities, license numbers, etc.) - unlike MIR/Stock, which really do differ
+  per plant - so all three go through one shared parser
+  (`apps/services/parsers/import_po_csv.py`). Import POs also get a real reconciliation layer
+  computed at read time (`apps/services/import_flags.py`): shipment-stage rollup, PO-vs-BOE qty
+  discrepancy detection, delivery-date status, partial-delivery detection, and 7 data-quality
+  flags. See CLAUDE.md's "Known gaps" section for exactly which 3 KPI cards (the ones that would
+  need a real MIR-equivalent data source) are still disabled.
+- **There's now a real in-app user-management UI**, not just Django Admin/`manage.py
+  create_pt_user`: `frontend/admin.html`'s Users panel (create/edit/activate/deactivate/role/
+  per-plant scoping/password reset), backed by `apps/api/routers/users_views.py`. `manage.py
+  create_pt_user` remains the only way to create the very first account, before any admin exists
+  to use the panel.
+- Scheduling and Licenses (Advance Authorisation tracking) are still genuinely not built - both
+  remain correct as written above.
+
+Every
+API endpoint now requires authentication (device-aware 2FA login, see
+CLAUDE.md). See CLAUDE.md for the full list of known gaps and the bugs
+already found and fixed along the way
+- several real ones (a Drive API v2/v3 field-name bug, a Decimal-precision
+bug in GST rate fields, a pre-tax/post-tax mismatch in the value comparison,
+a Postgres numeric-rounding mismatch that broke change-detection
+idempotency for one plant's data, `.env` parsing gotchas, an uncaught
+`decimal.InvalidOperation` in the inline field-correction endpoints, and a
+stale-response race in the PO/material detail modals) came out of getting
+this far.
+
+## Frontend pages
+
+Four protected pages share one top nav (see CLAUDE.md's "Frontend pages and the shared top nav"
+for the full breakdown): **`home.html`** (landing page, live cross-plant KPI row), **`index.html`**
+(`/`, the real PO<->MIR<->Stock reconciliation dashboard), **`search-po.html`** (look up a PO by
+number across all 3 plants at once), and **`admin.html`** (admin-only: per-plant sync status plus
+the in-app Users panel above). Every mutating write (inline field corrections, dismiss/override,
+user management) is logged: `PTAuditLog` (`pt_audit_log`) covers login/logout, and each
+correction/dismissal writes its own audit row (`DomesticPOCorrection`/`ImportPOCorrection`,
+`dismissed_by`/`dismissed_at`/`dismissed_reason` columns on the match models) - see CLAUDE.md for
+specifics. `PTUser.plants` lets an admin be scoped to specific plants for write access (empty list
+= all plants); every role can still read every plant's dashboard.
 
 ## Local setup
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate        # .venv\Scripts\activate on Windows
-pip install -r requirements.txt
-cp .env.example .env              # then fill in real values, see below
-python manage.py migrate
-python manage.py test_drive_access   # confirms the service account can see each plant's Drive folder
-python manage.py runserver
+uv sync
+cp .env.example .env   # fill in DB, Google service account, SMTP, and OAuth details
+uv run python manage.py migrate
+uv run python manage.py createcachetable   # one-off: creates the DatabaseCache table
+
+# Bootstrap the first account - nobody can log in without at least one.
+uv run python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
+
+uv run python manage.py runserver
+# -> open http://127.0.0.1:8000/login.html
 ```
-
-## Required secrets / config (see `.env.example` for the full list)
-
-- `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_REDIRECT_URI`:
-  from Google Cloud Console, used only for "Sign in with Google" -
-  restricted server-side to `@ravasco.com` emails (see `core/auth_views.py`).
-- `secrets/service_account.json`: a separate Google Cloud service account
-  key, distinct from the OAuth client above. This is what reads Drive
-  regardless of who's logged in - the signed-in user's own Drive
-  permissions are never used. Must be shared as Viewer on the "Purchase
-  Orders HO" Drive folder (permissions cascade to everything below it, so
-  the 3 plant folders don't need separate sharing).
-- `DATABASE_URL`: Postgres connection string. Render provides this
-  automatically once a Postgres instance is attached to the service.
-- `DRIVE_EXTRACTION_QUEUE_FOLDER`: Drive folder ID used for the
-  extraction request/result hand-off files (a subfolder of "Purchase
-  Orders HO", already shared via the parent).
-
-**Never commit `.env` or `secrets/service_account.json`** - both are
-git-ignored. On Render, set env vars in the service's Environment tab and
-upload the service account key as a Secret File, not a plain env var (it's
-multi-line and easy to mangle as one).
-
-## Deploying on Render (from scratch)
-
-1. New > PostgreSQL. Once created, Render exposes an Internal Database URL.
-2. New > Web Service, connect this GitHub repo.
-   - Environment: Python 3
-   - Build Command: `pip install -r requirements.txt && python manage.py collectstatic --noinput && python manage.py migrate`
-   - Start Command: `gunicorn purchase_tracker.wsgi`
-3. In the service's Environment tab, set every variable listed in
-   `.env.example` with real values, plus `DATABASE_URL` from step 1.
-4. Upload `service_account.json` as a Secret File; set
-   `GOOGLE_SERVICE_ACCOUNT_JSON_PATH` to the mounted path Render shows you
-   (typically `/etc/secrets/service_account.json`).
-5. Once deployed, add the real `https://<your-app>.onrender.com/auth/google/callback`
-   redirect URI back in Google Cloud Console's OAuth client settings.
-
-## Daily/scheduled jobs
-
-Render's Shell tab, its one-off Job runner, and Render Cron Jobs are all
-paid-tier features and unavailable on this project's plan - there's no way
-to open a shell or set up a native cron trigger to run
-`python manage.py <command>` directly on the server. Instead, the same 5
-management commands are exposed over HTTP:
-
-`POST /api/tasks/run/<task_name>` (`run_task` view in `core/views.py`)
-runs one of the whitelisted commands - `backfill_from_master_csv`,
-`scan_new_pos`, `ingest_extraction_results`, `snapshot_rm_stock`,
-`refresh_plant_file_status` - via Django's `call_command`. It accepts
-either an authenticated admin browser session, or a shared-secret token
-passed as `?token=...` or an `X-Task-Token` header, checked against the
-`RUN_TASKS_TOKEN` env var (see `.env.example`).
-
-**Manual runs**: the Admin tab in `public/index.html` has a "Scheduled
-Tasks (manual run)" card with a "Run now" button per task, for anyone
-logged in as an admin - no server access needed.
-
-**Automatic runs**: since there's no cron on this plan, wire up a free
-external scheduler instead - e.g. [cron-job.org](https://cron-job.org) -
-to send a `POST` to
-`https://<your-render-url>/api/tasks/run/<task_name>?token=<RUN_TASKS_TOKEN>`
-on a schedule. Recommended cadences:
-
-- `refresh_plant_file_status` - every 15-30 min. Cheap check, and this is
-  what keeps the "is today's file uploaded" indicator honest, so it
-  benefits from being close to real-time.
-- `snapshot_rm_stock` - once daily, at a fixed time after factory data
-  entry is done for the day, e.g. 22:00 IST (matching the old EOD
-  timing). Running it more than once a day is harmless (unique
-  constraint on plant+material+date) but pointless before the day's
-  entry is finished.
-- `scan_new_pos` and `ingest_extraction_results` - every 2-4 hours each.
-  These drive the extraction hand-off (see "What this replaces, and why"
-  above), so they don't need to be tight to the minute - just often
-  enough that a new PO folder doesn't sit unnoticed for a full day.
-  Stagger `ingest_extraction_results` to run some time after
-  `scan_new_pos` so the Claude-side batch has had a chance to complete.
-
-**`RUN_TASKS_TOKEN`** must be set in Render's Environment tab like the
-other secrets in this project - never logged, never committed, never put
-in a URL that ends up in a browser history you don't control. Treat it
-with the same care as `GOOGLE_OAUTH_CLIENT_SECRET` or the service account
-key.
-
-Because there's no shell access to tail logs, `AuditLog` records every
-task run (who/what triggered it - including "external scheduler" for
-token-authenticated calls - and whether it succeeded), so there's still a
-trail to check if a task didn't run or failed.
-
-## Security model
-
-- No local passwords anywhere - login is Google Sign-In only, restricted
-  server-side to `@ravasco.com` (see `core/auth_views.py`'s module
-  docstring for why the `hd` OAuth hint alone isn't sufficient).
-- 2FA is inherited from your Google Workspace admin console's own
-  enforcement (Security > 2-Step Verification) - this app doesn't
-  implement 2FA itself, confirm that setting is actually on.
-- Plant-level access is re-checked server-side on every API call (see
-  `core/decorators.py`) - never just hidden in the frontend.
-- Every login and every data-changing action is written to `AuditLog`.

@@ -1,0 +1,408 @@
+<!--
+  admin.html - Admin Panel: sync status for every plant, plus real in-app
+  user management (create / edit / activate / deactivate) - ported from the
+  TDS Automation App's own admin.html Users panel, not links out to Django
+  Admin. See js/auth.js's renderNavTabs()/renderUserBadge() for the shared
+  topnav + circle-avatar user menu used across every protected page.
+
+  `manage.py create_pt_user` still exists and is still the only way to (a)
+  create the very first account before any admin exists to use this panel,
+  and (b) reset an existing user's forgotten password - this page's "+ Add
+  User" creates every account after that first one, and its Edit action
+  covers role/status/name/designation changes, but there is deliberately no
+  password-reset action here (see apps/api/routers/users_views.py's header
+  comment - the TDS admin panel this was ported from has the same gap, not
+  invented here).
+
+  Admin-only. GET /api/auth/users is IsAdmin-gated server-side - the
+  access-denied state below is defense in depth for a non-admin who
+  navigates here directly (the Admin nav tab and home.html's Admin Panel
+  quick-action card are already hidden for them), not the primary gate.
+
+  Protected page: requireAuth() (js/auth.js) redirects to /login.html if
+  there's no active session.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="img/indus_logo.png">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Panel - Purchase Tracker</title>
+  <link rel="stylesheet" href="css/brand.css">
+  <style>
+    .sync-plant-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 16px 20px; box-shadow: var(--shadow-sm); margin-bottom: 12px;
+    }
+    .sync-plant-name { font-family: var(--font-head); font-weight: 800; color: var(--navy); font-size: 13.5px; margin-bottom: 10px; }
+    .sync-row-list { display: flex; gap: 24px; flex-wrap: wrap; }
+    .sync-item { font-size: 12.5px; color: var(--text-muted); }
+    .sync-item b { color: var(--text); font-weight: 700; }
+    .sync-item.failed { color: var(--red); }
+    .uf-plants { display: flex; gap: 14px; flex-wrap: wrap; }
+    .uf-plants label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: normal; color: var(--text); cursor: pointer; }
+    .plants-pill { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--text-muted); background: var(--bg-soft, #f1f5f9); border-radius: 6px; padding: 2px 8px; margin-left: 6px; }
+  </style>
+</head>
+<body>
+
+  <nav class="topnav">
+    <a href="home.html" class="nav-brand">
+      <img src="img/indus_logo.png" alt="Ravasco" class="nav-logo" onerror="this.style.display='none'">
+      <div class="nav-brand-text">
+        <h1>Purchase Tracker</h1>
+        <p>Ravasco Transmission &amp; Packing</p>
+      </div>
+    </a>
+    <div class="nav-tabs" id="navTabs"></div>
+    <div class="nav-spacer"></div>
+    <div class="nav-user" id="navUser"></div>
+  </nav>
+
+  <div class="page-wrap" id="pageBody">
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="spinner"></div><span>Loading&hellip;</span>
+    </div>
+
+    <div id="deniedContent" style="display:none;">
+      <div class="access-denied">
+        <h2>Admin access required</h2>
+        <p>Your account doesn't have the admin role needed to view this page. Contact an existing admin if you believe this is wrong.</p>
+      </div>
+    </div>
+
+    <div id="mainContent" style="display:none;">
+
+      <div class="section-title">Sync Status</div>
+      <div id="syncPlantCards" style="margin-bottom:32px;"></div>
+
+      <div class="section-title-row">
+        <div class="section-title">Users</div>
+        <button type="button" class="btn btn-primary" id="addUserBtn">+ Add User</button>
+      </div>
+      <div class="stat-sub" style="margin:-10px 0 18px;">
+        To create the very first account (before any admin exists to use this panel), run <code>manage.py create_pt_user</code> on the server - see CLAUDE.md. Every account after that, including password resets, can be managed right here via Edit.
+      </div>
+      <div id="usersArea"></div>
+
+    </div>
+  </div>
+
+  <!-- Create/Edit user modal -->
+  <div class="uf-overlay" id="uf-overlay">
+    <div class="uf-modal">
+      <div class="uf-modal-head">
+        <h3 id="uf-title">Add User</h3>
+        <button type="button" id="uf-close">&times;</button>
+      </div>
+      <div class="uf-body">
+        <div id="uf-err" class="uf-err"></div>
+        <div class="uf-row">
+          <label class="uf-label">Full Name</label>
+          <input id="uf-fullname" type="text" class="uf-input" placeholder="Dishant Barot">
+        </div>
+        <div class="uf-row">
+          <label class="uf-label">Email <span style="color:var(--red)">*</span></label>
+          <input id="uf-email" type="email" class="uf-input" placeholder="user@ravasco.com">
+        </div>
+        <div class="uf-row" id="uf-pw-row">
+          <label class="uf-label" id="uf-pw-label">Password <span style="color:var(--red)">*</span></label>
+          <input id="uf-password" type="password" class="uf-input" placeholder="Min. 8 characters" autocomplete="new-password">
+          <p class="uf-hint" id="uf-pw-hint">Share this password with the user directly - there's no in-app "change my own password" flow yet, only an admin-driven reset here.</p>
+        </div>
+        <div class="uf-row">
+          <label class="uf-label">Designation</label>
+          <input id="uf-designation" type="text" class="uf-input" placeholder="Purchase Manager">
+        </div>
+        <div class="uf-row">
+          <label class="uf-label">Role <span style="color:var(--red)">*</span></label>
+          <select id="uf-role" class="uf-input">
+            <option value="viewer">Viewer - read-only dashboard access</option>
+            <option value="editor">Editor - full dashboard access</option>
+            <option value="admin">Admin - full access + user management</option>
+          </select>
+        </div>
+        <div class="uf-row">
+          <label class="uf-label">Plants (inline edit access)</label>
+          <div id="uf-plants" class="uf-plants"></div>
+          <p class="uf-hint">Leave every box unchecked for access to all plants. Only affects the inline "Edit Everywhere" pencils - every role can still read every plant's dashboard.</p>
+        </div>
+        <div class="uf-row" id="uf-active-row" style="display:none;">
+          <label class="uf-label">Status</label>
+          <select id="uf-active" class="uf-input">
+            <option value="true">Active</option>
+            <option value="false">Inactive (blocked from signing in)</option>
+          </select>
+        </div>
+      </div>
+      <div class="uf-foot">
+        <button type="button" class="btn" id="uf-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="uf-submit">Create User</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toastStack"></div>
+
+  <script src="js/auth.js"></script>
+  <script src="js/shared.js"></script>
+  <script>
+    let USERS = [];
+    let editingUserId = null;
+
+    (async function () {
+      const user = await requireAuth();
+      if (!user) return;
+      renderNavTabs(document.getElementById('navTabs'), 'admin');
+      renderUserBadge(document.getElementById('navUser'));
+
+      document.getElementById('loadingOverlay').style.display = 'none';
+      if (user.role !== 'admin') {
+        document.getElementById('deniedContent').style.display = '';
+        return;
+      }
+      document.getElementById('mainContent').style.display = '';
+
+      document.getElementById('addUserBtn').onclick = () => openForm(null);
+      document.getElementById('uf-close').onclick = closeForm;
+      document.getElementById('uf-cancel').onclick = closeForm;
+      document.getElementById('uf-submit').onclick = submitForm;
+
+      await Promise.all([loadSyncCards(), loadUsers()]);
+    })();
+
+    async function loadSyncCards() {
+      const el = document.getElementById('syncPlantCards');
+      const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM' };
+      const rows = await Promise.all(PLANT_KEYS.map(async key => {
+        try {
+          const data = await apiForPlant(key, '/sync-status');
+          return { key, sync: data.sync, failed: false };
+        } catch (e) {
+          console.error('admin: sync-status failed for ' + key + ':', e);
+          return { key, sync: null, failed: true };
+        }
+      }));
+
+      el.innerHTML = rows.map(r => {
+        if (r.failed) {
+          return '<div class="sync-plant-card"><div class="sync-plant-name">' + escapeHtml(PLANTS[r.key].label) + '</div>' +
+            '<div class="sync-item failed">Sync status unavailable right now.</div></div>';
+        }
+        const items = Object.keys(labels).map(src => {
+          const run = r.sync[src];
+          if (!run) return '<span class="sync-item">' + labels[src] + ': never synced</span>';
+          const when = new Date(run.startedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+          const cls = run.status === 'success' ? '' : 'failed';
+          return '<span class="sync-item ' + cls + '">' + labels[src] + ': <b>' + escapeHtml(when) + '</b></span>';
+        }).join('');
+        return '<div class="sync-plant-card"><div class="sync-plant-name">' + escapeHtml(PLANTS[r.key].label) + '</div>' +
+          '<div class="sync-row-list">' + items + '</div></div>';
+      }).join('');
+    }
+
+    // ── Users: list/render ──────────────────────────────────────────
+    async function loadUsers() {
+      const el = document.getElementById('usersArea');
+      try {
+        const res = await fetch('/api/auth/users', { credentials: 'same-origin' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        USERS = data.users || [];
+        renderUsers();
+      } catch (e) {
+        console.error('admin: failed to load users:', e);
+        el.innerHTML = '<div class="search-empty" style="color:var(--red);">Couldn\'t load the user list right now. Refresh to retry.</div>';
+      }
+    }
+
+    function renderUsers() {
+      const el = document.getElementById('usersArea');
+      if (!USERS.length) {
+        el.innerHTML = '<div class="search-empty">No users found.</div>';
+        return;
+      }
+      el.innerHTML = '<div class="users-grid">' + USERS.map(u => {
+        const color = { admin: 'var(--gold-light)', editor: 'var(--blue)', viewer: 'var(--navy-mid)' }[u.role] || 'var(--navy-mid)';
+        const initials = userInitials(u);
+        return '<div class="user-card' + (u.isActive ? '' : ' inactive') + '">' +
+          '<div class="user-card-head">' +
+            '<div class="user-card-avatar" style="background:' + color + '">' + escapeHtml(initials) + '</div>' +
+            '<div><div class="user-card-name">' + escapeHtml(u.fullName || u.email) + '</div>' +
+            '<div class="user-card-email">' + escapeHtml(u.email) + '</div></div>' +
+          '</div>' +
+          '<div class="user-card-meta"><span class="role-pill ' + escapeHtml(u.role) + '">' + escapeHtml(u.role) + '</span>' +
+            '<span class="status-pill ' + (u.isActive ? 'active' : 'inactive') + '">' + (u.isActive ? 'Active' : 'Inactive') + '</span>' +
+            '<span class="plants-pill">' + escapeHtml(plantsLabel(u.plants)) + '</span></div>' +
+          '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
+          '<div class="user-card-foot">' +
+            '<span style="font-size:11px;color:var(--text-muted);">Since ' + escapeHtml(formatDateIN(u.createdAt ? u.createdAt.slice(0, 10) : null)) + '</span>' +
+            '<div class="user-card-actions">' +
+              '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
+              '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>';
+      }).join('') + '</div>';
+
+      el.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openForm(USERS.find(u => u.userId === Number(btn.dataset.edit))));
+      el.querySelectorAll('[data-toggle]').forEach(btn => btn.onclick = () => toggleActive(Number(btn.dataset.toggle)));
+    }
+
+    function plantsLabel(plants) {
+      if (!plants || !plants.length) return 'All plants';
+      return plants.map(k => (PLANTS[k] || { label: k }).label).join(', ');
+    }
+
+    function userInitials(u) {
+      const name = (u.fullName || '').trim();
+      if (name) {
+        const parts = name.split(/\s+/).filter(Boolean);
+        return (parts.length > 1 ? parts[0][0] + parts[parts.length - 1][0] : parts[0].slice(0, 2)).toUpperCase();
+      }
+      return (u.email || '?').slice(0, 2).toUpperCase();
+    }
+
+    // ── Users: create/edit form ─────────────────────────────────────
+    function renderPlantsCheckboxes(selected) {
+      const el = document.getElementById('uf-plants');
+      const sel = selected || [];
+      el.innerHTML = PLANT_KEYS.map(key =>
+        '<label><input type="checkbox" value="' + key + '"' + (sel.includes(key) ? ' checked' : '') + '> ' + escapeHtml(PLANTS[key].label) + '</label>'
+      ).join('');
+    }
+
+    function readPlantsCheckboxes() {
+      return Array.from(document.querySelectorAll('#uf-plants input[type="checkbox"]:checked')).map(cb => cb.value);
+    }
+
+    function openForm(user) {
+      editingUserId = user ? user.userId : null;
+      const edit = !!user;
+      document.getElementById('uf-title').textContent = edit ? 'Edit User' : 'Add User';
+      document.getElementById('uf-submit').textContent = edit ? 'Save Changes' : 'Create User';
+      document.getElementById('uf-fullname').value = user ? (user.fullName || '') : '';
+      document.getElementById('uf-email').value = user ? user.email : '';
+      document.getElementById('uf-email').readOnly = edit;
+      document.getElementById('uf-designation').value = user ? (user.designation || '') : '';
+      document.getElementById('uf-role').value = user ? user.role : 'viewer';
+      document.getElementById('uf-password').value = '';
+      renderPlantsCheckboxes(user ? user.plants : []);
+      // Password row now stays visible in edit mode too (added 2026-09-04,
+      // in-app reset) - just optional there: label/hint/required-asterisk
+      // swap to make "blank = leave unchanged" obvious.
+      document.getElementById('uf-pw-label').innerHTML = edit
+        ? 'New Password <span style="color:var(--text-muted);font-weight:400;">(leave blank to keep current)</span>'
+        : 'Password <span style="color:var(--red)">*</span>';
+      document.getElementById('uf-pw-hint').textContent = edit
+        ? 'Only fill this in to reset the password - leave it blank to leave the current password untouched.'
+        : "Share this password with the user directly - there's no in-app \"change my own password\" flow yet, only an admin-driven reset here.";
+      document.getElementById('uf-active-row').style.display = edit ? 'block' : 'none';
+      if (edit) document.getElementById('uf-active').value = String(user.isActive);
+      document.getElementById('uf-err').classList.remove('show');
+      document.getElementById('uf-overlay').classList.add('open');
+      document.getElementById('uf-fullname').focus();
+    }
+
+    function closeForm() {
+      document.getElementById('uf-overlay').classList.remove('open');
+      editingUserId = null;
+    }
+
+    async function submitForm() {
+      const errEl = document.getElementById('uf-err');
+      errEl.classList.remove('show');
+
+      const fullName = document.getElementById('uf-fullname').value.trim();
+      const email = document.getElementById('uf-email').value.trim();
+      const password = document.getElementById('uf-password').value;
+      const designation = document.getElementById('uf-designation').value.trim();
+      const role = document.getElementById('uf-role').value;
+      const isActive = document.getElementById('uf-active').value === 'true';
+      const plants = readPlantsCheckboxes();
+
+      if (!editingUserId) {
+        if (!email) { return showFormError('Email is required.'); }
+        if (password.length < 8) { return showFormError('Password must be at least 8 characters.'); }
+      } else if (password && password.length < 8) {
+        // Blank is fine (means "don't change it") - only validate length
+        // when the admin actually typed a new one.
+        return showFormError('Password must be at least 8 characters.');
+      }
+
+      const btn = document.getElementById('uf-submit');
+      btn.disabled = true;
+      btn.textContent = 'Saving…';
+      try {
+        if (editingUserId) {
+          const payload = { fullName, designation, role, isActive, plants };
+          if (password) payload.password = password;
+          await patchUser(editingUserId, payload);
+          showToast('User updated.', 'success');
+        } else {
+          await createUserApi({ email, password, fullName, designation, role, plants });
+          showToast('User created.', 'success');
+        }
+        closeForm();
+        await loadUsers();
+      } catch (e) {
+        showFormError(e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = editingUserId ? 'Save Changes' : 'Create User';
+      }
+    }
+
+    function showFormError(msg) {
+      const errEl = document.getElementById('uf-err');
+      errEl.textContent = msg;
+      errEl.classList.add('show');
+    }
+
+    async function toggleActive(userId) {
+      const user = USERS.find(u => u.userId === userId);
+      if (!user) return;
+      try {
+        await patchUser(userId, { isActive: !user.isActive });
+        showToast('User ' + (user.isActive ? 'deactivated' : 'activated') + '.', 'success');
+        await loadUsers();
+      } catch (e) {
+        showToast('Failed: ' + e.message, 'error');
+      }
+    }
+
+    async function createUserApi(payload) {
+      const res = await fetch('/api/auth/users/create', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Something went wrong. Please try again.');
+      return data;
+    }
+
+    async function patchUser(userId, payload) {
+      const res = await fetch('/api/auth/users/' + userId, {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Something went wrong. Please try again.');
+      return data;
+    }
+
+    // ── Toast ────────────────────────────────────────────────────────
+    function showToast(message, kind) {
+      const stack = document.getElementById('toastStack');
+      const el = document.createElement('div');
+      el.className = 'toast' + (kind ? ' ' + kind : '');
+      el.textContent = message;
+      stack.appendChild(el);
+      setTimeout(() => el.remove(), 3500);
+    }
+  </script>
+</body>
+</html>

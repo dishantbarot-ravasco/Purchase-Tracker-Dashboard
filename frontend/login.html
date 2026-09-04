@@ -1,0 +1,236 @@
+<!--
+  login.html - Sign-in page for the Purchase Tracker Dashboard.
+
+  Visual design ported from the TDS Automation App's frontend/index.html
+  (split hero/login-card layout, navy/gold theme, Ravasco logo) so both
+  internal apps share one look. The underlying form/element IDs are
+  unchanged from before this pass - js/login.js still drives this page
+  exactly as it did (password step -> optional email-OTP device-verify
+  step -> redirect), only the markup/styling around them changed.
+
+  Served directly by WhiteNoise from frontend/ (no Django route/template
+  rendering for this file - see config/urls.py), so asset paths below are
+  plain relative paths, not {% static %} tags.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="img/indus_logo.png">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In - Purchase Tracker</title>
+  <link rel="stylesheet" href="css/brand.css">
+  <style>
+    body { display: flex; flex-direction: column; min-height: 100vh; }
+
+    .login-bg { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 100vh; }
+    @media (max-width: 760px) {
+      .login-bg { grid-template-columns: 1fr; }
+      .login-hero { display: none; }
+    }
+
+    /* ── Left hero panel ── */
+    .login-hero {
+      background: var(--navy);
+      background-image:
+        radial-gradient(ellipse 80% 60% at 20% 40%, rgba(193,127,10,.18) 0%, transparent 55%),
+        radial-gradient(ellipse 60% 40% at 80% 80%, rgba(193,127,10,.08) 0%, transparent 50%);
+      display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between;
+      padding: 48px 52px; position: relative; overflow: hidden;
+    }
+    .hero-logo-badge { display: inline-block; background: #fff; border-radius: 8px; padding: 10px 14px; box-shadow: 0 2px 12px rgba(0,0,0,.25); }
+    .hero-logo-img { height: 44px; width: auto; object-fit: contain; display: block; }
+    .hero-body h2 { font-family: var(--font-head); font-size: 32px; font-weight: 900; color: #fff; line-height: 1.2; letter-spacing: -.01em; }
+    .hero-body h2 span { color: var(--gold-light); }
+    .hero-body p { font-size: 13px; color: rgba(255,255,255,.55); margin-top: 14px; line-height: 1.65; max-width: 340px; }
+    .hero-pillars { display: flex; flex-direction: column; gap: 10px; margin-top: 32px; }
+    .hero-pillar { display: flex; align-items: center; gap: 12px; font-size: 12px; color: rgba(255,255,255,.7); }
+    .hero-pillar-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); flex-shrink: 0; }
+    .hero-foot-text { font-size: 12px; color: rgba(255,255,255,.3); letter-spacing: .08em; text-transform: uppercase; }
+
+    /* ── Right login panel ── */
+    .login-right { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 32px; background: var(--bg-page); }
+    .login-panel { width: 100%; max-width: 400px; }
+
+    .login-brand { text-align: center; margin-bottom: 36px; }
+    .login-brand-logo { height: 48px; width: auto; object-fit: contain; display: block; margin: 0 auto 14px; }
+    .login-brand h1 { font-family: var(--font-head); font-size: 20px; font-weight: 900; color: var(--navy); letter-spacing: .04em; }
+    .login-brand p { font-size: 11px; color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
+
+    .login-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-lg); }
+    .login-card-header { padding: 22px 28px 18px; border-bottom: 1px solid var(--border); background: var(--navy); }
+    .login-card-header h2 { font-family: var(--font-head); font-size: 16px; font-weight: 800; letter-spacing: .04em; color: #fff; }
+    .login-card-header p { font-size: 11px; color: rgba(255,255,255,.5); margin-top: 4px; }
+    .login-card-body { padding: 28px; }
+    .login-card-body .form-group { margin-bottom: 18px; }
+
+    .login-input-wrap { position: relative; }
+    .login-input-wrap .form-control { padding-left: 42px; }
+    .input-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 15px; pointer-events: none; opacity: .45; }
+
+    .login-options { display: flex; align-items: center; margin-bottom: 18px; }
+    .form-check { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+    .form-check-input { width: 16px; height: 16px; accent-color: var(--gold-light); cursor: pointer; flex-shrink: 0; }
+    .form-check-label { font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none; }
+
+    .login-btn {
+      width: 100%; padding: 14px; background: var(--navy); border: none; border-radius: var(--radius);
+      font-family: var(--font-head); font-size: 12px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase;
+      color: #fff; cursor: pointer; transition: all .2s;
+    }
+    .login-btn:hover { background: var(--navy-mid); }
+    .login-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+    .login-error {
+      display: none; align-items: flex-start; gap: 10px; padding: 12px 14px;
+      background: var(--red-pale); border: 1px solid var(--red-border);
+      border-radius: var(--radius); font-size: 12px; color: var(--red); margin-top: 16px;
+    }
+    .login-error.show { display: flex; }
+
+    .login-footer { text-align: center; padding: 18px 20px; font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--bg-section); }
+    .iso-ribbon {
+      display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
+      border: 1px solid var(--green-border); background: var(--green-pale);
+      border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: .1em; color: var(--green); margin-bottom: 8px;
+    }
+    .secure-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-light); margin-top: 4px; }
+    .secure-badge::before { content: '🔒'; font-size: 11px; }
+
+    .otp-icon { font-size: 36px; margin-bottom: 12px; }
+    .otp-hint { margin: 0 0 16px; font-size: 13px; color: var(--text-muted); line-height: 1.5; text-align: center; }
+    #otpCode { font-size: 24px; letter-spacing: .35em; text-align: center; font-weight: 700; }
+    .login-back { display: inline-block; margin-top: 14px; font-size: 12px; color: var(--gold-text); cursor: pointer; text-decoration: underline; }
+
+    .login-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+    .login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+    .google-btn {
+      display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 11px 16px;
+      border: 1px solid var(--border); border-radius: var(--radius); background: #fff; cursor: pointer;
+      font-size: 13px; font-weight: 600; color: var(--text); text-decoration: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .google-btn:hover { border-color: var(--gold); box-shadow: 0 2px 8px rgba(193,127,10,.15); }
+  </style>
+</head>
+<body class="login-body">
+
+  <div class="login-bg">
+
+    <!-- ── Left hero panel ── -->
+    <div class="login-hero">
+      <div class="hero-logo-badge">
+        <img src="img/indus_logo.png" alt="Ravasco" class="hero-logo-img" onerror="this.style.display='none'">
+      </div>
+
+      <div class="hero-body">
+        <h2>Purchase Order<br>Tracking &amp; <span>Reconciliation</span></h2>
+        <p>Reconcile Purchase Orders, MIR, and Raw Material Stock across every plant - accurately, and in one place.</p>
+        <div class="hero-pillars">
+          <div class="hero-pillar"><div class="hero-pillar-dot"></div>PO &harr; MIR &harr; Stock matching, vendor-gated</div>
+          <div class="hero-pillar"><div class="hero-pillar-dot"></div>HRS, RTP-Achhad, and RTP-Vapi in one dashboard</div>
+          <div class="hero-pillar"><div class="hero-pillar-dot"></div>Role-based access - Admin, Editor, Viewer</div>
+          <div class="hero-pillar"><div class="hero-pillar-dot"></div>Synced directly from Google Drive source files</div>
+        </div>
+      </div>
+
+      <div class="hero-foot">
+        <div class="hero-foot-text">Ravasco Transmission and Packing Limited</div>
+      </div>
+    </div>
+
+    <!-- ── Right login panel ── -->
+    <div class="login-right">
+      <div class="login-panel">
+
+        <div class="login-brand">
+          <img src="img/indus_logo.png" alt="Ravasco" class="login-brand-logo" onerror="this.style.display='none'">
+          <h1>Purchase Tracker</h1>
+          <p>Ravasco Transmission and Packing Limited</p>
+        </div>
+
+        <div class="login-card">
+          <div class="login-card-header">
+            <h2 id="cardTitle">Sign In</h2>
+            <p id="cardSub">Use your company account credentials</p>
+          </div>
+
+          <div class="login-card-body">
+
+            <!-- ── Step 1: Email + Password ── -->
+            <form id="passwordStep">
+              <div class="form-group">
+                <label class="form-label" for="email">Email Address</label>
+                <div class="login-input-wrap">
+                  <span class="input-icon">&#9993;</span>
+                  <input type="email" id="email" name="email" class="form-control" placeholder="you@ravasco.com" autocomplete="username" required>
+                </div>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="password">Password</label>
+                <div class="login-input-wrap">
+                  <span class="input-icon">&#128274;</span>
+                  <input type="password" id="password" name="password" class="form-control" placeholder="••••••••" autocomplete="current-password" required>
+                </div>
+              </div>
+
+              <div class="login-options">
+                <label class="form-check">
+                  <input type="checkbox" id="rememberMe" class="form-check-input">
+                  <span class="form-check-label">Remember me</span>
+                </label>
+              </div>
+
+              <button type="submit" class="login-btn" id="signInBtn">Sign In</button>
+
+              <div class="login-divider">or continue with</div>
+              <a href="/api/auth/google/login/" class="google-btn">
+                <svg width="18" height="18" viewBox="0 0 48 48">
+                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+                </svg>
+                Sign in with Google
+              </a>
+
+              <div class="login-error" id="loginError"></div>
+            </form>
+
+            <!-- ── Step 2: Device Verification (new device) ── -->
+            <form id="otpStep" style="display:none;">
+              <div style="text-align:center;margin-bottom:24px;">
+                <div class="otp-icon">&#128231;</div>
+                <p class="otp-hint">Enter the 6-digit code sent to your email.<br>It expires in 10 minutes.</p>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="otpCode">Verification Code</label>
+                <input type="text" id="otpCode" class="form-control" placeholder="123456" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
+              </div>
+
+              <button type="submit" class="login-btn" id="verifyBtn">Verify &amp; Sign In</button>
+              <div style="text-align:center;">
+                <span class="login-back" id="resendCode">Resend code</span>
+                &nbsp;&middot;&nbsp;
+                <span class="login-back" id="backToLogin">&larr; Back to sign in</span>
+              </div>
+            </form>
+
+          </div>
+
+          <div class="login-footer">
+            <div class="iso-ribbon">&#10003; ISO 9001:2015 Certified</div>
+            <div>Internal use only - Ravasco Transmission and Packing Limited</div>
+            <div class="secure-badge">Secured with JWT &middot; Device-verified sign-in</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <script src="js/login.js"></script>
+</body>
+</html>

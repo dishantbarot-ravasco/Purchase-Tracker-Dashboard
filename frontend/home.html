@@ -1,0 +1,257 @@
+<!--
+  home.html - Landing page shown after sign-in, before the dashboard.
+
+  Visual design ported from the TDS Automation App's frontend/home.html
+  (topnav + hero banner + KPI row + quick-action cards), extended with the
+  same nav-tabs (Dashboard / Search PO / Admin) now shared across every
+  protected page - see frontend/js/auth.js's renderNavTabs(). "Dashboard" is
+  shown active here too: this page is the landing view of that same section,
+  not a separate one - it links onward into the real reconciliation UI at "/".
+
+  The 4 KPI numbers (Total PO's, Suppliers, This Month, This Week) are real,
+  computed client-side from all 3 plants' live purchase-order data (fetched
+  in parallel on load) - not placeholders. "Suppliers" counts distinct
+  vendor names as-recorded (trimmed only, no fuzzy/typo matching - the same
+  standard the rest of this app holds itself to, see CLAUDE.md's data-
+  accuracy notes) across every plant.
+
+  Protected page: the inline script below calls requireAuth() (js/auth.js)
+  first, which redirects to /login.html if there's no active session.
+
+  Served directly by WhiteNoise from frontend/ (no Django route/template
+  rendering for this file - see config/urls.py), so asset paths below are
+  plain relative paths, not {% static %} tags.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="img/indus_logo.png">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Purchase Tracker</title>
+  <link rel="stylesheet" href="css/brand.css">
+  <style>
+    .hero { position: relative; height: 280px; overflow: hidden; background: var(--navy); }
+    .hero-img { width: 100%; height: 100%; object-fit: cover; object-position: center 30%; display: block; opacity: .55; }
+    .hero-overlay { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(26,37,53,.95) 0%, rgba(26,37,53,.75) 50%, rgba(26,37,53,.2) 100%); }
+    .hero-content { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 60px; }
+    .hero-tag {
+      display: inline-flex; align-items: center; gap: 8px; padding: 5px 14px; margin-bottom: 14px;
+      background: rgba(240,180,41,.15); border: 1px solid rgba(240,180,41,.4); border-radius: 20px;
+      width: fit-content; font-family: var(--font-head); font-size: 11px; font-weight: 700;
+      letter-spacing: .16em; text-transform: uppercase; color: var(--gold-bright);
+    }
+    .hero-tag::before { content: '●'; font-size: 7px; }
+    .hero-greeting { font-size: 12px; font-weight: 500; color: rgba(255,255,255,.6); letter-spacing: .06em; margin-bottom: 7px; }
+    .hero-greeting span { color: var(--gold-bright); font-weight: 700; }
+    .hero-title { font-family: var(--font-head); font-size: 30px; font-weight: 900; color: #fff; letter-spacing: .02em; line-height: 1.15; margin-bottom: 10px; }
+    .hero-title em { color: var(--gold-bright); font-style: normal; }
+    .hero-sub { font-size: 12px; color: rgba(255,255,255,.6); max-width: 480px; line-height: 1.6; }
+    .hero-fade { position: absolute; bottom: 0; left: 0; right: 0; height: 60px; background: linear-gradient(to top, var(--bg-page), transparent); }
+    @media (max-width: 500px) { .hero-content { padding: 0 24px; } }
+  </style>
+</head>
+<body>
+
+  <!-- Top Nav -->
+  <nav class="topnav">
+    <a href="home.html" class="nav-brand">
+      <img src="img/indus_logo.png" alt="Ravasco" class="nav-logo" onerror="this.style.display='none'">
+      <div class="nav-brand-text">
+        <h1>Purchase Tracker</h1>
+        <p>Ravasco Transmission &amp; Packing</p>
+      </div>
+    </a>
+    <div class="nav-tabs" id="navTabs"></div>
+    <div class="nav-spacer"></div>
+    <div class="nav-user" id="navUser"></div>
+  </nav>
+
+  <!-- Hero -->
+  <div class="hero">
+    <img src="img/hero.png" alt="" class="hero-img">
+    <div class="hero-overlay"></div>
+    <div class="hero-content">
+      <div class="hero-greeting">Welcome back, <span id="heroName">-</span></div>
+      <div class="hero-title">Purchase Order <em>Tracking</em><br>&amp; Reconciliation</div>
+      <div class="hero-sub">Live PO &harr; MIR &harr; Stock reconciliation across HRS, RTP-Achhad, and RTP-Vapi, synced directly from Drive source files.</div>
+    </div>
+    <div class="hero-fade"></div>
+  </div>
+
+  <div class="page-wrap" style="padding-top:36px;" id="pageBody">
+
+    <div class="loading-overlay" id="loadingOverlay">
+      <div class="spinner"></div><span>Loading&hellip;</span>
+    </div>
+
+    <div id="mainContent" style="display:none;">
+
+      <!-- KPIs -->
+      <div class="section-title">Overview</div>
+      <div class="stats-row kpi4" id="kpiRow">
+        <div class="stat-card">
+          <div class="stat-icon">&#128203;</div>
+          <div>
+            <div class="stat-label">Total PO's</div>
+            <div class="stat-value" id="kpiTotalPos">-</div>
+            <div class="stat-sub">All time, all plants</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon blue">&#127970;</div>
+          <div>
+            <div class="stat-label">Suppliers</div>
+            <div class="stat-value" id="kpiSuppliers">-</div>
+            <div class="stat-sub">Unique vendors</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green">&#128197;</div>
+          <div>
+            <div class="stat-label">This Month</div>
+            <div class="stat-value" id="kpiThisMonth">-</div>
+            <div class="stat-sub" id="kpiThisMonthSub">-</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon purple">&#128200;</div>
+          <div>
+            <div class="stat-label">This Week</div>
+            <div class="stat-value" id="kpiThisWeek">-</div>
+            <div class="stat-sub">Last 7 days</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Plant coverage -->
+      <div class="section-title">Plants Covered</div>
+      <div class="stats-row">
+        <div class="stat-card">
+          <div class="stat-icon">&#127981;</div>
+          <div>
+            <div class="stat-label">HRS, Silvassa</div>
+            <div class="stat-value">PO &middot; MIR &middot; RM</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon green">&#127981;</div>
+          <div>
+            <div class="stat-label">RTP-Achhad</div>
+            <div class="stat-value">PO &middot; MIR &middot; RM</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">&#127981;</div>
+          <div>
+            <div class="stat-label">RTP-Vapi</div>
+            <div class="stat-value">PO &middot; MIR &middot; RM</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="section-title">Quick Actions</div>
+      <div class="action-cards cols-3" id="actionCards">
+        <a href="/" class="action-card">
+          <div class="action-card-icon">&#128202;</div>
+          <div class="action-card-title">Dashboard</div>
+          <div class="action-card-desc">
+            View PO status, matched/flagged line items, and Raw Material Stock trends for every plant - with drill-down into any purchase order.
+          </div>
+          <span class="action-card-cta">Open Dashboard &rarr;</span>
+        </a>
+        <a href="/search-po.html" class="action-card">
+          <div class="action-card-icon">&#128269;</div>
+          <div class="action-card-title">Search PO</div>
+          <div class="action-card-desc">
+            Look up any purchase order by its PO number across all 3 plants and jump straight to its match status and line items.
+          </div>
+          <span class="action-card-cta">Search Now &rarr;</span>
+        </a>
+        <a href="/admin.html" class="action-card" id="adminCard" style="display:none;">
+          <div class="action-card-icon">&#9881;&#65039;</div>
+          <div class="action-card-title">Admin Panel</div>
+          <div class="action-card-desc">
+            Sync status for every plant, the registered user list, and links into Django Admin for account and audit-log management.
+          </div>
+          <span class="action-card-cta">Open Admin &rarr;</span>
+        </a>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="js/auth.js"></script>
+  <script src="js/shared.js"></script>
+  <script>
+    (async function () {
+      const user = await requireAuth();
+      if (!user) return; // requireAuth() already redirected to /login.html
+
+      const firstName = (user.fullName || user.email || '').split(' ')[0].split('@')[0];
+      document.getElementById('heroName').textContent = firstName || user.email;
+      renderNavTabs(document.getElementById('navTabs'), 'home');
+      renderUserBadge(document.getElementById('navUser'));
+      if (user.role === 'admin') document.getElementById('adminCard').style.display = '';
+
+      await loadKpis();
+
+      document.getElementById('loadingOverlay').style.display = 'none';
+      document.getElementById('mainContent').style.display = '';
+    })();
+
+    // KPIs are real, computed client-side from all 3 plants' live PO data -
+    // fetched in parallel here rather than reusing js/main.js's per-plant
+    // cache (this page never loads main.js - it's a lightweight landing
+    // page, not the full dashboard). A fetch failure for one plant must not
+    // blank the whole row - each plant's data is optional, the KPIs sum
+    // whatever loaded successfully and this is disclosed via console.error,
+    // never silently treated as "0 POs for that plant".
+    async function loadKpis() {
+      const results = await Promise.all(PLANT_KEYS.map(async key => {
+        try {
+          const data = await apiForPlant(key, '/purchase-orders');
+          return data.purchaseOrders || [];
+        } catch (e) {
+          console.error('loadKpis: failed to load purchase orders for ' + key + ':', e);
+          return null; // distinct from [] - "failed to load", not "zero POs"
+        }
+      }));
+
+      const loaded = results.filter(r => r !== null);
+      const allPos = loaded.flat();
+
+      document.getElementById('kpiTotalPos').textContent = String(allPos.length);
+
+      const suppliers = new Set();
+      allPos.forEach(po => { if (po.vendorName && po.vendorName.trim()) suppliers.add(po.vendorName.trim().toLowerCase()); });
+      document.getElementById('kpiSuppliers').textContent = String(suppliers.size);
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayISO = today.toISOString().slice(0, 10);
+      const monthPrefix = todayISO.slice(0, 7);
+      const weekCutoff = new Date(today);
+      weekCutoff.setDate(weekCutoff.getDate() - 6);
+      const weekCutoffISO = weekCutoff.toISOString().slice(0, 10);
+
+      const thisMonthCount = allPos.filter(po => po.createdDate && po.createdDate.startsWith(monthPrefix)).length;
+      const thisWeekCount = allPos.filter(po => po.createdDate && po.createdDate >= weekCutoffISO && po.createdDate <= todayISO).length;
+
+      document.getElementById('kpiThisMonth').textContent = String(thisMonthCount);
+      document.getElementById('kpiThisMonthSub').textContent = today.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+      document.getElementById('kpiThisWeek').textContent = String(thisWeekCount);
+
+      if (loaded.length < PLANT_KEYS.length) {
+        const row = document.getElementById('kpiRow');
+        const note = document.createElement('div');
+        note.className = 'stat-sub';
+        note.style.cssText = 'grid-column:1/-1;color:var(--red);margin-top:-8px;';
+        note.textContent = 'Note: ' + (PLANT_KEYS.length - loaded.length) + ' plant(s) failed to load - these totals are undercounted. Refresh to retry.';
+        row.parentNode.insertBefore(note, row.nextSibling);
+      }
+    }
+  </script>
+</body>
+</html>

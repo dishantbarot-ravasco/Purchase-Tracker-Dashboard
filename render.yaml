@@ -1,0 +1,157 @@
+# Render Blueprint for the Purchase Tracker Dashboard.
+# Deploy: connect this repo in the Render dashboard as a Blueprint, or run
+# `render blueprint launch`. Everything below is pinned to the starter plan
+# (Render's "starter" is a legacy alias Render still accepts and maps to its
+# current compute-plan IDs - no need to write the new IDs directly).
+#
+# Secrets (sync: false below) are NOT set here - Render prompts for them once
+# at blueprint creation, and updating them afterwards means Dashboard ->
+# service -> Environment. Non-secret config (Drive folder ids, SMTP host,
+# etc.) is filled in directly from .env.example so a fresh deploy needs the
+# fewest possible manual steps.
+
+databases:
+  - name: purchase-tracker-db
+    plan: starter
+    databaseName: purchase_tracker
+    user: purchase_tracker
+
+services:
+  - type: web
+    name: purchase-tracker-dashboard
+    runtime: python
+    plan: starter
+    region: oregon
+    branch: main
+    healthCheckPath: /
+    buildCommand: >-
+      pip install uv &&
+      uv sync --frozen &&
+      uv run python manage.py collectstatic --noinput &&
+      uv run python manage.py migrate --noinput &&
+      uv run python manage.py createcachetable
+    startCommand: uv run gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+
+      # ── Django core ──────────────────────────────────────────────────────
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: .onrender.com
+      - key: JWT_SIGNING_KEY
+        generateValue: true
+
+      # ── Database (discrete PG* vars are unused once DATABASE_URL is set,
+      #    left out on purpose - see config/settings.py) ────────────────────
+      - key: DATABASE_URL
+        fromDatabase:
+          name: purchase-tracker-db
+          property: connectionString
+
+      # ── Auth ─────────────────────────────────────────────────────────────
+      - key: ALLOWED_EMAIL_DOMAIN
+        value: ravasco.com
+
+      # ── Google Drive service account (unattended sync jobs) - paste the
+      #    key JSON as ONE line when prompted. GOOGLE_SERVICE_ACCOUNT_FILE is
+      #    omitted: Render's filesystem is ephemeral, so a key *file* isn't a
+      #    workable option here, only the JSON env var is. ──────────────────
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+
+      # ── Drive folder ids (not secret - already documented in
+      #    .env.example / CLAUDE.md) ───────────────────────────────────────
+      - key: PURCHASE_TRACKER_DB_FOLDER_ID
+        value: 17cP2suZv26IAU5mqSKyC8U9zL0EysF9a
+      - key: HRS_MIR_STOCK_FOLDER_ID
+        value: 1mmZrMukdhuYyHQGEfH6ci_LIiNOEQ8Qp
+      - key: ACHHAD_MIR_STOCK_FOLDER_ID
+        value: 1mviBKPDyZLVLfGVZ780BX_xPR9fLxdtH
+      - key: VAPI_MIR_STOCK_FOLDER_ID
+        value: 1kzWf8sf9UfXBG34WalJxgu7djX5fwNUU
+
+      # ── SMTP (login OTP / new-device emails) ────────────────────────────
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+
+      # ── Google OAuth ("Sign in with Google") - a separate client from the
+      #    service account above. Update GOOGLE_OAUTH_REDIRECT_URI once the
+      #    service's real onrender.com hostname (or custom domain) is known,
+      #    and add the same URI to the OAuth client's authorized redirects
+      #    in Google Cloud Console. ─────────────────────────────────────────
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_OAUTH_REDIRECT_URI
+        value: https://purchase-tracker-dashboard.onrender.com/api/auth/google/callback/
+
+  # Runs the Drive sync/match pipelines queued by apps/services/sync_trigger.py
+  # (django-q2's ORM broker - queued tasks are rows in the shared Postgres DB
+  # above, not a separate broker). This is a real second OS process, wholly
+  # separate from the web service's gunicorn workers - required precisely so
+  # a web worker recycle (gunicorn's default 30s --timeout, uncustomized
+  # here) can't kill a sync mid-flight the way the old threading.Thread
+  # approach could. Without this service actually running, "Refresh Data"
+  # queues a task that never executes - it just sits in django_q_ormq until
+  # the sync-in-progress cache lock times out, with nothing having synced.
+  - type: worker
+    name: purchase-tracker-qcluster
+    runtime: python
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run python manage.py qcluster
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      # generateValue (not shared with the web service's own generated value)
+      # is fine here - qcluster never verifies a JWT or session cookie signed
+      # by the web service, it only runs management commands.
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+      - key: DJANGO_DEBUG
+        value: "false"
+      - key: DJANGO_ALLOWED_HOSTS
+        value: .onrender.com
+      - key: JWT_SIGNING_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: purchase-tracker-db
+          property: connectionString
+      - key: ALLOWED_EMAIL_DOMAIN
+        value: ravasco.com
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
+      - key: PURCHASE_TRACKER_DB_FOLDER_ID
+        value: 17cP2suZv26IAU5mqSKyC8U9zL0EysF9a
+      - key: HRS_MIR_STOCK_FOLDER_ID
+        value: 1mmZrMukdhuYyHQGEfH6ci_LIiNOEQ8Qp
+      - key: ACHHAD_MIR_STOCK_FOLDER_ID
+        value: 1mviBKPDyZLVLfGVZ780BX_xPR9fLxdtH
+      - key: VAPI_MIR_STOCK_FOLDER_ID
+        value: 1kzWf8sf9UfXBG34WalJxgu7djX5fwNUU
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "465"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
+        sync: false
+      - key: SMTP_FROM
+        sync: false

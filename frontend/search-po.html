@@ -1,0 +1,203 @@
+<!--
+  search-po.html - Look up a purchase order by PO number across all 3
+  plants (HRS / RTP-Achhad / RTP-Vapi), without going through the plant
+  selector on the main dashboard first. New page, brand.css-styled to match
+  home.html/index.html's shared topnav (see js/auth.js's renderNavTabs()).
+
+  Deliberately self-contained rather than depending on js/main.js's PO cache
+  or its full modal (which needs the dashboard's own #root/#modalBackdrop
+  DOM and internal `state` object) - this page fetches and caches its own
+  copy of each plant's purchase orders, and the result detail panel shows
+  the essentials (vendor, value, status, line items, remarks) but not the
+  dashboard's full match-confidence/flag-badge treatment. That's a real,
+  disclosed simplification (see the detail panel's own comment below), not
+  an oversight - a full-parity detail view already exists at "/" (this page
+  links there for anyone who needs it).
+
+  Protected page: requireAuth() (js/auth.js) redirects to /login.html if
+  there's no active session.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/png" href="img/indus_logo.png">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Search PO - Purchase Tracker</title>
+  <link rel="stylesheet" href="css/brand.css">
+  <style>
+    .detail-panel {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+      padding: 28px; margin-top: 20px; box-shadow: var(--shadow-sm);
+    }
+    .detail-close { float: right; cursor: pointer; font-size: 22px; color: var(--text-muted); line-height: 1; }
+    .detail-close:hover { color: var(--navy); }
+    .detail-title { font-family: var(--font-head); font-size: 20px; font-weight: 900; color: var(--navy); }
+    .detail-meta { font-size: 12.5px; color: var(--text-muted); margin: 6px 0 18px; }
+    .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 20px; }
+    .detail-block h4 { font-family: var(--font-head); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 8px; }
+    .detail-block .line { font-size: 13px; color: var(--text); margin-bottom: 4px; }
+    .items-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    .items-table th, .items-table td { padding: 9px 12px; text-align: left; font-size: 12.5px; border-bottom: 1px solid var(--border); }
+    .items-table th { font-family: var(--font-head); font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); background: var(--bg-section); }
+    .status-pill { display: inline-block; padding: 3px 11px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+    .status-pill.matched { background: var(--green-pale); color: var(--green); }
+    .status-pill.unmatched { background: var(--bg-section); color: var(--text-muted); }
+    @media (max-width: 700px) { .detail-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+  <nav class="topnav">
+    <a href="home.html" class="nav-brand">
+      <img src="img/indus_logo.png" alt="Ravasco" class="nav-logo" onerror="this.style.display='none'">
+      <div class="nav-brand-text">
+        <h1>Purchase Tracker</h1>
+        <p>Ravasco Transmission &amp; Packing</p>
+      </div>
+    </a>
+    <div class="nav-tabs" id="navTabs"></div>
+    <div class="nav-spacer"></div>
+    <div class="nav-user" id="navUser"></div>
+  </nav>
+
+  <div class="page-wrap">
+    <div class="section-title">Search Purchase Orders</div>
+    <div class="search-box">
+      <input type="text" class="form-control" id="searchInput" placeholder="Enter a PO number (e.g. 3000001104, HRS/HO/26-27/003)&hellip;" autofocus>
+      <button type="button" class="btn btn-primary" id="searchBtn">Search</button>
+    </div>
+
+    <div id="resultsArea"></div>
+    <div id="detailArea"></div>
+  </div>
+
+  <script src="js/auth.js"></script>
+  <script src="js/shared.js"></script>
+  <script>
+    let POS_BY_PLANT = {}; // lazy-loaded per plant, cached for this page's lifetime
+    let loadPromise = null;
+
+    (async function () {
+      const user = await requireAuth();
+      if (!user) return;
+      renderNavTabs(document.getElementById('navTabs'), 'search');
+      renderUserBadge(document.getElementById('navUser'));
+
+      document.getElementById('searchBtn').onclick = runSearch;
+      document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+    })();
+
+    // All 3 plants' PO data is fetched once, lazily, on the first search -
+    // not on page load, since a viewer who never searches shouldn't pay for
+    // 3 fetches they didn't ask for.
+    function ensureLoaded() {
+      if (loadPromise) return loadPromise;
+      loadPromise = Promise.all(PLANT_KEYS.map(async key => {
+        try {
+          const data = await apiForPlant(key, '/purchase-orders');
+          POS_BY_PLANT[key] = data.purchaseOrders || [];
+        } catch (e) {
+          console.error('search-po: failed to load purchase orders for ' + key + ':', e);
+          POS_BY_PLANT[key] = null; // failed, not empty - see renderResults()
+        }
+      }));
+      return loadPromise;
+    }
+
+    async function runSearch() {
+      const query = document.getElementById('searchInput').value.trim();
+      document.getElementById('detailArea').innerHTML = '';
+      const resultsEl = document.getElementById('resultsArea');
+      if (query.length < 2) {
+        resultsEl.innerHTML = '<div class="search-empty">Enter at least 2 characters of a PO number to search.</div>';
+        return;
+      }
+      resultsEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><span>Searching&hellip;</span></div>';
+      await ensureLoaded();
+      renderResults(query);
+    }
+
+    function renderResults(query) {
+      const q = query.toLowerCase();
+      const failedPlants = PLANT_KEYS.filter(k => POS_BY_PLANT[k] === null);
+      const matches = [];
+      PLANT_KEYS.forEach(key => {
+        (POS_BY_PLANT[key] || []).forEach(po => {
+          if (po.poNumber && po.poNumber.toLowerCase().includes(q)) matches.push({ po, plantKey: key });
+        });
+      });
+
+      const resultsEl = document.getElementById('resultsArea');
+      const warnHtml = failedPlants.length
+        ? '<div class="search-empty" style="color:var(--red);padding:10px 0;">Note: ' + failedPlants.map(k => escapeHtml(PLANTS[k].label)).join(', ') +
+          ' failed to load - results from ' + (failedPlants.length > 1 ? 'those plants are' : 'that plant is') + ' missing. Refresh and try again.</div>'
+        : '';
+
+      if (!matches.length) {
+        resultsEl.innerHTML = warnHtml + '<div class="search-empty">No purchase order matching "' + escapeHtml(query) + '" was found in any plant.</div>';
+        return;
+      }
+
+      resultsEl.innerHTML = warnHtml +
+        '<div class="search-results">' + matches.map((m, i) => {
+          const po = m.po;
+          const matchedCount = (po.items || []).filter(it => it.matched).length;
+          const totalCount = (po.items || []).length;
+          return '<div class="search-result-card" data-idx="' + i + '">' +
+            '<div class="search-result-top">' +
+              '<span class="search-result-po">' + escapeHtml(po.poNumber) + '</span>' +
+              '<span class="search-result-plant">' + escapeHtml(PLANTS[m.plantKey].label) + '</span>' +
+            '</div>' +
+            '<div class="search-result-meta">' + escapeHtml(po.vendorName || 'Vendor not recorded') + ' &middot; Created ' + escapeHtml(formatDateIN(po.createdDate)) +
+              ' &middot; ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : 'Value not recorded') +
+              ' &middot; ' + matchedCount + ' / ' + totalCount + ' line items matched to MIR</div>' +
+          '</div>';
+        }).join('') + '</div>';
+
+      resultsEl.querySelectorAll('[data-idx]').forEach(el => el.onclick = () => showDetail(matches[Number(el.dataset.idx)]));
+    }
+
+    // A deliberately simpler detail view than the full dashboard modal (see
+    // this file's header comment) - core fields + line items + remarks,
+    // no match-confidence/flag-severity styling.
+    function showDetail(match) {
+      const po = match.po;
+      const itemsHtml = (po.items || []).length
+        ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>MIR Status</th></tr></thead><tbody>' +
+            po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '-') +
+              '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
+              '</td><td><span class="status-pill ' + (it.matched ? 'matched">Matched' : 'unmatched">Not yet matched') + '</span></td></tr>').join('') +
+          '</tbody></table>'
+        : '<div style="font-size:12.5px;color:var(--text-muted);">No line items recorded.</div>';
+      const remarksHtml = po.remarks
+        ? '<div class="detail-block" style="margin-top:16px;"><h4>Remarks</h4><div class="line">' + escapeHtml(po.remarks) + '</div></div>'
+        : '';
+
+      document.getElementById('detailArea').innerHTML =
+        '<div class="detail-panel">' +
+          '<span class="detail-close" id="detailCloseBtn">&times;</span>' +
+          '<div class="detail-title">' + escapeHtml(po.poNumber) + '</div>' +
+          '<div class="detail-meta">' + escapeHtml(PLANTS[match.plantKey].label) + ' &middot; Domestic Purchases</div>' +
+          '<div class="detail-grid">' +
+            '<div class="detail-block"><h4>Vendor</h4>' +
+              '<div class="line">' + escapeHtml(po.vendorName || '-') + '</div>' +
+              '<div class="line">GSTIN: ' + escapeHtml(po.vendorGstin || '-') + '</div>' +
+            '</div>' +
+            '<div class="detail-block"><h4>Commercials</h4>' +
+              '<div class="line">Total incl. tax: ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</div>' +
+              '<div class="line">Payment terms: ' + escapeHtml(po.paymentTerms || '-') + '</div>' +
+              '<div class="line">Incoterms: ' + escapeHtml(po.incoterms || '-') + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<h4 style="font-family:var(--font-head);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px;">Items</h4>' +
+          itemsHtml +
+          remarksHtml +
+          '<div style="margin-top:20px;"><a href="/" class="btn btn-navy">Open Full Dashboard &rarr;</a></div>' +
+        '</div>';
+      document.getElementById('detailCloseBtn').onclick = () => { document.getElementById('detailArea').innerHTML = ''; };
+      document.getElementById('detailArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  </script>
+</body>
+</html>

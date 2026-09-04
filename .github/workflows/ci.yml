@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+jobs:
+  django:
+    runs-on: ubuntu-22.04
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pt_ci
+          POSTGRES_PASSWORD: pt_ci
+          POSTGRES_DB: pt_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pt_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DJANGO_SECRET_KEY: ci-only-secret-key-not-used-in-production-0123456789
+      JWT_SIGNING_KEY: ci-only-jwt-signing-key-not-used-in-production-0123456789
+      DJANGO_DEBUG: "false"
+      DATABASE_URL: postgres://pt_ci:pt_ci@localhost:5432/pt_ci
+      ALLOWED_EMAIL_DOMAIN: ravasco.com
+      # Dummy Drive/Google values so settings.py imports cleanly - no live
+      # Drive/OAuth calls happen during makemigrations/migrate/check/test.
+      GOOGLE_SERVICE_ACCOUNT_JSON: ""
+      GOOGLE_CLIENT_ID: ci-placeholder
+      GOOGLE_CLIENT_SECRET: ci-placeholder
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          uv pip install pip-audit
+          uv run pip-audit
+
+      - name: Check for missing migrations
+        run: uv run python manage.py makemigrations --check --dry-run
+
+      - name: Django system check
+        run: uv run python manage.py check
+
+      - name: Run migrations (fresh database)
+        run: uv run python manage.py migrate --noinput
+
+      - name: Create cache table
+        run: uv run python manage.py createcachetable
+
+      - name: Run test suite
+        run: uv run pytest
+
+  frontend-lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Zero-config, dependency-free syntax gate - node's own parser, no
+      # ESLint install involved. This app's frontend has no build step (see
+      # CLAUDE.md), so a real syntax error here means the page's <script>
+      # tag fails to load in the browser at all.
+      - name: Syntax-check frontend JS modules
+        run: |
+          for f in frontend/js/*.js; do
+            echo "Checking $f"
+            node --check "$f"
+          done

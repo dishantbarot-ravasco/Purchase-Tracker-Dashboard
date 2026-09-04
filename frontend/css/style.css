@@ -1,0 +1,346 @@
+/*
+CSS ported verbatim (colors, spacing, radii) from the original "Purchase
+Tracker" Claude artifact this dashboard's UI is modeled on, minus the
+components this build doesn't have data for yet: Domestic/Import sub-tabs
+(only the domestic CSV is parsed so far), Licenses, and the admin/sign-in
+screens (no auth layer built yet - see project notes). Plant tabs (HRS,
+RTP-Achhad) reuse the existing .view-tab classes rather than a new
+component - see frontend/js/main.js's PLANTS/renderPlantTabs(). Add the
+remaining blocks back if/when Vapi or auth land.
+*/
+:root {
+  color-scheme: light;
+  --navy: #0f1b2d;
+  --navy-hover: #182a44;
+  --on-accent: #ffffff;
+  --slate: #1f2937;
+  --slate-soft: #475569;
+  --border: #e2e8f0;
+  --border-soft: #f1f5f9;
+  --bg: #f4f6f9;
+  --card: #ffffff;
+  --gray-soft: #f1f5f9;
+  --blue: #2563eb;
+  --blue-soft: #eff4ff;
+  --red: #dc2626;
+  --red-soft: #fef2f2;
+  --amber: #d97706;
+  --amber-soft: #fffbeb;
+  --green: #16a34a;
+  --green-soft: #f0fdf4;
+  --indigo: #6366f1;
+  --indigo-soft: #e0e7ff;
+  --purple: #7c3aed;
+  --purple-soft: #f3e8ff;
+  --gray: #64748b;
+  --gray-mid-soft: #eef1f5;
+  --mono: ui-monospace, SFMono-Regular, 'Roboto Mono', Menlo, Consolas, monospace;
+  --shadow: 0 1px 2px rgba(15,23,42,0.04), 0 2px 8px rgba(15,23,42,0.05);
+}
+* { box-sizing: border-box; min-width: 0; }
+html, body { width:100%; overflow-x:hidden; }
+body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--slate); line-height:1.45; }
+.wrap { width:100%; max-width: 1600px; margin: 0 auto; padding: 22px clamp(12px, 2.5vw, 26px) 60px; }
+
+/* Brand/nav/user identity live in the shared static topnav now (brand.css,
+   index.html) - .sync-bar is this page's own content, just the per-plant
+   sync-status badges (PO Updated / MIR / RM) + Refresh Data button, sitting
+   right below that shared nav. */
+.sync-bar { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; padding-bottom:18px; margin-bottom:20px; border-bottom:1px solid var(--border); }
+.who { display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--slate-soft); flex-wrap:wrap; }
+.badge { display:inline-block; font-size:11px; padding:3px 10px; border-radius:999px; background:var(--blue-soft); color:#1e40af; font-weight:700; }
+.badge.stale { background:var(--amber-soft); color:#92400e; }
+.badge.failed { background:var(--red-soft); color:#991b1b; }
+/* A real Drive sync is currently running for that plant (main.js's
+   loadSyncStatus() - reflects the shared DB-backed lock in
+   apps/services/sync_trigger.py, so it shows even if triggered from
+   another tab/session). Pulses gently so it reads as "in progress", not
+   just another static status label. */
+.badge.syncing { background:var(--indigo-soft); color:#3730a3; animation: badge-pulse 1.4s ease-in-out infinite; }
+@keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+.refresh-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--navy); background:var(--navy); color:var(--on-accent); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; box-shadow:var(--shadow); }
+.refresh-btn:hover { background:var(--navy-hover); }
+.refresh-btn[disabled] { opacity:.5; cursor:default; }
+
+/* Level 1 (Purchase Orders / Raw Material Analysis) - filled pill tabs.
+   Ported verbatim from the reference artifact's .view-tabs/.view-tab. */
+.view-tabs { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
+.view-tab { padding:10px 20px; cursor:pointer; font-size:13.5px; font-weight:700; border-radius:9px; color:var(--slate-soft); background:var(--card); border:1px solid var(--border); }
+.view-tab.active { color:var(--on-accent); background:var(--navy); border-color:var(--navy); }
+
+/* Level 2 (plant selector: HRS/RTP-Achhad/RTP-Vapi, plus "All Plants" for
+   Raw Material Analysis) - underline tabs, NOT filled pills. Deliberately a
+   different component from .view-tab (level 1) and .sub-tab (level 3), not
+   a reused/overridden .view-tab - ported verbatim from the reference
+   artifact's .plant-tabs/.plant-tab, which uses this exact underline
+   treatment, not a background fill. Using the wrong (pill) style here was
+   the root cause of an earlier visual-parity miss - keep these separate. */
+.plant-tabs { display:flex; gap:6px; border-bottom:2px solid var(--border); margin-bottom:16px; }
+.plant-tab { padding:9px 18px; cursor:pointer; font-size:13.5px; font-weight:600; color:var(--slate-soft); border-bottom:2px solid transparent; margin-bottom:-2px; }
+.plant-tab.active { color:var(--navy); border-bottom-color:var(--blue); }
+
+/* Level 3 (Domestic / Import Purchases, Purchase Orders only) - small
+   filled pills, gray when inactive. Ported verbatim from the reference
+   artifact's .sub-tabs/.sub-tab. */
+.sub-tabs { display:flex; gap:4px; margin-bottom:18px; }
+.sub-tab { padding:6px 14px; font-size:12.5px; border-radius:7px; cursor:pointer; background:var(--gray-soft); color:var(--slate-soft); font-weight:600; }
+.sub-tab.active { background:var(--navy); color:var(--on-accent); }
+
+.load-banner { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:48px 20px; text-align:center; color:var(--slate-soft); font-size:14px; margin-bottom:18px; box-shadow:var(--shadow); }
+.spinner { display:inline-block; width:22px; height:22px; border:3px solid var(--border); border-top-color:var(--blue); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:12px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.noaccess { background:var(--amber-soft); border:1px solid #fde68a; border-radius:12px; padding:20px 22px; color:#92400e; font-size:13.5px; }
+
+.filter-row { display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 15px; box-shadow:var(--shadow); }
+.filter-row label { font-size:12px; color:var(--slate-soft); font-weight:600; }
+.filter-row input[type=date], .filter-row input[type=text] { padding:6px 9px; border:1px solid #cbd5e1; border-radius:7px; font-size:12.5px; }
+.filter-row button { padding:6px 13px; border-radius:7px; border:1px solid #cbd5e1; background:#fff; cursor:pointer; font-size:12px; font-weight:600; color:var(--slate); }
+.filter-row button.primary { background:var(--navy); color:var(--on-accent); border-color:var(--navy); }
+
+.kpi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:14px; margin-bottom:20px; }
+.kpi-card { position:relative; background:var(--card); border:1px solid var(--border); border-left:5px solid #cbd5e1; border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--shadow); }
+/* Colored flag icon (top-right corner of the card) - see main.js's
+   flagIconHtml()/KPI_FLAG_COLORS. Red = qty/rate discrepancy (money or
+   quantity problem), amber = delivery-timing group (Overdue/Pending/Date
+   Unknown), purple = Data Quality Flags (paperwork/process notes). */
+.kpi-flag-icon { position:absolute; top:14px; right:14px; opacity:.9; }
+.kpi-card:hover { transform:translateY(-2px); box-shadow:0 8px 20px rgba(15,23,42,0.10); }
+.kpi-card.active { outline:2px solid var(--navy); outline-offset:-1px; }
+.kpi-card .val { font-family:var(--mono); font-size:28px; font-weight:800; line-height:1.1; color:var(--navy); font-variant-numeric: tabular-nums; }
+.kpi-card .label { font-size:11px; color:var(--slate-soft); margin-top:7px; font-weight:700; text-transform:uppercase; letter-spacing:0.03em; }
+.kpi-card.unknown { border-left-color:var(--gray); }
+.kpi-card.unknown .val { color:var(--gray); }
+.kpi-card.overdue { border-left-color:var(--red); }
+.kpi-card.overdue .val { color:var(--red); }
+.kpi-card.received { border-left-color:var(--green); }
+.kpi-card.received .val { color:var(--green); }
+.kpi-card.partial { border-left-color:var(--blue); }
+.kpi-card.partial .val { color:var(--blue); }
+.kpi-card.pending { border-left-color:var(--amber); }
+.kpi-card.pending .val { color:var(--amber); }
+/* Quantity/Rate-Value Discrepancy cards - a filled red background, not just
+   a red left-border like .overdue, so they read as the two cards needing
+   action first (see the legend panel). Ported verbatim from the reference
+   artifact's .kpi-card.critical - deliberately distinct from .overdue. */
+.kpi-card.critical { border-left-color:var(--red); background:var(--red-soft); }
+.kpi-card.critical .val { color:var(--red); }
+/* Data Quality Flags - deliberately neutral (no .val color override, stays
+   the default navy), not red: these are process/paperwork notes, not
+   money-or-quantity problems that need action first - see CLAUDE.md's
+   flag-categorization section. Ported verbatim from the reference artifact. */
+.kpi-card.flags { border-left-color:var(--slate-soft); }
+.chart-row { display:grid; grid-template-columns: minmax(320px, 1.4fr) minmax(280px, 1fr); gap:16px; margin-bottom:20px; }
+@media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
+.chart-panel { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px 14px; box-shadow:var(--shadow); }
+.chart-panel h4 { margin:0 0 4px; font-size:12.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; display:flex; align-items:center; gap:7px; }
+.chart-panel h4::before { content:''; width:4px; height:14px; border-radius:2px; background:var(--blue); display:inline-block; }
+.chart-box { position:relative; height:250px; margin-top:14px; }
+.no-data-note { color:#9ca3af; font-size:12px; font-style:italic; }
+
+/* Drill-down chart breadcrumb (Inventory Value by Category -> Subcategory ->
+   Material - see frontend/js/main.js's renderMaterialsChart()). */
+.chart-breadcrumb { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin:8px 0 4px; font-size:12px; }
+.chart-breadcrumb .crumb { color:var(--blue); cursor:pointer; font-weight:600; }
+.chart-breadcrumb .crumb:hover { text-decoration:underline; }
+.chart-breadcrumb .crumb.active { color:var(--slate-soft); cursor:default; font-weight:700; }
+.chart-breadcrumb .crumb.active:hover { text-decoration:none; }
+.chart-breadcrumb .crumb-sep { color:#cbd5e1; }
+
+.list-toggle-row { display:flex; align-items:center; justify-content:space-between; margin: 20px 0 10px; }
+.view-all-btn { padding:7px 15px; border-radius:8px; border:1px solid var(--navy); background:#fff; color:var(--navy); font-size:12px; font-weight:700; cursor:pointer; }
+.view-all-btn:hover { background:var(--blue-soft); }
+
+/* "View all" table pagination - 10 rows/page (main.js's PAGE_SIZE). */
+.pagination-row { display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; padding:14px 0 4px; }
+.page-btn { padding:6px 12px; border-radius:7px; border:1px solid #cbd5e1; background:#fff; color:var(--slate); font-size:12px; font-weight:600; cursor:pointer; }
+.page-btn:hover:not(:disabled) { background:var(--blue-soft); border-color:var(--blue); }
+.page-btn:disabled { opacity:.4; cursor:default; }
+.page-btn.page-num { min-width:32px; text-align:center; padding:6px 8px; }
+.page-btn.page-num.active { background:var(--navy); border-color:var(--navy); color:var(--on-accent); cursor:default; }
+.page-info { font-size:12px; color:var(--slate-soft); font-weight:600; padding:0 6px; }
+
+/* Top-5 (collapsed) list rows - individual rounded cards laid out on a
+   shared CSS grid column template, NOT a plain HTML <table>. Ported
+   verbatim from the reference artifact's .top5-list/.top5-row/
+   .list-header-row - this is a real, structural difference from a table
+   (no table borders/row-separator lines; each row is its own bordered,
+   shadowed card), not just a color/spacing tweak. "View all" still renders
+   as a plain <table> (frontend/js/main.js) - a disclosed simplification,
+   not a parity gap that matters as much as the primary 5-row view. */
+.top5-list { display:flex; flex-direction:column; gap:8px; margin-bottom:6px; }
+.top5-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap:12px; align-items:center; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 14px; font-size:12.5px; box-shadow:var(--shadow); }
+@media (max-width: 1100px) { .top5-row { font-size:12px; } }
+.top5-row .po-num { font-family:var(--mono); font-weight:700; color:var(--navy); }
+.top5-row .row-link { font-weight:700; color:var(--blue); cursor:pointer; }
+.list-header-row { display:grid; gap:12px; padding:0 14px 6px; font-size:10px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
+.list-header-row.po-cols { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+/* Compact top-5 view's own header filter row - same controls as the "View
+   all" table's <thead> filter row (see main.js's filterCells), just laid
+   out on the existing .list-header-row.po-cols grid instead of <th>s, so
+   filtering works from either view. Overrides the label row's uppercase
+   text-transform, which would otherwise be inherited into every input's
+   typed/placeholder text. */
+.list-header-row.col-filter-row-grid { text-transform:none; letter-spacing:normal; padding:6px 10px; background:var(--gray-soft); border-radius:8px; margin-bottom:8px; align-items:center; }
+
+.section-title { font-size:14.5px; font-weight:700; margin: 20px 0 10px; color:var(--navy); }
+.section-sub { font-size:12px; color:var(--slate-soft); margin:-6px 0 12px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--border-soft); }
+th { color:var(--slate-soft); font-size:10.5px; text-transform:uppercase; letter-spacing:0.03em; font-weight:700; }
+input, select { font-size:13px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:7px; font-family:inherit; }
+.table-wrap { border-radius:10px; overflow-x:auto; border:1px solid var(--border); box-shadow:var(--shadow); background:var(--card); }
+
+/* Per-column header filter row on the "View all" PO table - see
+   frontend/js/main.js's colFilterRow. A second <tr> of <th>s directly under
+   the label row, one small control per column matching that column's data
+   (text/date-range/number-range/select) - Details has no data of its own,
+   so its cell is left empty for alignment. */
+.col-filter-row th { padding:6px 8px; background:var(--gray-soft); text-transform:none; letter-spacing:normal; }
+.col-filter-input, .col-filter-num { width:100%; font-size:11.5px; padding:5px 7px; border-radius:6px; text-transform:none; }
+.col-filter-num { width:64px; }
+.col-filter-range { display:flex; gap:4px; align-items:center; }
+.col-filter-range input[type=date] { min-width:0; flex:1; font-size:10.5px; padding:4px 3px; text-transform:none; }
+
+/* "N filters active - Clear" chip next to "Purchase Orders (Latest first)" -
+   summarizes every table-only filter currently narrowing the list (chart
+   clicks + header filters), since those don't show up anywhere else the
+   way a selected KPI card's outline or a selected chart slice's pop-out
+   already do on their own. */
+.clear-list-filters { font-size:11.5px; font-weight:700; color:var(--blue); cursor:pointer; background:var(--blue-soft); padding:5px 11px; border-radius:99px; white-space:nowrap; }
+.clear-list-filters:hover { background:#dbe7fe; }
+
+/* Per-row flag icons (Status column) - one small flag per category on that
+   PO, colored per main.js's CATEGORY_COLORS (each category's own color, not
+   a flat red/purple split - "the flag color should match the error it
+   represents"). See main.js's rowFlags() and flagIconHtml()'s
+   'row-flag-icon' variant - unlike .kpi-flag-icon this one is inline, not
+   absolutely positioned.
+   The category name shows via a CSS tooltip (data-tooltip + ::after/::before
+   below), not a native title attribute - title tooltips have a ~1s hover
+   delay and vanish at the slightest mouse movement, which read as "hovering
+   isn't working". This tooltip shows instantly and stays up while hovered. */
+.row-flag-wrap { position:relative; display:inline-flex; vertical-align:middle; margin-left:5px; cursor:default; }
+.row-flag-icon { display:block; }
+.row-flag-wrap::after {
+  content: attr(data-tooltip);
+  position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%);
+  background:#0f1b2d; color:#fff; font-size:11px; font-weight:600; line-height:1.3; white-space:nowrap;
+  padding:5px 9px; border-radius:6px; opacity:0; visibility:hidden; pointer-events:none;
+  transition:opacity .1s ease; z-index:30; box-shadow:0 4px 14px rgba(0,0,0,.2);
+}
+.row-flag-wrap::before {
+  content:''; position:absolute; bottom:calc(100% + 3px); left:50%; transform:translateX(-50%);
+  border:5px solid transparent; border-top-color:#0f1b2d; opacity:0; visibility:hidden;
+  transition:opacity .1s ease; z-index:30;
+}
+.row-flag-wrap:hover::after, .row-flag-wrap:hover::before { opacity:1; visibility:visible; }
+
+/* Chart canvases are clickable (bar -> filter the list to that month,
+   doughnut slice -> filter to that status) - cursor is also swapped to
+   'pointer' on hover via each chart's own onHover, this is just the
+   default/fallback before Chart.js's own JS takes over. */
+.chart-box canvas { cursor: pointer; }
+
+.status-pill { display:inline-block; padding:3px 9px; border-radius:99px; font-size:10.5px; font-weight:700; letter-spacing:0.02em; text-transform:uppercase; }
+.status-received { background:var(--green-soft); color:#166534; }
+.status-partial { background:#fff7ed; color:#9a3412; }
+.status-pending { background:var(--amber-soft); color:#92400e; }
+.status-overdue { background:var(--red-soft); color:#991b1b; }
+.status-unknown { background:var(--indigo-soft); color:#3730a3; }
+.flag-badge { display:inline-block; font-size:10px; font-weight:700; border-radius:99px; padding:2px 8px; margin-left:6px; background:var(--red-soft); color:#991b1b; }
+/* Critical (money/quantity, computed from real PO-vs-MIR diffs) vs info
+   (paperwork/process notes, categorized from the PO's own remarks text) -
+   see CLAUDE.md's flag-categorization section. .flag-badge's default red
+   IS the critical color already; .critical is an explicit alias so call
+   sites can be unambiguous about which they mean. */
+.flag-badge.critical { background:var(--red-soft); color:#991b1b; }
+.flag-badge.info { background:var(--indigo-soft); color:#3730a3; }
+/* Dismissed (apps/services/match_dismiss.py) - muted + struck-through
+   rather than hidden, so a reviewer can still see what was dismissed. */
+.flag-badge.dismissed { background:var(--border); color:var(--slate-soft); text-decoration:line-through; }
+.dismissed-tag { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:6px; background:var(--border); color:var(--slate-soft); cursor:default; }
+.dismiss-link { display:inline-block; font-size:10.5px; font-weight:600; margin-left:6px; color:var(--blue); cursor:pointer; }
+.dismiss-link:hover { text-decoration:underline; }
+
+.legend-toggle { display:inline-block; margin:2px 0 14px; font-size:12.5px; color:var(--blue); cursor:pointer; font-weight:600; }
+.legend-toggle:hover { text-decoration:underline; }
+.legend-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px 20px; margin-bottom:16px; box-shadow:var(--shadow); }
+.legend-box h4 { margin:0 0 4px; font-size:13px; color:var(--navy); font-weight:800; }
+.legend-sub { font-size:12px; color:var(--slate-soft); margin-bottom:12px; }
+.legend-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.legend-item { font-size:12.5px; color:var(--slate); line-height:1.5; }
+.lg-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; vertical-align:middle; }
+.lg-label { display:inline-block; font-size:9px; font-weight:800; letter-spacing:0.04em; border-radius:5px; padding:2px 6px; margin-right:7px; }
+.lg-label.critical { background:var(--red-soft); color:#991b1b; }
+.lg-label.info { background:var(--indigo-soft); color:#3730a3; }
+.conf-badge { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:6px; cursor:default; }
+.conf-badge.conf-high { background:var(--green-soft); color:#166534; }
+.conf-badge.conf-medium { background:var(--amber-soft); color:#92400e; }
+.conf-badge.conf-low { background:var(--red-soft); color:#991b1b; }
+.validation-note { display:flex; gap:8px; align-items:flex-start; background:var(--amber-soft); border:1px solid #fde68a; border-radius:10px; padding:10px 14px; font-size:12px; color:#92400e; margin-bottom:16px; }
+.row-link { color:var(--blue); cursor:pointer; text-decoration:none; font-weight:700; font-size:12px; }
+.row-link:hover { text-decoration:underline; }
+.empty-state { padding:70px 20px; text-align:center; color:#9ca3af; font-size:14px; background:var(--card); border:1px dashed #d1d5db; border-radius:12px; }
+
+.modal-backdrop { position:fixed; inset:0; background:rgba(15,23,42,0.55); display:none; align-items:flex-start; justify-content:center; z-index:100; padding: 36px 16px; overflow:auto; }
+.modal-backdrop.open { display:flex; }
+.modal { background:#fff; border-radius:14px; max-width: 900px; width:100%; padding:26px 32px 32px; max-height: 92vh; overflow:auto; box-shadow:0 20px 60px rgba(0,0,0,0.25); }
+.modal h2 { margin:0 0 2px; font-size:20px; color:var(--navy); }
+.modal .close-btn { float:right; cursor:pointer; font-size:22px; color:#9ca3af; line-height:1; }
+.modal .close-btn:hover { color:var(--slate); }
+.modal-meta { font-size:12.5px; color:var(--slate-soft); margin-bottom:6px; }
+/* Overview / Item & Stock tabs inside the PO detail modal. */
+.modal-tabs { display:flex; gap:4px; margin:14px 0 16px; border-bottom:1px solid var(--border); }
+.modal-tab { padding:9px 16px; font-size:12.5px; font-weight:700; color:var(--slate-soft); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+.modal-tab.active { color:var(--navy); border-bottom-color:var(--blue); }
+.modal-tab-panel[hidden] { display:none; }
+.field-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top:4px; }
+@media (max-width: 720px) { .field-grid { grid-template-columns: 1fr; } }
+.field-block { background:var(--gray-soft); border-radius:10px; padding:14px 16px; }
+.field-block h4 { margin:0 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
+.vendor-pill { display:inline-block; background:var(--blue-soft); color:#1e40af; font-size:12px; font-weight:600; padding:5px 12px; border-radius:99px; margin:0 6px 6px 0; }
+.field-block div.line { font-size:13px; margin-bottom:3px; color:var(--slate); font-family:var(--mono); }
+.items-table { width:100%; border-collapse:collapse; margin-top:6px; font-size:12px; font-family:var(--mono); }
+.items-table th, .items-table td { border-bottom:1px solid var(--border); padding:5px 7px; text-align:left; }
+.items-table th { color:var(--slate-soft); font-family:-apple-system,BlinkMacSystemFont,sans-serif; text-transform:uppercase; font-size:10.5px; letter-spacing:0.03em; }
+.flags-box { background:#fff7ed; border:1px solid #fed7aa; border-radius:10px; padding:12px 14px; margin-top:14px; }
+.flags-box h4 { margin:0 0 8px; font-size:11px; text-transform:uppercase; color:#9a3412; font-weight:700; }
+.flags-box li { font-size:12.5px; margin-bottom:5px; }
+.full-width { grid-column: 1 / -1; }
+
+/* Import Purchases only (frontend/js/main.js's renderImportPoList()) - MIR-
+   placeholder KPI cards (grayed out, not clickable - no MIR-equivalent data
+   source exists for imports yet). Domestic's dashboard has no equivalent. */
+.kpi-card.kpi-disabled { cursor:default; opacity:.55; }
+.kpi-card.kpi-disabled:hover { transform:none; box-shadow:var(--shadow); }
+.kpi-card .val.val-text { font-family:-apple-system,BlinkMacSystemFont,sans-serif; font-size:13px; font-weight:700; line-height:1.3; }
+
+/* Inline "Edit Everywhere" pencil/edit-mode markup - shared by both the
+   Domestic PO modal (openPoModal()) and the Import PO modal
+   (renderImportPoModalBody()) via frontend/js/shared.js's editableLine()/
+   startFieldEdit(), each backed by its own plant's PATCH .../fields
+   endpoint. Gated by shared.js's canEditField() - a non-editing viewer
+   never gets this markup in the first place, not just a disabled pencil. */
+.editable-line { position:relative; padding-right:44px; }
+.editable-line .edit-pencil { position:absolute; right:0; top:1px; cursor:pointer; font-size:11.5px; opacity:.35; }
+.editable-line:hover .edit-pencil { opacity:.9; }
+.editable-line .edit-pencil:hover { opacity:1; color:var(--blue); }
+.line-input { font-family:var(--mono); font-size:12.5px; padding:2px 6px; border:1px solid var(--blue); border-radius:5px; width:180px; max-width:100%; }
+.edit-actions { position:absolute; right:0; top:1px; display:flex; gap:6px; }
+.edit-actions span { cursor:pointer; font-size:12px; font-weight:700; opacity:.7; }
+.edit-actions span:hover { opacity:1; }
+.edit-save { color:var(--green, #16a34a); }
+.edit-cancel { color:var(--red, #dc2626); }
+.edit-warning { margin-top:3px; font-size:11px; color:var(--gold-dark, #b45309); }
+
+.mat-toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+.mat-search { flex:1; min-width:220px; padding:9px 13px; border:1px solid #cbd5e1; border-radius:9px; font-size:13px; }
+.mat-cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-bottom:18px; }
+
+.mini-stepper { display:flex; align-items:center; gap:0; }
+.mini-stepper .step-dot { width:9px; height:9px; border-radius:50%; background:#cbd5e1; flex:none; }
+.mini-stepper .step-dot.done { background:var(--green); }
+.mini-stepper .step-line { width:16px; height:2px; background:#cbd5e1; flex:none; }
+.mini-stepper .step-line.done { background:var(--green); }
+.mini-stepper-wrap { display:flex; flex-direction:column; gap:3px; }
+.mini-stepper-labels { font-size:9px; color:var(--slate-soft); white-space:nowrap; }
