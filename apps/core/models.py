@@ -1600,6 +1600,21 @@ class PTUser(models.Model):
     failed_login_attempts = models.PositiveSmallIntegerField(default=0)
     locked_until = models.DateTimeField(null=True, blank=True)
 
+    # "Log out everywhere" (added 2026-09-05, hardening pass) - every JWT
+    # issued for this user embeds the current value as a `ver` claim (see
+    # apps/api/auth_serializers.py's PTTokenObtainPairSerializer.get_token()).
+    # Both access-token auth (apps/api/auth_backend.py's
+    # PTJWTAuthentication.get_user()) and refresh (PTTokenRefreshSerializer)
+    # reject any token whose `ver` claim doesn't match the user's current
+    # value. Incrementing this instantly invalidates every previously issued
+    # access AND refresh token at once - a stronger, simpler guarantee than
+    # RevokedRefreshToken alone provides (that table only knows about tokens
+    # explicitly rotated-away or logged out, not every token ever issued;
+    # this stamp needs no such registry, and covers live access tokens too,
+    # which per-jti revocation never did). See
+    # apps/services/token_revocation.py's revoke_all_sessions().
+    token_version = models.PositiveIntegerField(default=0)
+
     # ── Django/DRF auth protocol ──────────────────────────────────────────
     # PTUser does NOT inherit from AbstractBaseUser, so these must be
     # declared explicitly - DRF's IsAuthenticated permission reads

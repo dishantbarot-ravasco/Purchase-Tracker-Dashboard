@@ -12,6 +12,7 @@ POST   /api/auth/users/create                    -> users_views.create_user
 PATCH  /api/auth/users/<id>                       -> users_views.update_user
 GET    /api/auth/users/<id>/devices               -> users_views.list_user_devices
 DELETE /api/auth/users/<id>/devices/<device_id>   -> users_views.revoke_user_device
+POST   /api/auth/users/<id>/logout-everywhere     -> users_views.admin_logout_everywhere
 """
 
 from django.urls import path
@@ -24,4 +25,5 @@ urlpatterns = [
     path("auth/users/<int:user_id>", users_views.update_user, name="users-update"),
     path("auth/users/<int:user_id>/devices", users_views.list_user_devices, name="users-devices-list"),
     path("auth/users/<int:user_id>/devices/<int:device_id>", users_views.revoke_user_device, name="users-devices-revoke"),
+    path("auth/users/<int:user_id>/logout-everywhere", users_views.admin_logout_everywhere, name="users-logout-everywhere"),
 ]

@@ -102,12 +102,22 @@ def _register_failed_attempt(user: PTUser) -> None:
     clobbers a concurrent request's own field changes to the same row - the
     in-memory `user` object passed in is only read here, never written back
     to the caller."""
+    from apps.services.security_alerts import notify_admins_account_locked, record_failed_login_and_maybe_alert
+
     attempts = user.failed_login_attempts + 1
     updates = {"failed_login_attempts": attempts}
-    if attempts >= _MAX_FAILED_ATTEMPTS:
+    just_locked = attempts >= _MAX_FAILED_ATTEMPTS
+    if just_locked:
         updates["locked_until"] = timezone.now() + _LOCKOUT_DURATION
         updates["failed_login_attempts"] = 0
     PTUser.objects.filter(pk=user.pk).update(**updates)
+
+    # See apps/services/security_alerts.py's module docstring - both are
+    # best-effort/never-propagating, deliberately called after the DB write
+    # above so an email failure can't affect the actual lockout logic.
+    record_failed_login_and_maybe_alert()
+    if just_locked:
+        notify_admins_account_locked(user)
 
 
 class PTUserBackend:
@@ -124,6 +134,12 @@ class PTUserBackend:
             user = PTUser.objects.get(email=email)
         except PTUser.DoesNotExist:
             _dummy_verify()
+            # Counts toward the login-burst detector even though there's no
+            # PTUser row to lock - a credential-stuffing run often targets
+            # many nonexistent/typo'd emails too, see
+            # apps/services/security_alerts.py's own docstring.
+            from apps.services.security_alerts import record_failed_login_and_maybe_alert
+            record_failed_login_and_maybe_alert()
             return None
 
         # Locked out (5 consecutive failed attempts, see
@@ -191,6 +207,14 @@ class PTJWTAuthentication(JWTAuthentication):
 
         if not user.is_active:
             raise AuthenticationFailed("User account is inactive.", code="user_inactive")
+
+        # "Log out everywhere" - see PTUser.token_version's own docstring.
+        # An access token minted before the user's most recent
+        # revoke_all_sessions() call is rejected immediately, on every
+        # request - this is what makes "log out everywhere" actually revoke
+        # a live session instead of only blocking a future token refresh.
+        if validated_token.get("ver", 0) != user.token_version:
+            raise AuthenticationFailed("Session has been revoked.", code="session_revoked")
 
         return user
 

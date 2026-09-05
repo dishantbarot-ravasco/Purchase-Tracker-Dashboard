@@ -436,6 +436,21 @@ function computePoFlags(po) {
 // entries, which use the same fields without the underscore prefix
 // (qtyFlag/rateFlag/maxDiffPct) - checks both naming conventions rather
 // than making every caller normalize its own object shape first.
+// Compact always-visible legend for rowTintClass()'s row shading - the
+// shading has no other on-screen explanation otherwise (a flag badge is
+// visible per-row already, but nothing said why one flagged row looked
+// pinker than another), which read as an unexplained/broken row rather than
+// a deliberate severity cue when the project owner first saw it. Placed
+// next to each list's own toggle-all/pagination row, not inside the (PO-
+// remarks-specific) DISCREPANCY_LEGEND panel, since this applies to every
+// list (PO/Materials/Import) uniformly.
+function rowTintLegendHtml() {
+  return '<span class="row-tint-legend">Row shading = discrepancy size:' +
+    '<span class="row-tint-swatch row-tint-mild"></span>Mild' +
+    '<span class="row-tint-swatch row-tint-moderate"></span>Moderate' +
+    '<span class="row-tint-swatch row-tint-severe"></span>Severe</span>';
+}
+
 function rowTintClass(rec) {
   const qtyFlag = rec._qtyFlag != null ? rec._qtyFlag : rec.qtyFlag;
   const rateFlag = rec._rateFlag != null ? rec._rateFlag : rec.rateFlag;

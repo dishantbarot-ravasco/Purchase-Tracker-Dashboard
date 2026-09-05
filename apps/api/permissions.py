@@ -88,5 +88,28 @@ def user_can_edit_plant(user, plant_key: str) -> bool:
     isn't known until inside the view (a URL kwarg for Import, an implicit
     per-router constant for Domestic) - call this directly from the view
     body and return a 403 on False."""
+    return user_can_access_plant(user, plant_key)
+
+
+def user_can_access_plant(user, plant_key: str) -> bool:
+    """True if `user` may READ `plant_key`'s data at all (added 2026-09-05,
+    hardening pass, closing a gap flagged by a security review: every read
+    endpoint used to be plain IsAuthenticated regardless of role/plant, so
+    an editor explicitly scoped to e.g. ["hrs"] could still read every
+    other plant's dashboard - inconsistent with what PTUser.plants'
+    docstring already promises ("scopes which plants a user may edit"),
+    which read as narrower than what was actually enforced).
+
+    Same underlying check as user_can_edit_plant (which now delegates here)
+    - there was never a real distinction in the logic, only in which call
+    sites used it. Deliberately LOW blast-radius: an empty `plants` list
+    still means "all plants" (see that field's docstring), so this only
+    changes behavior for accounts an admin has already explicitly scoped to
+    specific plants - the vast majority of accounts (empty plants list) see
+    no change at all. Call this directly from a read view's body and return
+    403 (single-plant endpoints) or filter results (cross-plant endpoints
+    like imports_views.py's purchase_orders) on False - do not make this a
+    DRF BasePermission subclass, for the same URL-kwarg-vs-router-constant
+    reason user_can_edit_plant's own docstring already explains."""
     plants = getattr(user, "plants", None) or []
     return not plants or plant_key in plants

@@ -221,7 +221,7 @@ function renderPoList(el) {
       '<div class="filter-group">' +
         '<label>Date filter (Created on)</label>' +
         '<input type="date" id="fromDate" value="' + (state.from || '') + '">' +
-        '<span style="color:#9ca3af;font-size:12px;">to</span>' +
+        '<span style="color:var(--gray);font-size:12px;">to</span>' +
         '<input type="date" id="toDate" value="' + (state.to || '') + '">' +
       '</div>' +
       '<button class="primary" id="applyFilter">Apply</button>' +
@@ -274,6 +274,7 @@ function renderPoList(el) {
         '</div>' +
       '</div>' : '') +
     '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Purchase Orders (Latest first)</div>' +
+      (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
       '<div style="display:flex;align-items:center;gap:10px;">' +
         (activeFilterCount ? '<span class="clear-list-filters" id="clearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
         (totalForList > 5 ? '<button class="view-all-btn" id="toggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +

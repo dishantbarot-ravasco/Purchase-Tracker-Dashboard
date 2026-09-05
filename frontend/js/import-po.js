@@ -267,7 +267,7 @@ function renderImportPoList(el) {
       '<div class="filter-group">' +
         '<label>Date filter (Created on)</label>' +
         '<input type="date" id="importFromDate" value="' + (state.importFrom || '') + '">' +
-        '<span style="color:#9ca3af;font-size:12px;">to</span>' +
+        '<span style="color:var(--gray);font-size:12px;">to</span>' +
         '<input type="date" id="importToDate" value="' + (state.importTo || '') + '">' +
       '</div>' +
       '<button class="primary" id="importApplyFilter">Apply</button>' +
@@ -313,6 +313,7 @@ function renderImportPoList(el) {
         '</div>' +
       '</div>' : '') +
     '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Import Purchase Orders (Latest first)</div>' +
+      (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
       '<div style="display:flex;align-items:center;gap:10px;">' +
         (activeFilterCount ? '<span class="clear-list-filters" id="importClearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
         (totalForList > 5 ? '<button class="view-all-btn" id="importToggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
@@ -549,7 +550,7 @@ async function openImportPoModal(compositeKey) {
   const body = document.getElementById('modalBody');
   backdrop.classList.add('open');
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
-  body.innerHTML = '<span class="close-btn" onclick="closeModal()">&times;</span><div class="load-banner"><div class="spinner"></div><div>Loading&hellip;</div></div>';
+  body.innerHTML = '<div class="modal-head"><div></div><span class="close-btn">&times;</span></div><div class="load-banner"><div class="spinner"></div><div>Loading&hellip;</div></div>';
 
   let po;
   try {
@@ -557,7 +558,7 @@ async function openImportPoModal(compositeKey) {
   } catch (e) {
     console.error('Failed to load import PO detail:', e);
     if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
-    body.innerHTML = '<span class="close-btn" onclick="closeModal()">&times;</span><div class="noaccess">Couldn\'t load this purchase order. Please close and try again.</div>';
+    body.innerHTML = '<div class="modal-head"><div></div><span class="close-btn">&times;</span></div><div class="noaccess">Couldn\'t load this purchase order. Please close and try again.</div>';
     return;
   }
   if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
@@ -679,9 +680,9 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const correctionBoxHtml = overrideBoxHtml('Click the ✎ icon next to any field in the Overview, Items, or Shipment & License tab to correct it - no need to know column names.');
 
   body.innerHTML =
-    '<span class="close-btn">&times;</span>' +
-    '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
-    '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(po.plantLabel) + ' (Imports) &middot; Country of Origin: ' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
+    '<div class="modal-head"><div><h2>' + escapeHtml(po.poNumber) + '</h2>' +
+    '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(po.plantLabel) + ' (Imports) &middot; Country of Origin: ' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div></div>' +
+    '<span class="close-btn">&times;</span></div>' +
     '<div class="modal-tabs" id="importPoModalTabs" role="tablist">' +
       '<div class="modal-tab' + (importModalTab === 'overview' ? ' active' : '') + '" data-itab="overview" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'overview') + '">Overview</div>' +
       '<div class="modal-tab' + (importModalTab === 'items' ? ' active' : '') + '" data-itab="items" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'items') + '">Items</div>' +

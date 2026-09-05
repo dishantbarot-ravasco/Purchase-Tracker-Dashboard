@@ -34,8 +34,15 @@
   --text-dim:      #4A5568;
   --text-muted:    #5B6472;
   --text-light:    #5F6B78;
-  --border:        #E2E8F0;
-  --border-mid:    #CBD5E0;
+  /* Strengthened (was #E2E8F0/#CBD5E0 - too close to --bg-card's white to
+     read as a real edge). Same fix, same reasoning, as style.css's own
+     --border/--border-strong (see that file's comment) - this token governs
+     every card/popup OUTSIDE the dashboard (home.html's stat/action cards,
+     search results, user cards, and every modal styled by this file,
+     including admin.html's Add/Edit User popup), so it needed the identical
+     fix, not just the dashboard's own stylesheet. */
+  --border:        #D3DAE3;
+  --border-mid:    #B8C2CF;
   --green:         #1A7A4A;
   --green-pale:    #F0FFF4;
   --green-border:  #C6F6D5;
@@ -48,8 +55,8 @@
   --purple:        #6B46C1;
   --purple-pale:   #F3EEFF;
   --purple-border: #DCD0FA;
-  --shadow-sm:     0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.06);
-  --shadow:        0 4px 12px rgba(0,0,0,.08), 0 2px 4px rgba(0,0,0,.05);
+  --shadow-sm:     0 1px 3px rgba(0,0,0,.10), 0 1px 2px rgba(0,0,0,.08);
+  --shadow:        0 4px 12px rgba(0,0,0,.10), 0 2px 4px rgba(0,0,0,.07);
   --shadow-md:     0 8px 24px rgba(0,0,0,.10), 0 4px 8px rgba(0,0,0,.06);
   --shadow-lg:     0 16px 48px rgba(0,0,0,.12), 0 8px 16px rgba(0,0,0,.06);
   --radius:        6px;
@@ -362,7 +369,16 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .uf-overlay.open .uf-modal { transform: translateY(0) scale(1); }
 .uf-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border); }
 .uf-modal-head h3 { font-family: var(--font-head); font-size: 16px; color: var(--navy); }
-.uf-modal-head button { background: none; border: none; font-size: 18px; color: var(--text-muted); cursor: pointer; line-height: 1; }
+/* Same circular hover-fill close button as style.css's own .modal .close-btn
+   (the dashboard's PO/Import PO/Material detail modals) - one consistent
+   close-button treatment across every popup in the app now, not just a
+   matching header layout. */
+.uf-modal-head button {
+  background: none; border: none; font-size: 18px; color: var(--text-muted); cursor: pointer; line-height: 1;
+  width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; transition: background .15s, color .15s; flex-shrink: 0;
+}
+.uf-modal-head button:hover { background: var(--bg-section); color: var(--text); }
 .uf-body { padding: 20px 24px; }
 .uf-row { margin-bottom: 16px; }
 .uf-label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--navy); margin-bottom: 6px; }

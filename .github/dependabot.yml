@@ -1,0 +1,17 @@
+# Continuous dependency-vulnerability monitoring, on top of (not instead of)
+# CI's own pip-audit step (.github/workflows/ci.yml) - pip-audit only checks
+# whatever's pinned at the moment CI runs; a CVE disclosed against an
+# already-merged pin sits undetected until the next push otherwise.
+# Dependabot checks on its own schedule regardless of push activity and
+# opens a PR when a pinned dependency has a known advisory.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

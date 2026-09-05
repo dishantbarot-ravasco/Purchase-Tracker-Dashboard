@@ -441,6 +441,7 @@ function renderMaterialsView() {
     '</div>' +
     renderMaterialsChart(filtered) +
     '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Materials by Stock Quantity - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
+      (listRecs.some(m => { const e = linkageByKey.get(normalizeMaterial(m.description)); return e && (e.qtyFlag || e.rateFlag); }) ? rowTintLegendHtml() : '') +
       (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all ' + sorted.length + ' materials') + '</button>' : '') +
     '</div>' +
     (() => {

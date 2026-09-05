@@ -177,3 +177,34 @@ def logout_view(request):
     response.delete_cookie(key=settings.PT_COOKIE_NAME, path="/", samesite=settings.PT_COOKIE_SAMESITE)
     response.delete_cookie(key=REFRESH_COOKIE_NAME, path=REFRESH_COOKIE_PATH, samesite=settings.PT_COOKIE_SAMESITE)
     return response
+
+
+@api_view(["POST"])
+def logout_everywhere_view(request):
+    """POST /api/auth/logout-everywhere
+
+    Self-service "something might be wrong with my account" panic button -
+    IsAuthenticated by default (any signed-in user may revoke their OWN
+    sessions; no special role needed to protect yourself). Instantly
+    invalidates every access/refresh token issued to this account on every
+    device (apps/services/token_revocation.py's revoke_all_sessions() -
+    see PTUser.token_version's own docstring for the mechanism), clears all
+    device trust (every TrustedDevice row deleted - the next sign-in
+    anywhere goes through the email-OTP challenge again), then also logs out
+    THIS request's own session/cookies the same way logout_view does, since
+    the caller's own current session is one of the ones just revoked."""
+    from django.conf import settings
+
+    from apps.services.device_service import REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH
+    from apps.services.token_revocation import revoke_all_sessions
+
+    from apps.core.audit_log import PTAuditLog, log_pt_action
+
+    revoke_all_sessions(request.user)
+    log_pt_action(request, PTAuditLog.ACTION_SESSIONS_REVOKED, actor=request.user)
+
+    request.session.flush()
+    response = Response({"detail": "All sessions revoked. You have been signed out everywhere."})
+    response.delete_cookie(key=settings.PT_COOKIE_NAME, path="/", samesite=settings.PT_COOKIE_SAMESITE)
+    response.delete_cookie(key=REFRESH_COOKIE_NAME, path=REFRESH_COOKIE_PATH, samesite=settings.PT_COOKIE_SAMESITE)
+    return response

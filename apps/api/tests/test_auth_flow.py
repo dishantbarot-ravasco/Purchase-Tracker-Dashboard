@@ -119,6 +119,10 @@ class TestAccountLockout:
         self.client = APIClient()
         self.password = "Str0ngPassw0rd!"
         self.user = make_user(password=self.password)
+        # An admin recipient - see apps/services/security_alerts.py's
+        # _admin_emails(); with none, the alert functions are still called
+        # but no-op (nothing to assert on mail.outbox in that case).
+        self.admin = make_user(email="admin-lockout-test@ravasco.com", role="admin")
 
     def test_locks_account_after_5_failed_attempts_and_rejects_even_correct_password(self):
         for _ in range(5):
@@ -135,6 +139,19 @@ class TestAccountLockout:
         cache.clear()
         response = self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
         assert response.status_code == 400
+
+    def test_lockout_sends_an_admin_alert_email(self):
+        """Regression test for the 2026-09-05 hardening pass's alerting
+        gap: an account locking out must actually notify an admin, not
+        just silently write a log line nobody's watching."""
+        for _ in range(5):
+            cache.clear()
+            self.client.post(LOGIN_URL, {"email": self.user.email, "password": "wrong-password"}, format="json")
+
+        alert_emails = [m for m in mail.outbox if "Account Locked" in m.subject]
+        assert len(alert_emails) == 1
+        assert self.admin.email in alert_emails[0].to
+        assert self.user.email in alert_emails[0].body
 
     def test_successful_login_resets_the_failed_attempt_counter(self):
         cache.clear()

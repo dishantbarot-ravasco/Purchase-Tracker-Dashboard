@@ -361,6 +361,67 @@ punch list of defense-in-depth/production-hardening gaps the audits found, not l
   data-accuracy/matching-threshold validation work remain separate, explicitly deferred efforts
   too — not silently resolved or forgotten by either hardening pass.
 
+### Security hardening pass, round 2 (added 2026-09-05, same day as round 1 above)
+
+Following an independent-security-analyst-style review of round 1's own results (a genuinely
+different framing — residual business risk, not code-level controls in isolation — which landed on
+a more conservative ~6.5-7/10 score, mainly for monitoring/alerting and second-factor strength), this
+pass closed every item that was actually fixable in code:
+
+- **Revoked-refresh-token pruning.** `RevokedRefreshToken` (round 1) had nothing that ever deleted a
+  row — `apps/core/management/commands/prune_revoked_tokens.py` deletes rows past their own
+  `expires_at`. Not wired to a scheduler (this app still has no cron/scheduled-task infrastructure —
+  see "No scheduling" below) — run manually or via whatever scheduler eventually closes that gap.
+- **"Log out everywhere."** `PTUser.token_version` (migration `0021`) is a per-account counter
+  embedded as a `ver` claim in every JWT (`PTTokenObtainPairSerializer.get_token()`); both
+  `PTJWTAuthentication.get_user()` (access tokens, checked on every request) and
+  `PTTokenRefreshSerializer` (refresh tokens) reject any token whose `ver` doesn't match the user's
+  current value. This is a stronger guarantee than `RevokedRefreshToken` alone: that table only
+  knows about tokens explicitly rotated-away or logged out, not every token ever issued, and never
+  covered a still-live access token. `apps/services/token_revocation.py`'s `revoke_all_sessions()`
+  bumps the counter and deletes every `TrustedDevice` row for the account (a fresh sign-in anywhere
+  goes through 2FA again). Wired to two endpoints:
+  `POST /api/auth/logout-everywhere` (self-service, `IsAuthenticated`, any account can revoke its own
+  sessions) and `POST /api/auth/users/<id>/logout-everywhere` (`IsAdmin`, for revoking a DIFFERENT
+  account's sessions — e.g. a reported compromise). Verified with a real multi-client test
+  (`test_logout_everywhere.py`) proving a second, already-logged-in client's live access token stops
+  working the instant the first client revokes — not just that a future refresh would fail.
+- **Security alerting** (`apps/services/security_alerts.py`) — this app previously had zero alerting
+  on any security-relevant event, only passive log lines nobody was watching. Three new,
+  best-effort/never-propagating email alerts, following the exact `render_email()`/`_dispatch_email()`
+  pattern `device_service.py`'s existing admin-alert emails already use: (1) an account-locked alert
+  the moment `PTUserBackend.authenticate()`'s lockout actually fires (not on every failed attempt);
+  (2) a login-burst alert (cache-backed counter, 15 failed logins — across ANY accounts, including
+  nonexistent emails — within a 5-minute window, suppressed to at most once per 30 minutes) for
+  detecting a credential-stuffing-shaped attack that no single per-account throttle would catch; (3)
+  a sync-pipeline-failure alert from `apps/services/sync_trigger.py`'s `_run_pipeline`/
+  `_run_imports_pipeline`, so a failed Drive sync reaches an inbox instead of only `logs/app.log`.
+- **Deploy-time system checks** (`apps/core/checks.py`, registered via `CoreConfig.ready()`) — run as
+  part of `manage.py check --deploy --fail-level WARNING`, the same command CI already gates on.
+  `check_jwt_signing_key_is_independent` warns (outside `DEBUG`) if `JWT_SIGNING_KEY` is still
+  silently falling back to `SECRET_KEY`. `check_no_unexpected_django_superuser` warns if an
+  `auth.User` superuser exists at all — this app's real login never touches `auth.User` (see the
+  `AUTH_USER_MODEL` note earlier in this file), so a superuser account is an undocumented,
+  unaudited path into `/admin/` that bypasses `PTAuditLog` for `PTUser` edits.
+- **Dependabot** (`.github/dependabot.yml`) — continuous CVE monitoring for pip + GitHub Actions
+  dependencies, on top of (not instead of) CI's own point-in-time `pip-audit` step.
+- **Read-endpoint plant scoping** — see the "Role differentiation..." bullet just above this
+  section; this was the one item this pass touched that could plausibly change real user-visible
+  behavior, so it's documented there in full rather than duplicated here.
+- **TOTP (authenticator-app) second factor — built, then fully removed same-day at the project
+  owner's request ("Don't need TOTP, happy with device aware").** Briefly existed as a complete,
+  tested, opt-in alternative to email OTP (`apps/services/totp_service.py`'s from-scratch RFC 6238
+  implementation, `apps/api/routers/totp_views.py`'s setup/confirm/disable/verify endpoints, a
+  `PTUser.totp_enabled` login-flow branch, `login.js`'s TOTP code-entry step) but was never wired
+  into any UI, so no real account ever had it enabled. Fully reverted, not just left dormant: the
+  `totp_service`/`totp_views`/`totp_urls` modules and their tests are deleted;
+  `PTUser.totp_secret`/`totp_enabled`/`backup_codes` were removed from the model before the
+  migration adding them was ever applied anywhere but this one local dev DB (migration `0021` was
+  unapplied and regenerated clean, keeping only `token_version` — see "Log out everywhere" above,
+  which is unrelated and stayed). `login.js` and `auth_serializers.py`/`device_views.py` are back
+  to their pre-TOTP shape. If TOTP is wanted again later, it needs to be rebuilt from scratch - no
+  code or migration history from this attempt remains to build on.
+
 **Bootstrap**: without at least one `PTUser`, nobody can log in to create more via Django Admin —
 use `manage.py create_pt_user --role admin` (see Commands above) to create the first account. Only
 an email ending in `@<ALLOWED_EMAIL_DOMAIN>` (default `ravasco.com`) may ever have an account or
@@ -1196,15 +1257,30 @@ had no MIR-derived fields at all; the three previously-`disabled: true` "Awaitin
   the constraint. `main.js`'s Import KPI row no longer has any `disabled: true` "Awaiting MIR"
   cards — Material Inwarded, Qty Discrepancies (BOE vs MIR), and Rate Discrepancies are all real
   now too.
-- **Role differentiation is now real but narrow** — every read endpoint (PO list, materials, stock
-  trend, sync status) is still plain `IsAuthenticated` (any role) by design; the write paths gated
-  at `IsEditor` are `correct_field` (Domestic and Import), `dismiss_po_mir_match`/
-  `dismiss_mir_stock_match` (see "Dismiss/override a flagged match" above), and the Import PO
-  `correct_field` in `imports_views.py`. `IsAdmin` gates `sync_trigger` and every
-  `users_views.py` endpoint (including the password-reset field on `PATCH /api/auth/users/<id>`,
-  see "In-app user management" above). There's no third tier of endpoint waiting on role gating
-  right now - if a new write endpoint is added, gate it the same way, don't leave it at
-  `IsAuthenticated` by default.
+- **Role differentiation is real; plant scoping on reads was tightened 2026-09-05 (hardening
+  pass).** Every read endpoint (PO list, materials, stock trend, sync status, both Domestic and
+  Import) is still plain `IsAuthenticated` on ROLE (any role can read, by design) — that part is
+  unchanged. What changed: reads now also respect `PTUser.plants` scoping via
+  `apps/api/permissions.py`'s `user_can_access_plant()` (the same underlying check
+  `user_can_edit_plant()` already used for writes — the two are no longer separate concepts, just
+  separate call sites). Previously an editor explicitly scoped to `plants=["hrs"]` could still read
+  every other plant's dashboard, which was inconsistent with what `PTUser.plants`' own docstring
+  already promised. **Deliberately low blast-radius**: an empty `plants` list still means "all
+  plants" (unchanged default), so this only affects accounts an admin has already explicitly
+  scoped — confirmed directly in `apps/api/tests/test_read_endpoint_plant_scoping.py`, which
+  asserts an unscoped account sees zero behavior difference. Domestic single-plant read endpoints
+  (`_domestic_base.py`) 403 outright for an out-of-scope plant; Import's cross-plant
+  `purchase_orders`/`sync_status` (`imports_views.py`) silently narrow the combined result instead
+  (same "you see less, not an error" shape the endpoint already had for a plant with zero rows);
+  `purchase_order_detail` 404s (not 403) for an out-of-scope plant, matching its existing
+  unknown-plant-segment 404 rather than confirming a PO exists. The write paths gated at `IsEditor`
+  are `correct_field` (Domestic and Import), `dismiss_po_mir_match`/`dismiss_mir_stock_match` (see
+  "Dismiss/override a flagged match" above), and the Import PO `correct_field` in
+  `imports_views.py`. `IsAdmin` gates `sync_trigger` and every `users_views.py` endpoint (including
+  the password-reset field on `PATCH /api/auth/users/<id>`, see "In-app user management" above).
+  If a new read OR write endpoint is added, gate both role (`IsAuthenticated`/`IsEditor`/`IsAdmin`)
+  and plant (`user_can_access_plant()`/`user_can_edit_plant()`) the same way — don't leave a new
+  endpoint unscoped by plant just because it's "only a read."
 - **No automated tests for the Drive-sync/parse/matching pipeline itself** — still explicitly
   deferred; verification there stays manual/smoke-level (real parser runs against real files, real
   sync/match runs against a real Postgres, direct inspection of the rendered dashboard). This is

@@ -310,3 +310,28 @@ def revoke_user_device(request, user_id, device_id):
         detail=f"revoked device {device_name!r} for {user.email}",
     )
     return Response(status=204)
+
+
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+@throttle_classes([AdminWriteThrottle])
+def admin_logout_everywhere(request, user_id):
+    """POST /api/auth/users/<id>/logout-everywhere - admin-driven equivalent
+    of device_views.logout_everywhere_view's self-service panic button, for
+    when an admin needs to kill a DIFFERENT account's sessions remotely
+    (e.g. a reported compromise, an employee's device was lost/stolen).
+    Admin only. Does not deactivate the account or change its password -
+    those remain separate, deliberate actions via update_user()."""
+    from apps.services.token_revocation import revoke_all_sessions
+
+    user = PTUser.objects.filter(pk=user_id).first()
+    if not user:
+        raise NotFound(f"User {user_id} not found.")
+
+    revoke_all_sessions(user)
+    logger.info("users_views: admin %s revoked all sessions for PTUser %s", request.user.email, user.email)
+    log_pt_action(
+        request, PTAuditLog.ACTION_SESSIONS_REVOKED, actor=request.user,
+        detail=f"revoked all sessions for {user.email}",
+    )
+    return Response({"status": "ok"})

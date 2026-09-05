@@ -117,6 +117,8 @@ def is_sync_in_progress(plant_key: str) -> bool:
 # ── Domestic sync+match pipeline ─────────────────────────────────────────────
 
 def _run_pipeline(plant_key: str) -> None:
+    from apps.services.security_alerts import notify_admins_sync_failure
+
     try:
         for cmd_name in _PLANT_COMMANDS[plant_key]:
             try:
@@ -127,8 +129,10 @@ def _run_pipeline(plant_key: str) -> None:
                 # (see each command's own `finally` block) - logged here
                 # just so it's visible in this trigger's own trace too.
                 log.error("sync_trigger: %s exited with failure for plant=%s", cmd_name, plant_key)
-            except Exception:
+                notify_admins_sync_failure(plant_key, cmd_name)
+            except Exception as exc:
                 log.exception("sync_trigger: %s raised an unexpected error for plant=%s", cmd_name, plant_key)
+                notify_admins_sync_failure(plant_key, cmd_name, detail=str(exc))
     finally:
         cache.delete(_lock_key(plant_key))
 
@@ -156,14 +160,18 @@ def is_imports_sync_in_progress(plant_key: str) -> bool:
 
 
 def _run_imports_pipeline(plant_key: str) -> None:
+    from apps.services.security_alerts import notify_admins_sync_failure
+
     try:
         for cmd_name in _IMPORT_PLANT_COMMANDS[plant_key]:
             try:
                 call_command(cmd_name)
             except SystemExit:
                 log.error("sync_trigger: %s exited with failure for plant=%s (imports)", cmd_name, plant_key)
-            except Exception:
+                notify_admins_sync_failure(plant_key, cmd_name)
+            except Exception as exc:
                 log.exception("sync_trigger: %s raised an unexpected error for plant=%s (imports)", cmd_name, plant_key)
+                notify_admins_sync_failure(plant_key, cmd_name, detail=str(exc))
     finally:
         cache.delete(_imports_lock_key(plant_key))
 

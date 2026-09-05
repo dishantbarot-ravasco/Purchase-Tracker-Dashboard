@@ -66,6 +66,7 @@ class PTAuditLog(models.Model):
     ACTION_USER_CREATED = "user_created"
     ACTION_USER_UPDATED = "user_updated"
     ACTION_DEVICE_REVOKED = "device_revoked"
+    ACTION_SESSIONS_REVOKED = "sessions_revoked"
 
     ACTION_CHOICES = [
         (ACTION_LOGIN, "Login"),
@@ -73,6 +74,7 @@ class PTAuditLog(models.Model):
         (ACTION_USER_CREATED, "User created"),
         (ACTION_USER_UPDATED, "User updated"),
         (ACTION_DEVICE_REVOKED, "Trusted device revoked"),
+        (ACTION_SESSIONS_REVOKED, "All sessions revoked (log out everywhere)"),
     ]
 
     timestamp = models.DateTimeField(default=timezone.now, db_index=True)

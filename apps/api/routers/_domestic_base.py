@@ -28,7 +28,7 @@ from django.db import transaction
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
-from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_edit_plant
+from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
 from apps.core.models import DomesticPOCorrection, FlagDismissal, MaterialCorrection
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
@@ -252,6 +252,11 @@ def _lot_dict(cfg: _PlantConfig, lot):
 def make_purchase_orders(cfg: _PlantConfig):
     @api_view(["GET"])
     def purchase_orders(request):
+        # See apps/api/permissions.py's user_can_access_plant() docstring -
+        # low blast-radius: only affects accounts an admin already scoped
+        # to specific plants (empty plants list = "all plants", unchanged).
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's purchase orders."}, status=403)
         qs = cfg.po_model.objects.prefetch_related(
             "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
         )
@@ -323,6 +328,8 @@ def make_correct_field(cfg: _PlantConfig):
 def make_materials(cfg: _PlantConfig):
     @api_view(["GET"])
     def materials(request):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's materials."}, status=403)
         qs = cfg.stock_lot_model.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
         return Response({"materials": [_lot_dict(cfg, lot) for lot in qs]})
 
@@ -378,6 +385,8 @@ def make_correct_material_field(cfg: _PlantConfig):
 def make_stock_trend(cfg: _PlantConfig):
     @api_view(["GET"])
     def stock_trend(request, lot_id: int):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's stock trend."}, status=403)
         snapshots = cfg.stock_snapshot_model.objects.filter(stock_lot_id=lot_id).order_by("snapshot_date")
         return Response({
             "snapshots": [
@@ -398,6 +407,9 @@ def make_sync_status(cfg: _PlantConfig):
     @api_view(["GET"])
     def sync_status(request):
         from apps.core.models import SyncRun
+
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's sync status."}, status=403)
 
         latest_by_source = {}
         for run in SyncRun.objects.filter(plant=cfg.syncrun_plant).order_by("source", "-started_at"):

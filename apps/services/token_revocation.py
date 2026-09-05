@@ -15,7 +15,7 @@ apps/api/routers/device_views.py's logout_view (revoke the current refresh
 token's jti directly on logout).
 """
 
-from apps.core.models import RevokedRefreshToken
+from apps.core.models import PTUser, RevokedRefreshToken, TrustedDevice
 
 
 def revoke_refresh_jti(jti: str, expires_at) -> None:
@@ -26,3 +26,16 @@ def revoke_refresh_jti(jti: str, expires_at) -> None:
 
 def is_refresh_jti_revoked(jti: str) -> bool:
     return RevokedRefreshToken.objects.filter(jti=jti).exists()
+
+
+def revoke_all_sessions(user: PTUser) -> None:
+    """"Log out everywhere" for `user` - see PTUser.token_version's own
+    docstring for why bumping this one counter instantly invalidates every
+    access AND refresh token already issued, without needing a registry of
+    every token ever handed out. Also clears device trust (deletes every
+    TrustedDevice row for this account) so a fresh sign-in on any device,
+    including ones that were previously trusted, goes through the email-OTP
+    challenge again rather than silently re-trusting a device that might be
+    the very thing prompting this call (e.g. a lost laptop)."""
+    PTUser.objects.filter(pk=user.pk).update(token_version=user.token_version + 1)
+    TrustedDevice.objects.filter(user=user).delete()

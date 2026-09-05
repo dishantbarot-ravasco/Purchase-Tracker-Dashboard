@@ -46,6 +46,8 @@ class PTTokenObtainPairSerializer(TokenObtainPairSerializer):
         token["role"] = user.role
         token["email"] = user.email
         token["full_name"] = user.full_name or ""
+        # "Log out everywhere" - see PTUser.token_version's own docstring.
+        token["ver"] = user.token_version
         return token
 
     def validate(self, attrs):
@@ -138,6 +140,7 @@ class PTTokenRefreshSerializer(TokenRefreshSerializer):
             )
 
         user_id = refresh.payload.get(api_settings.USER_ID_CLAIM, None)
+        user = None
         if user_id is not None:
             user = PTUser.objects.filter(pk=user_id).first()
             if not pt_user_authentication_rule(user):
@@ -145,8 +148,24 @@ class PTTokenRefreshSerializer(TokenRefreshSerializer):
                     self.error_messages["no_active_account"],
                     "no_active_account",
                 )
+            # "Log out everywhere" - see PTUser.token_version's own
+            # docstring. A refresh token minted before the user's most
+            # recent revoke_all_sessions() call must not mint a fresh
+            # access token either, or "log out everywhere" would only ever
+            # affect the refresh step, not access tokens already in flight
+            # via a still-valid refresh cookie.
+            if refresh.payload.get("ver", 0) != user.token_version:
+                raise AuthenticationFailed(
+                    self.error_messages["no_active_account"],
+                    "no_active_account",
+                )
 
-        data = {"access": str(refresh.access_token)}
+        new_access = refresh.access_token
+        # Explicit, not relying on simplejwt's claim-copying behavior on
+        # refresh.access_token - correctness here shouldn't depend on an
+        # implementation detail of a third-party library.
+        new_access["ver"] = refresh.payload.get("ver", 0)
+        data = {"access": str(new_access)}
 
         if api_settings.ROTATE_REFRESH_TOKENS:
             old_exp = refresh.payload.get("exp")

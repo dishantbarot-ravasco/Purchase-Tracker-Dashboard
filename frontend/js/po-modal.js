@@ -124,9 +124,9 @@ async function openPoModal(compositeKey) {
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
   poModalTab = poModalTab || 'overview';
   body.innerHTML =
-    '<span class="close-btn">&times;</span>' +
-    '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
-    '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(PLANTS[plantKey].label) + ' &middot; ' + (po.createdDate ? escapeHtml(formatDateIN(po.createdDate)) : 'no date') + '</div>' +
+    '<div class="modal-head"><div><h2>' + escapeHtml(po.poNumber) + '</h2>' +
+    '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(PLANTS[plantKey].label) + ' &middot; ' + (po.createdDate ? escapeHtml(formatDateIN(po.createdDate)) : 'no date') + '</div></div>' +
+    '<span class="close-btn">&times;</span></div>' +
     '<div class="modal-tabs" id="poModalTabs" role="tablist">' +
       '<div class="modal-tab' + (poModalTab === 'overview' ? ' active' : '') + '" data-tab="overview" tabindex="0" role="tab" aria-selected="' + (poModalTab === 'overview') + '">Overview</div>' +
       '<div class="modal-tab' + (poModalTab === 'itemstock' ? ' active' : '') + '" data-tab="itemstock" tabindex="0" role="tab" aria-selected="' + (poModalTab === 'itemstock') + '">Item &amp; Stock</div>' +

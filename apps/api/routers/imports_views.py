@@ -26,7 +26,7 @@ from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
-from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_edit_plant
+from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
 from apps.core.models import (
     FlagDismissal,
     HRSImportPOLineItem,
@@ -259,9 +259,16 @@ def purchase_orders(request):
     shape (see _po_dict's non-detail fields). Spec section 1's "single
     dataset with a Plant field". Two of three plants have 0 rows today;
     that's fine, they just contribute nothing to the combined list rather
-    than erroring. IsAuthenticated by default (any role)."""
+    than erroring. IsAuthenticated by default (any role) - additionally
+    narrowed per-plant by user_can_access_plant() (added 2026-09-05,
+    hardening pass): a plant the caller isn't scoped to is silently
+    excluded from the combined list rather than erroring the whole
+    request, same "you see less, not an error" shape as the rest of this
+    filter already has for plants with zero rows."""
     result = []
     for plant_key, (po_model, _item_model, _sr_plant, label, _match_model) in _PLANTS.items():
+        if not user_can_access_plant(request.user, plant_key):
+            continue
         qs = po_model.objects.prefetch_related(
             "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
         )
@@ -278,6 +285,11 @@ def purchase_order_detail(request, plant, po_number):
     po_number that doesn't exist for that plant."""
     resolved = _resolve_plant(plant)
     if not resolved:
+        return Response({"error": "Unknown plant."}, status=404)
+    # 404, not 403 - matches the "unknown plant" response above rather than
+    # confirming a PO exists for a plant the caller isn't scoped to. See
+    # apps/api/permissions.py's user_can_access_plant() docstring.
+    if not user_can_access_plant(request.user, plant):
         return Response({"error": "Unknown plant."}, status=404)
     po_model, _item_model, sr_plant, label, _match_model = resolved
     po = po_model.objects.prefetch_related(
@@ -392,6 +404,8 @@ def sync_status(request):
     routers' own sync_status views."""
     latest_by_plant = {}
     for plant_key, (_po_model, _item_model, sr_plant, _label, _match_model) in _PLANTS.items():
+        if not user_can_access_plant(request.user, plant_key):
+            continue
         run = SyncRun.objects.filter(plant=sr_plant, source=SyncRun.Source.IMPORT_PO_CSV).order_by("-started_at").first()
         latest_by_plant[plant_key] = {
             "status": run.status if run else None,
