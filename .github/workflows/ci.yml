@@ -38,7 +38,7 @@ jobs:
       GOOGLE_CLIENT_SECRET: ci-placeholder
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
@@ -82,7 +82,7 @@ jobs:
   frontend-lint:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
