@@ -5,11 +5,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <!-- Applies a stored theme choice before first paint - see js/auth.js's
+       initThemeToggle()/applyTheme() for the toggle this pairs with. -->
+  <script src="{% static 'js/theme-init.js' %}"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Purchase Tracker Dashboard</title>
   <link rel="stylesheet" href="{% static 'css/brand.css' %}">
   <link rel="stylesheet" href="{% static 'css/style.css' %}">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" crossorigin="anonymous" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi"></script>
 </head>
 <body>
   <!-- Shared top nav (brand.css) - same on home.html/search-po.html/admin.html,
@@ -17,7 +20,7 @@
        dashboard's own content (js/main.js), on its own stylesheet. -->
   <nav class="topnav">
     <a href="/home.html" class="nav-brand">
-      <img src="{% static 'img/indus_logo.png' %}" alt="Ravasco" class="nav-logo" onerror="this.style.display='none'">
+      <img src="{% static 'img/indus_logo.png' %}" alt="Ravasco" class="nav-logo" data-hide-on-error>
       <div class="nav-brand-text">
         <h1>Purchase Tracker</h1>
         <p>Ravasco Transmission &amp; Packing</p>

@@ -30,7 +30,7 @@ function renderPoList(el) {
     const msg = isAllPlants()
       ? 'No purchase orders synced yet for any plant.'
       : 'No purchase orders synced yet - run <code>' + PLANTS[state.plant].syncCmdPoCsv + '</code> to load them.';
-    el.innerHTML = '<div class="empty-state">' + msg + '</div>';
+    el.innerHTML = '<div class="empty-state">' + emptyStateHtml(msg) + '</div>';
     return;
   }
 
@@ -86,19 +86,19 @@ function renderPoList(el) {
   // urgent, not merely a scheduling note. Total is the only card with no
   // flag icon - it's a plain aggregate, not a status.
   const cardDef = [
-    { key: 'total', cls: '', label: "Total PO's Created", val: total },
-    { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received },
-    { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial },
-    { key: 'qtydisc', cls: 'critical', label: 'Quantity Discrepancies', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate / Value Discrepancies', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical },
-    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical },
-    { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending },
-    { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, flag: KPI_FLAG_COLORS.unknown },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality },
+    { key: 'total', cls: '', label: "Total PO's Created", val: total, tip: 'All purchase orders in the selected date range and plant(s).' },
+    { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has a matched MIR entry - the material has been received.' },
+    { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items on this PO have a matched MIR entry yet.' },
+    { key: 'qtydisc', cls: 'critical', label: 'Quantity Discrepancies', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate / Value Discrepancies', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate or pre-tax value differs between the PO and its matched MIR entry - zero tolerance.' },
+    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully matched to MIR.' },
+    { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched to MIR.' },
+    { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
+    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality, tip: 'Paperwork/process notes detected in the PO\'s remarks - not a money or quantity problem.' },
   ];
-  const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.statusFilter === c.key ? 'active' : '') + '" data-kpi="' + c.key + '">' +
+  const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.statusFilter === c.key ? 'active' : '') + '" data-kpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.statusFilter === c.key) + '">' +
     (c.flag ? flagIconHtml(c.flag) : '') +
-    '<div class="val">' + c.val + '</div><div class="label">' + escapeHtml(c.label) + '</div></div>').join('');
+    '<div class="val" data-count-target="' + c.val + '" data-count-fmt="int">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>').join('');
 
   let tableRecs = filtered;
   if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
@@ -313,12 +313,13 @@ function renderPoList(el) {
               '<button id="prevPageBtn" class="page-btn"' + (tablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
               pageButtons +
               '<button id="nextPageBtn" class="page-btn"' + (tablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
+              jumpToPageHtml('po', totalPages) +
             '</div>'
           : '';
         return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
-            return '<tr><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
+            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po.createdDate)) + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po._deliveryDate)) + '</td>' +
@@ -332,7 +333,7 @@ function renderPoList(el) {
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="top5List">' + listRecs.map(po => {
           const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
-          return '<div class="top5-row">' +
+          return '<div class="top5-row' + rowTintClass(po) + '">' +
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po.createdDate) || 'Not available') + '</div>' +
@@ -343,6 +344,8 @@ function renderPoList(el) {
             '<div><span class="row-link" data-po="' + key + '">View details</span></div></div>';
         }).join('') + '</div>';
     })();
+
+  wireKpiCountUps();
 
   document.querySelectorAll('[data-kpi]').forEach(c => c.onclick = () => {
     const key = c.dataset.kpi;
@@ -367,6 +370,7 @@ function renderPoList(el) {
   const nextPageBtn = document.getElementById('nextPageBtn');
   if (nextPageBtn) nextPageBtn.onclick = () => { state.tablePage = state.tablePage + 1; renderPoList(el); }; // clamped to totalPages on next render
   document.querySelectorAll('.page-num').forEach(btn => btn.onclick = () => { state.tablePage = Number(btn.dataset.page); renderPoList(el); });
+  wireJumpToPage('po', totalPages, (n) => { state.tablePage = n; renderPoList(el); });
 
   const categorySelect = document.getElementById('categoryFilterSelect');
   if (categorySelect) categorySelect.onchange = () => { state.categoryFilter = categorySelect.value || null; state.subCategoryFilter = null; state.tablePage = 1; renderPoList(el); };

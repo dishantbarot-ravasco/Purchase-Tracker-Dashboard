@@ -52,8 +52,22 @@ class Command(BaseCommand):
                 f"'{email}' is outside the allowed domain (@{settings.ALLOWED_EMAIL_DOMAIN}) - refusing to create it."
             )
 
+        # Same modest strength policy as the in-app Users panel
+        # (apps/api/routers/users_views.py's _validate_password_strength) -
+        # kept in sync deliberately so the CLI bootstrap path can't be used
+        # to sneak in a weaker password than the UI would ever accept.
+        password = options["password"]
+        local_part = email.split("@")[0]
+        if len(password) < 10:
+            raise CommandError("Password must be at least 10 characters.")
+        if password.isdigit():
+            raise CommandError("Password must not be entirely numeric.")
+        if password.lower() == local_part.lower():
+            raise CommandError("Password must not be the same as the email address.")
+
         # Never store the plaintext password - only the bcrypt hash goes to the DB.
-        password_hash = bcrypt.hashpw(options["password"].encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        # rounds=12 pinned explicitly - see users_views.py's _hash_password.
+        password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
         # update_or_create(): create the row if this is the first time we've seen
         # this email, otherwise overwrite the fields below on the existing row -

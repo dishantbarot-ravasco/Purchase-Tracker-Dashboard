@@ -134,14 +134,43 @@ def logout_view(request):
     Clears the pt_access/pt_refresh httpOnly cookies and flushes the
     session (a stateless JWT would otherwise keep authenticating every
     request right up to its natural expiry even after logout). Does NOT
-    clear the pt_device cookie - device stays trusted for next login."""
+    clear the pt_device cookie - device stays trusted for next login.
+
+    Also revokes the caller's own pt_refresh token via our custom
+    RevokedRefreshToken table (see apps/services/token_revocation.py's
+    module docstring for why this is a custom jti-keyed table rather than
+    rest_framework_simplejwt's own token_blacklist app) - without this,
+    clearing the cookie only stops THIS browser from sending the token
+    again, but the token string itself (e.g. if it had already been copied
+    out by something else) would stay valid against
+    POST /api/auth/token/refresh for up to its full 30-day
+    REFRESH_TOKEN_LIFETIME even after the user explicitly logged out."""
     from django.conf import settings
+    from rest_framework_simplejwt.exceptions import TokenError
+    from rest_framework_simplejwt.settings import api_settings
+    from rest_framework_simplejwt.tokens import RefreshToken
+    from rest_framework_simplejwt.utils import datetime_from_epoch
 
     from apps.services.device_service import REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH
+    from apps.services.token_revocation import revoke_refresh_jti
 
     from apps.core.audit_log import PTAuditLog, log_pt_action
 
     log_pt_action(request, PTAuditLog.ACTION_LOGOUT, actor=getattr(request, "user", None))
+
+    raw_refresh = request.COOKIES.get(REFRESH_COOKIE_NAME)
+    if raw_refresh:
+        try:
+            token = RefreshToken(raw_refresh)
+            jti = token.payload.get(api_settings.JTI_CLAIM)
+            exp = token.payload.get("exp")
+            if jti and exp:
+                revoke_refresh_jti(jti, datetime_from_epoch(exp))
+        except TokenError:
+            # Already expired/invalid - logout should still succeed either
+            # way, this is a best-effort revocation, not a precondition for
+            # clearing the cookies below.
+            pass
 
     request.session.flush()
     response = Response({"detail": "Logged out successfully."})

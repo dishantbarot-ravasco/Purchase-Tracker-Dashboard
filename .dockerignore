@@ -1,0 +1,11 @@
+# Mirrors .gitignore, plus .git/ itself - keeps the build context small and
+# avoids ever baking local secrets/dev artifacts into the image.
+.git/
+.venv/
+__pycache__/
+*.pyc
+.env
+staticfiles/
+*.sqlite3
+logs/
+.pytest_cache/

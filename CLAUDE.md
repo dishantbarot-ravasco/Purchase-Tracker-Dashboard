@@ -61,6 +61,41 @@ uv run python manage.py match_vapi
 # real Drive files or needing live service-account credentials.
 ```
 
+### Docker (local dev)
+
+Added 2026-09-05, local-dev only - does **not** replace `render.yaml`'s own deploy pipeline;
+Render still builds/deploys this app its own way. Exists so a developer can run a real Postgres +
+this app together without installing Python/uv/Postgres directly, and so local dev can match
+Render's actual runtime (Python 3.12.8, gunicorn, a separate `qcluster` worker process) rather
+than whatever a developer happens to have installed locally - this repo's own `.python-version`
+(`3.14`) is intentionally NOT what the Docker image uses; the `Dockerfile` pins `python:3.12-slim`
+to match `render.yaml`'s `PYTHON_VERSION: "3.12.8"` instead, since that's the environment that
+actually matters for parity.
+
+```bash
+docker compose up -d                              # app + worker (qcluster) + a real Postgres
+docker compose exec app uv run python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
+docker compose logs app                           # check for tracebacks
+```
+
+`Dockerfile` bakes `uv sync --frozen` and `collectstatic --noinput` in at build time (static files
+don't depend on a live DB connection); `docker-entrypoint.sh` runs `migrate --noinput` then
+`createcachetable` (guarded with `|| true` so a container restart doesn't error on an
+already-existing cache table - Django's `createcachetable` isn't safely re-runnable on its own
+terms) at container start, before handing off to the CMD (gunicorn for the `app` service,
+`manage.py qcluster` for the `worker` service - same image, different command, set per-service in
+`docker-compose.yml`). `psycopg[binary]` (already pinned in `pyproject.toml`/`uv.lock`) ships a
+prebuilt wheel, so the image needs no `libpq-dev`/build toolchain - keep it that way; if a future
+dependency needs compiling, add build deps deliberately rather than by reflex.
+
+`docker-compose.yml` reuses `.env.example`/`.env` as the single source of truth for app secrets
+(Google/SMTP/JWT/OAuth vars) via `env_file: .env` - **you do not need to change anything in
+`.env` for Docker to work.** `DATABASE_URL` is set explicitly in `docker-compose.yml` itself,
+pointed at its own `db` service by name (`db`, not `localhost`) - this overrides whatever
+`DATABASE_URL`/`PGHOST` happens to be in a developer's own `.env` (typically `localhost`, for the
+non-Docker flow against a locally-installed Postgres). See `.env.example`'s own comment next to
+`DATABASE_URL` for the same note in-place.
+
 **Test coverage is split into two deliberately different scopes, mirroring the TDS app's own
 split between `apps/api/tests/` (integration) and `apps/services/tests/` (pure calculation):**
 - `apps/api/tests/test_auth_flow.py` — integration tests for the login → device-verify → cookie →
@@ -220,6 +255,111 @@ the same bucket. Regression test:
 second's first attempt). **If you add another `AnonRateThrottle` subclass anywhere in the auth
 flow, key it the same way — per-account/per-session, not the inherited per-IP default — or this
 exact bug reappears.**
+
+### Security hardening pass (added 2026-09-05)
+
+Three parallel audits (frontend XSS/injection surface, backend injection/rate-limiting, auth/
+token/dependency security) confirmed **no exploitable injection vulnerability existed anywhere in
+this app** before this pass — zero raw SQL/eval/exec calls anywhere in `apps/`, ORM-only DB access,
+the Drive query's `title` clause already correctly escaped, and the frontend consistently runs
+dynamic content through `escapeHtml()`/`textContent` before touching `innerHTML` (confirmed by
+reading every `innerHTML`/`insertAdjacentHTML` site in `frontend/js/`). `pip-audit` (run for real
+against the exact pinned `uv.lock` versions, not guessed) found no known CVEs. This pass closes a
+punch list of defense-in-depth/production-hardening gaps the audits found, not live bugs:
+
+- **DRF's Browsable API is now disabled** (`REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"]` pinned to
+  `JSONRenderer` only, `config/settings.py`) — this is an internal, same-origin JSON API with a
+  static-HTML frontend; the interactive HTML/schema UI DRF enables by default regardless of `DEBUG`
+  was unnecessary attack surface for no benefit here.
+- **`apps/services/google_client.py`'s `_escape()` now covers `parent_id`/`mime_type`, not just
+  `title`.** Every current caller already passes env-configured constants (never anything derived
+  from a synced file's own content) so this was never exploitable in practice — defense-in-depth
+  only, closing the gap before a future caller could reintroduce it.
+- **`pt_device` cookie's `secure` flag** (`apps/services/device_service.py`) now reads
+  `settings.PT_DEVICE_COOKIE_SECURE` directly instead of `getattr(settings, ..., False)` — fails
+  loudly (AttributeError) if that setting is ever removed, matching `pt_access`/`pt_refresh`'s own
+  fail-closed style instead of silently degrading to an insecure cookie.
+- **`SESSION_COOKIE_AGE` is now explicit** (30 minutes, `config/settings.py`) rather than relying on
+  Django's 2-week default — this session only ever carries short-lived state (OAuth PKCE
+  `code_verifier`, or `pending_user_id` during the 10-minute OTP window), not the main JWT-cookie
+  auth path.
+- **bcrypt cost is now pinned explicitly** (`rounds=12`) in `apps/api/routers/users_views.py`,
+  `apps/core/management/commands/create_pt_user.py` — same value bcrypt's library default already
+  used, just no longer implicit, so a future bcrypt version change can't silently alter it.
+- **Stricter throttle scopes for higher-blast-radius writes**: `sync_trigger` (all 3 domestic
+  plants + imports — each request queues a real background Drive-sync job) and
+  `users_views.py`'s `create_user`/`update_user` no longer share the generic 200/min "user"
+  bucket — see `apps/api/permissions.py`'s `SyncTriggerThrottle`/`AdminWriteThrottle` and
+  `config/settings.py`'s `DEFAULT_THROTTLE_RATES["sync_trigger"]`/`["admin_write"]`.
+- **Password policy tightened** (`apps/api/routers/users_views.py::_validate_password_strength`,
+  mirrored in `create_pt_user.py`): minimum 10 characters (up from 8), rejects a purely-numeric
+  password, rejects a password identical to the account's own email local-part. Deliberately
+  modest — not a full breach-list/entropy policy, this is an admin-bootstrapped internal tool, not
+  a public signup form.
+- **Refresh-token rotation + revocation, real this time.** `SIMPLE_JWT["ROTATE_REFRESH_TOKENS"]`/
+  `["BLACKLIST_AFTER_ROTATION"]` are now `True` (`config/settings.py`) — `PTTokenRefreshSerializer`
+  (`apps/api/auth_serializers.py`) already had the rotate/blacklist branch, it was just dead code
+  before this. **Do NOT enable `rest_framework_simplejwt.token_blacklist` in `INSTALLED_APPS` to
+  back this** — confirmed the hard way, it crashes `device_verify` with `"OutstandingToken.user"
+  must be a "User" instance` the moment a `PTUser` is passed to `RefreshToken.for_user()`, because
+  that app's `OutstandingToken` model FKs to `AUTH_USER_MODEL` (Django's default `auth.User`),
+  which this app deliberately never uses for real accounts (see this file's own note on why
+  `AUTH_USER_MODEL` stays unchanged, above). Instead, `apps/core/models.py`'s `RevokedRefreshToken`
+  is a small custom table keyed on `jti` alone — no user FK needed — written to by
+  `apps/services/token_revocation.py`'s `revoke_refresh_jti()`/`is_refresh_jti_revoked()`. Wired
+  into two places: `PTTokenRefreshSerializer.validate()` revokes the just-spent refresh token's
+  `jti` on every successful rotation and rejects an already-revoked one, and
+  `apps/api/routers/device_views.py`'s `logout_view` revokes the caller's current refresh token
+  directly. `PTTokenRefreshView.post()` (`apps/api/auth_views.py`) now re-cookies the rotated
+  refresh token via `set_refresh_cookie()` and strips the raw refresh string out of the JSON
+  response body entirely (it only ever travels as the httpOnly `pt_refresh` cookie, same reasoning
+  as the access token). **If you ever consider re-adding `rest_framework_simplejwt.token_blacklist`
+  to `INSTALLED_APPS`, don't — re-read this note first,** it will reproduce the exact crash above.
+- **Account lockout, on top of (not instead of) the existing `LoginRateThrottle`.** A rate limit
+  alone slows down password guessing but never stops it, indefinitely, with no signal an account
+  is under sustained attack. `PTUser.failed_login_attempts`/`locked_until` (migration `0020`) —
+  `apps/api/auth_backend.py`'s `PTUserBackend.authenticate()` increments the counter on a wrong
+  password and locks the account for 15 minutes once it reaches 5, resetting on a successful
+  login. The lockout check runs before the bcrypt password check (same as the existing
+  unknown-email branch) and burns an equivalent dummy-bcrypt delay via `_dummy_verify()` so a
+  locked account isn't distinguishable-by-timing from a wrong-password attempt on an unlocked one
+  — preserves this file's existing timing-safety property, doesn't introduce a new side channel.
+- **Frontend defense-in-depth** (no functional change, tightens consistency — see the frontend
+  security audit this pass started from): `import-po.js`'s Items table now runs `netPrice` through
+  `formatInr()` like every other numeric cell, instead of interpolating it raw (it was never
+  exploitable — a `DecimalField` always arrives as a JSON number, not attacker-controlled text —
+  but the inconsistency was worth closing). `shared.js`'s `materialFieldsUrl()`/`dismissMatch()`
+  and `material-modal.js`'s stock-trend fetch now `encodeURIComponent()` every URL segment
+  (`lotId`/`matchType`/`matchId`), matching the already-encoded `poNumber`/`plantKey` call sites —
+  these values are never attacker-influenced today (always backend-issued numeric ids or a small
+  hardcoded enum), but a future change reusing this URL-building code without that guarantee won't
+  silently regress. `index.html`'s jsdelivr-hosted Chart.js `<script>` tag now carries a
+  Subresource-Integrity hash (`integrity="sha384-..."`, computed against the exact pinned
+  `chart.js@4.5.0` build and cross-checked with two independent hash tools before writing it in) —
+  a compromise of that specific CDN-hosted file would now be blocked by the browser rather than
+  silently served and executed.
+- **`script-src 'unsafe-inline'` removed (2026-09-05, second hardening pass, same day).** Originally
+  scoped out as requiring a nonce/Django-template conversion for the 4 static pages — turned out to
+  be unnecessary. Every inline `<script>` block was extracted to its own external file instead
+  (`frontend/js/theme-init.js`, `login-theme-toggle.js`, `home-page.js`, `admin-page.js`,
+  `search-po-page.js` — one straight extraction per page, no logic changes), and every inline
+  event-handler attribute was converted to a real listener: the logo-fallback
+  `onerror="this.style.display='none'"` pattern (6 sites across every page) is now a single
+  capture-phase `error` listener in `theme-init.js` (loaded identically on all 5 pages, including
+  `login.html` which loads none of `auth.js`/`shared.js`) keyed on a `data-hide-on-error` attribute;
+  the modal close-button `onclick="closeModal()"` pattern (7 sites across `po-modal.js`/
+  `import-po.js`/`material-modal.js`) is now one delegated click listener in `charts.js`. `'self'`
+  already covers every extracted external file, so no nonce/hash machinery was needed at all —
+  `config/security_headers.py`'s CSP now reads `script-src 'self' https://cdn.jsdelivr.net`, no
+  `'unsafe-inline'`. Verified live in a real browser (not just read): every one of the 5 pages
+  loaded with zero console errors and zero CSP violations both before and after the CSP change,
+  and the extracted `login-theme-toggle.js` was click-tested end-to-end (dark mode toggled
+  correctly). **`style-src` still has `'unsafe-inline'`** — dropping it would mean moving every
+  dynamically-rendered inline `style="..."` attribute across `frontend/js/*.js` (used pervasively)
+  into CSS classes, a much larger refactor left for a future pass, not silently forgotten.
+  Tightening the `IsAuthenticated`-only read endpoints (documented in "Known gaps" below) and the
+  data-accuracy/matching-threshold validation work remain separate, explicitly deferred efforts
+  too — not silently resolved or forgotten by either hardening pass.
 
 **Bootstrap**: without at least one `PTUser`, nobody can log in to create more via Django Admin —
 use `manage.py create_pt_user --role admin` (see Commands above) to create the first account. Only
@@ -384,6 +524,48 @@ model set, parser modules, matching module (`matching.py` / `matching_achhad.py`
 management commands instead. `SyncRun` is the one shared table — it's a generic log with a
 `plant` field, not a plant-shaped data table.
 
+### Domestic router de-duplication (added 2026-09-05) — status: all three plants migrated
+
+The per-plant-model decision above is real and correct, but it does **not** mean the three
+domestic routers' *view/HTTP-layer* code should also be duplicated — that part has nothing to do
+with the genuine per-plant schema differences and was previously copy-pasted near-verbatim across
+`hrs_views.py`/`vapi_views.py`/`achhad_views.py` (confirmed byte-for-byte identical except which
+model classes to query, which plant's `matching*.py` module to call, and a handful of real schema
+differences: Achhad's Stock lot has `rate`/`msl` instead of `basic_rate`/`sub_category`/`uom` and
+no vendor column at all). That HTTP-layer logic now lives once in
+`apps/api/routers/_domestic_base.py` — a `_PlantConfig` dataclass (model classes, `run_full_match`
+reference, plant key, material-field allow-lists, and the three lot-attribute names that
+genuinely vary: `lot_rate_field`/`lot_code_field`/`lot_vendor_field`) plus `make_*` factory
+functions (`make_purchase_orders`, `make_correct_field`, `make_materials`,
+`make_correct_material_field`, `make_stock_trend`, `make_sync_status`, `make_sync_trigger`,
+`make_dismiss_po_mir_match`, `make_dismiss_mir_stock_match`, `make_dismiss_flag`) that each plant's
+own router file calls once at import time and re-exports under the original function name.
+**`urls.py` and every endpoint's URL/response shape are unchanged** — only where the code
+physically lives changed, done as a strangler-fig migration (one plant file rewritten at a time,
+each verified against that plant's own test suite before moving to the next) specifically because
+`vapi_views.py`/`achhad_views.py` had no direct test coverage of their own before this pass (only
+HRS did — see "Test coverage is split into two deliberately different scopes" above) - characterization
+tests for Vapi/Achhad (`test_vapi_correct_field.py`, `test_vapi_dismiss_match.py`,
+`test_vapi_dismiss_flag.py`, `test_achhad_correct_field.py`, `test_achhad_dismiss_match.py`,
+`test_achhad_dismiss_flag.py`, plus `TestVapiCorrectMaterialField`/extended
+`TestAchhadCorrectMaterialField` in `test_material_correct_field.py`) were written against the
+unmodified originals first, specifically to prove behavioral equivalence before/after each
+plant's migration. **All three plants are migrated as of this pass** — `hrs_views.py`, `vapi_views.py`, and
+`achhad_views.py` each now just build their own `_CONFIG` and re-export the ten view functions;
+none of them has its own private `_serialize`/`_coerce_value`/`_lot_dict`/etc. helpers anymore
+(confirmed by grep — zero matches for those names across all three files). Achhad's genuine
+schema divergence (`rate`/`msl` instead of `basic_rate`/`sub_category`/`uom`, no vendor field,
+`sap_code` instead of `sap_item_code`/`hsn_code`) is handled entirely through `_PlantConfig`
+values, not through any per-plant branching inside `_domestic_base.py` itself. `imports_views.py` is intentionally not part of this migration (it already has
+its own, different shared-config pattern via its `_PLANTS` dict). Its own `_field_warning`/
+`_serialize` now import from `_domestic_base` too (byte-for-byte identical, field-set-independent
+— safe to share); its `_coerce_value` stays its own local copy, deliberately **not** shared,
+because `imports_views.py`'s own `_DATE_FIELDS`/`_DECIMAL_FIELDS` are a strict superset of the
+domestic routers' (BOE/exchange-rate fields the domestic plants don't have) and
+`_domestic_base._coerce_value` reads its own module-level field sets — sharing it as-is would
+silently reject valid import-only fields. Parametrizing `_coerce_value` to accept the field sets
+as arguments would fix this but is a further design change, not attempted in this pass.
+
 **The PO master CSV format is identical across HRS, Achhad, and Vapi** (confirmed against real
 files, byte-for-byte identical header) — `apps/services/parsers/po_csv.py` is reused as-is for all
 three plants; only the target model class and the Drive file title differ per plant's
@@ -427,6 +609,23 @@ ever starts failing with "Invalid Value" again, check this first.
 - Both of the above are now called out directly in `.env.example`'s comments — read them before
   re-deriving this from scratch if a sync command fails immediately with a parsing/credentials
   error.
+- **This repo's working directory can itself be inside a OneDrive-synced folder** (confirmed true
+  for at least one developer's setup: `.../OneDrive/Desktop/Purchase Automation App/...`). `.env`
+  is gitignored (confirmed — `git log -- .env` shows no history), so it's never at risk of landing
+  in the repo's own history, but OneDrive sync operates independently of git and doesn't respect
+  `.gitignore` at all — a real secret sitting in `.env` can still get synced to Microsoft's cloud
+  and any other device signed into that same OneDrive account, which is a meaningfully different
+  (and easy to overlook) exposure path from "is it committed." **Fix (documentation only, no
+  secret rotation performed as part of this note)**: exclude this project's folder from OneDrive
+  sync (Windows: OneDrive Settings → Account → "Choose folders", uncheck this folder — or move the
+  repo outside the OneDrive-synced tree entirely if that's feasible later). If you're setting this
+  project up fresh inside a OneDrive-synced location, do this before populating a real `.env`, not
+  after.
+- **Docker's `PGHOST`/`DATABASE_URL` note**: see "Docker (local dev)" below — this is not a `.env`
+  gotcha in the same sense as the two above (nothing about `.env` itself needs to change for
+  Docker), but it's easy to assume `PGHOST=localhost` in `.env` needs editing for
+  `docker compose up` to work, and it doesn't — `docker-compose.yml` sets `DATABASE_URL` itself,
+  pointed at its own `db` service.
 
 ### Change-detection must compare quantized Decimal values, rounded the way Postgres actually rounds
 

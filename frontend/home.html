@@ -26,12 +26,15 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <!-- Applies a stored theme choice before first paint - see js/auth.js's
+       initThemeToggle()/applyTheme() for the toggle this pairs with. -->
+  <script src="js/theme-init.js"></script>
   <link rel="icon" type="image/png" href="img/indus_logo.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Purchase Tracker</title>
   <link rel="stylesheet" href="css/brand.css">
   <style>
-    .hero { position: relative; height: 280px; overflow: hidden; background: var(--navy); }
+    .hero { position: relative; height: 280px; overflow: hidden; background: var(--navy-solid); }
     .hero-img { width: 100%; height: 100%; object-fit: cover; object-position: center 30%; display: block; opacity: .55; }
     .hero-overlay { position: absolute; inset: 0; background: linear-gradient(90deg, rgba(26,37,53,.95) 0%, rgba(26,37,53,.75) 50%, rgba(26,37,53,.2) 100%); }
     .hero-content { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 60px; }
@@ -56,7 +59,7 @@
   <!-- Top Nav -->
   <nav class="topnav">
     <a href="home.html" class="nav-brand">
-      <img src="img/indus_logo.png" alt="Ravasco" class="nav-logo" onerror="this.style.display='none'">
+      <img src="img/indus_logo.png" alt="Ravasco" class="nav-logo" data-hide-on-error>
       <div class="nav-brand-text">
         <h1>Purchase Tracker</h1>
         <p>Ravasco Transmission &amp; Packing</p>
@@ -91,7 +94,7 @@
       <div class="section-title">Overview</div>
       <div class="stats-row kpi4" id="kpiRow">
         <div class="stat-card">
-          <div class="stat-icon">&#128203;</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="9" y1="14" x2="15" y2="14"/><line x1="9" y1="18" x2="13" y2="18"/></svg></div>
           <div>
             <div class="stat-label">Total PO's</div>
             <div class="stat-value" id="kpiTotalPos">-</div>
@@ -99,7 +102,7 @@
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon blue">&#127970;</div>
+          <div class="stat-icon blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="12" height="18" rx="1"/><rect x="16" y="9" width="5" height="12" rx="1"/><line x1="7" y1="7" x2="8.5" y2="7"/><line x1="11.5" y1="7" x2="13" y2="7"/><line x1="7" y1="11" x2="8.5" y2="11"/><line x1="11.5" y1="11" x2="13" y2="11"/><line x1="7" y1="15" x2="8.5" y2="15"/><line x1="11.5" y1="15" x2="13" y2="15"/></svg></div>
           <div>
             <div class="stat-label">Suppliers</div>
             <div class="stat-value" id="kpiSuppliers">-</div>
@@ -107,7 +110,7 @@
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon green">&#128197;</div>
+          <div class="stat-icon green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="7" y1="3" x2="7" y2="7"/><line x1="17" y1="3" x2="17" y2="7"/></svg></div>
           <div>
             <div class="stat-label">This Month</div>
             <div class="stat-value" id="kpiThisMonth">-</div>
@@ -115,7 +118,7 @@
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon purple">&#128200;</div>
+          <div class="stat-icon purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,17 9,11 13,15 21,6"/><polyline points="15,6 21,6 21,12"/></svg></div>
           <div>
             <div class="stat-label">This Week</div>
             <div class="stat-value" id="kpiThisWeek">-</div>
@@ -128,21 +131,21 @@
       <div class="section-title">Plants Covered</div>
       <div class="stats-row">
         <div class="stat-card">
-          <div class="stat-icon">&#127981;</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V11l6 4v-4l6 4V7l6 4v10H3Z"/><line x1="7" y1="21" x2="7" y2="17"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="17" y1="21" x2="17" y2="17"/></svg></div>
           <div>
             <div class="stat-label">HRS, Silvassa</div>
             <div class="stat-value">PO &middot; MIR &middot; RM</div>
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon green">&#127981;</div>
+          <div class="stat-icon green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V11l6 4v-4l6 4V7l6 4v10H3Z"/><line x1="7" y1="21" x2="7" y2="17"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="17" y1="21" x2="17" y2="17"/></svg></div>
           <div>
             <div class="stat-label">RTP-Achhad</div>
             <div class="stat-value">PO &middot; MIR &middot; RM</div>
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon">&#127981;</div>
+          <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V11l6 4v-4l6 4V7l6 4v10H3Z"/><line x1="7" y1="21" x2="7" y2="17"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="17" y1="21" x2="17" y2="17"/></svg></div>
           <div>
             <div class="stat-label">RTP-Vapi</div>
             <div class="stat-value">PO &middot; MIR &middot; RM</div>
@@ -154,7 +157,7 @@
       <div class="section-title">Quick Actions</div>
       <div class="action-cards cols-3" id="actionCards">
         <a href="/" class="action-card">
-          <div class="action-card-icon">&#128202;</div>
+          <div class="action-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="21" x2="5" y2="10"/><line x1="12" y1="21" x2="12" y2="4"/><line x1="19" y1="21" x2="19" y2="14"/></svg></div>
           <div class="action-card-title">Dashboard</div>
           <div class="action-card-desc">
             View PO status, matched/flagged line items, and Raw Material Stock trends for every plant - with drill-down into any purchase order.
@@ -162,7 +165,7 @@
           <span class="action-card-cta">Open Dashboard &rarr;</span>
         </a>
         <a href="/search-po.html" class="action-card">
-          <div class="action-card-icon">&#128269;</div>
+          <div class="action-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg></div>
           <div class="action-card-title">Search PO</div>
           <div class="action-card-desc">
             Look up any purchase order by its PO number across all 3 plants and jump straight to its match status and line items.
@@ -174,7 +177,7 @@
              nav tab (auth.js's renderNavTabs()), not the real access gate
              (the 3 admin-only endpoints enforcing IsAdmin server-side are). -->
         <a href="/admin.html" class="action-card" id="adminCard" style="display:none;">
-          <div class="action-card-icon">&#9881;&#65039;</div>
+          <div class="action-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 13a7.97 7.97 0 0 0 0-2l2.1-1.6-2-3.4-2.5 1a8 8 0 0 0-1.7-1L15 3h-4l-.3 2.6a8 8 0 0 0-1.7 1l-2.5-1-2 3.4L6.6 11a7.97 7.97 0 0 0 0 2l-2.1 1.6 2 3.4 2.5-1a8 8 0 0 0 1.7 1L11 21h4l.3-2.6a8 8 0 0 0 1.7-1l2.5 1 2-3.4L19.4 13Z"/></svg></div>
           <div class="action-card-title">Admin Panel</div>
           <div class="action-card-desc">
             Sync status for every plant, the registered user list, and links into Django Admin for account and audit-log management.
@@ -188,74 +191,6 @@
 
   <script src="js/auth.js"></script>
   <script src="js/shared.js"></script>
-  <script>
-    (async function () {
-      const user = await requireAuth();
-      if (!user) return; // requireAuth() already redirected to /login.html
-
-      const firstName = (user.fullName || user.email || '').split(' ')[0].split('@')[0];
-      document.getElementById('heroName').textContent = firstName || user.email;
-      renderNavTabs(document.getElementById('navTabs'), 'home');
-      renderUserBadge(document.getElementById('navUser'));
-      if (user.role === 'admin') document.getElementById('adminCard').style.display = '';
-
-      await loadKpis();
-
-      document.getElementById('loadingOverlay').style.display = 'none';
-      document.getElementById('mainContent').style.display = '';
-    })();
-
-    // KPIs are real, computed client-side from all 3 plants' live PO data -
-    // fetched in parallel here rather than reusing js/main.js's per-plant
-    // cache (this page never loads main.js - it's a lightweight landing
-    // page, not the full dashboard). A fetch failure for one plant must not
-    // blank the whole row - each plant's data is optional, the KPIs sum
-    // whatever loaded successfully and this is disclosed via console.error,
-    // never silently treated as "0 POs for that plant".
-    async function loadKpis() {
-      const results = await Promise.all(PLANT_KEYS.map(async key => {
-        try {
-          const data = await apiForPlant(key, '/purchase-orders');
-          return data.purchaseOrders || [];
-        } catch (e) {
-          console.error('loadKpis: failed to load purchase orders for ' + key + ':', e);
-          return null; // distinct from [] - "failed to load", not "zero POs"
-        }
-      }));
-
-      const loaded = results.filter(r => r !== null);
-      const allPos = loaded.flat();
-
-      document.getElementById('kpiTotalPos').textContent = String(allPos.length);
-
-      const suppliers = new Set();
-      allPos.forEach(po => { if (po.vendorName && po.vendorName.trim()) suppliers.add(po.vendorName.trim().toLowerCase()); });
-      document.getElementById('kpiSuppliers').textContent = String(suppliers.size);
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayISO = today.toISOString().slice(0, 10);
-      const monthPrefix = todayISO.slice(0, 7);
-      const weekCutoff = new Date(today);
-      weekCutoff.setDate(weekCutoff.getDate() - 6);
-      const weekCutoffISO = weekCutoff.toISOString().slice(0, 10);
-
-      const thisMonthCount = allPos.filter(po => po.createdDate && po.createdDate.startsWith(monthPrefix)).length;
-      const thisWeekCount = allPos.filter(po => po.createdDate && po.createdDate >= weekCutoffISO && po.createdDate <= todayISO).length;
-
-      document.getElementById('kpiThisMonth').textContent = String(thisMonthCount);
-      document.getElementById('kpiThisMonthSub').textContent = today.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
-      document.getElementById('kpiThisWeek').textContent = String(thisWeekCount);
-
-      if (loaded.length < PLANT_KEYS.length) {
-        const row = document.getElementById('kpiRow');
-        const note = document.createElement('div');
-        note.className = 'stat-sub';
-        note.style.cssText = 'grid-column:1/-1;color:var(--red);margin-top:-8px;';
-        note.textContent = 'Note: ' + (PLANT_KEYS.length - loaded.length) + ' plant(s) failed to load - these totals are undercounted. Refresh to retry.';
-        row.parentNode.insertBefore(note, row.nextSibling);
-      }
-    }
-  </script>
+  <script src="js/home-page.js"></script>
 </body>
 </html>

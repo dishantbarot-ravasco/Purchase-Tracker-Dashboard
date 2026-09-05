@@ -170,6 +170,9 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       if (l.po.remarks) { const c = categorizeFlag(l.po.remarks); catMap.set(c.label, c); }
     });
     const categories = Array.from(catMap.values());
+    // Same reasoning as computePoFlags()'s own _maxDiffPct (see flags.js) -
+    // drives rowTintClass()'s severity-scaled row background.
+    const allDiffs = links.flatMap(l => [l.item.qtyDiffPct, l.item.rateDiffPct, l.item.valueDiffPct]).filter(v => v != null);
     return {
       material: m,
       links,
@@ -178,6 +181,7 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       qtyFlag: categories.some(c => c.label === 'Quantity Discrepancy'),
       rateFlag: categories.some(c => c.label === 'Rate / Value Discrepancy'),
       hasInfoFlag: categories.some(c => c.severity === 'info'),
+      maxDiffPct: allDiffs.length ? Math.max(...allDiffs) : 0,
     };
   });
 }
@@ -268,7 +272,7 @@ function renderMaterialsView() {
     const msg = isAllPlants()
       ? 'No Raw Material Stock synced yet for any plant.'
       : 'No RM Stock synced yet - run <code>' + PLANTS[state.plant].syncCmdStock + '</code> to load it.';
-    el.innerHTML = '<div class="empty-state">' + msg + '</div>';
+    el.innerHTML = '<div class="empty-state">' + emptyStateHtml(msg) + '</div>';
     return;
   }
 
@@ -292,18 +296,21 @@ function renderMaterialsView() {
   // colored left border + flag icon for discrepancy/quality cards, plain
   // counts for the rest. Order: plain counts -> in-transit pair -> the two
   // "critical" (money/quantity) discrepancy cards -> Data Quality Flags last.
+  // `fmt` picks the count-up animation's display formatter (wired below,
+  // near the [data-matkpi] click handlers) - 'inr' for the two currency
+  // cards, 'locale' for the plain comma-grouped quantity, 'int' for the rest.
   const cardDef = [
-    { key: 'total', cls: '', label: 'Materials Tracked', val: totalMaterials },
-    { key: 'value', cls: '', label: 'Total Inventory Value (Warehouse)', val: formatInr(totalValue) },
-    { key: 'transit', cls: 'partial', label: 'Inventory Value in Transit (Open POs)', val: formatInr(inTransitValue) },
-    { key: 'qtyordered', cls: 'partial', label: 'Quantity Ordered (Open POs)', val: qtyOrderedOpen.toLocaleString('en-IN') },
-    { key: 'qtydisc', cls: 'critical', label: 'Quantity Discrepancies', val: qtyDiscMats.length, flag: KPI_FLAG_COLORS.critical },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate Discrepancies', val: rateDiscMats.length, flag: KPI_FLAG_COLORS.critical },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flaggedMats.length, flag: KPI_FLAG_COLORS.quality },
+    { key: 'total', cls: '', label: 'Materials Tracked', raw: totalMaterials, fmt: 'int', tip: 'Distinct materials with current stock, summed across every vendor lot.' },
+    { key: 'value', cls: '', label: 'Total Inventory Value (Warehouse)', raw: totalValue, fmt: 'inr', tip: 'Current stock quantity x rate, summed across every lot in the selected plant(s).' },
+    { key: 'transit', cls: 'partial', label: 'Inventory Value in Transit (Open POs)', raw: inTransitValue, fmt: 'inr', tip: 'Value of ordered-but-not-yet-received line items linked to this material.' },
+    { key: 'qtyordered', cls: 'partial', label: 'Quantity Ordered (Open POs)', raw: qtyOrderedOpen, fmt: 'locale', tip: 'Total quantity still open on purchase orders linked to this material.' },
+    { key: 'qtydisc', cls: 'critical', label: 'Quantity Discrepancies', raw: qtyDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'A linked PO line item\'s quantity differs from its matched MIR entry.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate Discrepancies', raw: rateDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'A linked PO line item\'s rate differs from its matched MIR entry.' },
+    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', raw: flaggedMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.quality, tip: 'Paperwork/process notes on a linked PO\'s remarks - not a money or quantity problem.' },
   ];
-  const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.matStatusFilter === c.key ? 'active' : '') + '" data-matkpi="' + c.key + '">' +
+  const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.matStatusFilter === c.key ? 'active' : '') + '" data-matkpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.matStatusFilter === c.key) + '">' +
     (c.flag ? flagIconHtml(c.flag) : '') +
-    '<div class="val">' + c.val + '</div><div class="label">' + escapeHtml(c.label) + '</div></div>').join('');
+    '<div class="val" data-count-target="' + c.raw + '" data-count-fmt="' + c.fmt + '">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>').join('');
 
   // matStatusFilter is table-only-in-effect here (like PO's statusFilter on
   // its own table) even though it's also a KPI-card click target - narrows
@@ -389,13 +396,14 @@ function renderMaterialsView() {
         '<button id="matPrevPageBtn" class="page-btn"' + (matTablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
         pageButtons +
         '<button id="matNextPageBtn" class="page-btn"' + (matTablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
+        jumpToPageHtml('mat', totalPages) +
       '</div>'
     : '';
 
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
     '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + '. Click a row for its full cross-plant analysis.</div>' +
-    '<div class="validation-note">⚠️ <div>"Inventory Value in Transit", "Quantity Ordered", and the discrepancy/flag columns below are computed by automatically matching each material to purchase order line items by description (and vendor, where known) - the same best-effort approach this app already uses for PO&harr;MIR matching. <strong>Not guaranteed-correct identity resolution - verify manually before relying on it.</strong></div></div>' +
+    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>"Inventory Value in Transit", "Quantity Ordered", and the discrepancy/flag columns below are computed by automatically matching each material to purchase order line items by description (and vendor, where known) - the same best-effort approach this app already uses for PO&harr;MIR matching. <strong>Not guaranteed-correct identity resolution - verify manually before relying on it.</strong></div></div>' +
     '<div class="mat-cards">' + kpiHtml + '</div>' +
     // "Filter by Category" / "Filter by Sub Category" / "Filter by Flags"
     // bar - moved above the chart (project owner, 2026-09-04) so the chart
@@ -451,7 +459,7 @@ function renderMaterialsView() {
           const anchor = m.anchorLot;
           const key = escapeHtml(plantKeyFor(anchor) + '::' + anchor.lotId);
           const entry = linkageByKey.get(normalizeMaterial(m.description));
-          return '<tr><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></td>' +
+          return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></td>' +
           '<td>' + escapeHtml(m.category || '-') + '</td>' +
           '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
           '<td>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</td>' +
@@ -470,7 +478,7 @@ function renderMaterialsView() {
           const key = escapeHtml(plantKeyFor(anchor) + '::' + anchor.lotId);
           const entry = linkageByKey.get(normalizeMaterial(m.description));
           const st = computeMaterialStatus(m, entry);
-          return '<div class="top5-row">' +
+          return '<div class="top5-row' + (entry ? rowTintClass(entry) : '') + '">' +
             '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></div>' +
             '<div>' + escapeHtml(m.category || 'Not available') + '</div>' +
             '<div>' + escapeHtml(m.subCategory || 'Not available') + '</div>' +
@@ -482,6 +490,8 @@ function renderMaterialsView() {
             '<div><span class="row-link" data-lot="' + key + '">View analysis</span></div></div>';
         }).join('') + '</div>';
     })();
+
+  wireKpiCountUps();
 
   document.querySelectorAll('[data-matkpi]').forEach(c => c.onclick = () => {
     const key = c.dataset.matkpi;
@@ -506,6 +516,7 @@ function renderMaterialsView() {
   const matNextPageBtn = document.getElementById('matNextPageBtn');
   if (matNextPageBtn) matNextPageBtn.onclick = () => { state.matTablePage = state.matTablePage + 1; renderMaterialsView(); };
   document.querySelectorAll('[data-matpage]').forEach(btn => btn.onclick = () => { state.matTablePage = Number(btn.dataset.matpage); renderMaterialsView(); });
+  wireJumpToPage('mat', totalPages, (n) => { state.matTablePage = n; renderMaterialsView(); });
 
   // Header filter row (only present when showingAll). Text input re-renders
   // live on every keystroke via preserveFocus() (same as PO's own [data-cf]

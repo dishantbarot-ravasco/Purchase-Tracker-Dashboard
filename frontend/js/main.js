@@ -249,17 +249,18 @@ async function init() {
   // renderNavTabs()) - #root only holds this page's own dashboard content.
   renderNavTabs(document.getElementById('navTabs'), 'dashboard');
   renderUserBadge(document.getElementById('navUser'));
+  initThemeToggle();
 
   root.innerHTML =
     '<div class="sync-bar">' +
       '<div class="who" id="syncBadges"></div>' +
       '<button type="button" id="refreshDataBtn" class="refresh-btn">Refresh Data</button>' +
     '</div>' +
-    '<div class="validation-note">⚠️ <div>Matches shown here are computed automatically (exact PO-number match, or a weighted score on vendor/material/qty/rate/value - see the confidence badge on each line item). They are not guaranteed correct, especially anything below "high" confidence or carrying a qty/rate/value flag. <strong>Manually verify before treating a match as ground truth for reconciliation decisions.</strong></div>' +
+    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>Matches shown here are computed automatically (exact PO-number match, or a weighted score on vendor/material/qty/rate/value - see the confidence badge on each line item). They are not guaranteed correct, especially anything below "high" confidence or carrying a qty/rate/value flag. <strong>Manually verify before treating a match as ground truth for reconciliation decisions.</strong></div>' +
     '</div>' +
-    '<div class="view-tabs" id="viewTabs"></div>' +
-    '<div class="plant-tabs" id="plantTabs"></div>' +
-    '<div class="sub-tabs" id="purchaseTypeTabs"></div>' +
+    '<div class="view-tabs" id="viewTabs" role="tablist"></div>' +
+    '<div class="plant-tabs" id="plantTabs" role="tablist"></div>' +
+    '<div class="sub-tabs" id="purchaseTypeTabs" role="tablist"></div>' +
     '<div id="viewContent"></div>';
   renderViewTabs();
   renderPlantTabs();
@@ -381,8 +382,8 @@ async function pollSyncUntilDone(btn, targetKeys) {
 function renderViewTabs() {
   const el = document.getElementById('viewTabs');
   el.innerHTML =
-    '<div class="view-tab ' + (state.view === 'po' ? 'active' : '') + '" data-view="po">Purchase Orders</div>' +
-    '<div class="view-tab ' + (state.view === 'materials' ? 'active' : '') + '" data-view="materials">Raw Material Analysis</div>';
+    '<div class="view-tab ' + (state.view === 'po' ? 'active' : '') + '" data-view="po" tabindex="0" role="tab" aria-selected="' + (state.view === 'po') + '">Purchase Orders</div>' +
+    '<div class="view-tab ' + (state.view === 'materials' ? 'active' : '') + '" data-view="materials" tabindex="0" role="tab" aria-selected="' + (state.view === 'materials') + '">Raw Material Analysis</div>';
   el.querySelectorAll('[data-view]').forEach(t => t.onclick = async () => {
     if (t.dataset.view === state.view) return;
     state.view = t.dataset.view;
@@ -407,7 +408,7 @@ function renderPlantTabs() {
   const el = document.getElementById('plantTabs');
   const tabs = plantTabOptions();
   el.innerHTML = tabs.map(t =>
-    '<div class="plant-tab ' + (state.plant === t.key ? 'active' : '') + '" data-plant="' + t.key + '">' + escapeHtml(t.label) + '</div>'
+    '<div class="plant-tab ' + (state.plant === t.key ? 'active' : '') + '" data-plant="' + t.key + '" tabindex="0" role="tab" aria-selected="' + (state.plant === t.key) + '">' + escapeHtml(t.label) + '</div>'
   ).join('');
   el.querySelectorAll('[data-plant]').forEach(t => t.onclick = async () => {
     if (t.dataset.plant === state.plant) return;
@@ -425,7 +426,7 @@ function renderPurchaseTypeTabs() {
   if (state.view !== 'po') { el.innerHTML = ''; el.style.display = 'none'; return; }
   el.style.display = '';
   el.innerHTML = PURCHASE_TYPES.map(pt =>
-    '<div class="sub-tab ' + (state.purchaseType === pt.key ? 'active' : '') + '" data-ptype="' + pt.key + '">' + escapeHtml(pt.label) + '</div>'
+    '<div class="sub-tab ' + (state.purchaseType === pt.key ? 'active' : '') + '" data-ptype="' + pt.key + '" tabindex="0" role="tab" aria-selected="' + (state.purchaseType === pt.key) + '">' + escapeHtml(pt.label) + '</div>'
   ).join('');
   el.querySelectorAll('[data-ptype]').forEach(t => t.onclick = async () => {
     if (t.dataset.ptype === state.purchaseType) return;

@@ -81,11 +81,17 @@ def find_file_id_by_title(title: str, parent_id: str | None = None, mime_type: s
     # Drive API v3 (which this client is built against) uses "name", not
     # v2's "title" - a v2-style query silently returns HTTP 400 Invalid
     # Value, confirmed hitting this in practice.
+    # Every current caller passes settings.<X>_FOLDER_ID / a hardcoded mime
+    # constant for parent_id/mime_type (never anything derived from a synced
+    # file's own content), so this was never exploitable in practice - but
+    # escaping all three clauses the same way, not just `title`, is the
+    # correct defense-in-depth default so a future caller can't reintroduce
+    # a query-injection gap by passing something less trusted here.
     clauses = [f"name = '{_escape(title)}'", "trashed = false"]
     if parent_id:
-        clauses.append(f"'{parent_id}' in parents")
+        clauses.append(f"'{_escape(parent_id)}' in parents")
     if mime_type:
-        clauses.append(f"mimeType = '{mime_type}'")
+        clauses.append(f"mimeType = '{_escape(mime_type)}'")
     query = " and ".join(clauses)
     resp = service.files().list(q=query, fields="files(id, name, modifiedTime)", pageSize=5).execute()
     files = resp.get("files", [])

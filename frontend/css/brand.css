@@ -21,7 +21,8 @@
   --gold-pale:     #FEF3C7; /* pale backgrounds */
   --gold-dim:      rgba(193,127,10,.10); /* subtle tints */
   --gold-border:   rgba(193,127,10,.30); /* borders */
-  --navy:          #1A2535;
+  --navy:          #1A2535; /* heading/label text - flips light in dark mode, see dark blocks below */
+  --navy-solid:    #1A2535; /* fixed dark navy for solid button/badge backgrounds + text-on-gold - deliberately does NOT flip in dark mode */
   --navy-mid:      #253349;
   --orange:        #D96B0A;
   --bg-page:       #F0F2F5;
@@ -90,6 +91,16 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .nav-spacer { flex: 1; }
 .nav-user { display: flex; align-items: center; font-size: 12.5px; color: var(--text-muted); }
 
+/* ── THEME TOGGLE (js/auth.js's initThemeToggle()) ─────────────────────
+   Sits directly before .nav-user in the topnav on every protected page. */
+.theme-toggle-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; margin-right: 14px; flex-shrink: 0;
+  background: none; border: 1px solid var(--border); border-radius: 50%;
+  font-size: 15px; cursor: pointer; transition: background .15s, border-color .15s, transform .15s;
+}
+.theme-toggle-btn:hover { background: var(--gold-dim); border-color: var(--gold-border); transform: rotate(12deg); }
+
 /* ── USER MENU (circle avatar + stacked name/role + dropdown) ─────
    Same visual pattern as the TDS Automation App's own top nav - see
    frontend/js/auth.js's renderUserBadge()/userInitials(). */
@@ -154,9 +165,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   text-decoration: none; white-space: nowrap; line-height: 1;
 }
 .btn:disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
-.btn-primary { background: var(--gold-light); border-color: var(--gold-light); color: var(--navy); box-shadow: 0 2px 6px rgba(193,127,10,.25); }
-.btn-primary:hover { background: var(--gold); border-color: var(--gold); color: var(--navy); }
-.btn-navy   { background: var(--navy); border-color: var(--navy); color: #fff; }
+.btn-primary { background: var(--gold-light); border-color: var(--gold-light); color: var(--navy-solid); box-shadow: 0 2px 6px rgba(193,127,10,.25); }
+.btn-primary:hover { background: var(--gold); border-color: var(--gold); color: var(--navy-solid); }
+.btn-navy   { background: var(--navy-solid); border-color: var(--navy-solid); color: #fff; }
 .btn-navy:hover { background: var(--navy-mid); color: #fff; }
 
 /* ── FORM ───────────────────────────────────────────────── */
@@ -183,6 +194,32 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   gap: 14px; padding: 60px 20px; color: var(--text-muted); font-size: 13px;
 }
 
+/* ── ENTRANCE ANIMATION ─────────────────────────────────────────────────
+   Shared fade-up-in keyframe, applied with a per-card stagger (nth-child)
+   to .stat-card/.kpi-card/.action-card/.user-card/.search-result-card - CSS-
+   only (no JS render-order changes needed) so it's safe to layer onto every
+   existing card-grid render path at once. Capped at 8 staggered steps;
+   any card beyond that shares the last delay rather than growing forever. */
+@keyframes fade-up-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: no-preference) {
+  .stat-card, .kpi-card, .action-card, .user-card, .search-result-card {
+    animation: fade-up-in .38s ease-out both;
+  }
+  .stats-row > :nth-child(1), .action-cards > :nth-child(1), .users-grid > :nth-child(1) { animation-delay: 0ms; }
+  .stats-row > :nth-child(2), .action-cards > :nth-child(2), .users-grid > :nth-child(2) { animation-delay: 60ms; }
+  .stats-row > :nth-child(3), .action-cards > :nth-child(3), .users-grid > :nth-child(3) { animation-delay: 120ms; }
+  .stats-row > :nth-child(4), .users-grid > :nth-child(4) { animation-delay: 180ms; }
+  .users-grid > :nth-child(5) { animation-delay: 240ms; }
+  .users-grid > :nth-child(6) { animation-delay: 300ms; }
+  .users-grid > :nth-child(7) { animation-delay: 360ms; }
+  .users-grid > :nth-child(n+8) { animation-delay: 420ms; }
+  .search-result-card:nth-of-type(1) { animation-delay: 0ms; }
+  .search-result-card:nth-of-type(2) { animation-delay: 50ms; }
+  .search-result-card:nth-of-type(3) { animation-delay: 100ms; }
+  .search-result-card:nth-of-type(4) { animation-delay: 150ms; }
+  .search-result-card:nth-of-type(n+5) { animation-delay: 200ms; }
+}
+
 /* ── STAT CARDS ─────────────────────────────────────────── */
 .stats-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 16px; margin-bottom: 32px; }
 .stat-card {
@@ -193,9 +230,16 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .stat-card:hover { border-color: var(--gold-border); box-shadow: var(--shadow); transform: translateY(-2px); }
 .stat-icon {
   width: 48px; height: 48px; border-radius: var(--radius-lg);
-  background: var(--gold-pale); border: 1px solid var(--gold-border);
+  background: var(--gold-pale); border: 1px solid var(--gold-border); color: var(--gold-text);
   display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0;
 }
+/* Inline-SVG icon set (replaces raw emoji, see home.html) - stroke:currentColor
+   so each variant just needs its own `color`, matching that variant's
+   existing background/border accent below. */
+.stat-icon svg { width: 22px; height: 22px; }
+.stat-icon.blue   { color: var(--blue); }
+.stat-icon.green  { color: var(--green); }
+.stat-icon.purple { color: var(--purple); }
 .stat-label { font-size: 12px; color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; font-weight: 600; }
 .stat-value { font-family: var(--font-head); font-size: 17px; font-weight: 800; color: var(--navy); line-height: 1.3; margin-top: 4px; }
 .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
@@ -238,6 +282,10 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   padding: 18px 22px; box-shadow: var(--shadow-sm); cursor: pointer; transition: all .18s;
 }
 .search-result-card:hover { border-color: var(--gold-border); box-shadow: var(--shadow); }
+/* Keyboard accessibility - a div-based "button" (mouse-only .onclick, see
+   search-po-page.js) - see shared.js's delegated keydown listener for the
+   Enter/Space activation this focus ring pairs with. */
+.search-result-card:focus-visible { outline: 2px solid var(--gold-light); outline-offset: 2px; }
 .search-result-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .search-result-po { font-family: var(--font-head); font-size: 15px; font-weight: 800; color: var(--navy); }
 .search-result-plant {
@@ -247,6 +295,14 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 }
 .search-result-meta { font-size: 12.5px; color: var(--text-muted); margin-top: 6px; }
 .search-empty { text-align: center; color: var(--text-muted); font-size: 13px; padding: 40px 20px; }
+/* Shared empty-state icon+message - see shared.js's emptyStateHtml(); same
+   pattern as style.css's own .empty-state-icon (search-po.html/admin.html
+   don't load style.css, hence the duplicate - see brand.css's own header
+   comment on why the two stylesheets stay separate). */
+.empty-state-icon { width: 40px; height: 40px; margin: 0 auto 14px; color: var(--text-muted); opacity: .7; }
+.empty-state-icon svg { width: 100%; height: 100%; }
+.empty-state-icon-error { color: var(--red); opacity: .85; }
+.empty-state-msg { max-width: 420px; margin: 0 auto; line-height: 1.6; }
 
 /* ── ADMIN PANEL (admin.html) ──────────────────────────────────── */
 .role-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
@@ -294,11 +350,16 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 
 /* ── USER FORM MODAL (create/edit) ─────────────────────────────── */
 .uf-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(26,37,53,.55); z-index: 400;
+  display: flex; position: fixed; inset: 0; background: rgba(26,37,53,.55); z-index: 400;
   align-items: center; justify-content: center; padding: 20px;
+  opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .18s ease;
 }
-.uf-overlay.open { display: flex; }
-.uf-modal { background: var(--bg-card); border-radius: var(--radius-xl); width: 100%; max-width: 440px; box-shadow: var(--shadow-lg); max-height: 90vh; overflow-y: auto; }
+.uf-overlay.open { opacity: 1; visibility: visible; pointer-events: auto; }
+.uf-modal {
+  background: var(--bg-card); border-radius: var(--radius-xl); width: 100%; max-width: 440px; box-shadow: var(--shadow-lg);
+  max-height: 90vh; overflow-y: auto; transform: translateY(-14px) scale(.97); transition: transform .18s ease;
+}
+.uf-overlay.open .uf-modal { transform: translateY(0) scale(1); }
 .uf-modal-head { display: flex; align-items: center; justify-content: space-between; padding: 20px 24px; border-bottom: 1px solid var(--border); }
 .uf-modal-head h3 { font-family: var(--font-head); font-size: 16px; color: var(--navy); }
 .uf-modal-head button { background: none; border: none; font-size: 18px; color: var(--text-muted); cursor: pointer; line-height: 1; }
@@ -307,6 +368,15 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .uf-label { display: block; font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--navy); margin-bottom: 6px; }
 .uf-input { width: 100%; padding: 10px 13px; background: var(--bg-input); border: 1px solid var(--border-mid); border-radius: var(--radius); color: var(--text); font-size: 13px; font-family: var(--font-body); outline: none; }
 .uf-input:focus { border-color: var(--gold-light); box-shadow: 0 0 0 3px var(--gold-dim); }
+/* Show/hide toggle for a password-type .uf-input - same pattern as
+   login.html's .pw-toggle, ported here for the admin Users panel's
+   create/edit-user password field. `.uf-input-wrap` only exists to give the
+   toggle button a positioning parent; it changes no other layout. */
+.uf-input-wrap { position: relative; }
+.uf-input-wrap .uf-input { padding-right: 38px; }
+.uf-input-wrap .pw-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 14px; opacity: .45; background: none; border: none; padding: 4px; line-height: 1; color: inherit; }
+.uf-input-wrap .pw-toggle:hover { opacity: .8; }
+.uf-input-wrap .pw-toggle.active { opacity: .9; color: var(--gold); }
 .uf-hint { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
 .uf-err { display: none; background: var(--red-pale); border: 1px solid var(--red-border); color: var(--red); font-size: 12.5px; padding: 10px 13px; border-radius: var(--radius); margin-bottom: 16px; }
 .uf-err.show { display: block; }
@@ -315,7 +385,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 /* ── TOAST ──────────────────────────────────────────────────────── */
 .toast-stack { position: fixed; bottom: 24px; right: 24px; z-index: 500; display: flex; flex-direction: column; gap: 10px; }
 .toast {
-  background: var(--navy); color: #fff; padding: 12px 18px; border-radius: var(--radius-lg);
+  background: var(--navy-solid); color: #fff; padding: 12px 18px; border-radius: var(--radius-lg);
   font-size: 12.5px; font-weight: 600; box-shadow: var(--shadow-lg); min-width: 220px;
   animation: toast-in .2s ease-out;
 }
@@ -339,10 +409,11 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .action-card:hover { border-color: var(--gold-border); box-shadow: var(--shadow-md); transform: translateY(-3px); }
 .action-card:hover::before { transform: scaleX(1); }
 .action-card-icon {
-  width: 56px; height: 56px; background: var(--gold-pale); border: 1px solid var(--gold-border);
+  width: 56px; height: 56px; background: var(--gold-pale); border: 1px solid var(--gold-border); color: var(--gold-text);
   border-radius: var(--radius-lg); display: flex; align-items: center; justify-content: center;
   font-size: 26px; margin-bottom: 18px; transition: transform .22s;
 }
+.action-card-icon svg { width: 26px; height: 26px; }
 .action-card:hover .action-card-icon { transform: scale(1.08); }
 .action-card-title { font-family: var(--font-head); font-size: 19px; font-weight: 900; color: var(--navy); margin-bottom: 8px; }
 .action-card-desc  { font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 22px; }
@@ -352,7 +423,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   color: var(--gold-text); padding: 8px 16px; border: 1px solid var(--gold-border);
   border-radius: var(--radius); background: var(--gold-pale); transition: all .18s;
 }
-.action-card:hover .action-card-cta { background: var(--gold-light); color: var(--navy); border-color: var(--gold-light); }
+.action-card:hover .action-card-cta { background: var(--gold-light); color: var(--navy-solid); border-color: var(--gold-light); }
 
 /* ── SECTION TITLE ──────────────────────────────────────── */
 .section-title {
@@ -367,4 +438,93 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   .page-wrap { padding: 20px 16px 60px; }
   .stats-row { grid-template-columns: 1fr; }
   .topnav { padding: 0 16px; }
+}
+
+/* ── DARK MODE ──────────────────────────────────────────────────────────
+   Follows system preference (prefers-color-scheme) by default; a manual
+   toggle (js/auth.js's renderThemeToggle(), persisted to localStorage as
+   'pt-theme') can force either theme via [data-theme] on <html>, which is
+   why every token below is defined twice - once guarded by the media query
+   (system dark, no explicit override) and once by the attribute (explicit
+   toggle, regardless of system preference). --navy is the one token that
+   changes MEANING here: it's used purely as heading/label text color
+   throughout this file, never as a solid background - those "solid navy
+   background + white text" spots (buttons, toast, badges) were switched to
+   the new --navy-solid token above specifically so they keep working
+   unchanged when --navy itself flips light for dark-mode legibility.
+   --gold/--blue/--green/--red/--purple accent colors are deliberately
+   left alone (they're the brand accent, not a light/dark-page token) except
+   for the "-pale" chip backgrounds, which are muted to a translucent tint
+   instead of literal pale-white - the literal light hex values would render
+   as jarring bright rectangles on a dark page. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --navy:          #EDF1F7;
+    --bg-page:       #10151d;
+    --bg-card:       #1a2230;
+    --bg-section:    #1f2836;
+    --bg-input:      #1a2230;
+    --bg-nav:        #161d27;
+    --text:          #e7ecf3;
+    --text-dim:      #c2cad6;
+    --text-muted:    #8d97a7;
+    --text-light:    #9aa4b3;
+    --border:        #2c3646;
+    --border-mid:    #3d4a5f;
+    /* --gold-text is documented (see its light-mode definition above) as
+       tuned for WCAG AA on a LIGHT background - reused as-is here it would
+       be a dark brown-gold on a dark translucent chip, the same contrast
+       failure style.css's badge/status-pill text colors had before this
+       pass (see that file's own --amber-text etc.). Reuses --gold-bright's
+       value (already a light gold meant for dark backgrounds, e.g. the
+       hero banner) rather than inventing a third gold shade. */
+    --gold-text:     #F0B429;
+    --gold-pale:     rgba(240,180,41,.16);
+    --gold-dim:      rgba(193,127,10,.16);
+    --gold-border:   rgba(193,127,10,.38);
+    --green-pale:    rgba(26,122,74,.18);
+    --green-border:  rgba(26,122,74,.4);
+    --red-pale:      rgba(197,48,48,.18);
+    --red-border:    rgba(197,48,48,.4);
+    --blue-pale:     rgba(29,100,199,.2);
+    --blue-border:   rgba(29,100,199,.42);
+    --purple-pale:   rgba(107,70,193,.2);
+    --purple-border: rgba(107,70,193,.42);
+    --shadow-sm:     0 1px 3px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.3);
+    --shadow:        0 4px 12px rgba(0,0,0,.35), 0 2px 4px rgba(0,0,0,.25);
+    --shadow-md:     0 8px 24px rgba(0,0,0,.4), 0 4px 8px rgba(0,0,0,.3);
+    --shadow-lg:     0 16px 48px rgba(0,0,0,.45), 0 8px 16px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --navy:          #EDF1F7;
+  --bg-page:       #10151d;
+  --bg-card:       #1a2230;
+  --bg-section:    #1f2836;
+  --bg-input:      #1a2230;
+  --bg-nav:        #161d27;
+  --text:          #e7ecf3;
+  --text-dim:      #c2cad6;
+  --text-muted:    #8d97a7;
+  --text-light:    #9aa4b3;
+  --border:        #2c3646;
+  --border-mid:    #3d4a5f;
+  --gold-text:     #F0B429;
+  --gold-pale:     rgba(240,180,41,.16);
+  --gold-dim:      rgba(193,127,10,.16);
+  --gold-border:   rgba(193,127,10,.38);
+  --green-pale:    rgba(26,122,74,.18);
+  --green-border:  rgba(26,122,74,.4);
+  --red-pale:      rgba(197,48,48,.18);
+  --red-border:    rgba(197,48,48,.4);
+  --blue-pale:     rgba(29,100,199,.2);
+  --blue-border:   rgba(29,100,199,.42);
+  --purple-pale:   rgba(107,70,193,.2);
+  --purple-border: rgba(107,70,193,.42);
+  --shadow-sm:     0 1px 3px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.3);
+  --shadow:        0 4px 12px rgba(0,0,0,.35), 0 2px 4px rgba(0,0,0,.25);
+  --shadow-md:     0 8px 24px rgba(0,0,0,.4), 0 4px 8px rgba(0,0,0,.3);
+  --shadow-lg:     0 16px 48px rgba(0,0,0,.45), 0 8px 16px rgba(0,0,0,.3);
 }

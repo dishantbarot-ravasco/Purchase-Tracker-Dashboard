@@ -169,6 +169,9 @@ specifics. `PTUser.plants` lets an admin be scoped to specific plants for write 
 ```bash
 uv sync
 cp .env.example .env   # fill in DB, Google service account, SMTP, and OAuth details
+                        # (see CLAUDE.md's ".env gotchas" if this repo's folder is
+                        # synced by OneDrive/similar - .env is gitignored but not
+                        # automatically excluded from that kind of cloud sync)
 uv run python manage.py migrate
 uv run python manage.py createcachetable   # one-off: creates the DatabaseCache table
 
@@ -178,3 +181,26 @@ uv run python manage.py create_pt_user --email you@ravasco.com --password '...' 
 uv run python manage.py runserver
 # -> open http://127.0.0.1:8000/login.html
 ```
+
+### Docker alternative
+
+Gives you a real Postgres + this app running together without installing Python/uv/Postgres
+directly - useful if you'd rather not set up a local toolchain, or want dev to match Render's
+Python 3.12/gunicorn/qcluster setup exactly. Does not replace `render.yaml`'s own deploy pipeline;
+this is local-dev only.
+
+```bash
+cp .env.example .env   # same first step as above - fill in the same values
+docker compose up -d
+# docker-compose.yml points the app/worker containers at its own `db` service automatically -
+# you don't need to change PGHOST/DATABASE_URL in .env for this to work.
+
+# Bootstrap the first account, same as the non-Docker flow:
+docker compose exec app uv run python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
+# -> open http://localhost:8000/login.html
+```
+
+To confirm it's actually working: `docker compose logs app` should show no tracebacks, and the
+login page/dashboard should load with no 404s on `/static/...` assets (a broken `collectstatic`
+step is the most likely thing to go wrong, and shows up exactly there). See CLAUDE.md's "Docker
+(local dev)" for the underlying `Dockerfile`/`docker-entrypoint.sh` details.

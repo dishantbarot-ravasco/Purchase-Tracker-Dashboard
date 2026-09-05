@@ -1,0 +1,52 @@
+# Local-dev only - does not replace render.yaml's own Render deployment.
+# `docker compose up` gives a developer a real Postgres + this app running
+# together without installing Python/uv/Postgres directly. See CLAUDE.md's
+# "Docker (local dev)" and README.md's "Docker alternative" for setup steps.
+#
+# Reuses .env.example as the single source of truth for app secrets/config
+# (Google/SMTP/JWT vars etc.) - copy it to .env before running `docker
+# compose up`, same first step as the non-Docker "Local setup" flow. DB
+# connection details are set explicitly below (DATABASE_URL points at the
+# `db` service, not localhost) rather than read from .env, so whatever
+# PGHOST/DATABASE_URL happens to be in a developer's own .env (typically
+# `localhost`, for running against a locally-installed Postgres instead of
+# Docker) doesn't need to change to also work under Docker.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: purchase_tracker
+      POSTGRES_USER: purchase_tracker
+      POSTGRES_PASSWORD: purchase_tracker
+    volumes:
+      - pt_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U purchase_tracker -d purchase_tracker"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://purchase_tracker:purchase_tracker@db:5432/purchase_tracker
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://purchase_tracker:purchase_tracker@db:5432/purchase_tracker
+    command: ["uv", "run", "python", "manage.py", "qcluster"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pt_postgres_data:

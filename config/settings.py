@@ -284,6 +284,15 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
     "EXCEPTION_HANDLER": "apps.api.exceptions.custom_exception_handler",
+    # JSON only - this is an internal, same-origin JSON API with a static-HTML
+    # frontend (see CLAUDE.md), not a public API that benefits from DRF's
+    # Browsable API's interactive HTML/schema UI. Without this override, DRF's
+    # own default renderer list includes BrowsableAPIRenderer regardless of
+    # DEBUG, which is unnecessary attack surface (extra JS/CSS, self-
+    # documenting forms) for no real benefit here.
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+    ],
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
@@ -293,6 +302,12 @@ REST_FRAMEWORK = {
         "user": "200/minute",
         "login": "5/minute",       # POST /api/auth/login
         "otp_verify": "10/minute",  # POST /api/auth/device-verify
+        # Higher-blast-radius writes than an ordinary field correction - a
+        # real Drive sync job or a user-management change shouldn't share the
+        # generic 200/min "user" bucket. See apps/api/permissions.py's
+        # SyncTriggerThrottle/AdminWriteThrottle.
+        "sync_trigger": "10/minute",
+        "admin_write": "30/minute",
     },
 }
 
@@ -311,6 +326,18 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "ALGORITHM": "HS256",
     "SIGNING_KEY": JWT_SIGNING_KEY,
+    # A stolen refresh token used to remain valid for its full 30-day
+    # REFRESH_TOKEN_LIFETIME even after an explicit logout, since nothing
+    # revoked it server-side - PTTokenRefreshSerializer.validate() already
+    # had the rotate/blacklist logic (apps/api/auth_serializers.py) but it
+    # was dead code until these two flags were turned on. Requires
+    # rest_framework_simplejwt.token_blacklist in INSTALLED_APPS (added
+    # alongside this) - every successful /api/auth/token/refresh now issues
+    # a new refresh token and blacklists the one just spent, and
+    # apps/api/routers/device_views.py's logout_view blacklists the current
+    # one directly on logout.
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
     "AUTH_HEADER_TYPES": ("Bearer",),
     "USER_ID_FIELD": "user_id",   # PTUser PK field name
     "USER_ID_CLAIM": "user_id",
@@ -387,6 +414,13 @@ SESSION_SAVE_EVERY_REQUEST = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 SESSION_COOKIE_SECURE = not DEBUG
+# Explicit rather than Django's 2-week default - this session only ever
+# carries short-lived, single-purpose state (the OAuth PKCE code_verifier
+# round-trip, or pending_user_id during the device-verify OTP flow, which
+# itself expires in 10 minutes - see apps/services/otp_service.py). It is
+# not part of the main JWT-cookie auth path, so there's no reason for it to
+# outlive a single sign-in attempt by much.
+SESSION_COOKIE_AGE = 1800  # 30 minutes
 
 # ---------------------------------------------------------------------------
 # JWT access cookie - httpOnly cookie carrying the JWT access token after

@@ -14,6 +14,7 @@ users).
 
 from django.conf import settings
 from rest_framework.permissions import BasePermission
+from rest_framework.throttling import UserRateThrottle
 
 
 def is_allowed_email_domain(email: str) -> bool:
@@ -49,6 +50,29 @@ class IsAdmin(BasePermission):
             and bool(getattr(user, "is_active", False))
             and getattr(user, "role", None) == "admin"
         )
+
+
+class SyncTriggerThrottle(UserRateThrottle):
+    """Stricter than the generic 200/min "user" bucket - each request queues
+    a real background Drive-sync job (apps/services/sync_trigger.py), so an
+    IsAdmin-gated but buggy/compromised client hammering this endpoint is a
+    materially worse resource-exhaustion vector than an ordinary field
+    correction hitting the same generic limit. Same "distinct scope, keyed
+    the same way UserRateThrottle already keys by user pk" pattern
+    auth_views.py's LoginRateThrottle uses for its own reason (per-account,
+    not per-IP) - see config/settings.py's DEFAULT_THROTTLE_RATES for the
+    actual "sync_trigger" rate."""
+
+    scope = "sync_trigger"
+
+
+class AdminWriteThrottle(UserRateThrottle):
+    """Stricter than the generic 200/min "user" bucket for admin-only writes
+    that create/modify accounts (apps/api/routers/users_views.py) - see
+    config/settings.py's DEFAULT_THROTTLE_RATES for the actual
+    "admin_write" rate."""
+
+    scope = "admin_write"
 
 
 def user_can_edit_plant(user, plant_key: str) -> bool:

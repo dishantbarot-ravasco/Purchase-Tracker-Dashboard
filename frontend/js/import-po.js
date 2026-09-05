@@ -88,7 +88,7 @@ function renderImportPoList(el) {
       : 'No import purchase orders synced yet for ' + PLANTS[state.plant].label + ' - run <code>' +
         { hrs: 'sync_hrs_imports_po_csv', achhad: 'sync_achhad_imports_po_csv', vapi: 'sync_vapi_imports_po_csv' }[state.plant] +
         '</code> to load them.';
-    el.innerHTML = '<div class="empty-state">' + msg + '</div>';
+    el.innerHTML = '<div class="empty-state">' + emptyStateHtml(msg) + '</div>';
     return;
   }
 
@@ -108,7 +108,19 @@ function renderImportPoList(el) {
   const poInwarded = p => (p.items || []).some(i => i.mirMatch);
   const poQtyDiscMir = p => (p.items || []).some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0);
   const poRateDiscMir = p => (p.items || []).some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0);
-  filtered.forEach(po => { po._categories = importCategoriesFor(po, poQtyDiscMir, poRateDiscMir); });
+  filtered.forEach(po => {
+    po._categories = importCategoriesFor(po, poQtyDiscMir, poRateDiscMir);
+    // Same _qtyFlag/_rateFlag/_maxDiffPct shape as Domestic's computePoFlags()
+    // (see flags.js's rowTintClass(), shared across all three list views) -
+    // scoped to the BOE<->MIR diffs (the ones with a real percentage
+    // magnitude available client-side; the PO-vs-BOE qty flag has no
+    // equivalent % here) so the row tint reflects the same discrepancy the
+    // "Qty/Rate Discrepancies (BOE vs MIR)" KPI cards already count.
+    po._qtyFlag = po.qtyDiscrepancy || poQtyDiscMir(po);
+    po._rateFlag = poRateDiscMir(po);
+    const itemDiffs = (po.items || []).flatMap(i => i.mirMatch ? [i.mirMatch.qtyDiffPct, i.mirMatch.rateDiffPct, i.mirMatch.valueDiffPct] : []).filter(v => v != null);
+    po._maxDiffPct = itemDiffs.length ? Math.max(...itemDiffs) : 0;
+  });
 
   // Category/Sub Category counts and narrowing - same cascading
   // severity/label pattern as Domestic's renderPoList() (see its own
@@ -152,26 +164,26 @@ function renderImportPoList(el) {
   // the discrepancy/timing/flag cards, then the import-specific
   // shipment-stage trio Domestic has no equivalent of.
   const cardDef = [
-    { key: 'total', cls: '', label: 'Total Import POs', val: total },
-    { key: 'inwarded', cls: 'received', label: 'Material Inwarded', val: counts.inwarded, flag: KPI_FLAG_COLORS.received },
-    { key: 'partial', cls: 'partial', label: 'Partial Delivered', val: counts.partial, flag: KPI_FLAG_COLORS.partial },
-    { key: 'qtydisc', cls: 'critical', label: 'Qty Discrepancies (PO vs BOE)', val: counts.qtyDisc, flag: KPI_FLAG_COLORS.critical },
-    { key: 'qtydiscmir', cls: 'critical', label: 'Qty Discrepancies (BOE vs MIR)', val: counts.qtyDiscMir, flag: KPI_FLAG_COLORS.critical },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate Discrepancies', val: counts.rateDiscMir, flag: KPI_FLAG_COLORS.critical },
-    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical },
-    { key: 'onorder', cls: 'pending', label: 'Pending Deliveries / On Order', val: counts.onOrder, flag: KPI_FLAG_COLORS.pending },
-    { key: 'unknowndate', cls: 'unknown', label: 'Delivery Date Unknown', val: counts.unknownDate, flag: KPI_FLAG_COLORS.unknown },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: counts.flags, flag: KPI_FLAG_COLORS.quality },
-    { key: 'placed', cls: 'pending', label: 'Awaiting Bill of Lading', val: counts.placed, flag: KPI_FLAG_COLORS.pending },
-    { key: 'shipped', cls: 'partial', label: 'In Transit', val: counts.shipped, flag: KPI_FLAG_COLORS.partial },
-    { key: 'cleared', cls: 'received', label: 'Customs Cleared (BOE)', val: counts.cleared, flag: KPI_FLAG_COLORS.received },
+    { key: 'total', cls: '', label: 'Total Import POs', val: total, tip: 'All import purchase orders in the selected date range.' },
+    { key: 'inwarded', cls: 'received', label: 'Material Inwarded', val: counts.inwarded, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this import PO has a matched MIR entry.' },
+    { key: 'partial', cls: 'partial', label: 'Partial Delivered', val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items received against this import PO.' },
+    { key: 'qtydisc', cls: 'critical', label: 'Qty Discrepancies (PO vs BOE)', val: counts.qtyDisc, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity ordered differs from the quantity cleared on the Bill of Entry.' },
+    { key: 'qtydiscmir', cls: 'critical', label: 'Qty Discrepancies (BOE vs MIR)', val: counts.qtyDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Bill of Entry quantity differs from the matched MIR entry\'s quantity.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate Discrepancies', val: counts.rateDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Landed rate (converted to INR) differs from the matched MIR entry\'s rate.' },
+    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully received.' },
+    { key: 'onorder', cls: 'pending', label: 'Pending Deliveries / On Order', val: counts.onOrder, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched.' },
+    { key: 'unknowndate', cls: 'unknown', label: 'Delivery Date Unknown', val: counts.unknownDate, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
+    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: counts.flags, flag: KPI_FLAG_COLORS.quality, tip: 'BOE/customs paperwork issues detected on this PO (see flag codes F1-F7).' },
+    { key: 'placed', cls: 'pending', label: 'Awaiting Bill of Lading', val: counts.placed, flag: KPI_FLAG_COLORS.pending, tip: 'PO placed - shipment not yet on a Bill of Lading.' },
+    { key: 'shipped', cls: 'partial', label: 'In Transit', val: counts.shipped, flag: KPI_FLAG_COLORS.partial, tip: 'Bill of Lading issued - not yet cleared through customs.' },
+    { key: 'cleared', cls: 'received', label: 'Customs Cleared (BOE)', val: counts.cleared, flag: KPI_FLAG_COLORS.received, tip: 'Bill of Entry filed - shipment has cleared customs.' },
   ];
   const kpiHtml = cardDef.map(c => {
     const active = !c.disabled && state.importStatusFilter === c.key;
-    return '<div class="kpi-card ' + c.cls + (active ? ' active' : '') + (c.disabled ? ' kpi-disabled' : '') + '" data-kpi="' + (c.disabled ? '' : c.key) + '">' +
+    return '<div class="kpi-card ' + c.cls + (active ? ' active' : '') + (c.disabled ? ' kpi-disabled' : '') + '" data-kpi="' + (c.disabled ? '' : c.key) + '"' + (c.disabled ? '' : ' tabindex="0" role="button" aria-pressed="' + active + '"') + '>' +
       (c.flag ? flagIconHtml(c.flag) : '') +
-      '<div class="val' + (typeof c.val === 'string' ? ' val-text' : '') + '">' + (typeof c.val === 'string' ? escapeHtml(c.val) : c.val) + '</div>' +
-      '<div class="label">' + escapeHtml(c.label) + '</div></div>';
+      '<div class="val' + (typeof c.val === 'string' ? ' val-text' : '') + '"' + (typeof c.val === 'string' ? '' : ' data-count-target="' + c.val + '" data-count-fmt="int"') + '>' + (typeof c.val === 'string' ? escapeHtml(c.val) : 0) + '</div>' +
+      '<div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>';
   }).join('');
 
   let tableRecs = filtered;
@@ -319,12 +331,13 @@ function renderImportPoList(el) {
               '<button id="importPrevPageBtn" class="page-btn"' + (tablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
               pageButtons +
               '<button id="importNextPageBtn" class="page-btn"' + (tablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
+              jumpToPageHtml('import', totalPages) +
             '</div>'
           : '';
         return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(po.plant + '::' + po.poNumber);
-            return '<tr><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
+            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
               '<td>' + escapeHtml(po.countryOfOrigin || '-') + '</td>' +
               '<td>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-') + '</td>' +
@@ -337,7 +350,7 @@ function renderImportPoList(el) {
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
           const key = escapeHtml(po.plant + '::' + po.poNumber);
-          return '<div class="top5-row">' +
+          return '<div class="top5-row' + rowTintClass(po) + '">' +
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
             '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
@@ -347,6 +360,8 @@ function renderImportPoList(el) {
             '<div><span class="row-link" data-impo="' + key + '">View details</span></div></div>';
         }).join('') + '</div>';
     })();
+
+  wireKpiCountUps();
 
   document.querySelectorAll('[data-kpi]').forEach(c => {
     if (!c.dataset.kpi) return; // disabled (MIR-placeholder) card - no filter to set
@@ -373,6 +388,7 @@ function renderImportPoList(el) {
   const nextPageBtn = document.getElementById('importNextPageBtn');
   if (nextPageBtn) nextPageBtn.onclick = () => { state.importTablePage = state.importTablePage + 1; renderImportPoList(el); };
   document.querySelectorAll('[data-impage]').forEach(btn => btn.onclick = () => { state.importTablePage = Number(btn.dataset.impage); renderImportPoList(el); });
+  wireJumpToPage('import', totalPages, (n) => { state.importTablePage = n; renderImportPoList(el); });
 
   const importCategorySelect = document.getElementById('importCategoryFilterSelect');
   if (importCategorySelect) importCategorySelect.onchange = () => { state.importCategoryFilter = importCategorySelect.value || null; state.importSubCategoryFilter = null; state.importTablePage = 1; renderImportPoList(el); };
@@ -558,7 +574,7 @@ async function ensureImportPoDetailLoaded(plantKey, poNumber, force) {
 
 let importModalTab = 'overview';
 
-// editableLine/plainLine/wireEditableLines/savePoField are shared with
+// editableLine/plainLine/wireEditIcons/savePoField are shared with
 // Domestic's openPoModal() - see frontend/js/shared.js. itemId is omitted
 // for a PO-level field, present for a line-item field (matches
 // correct_field's own PO-level-vs-item-level branch on both the Domestic
@@ -612,7 +628,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
             '</td><td>' + (it.qtyAsPerPo != null ? it.qtyAsPerPo : '-') + ' ' + escapeHtml(it.uom || '') +
             '</td><td>' + (it.qtyAsPerBoe != null ? it.qtyAsPerBoe : '-') + ' ' + escapeHtml(it.uom || '') +
             '</td><td style="color:' + color + ';font-weight:700;">' + variance + '</td>' +
-            '<td>' + (it.netPrice != null ? it.netPrice : '-') + '</td><td>' + (it.netValue != null ? formatInr(it.netValue) : '-') + '</td>' +
+            '<td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') + '</td><td>' + (it.netValue != null ? formatInr(it.netValue) : '-') + '</td>' +
             '<td>' + importMatchStatusHtml(it, plantKey) + '</td></tr>';
         }).join('') + '</tbody></table>'
     : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
@@ -636,49 +652,60 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
       '</div>'
     ).join('');
 
+  // Critical (Qty/Rate discrepancy) flags first, then the F1-F7 data
+  // quality flags - previously this tab only ever showed the latter (see
+  // importCriticalFlagsFor()'s own comment for why that was an
+  // inconsistency with Domestic's equivalent tab, which always showed both).
+  const criticalCats = importCriticalFlagsFor(po);
   const FLAG_DESCRIPTIONS_NOTE = 'Each flag below is a real data-quality check against this PO\'s own synced fields (apps/services/import_flags.py) - not a placeholder.';
-  const flagsTabHtml = (po.dataQualityFlags || []).length
-    ? '<div class="no-data-note" style="margin-bottom:12px;">' + FLAG_DESCRIPTIONS_NOTE + '</div>' +
-      po.dataQualityFlags.map(f => importFlagHtml(f, po, plantKey)).join('')
-    : '<div style="text-align:center;color:var(--slate-soft);padding:20px;">No data quality flags on this PO.</div>';
+  const flagsTabHtml =
+    criticalCats.map(c => poFlagHtml(c, po, plantKey, true)).join('') +
+    ((po.dataQualityFlags || []).length
+      ? '<div class="no-data-note" style="margin:8px 0 12px;">' + FLAG_DESCRIPTIONS_NOTE + '</div>' +
+        po.dataQualityFlags.map(f => importFlagHtml(f, po, plantKey)).join('')
+      : (criticalCats.length ? '' : '<div style="text-align:center;color:var(--slate-soft);padding:20px;">No data quality flags on this PO.</div>'));
   const correctionsHtml = (po.corrections || []).length
     ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +
       po.corrections.map(c =>
         '<div class="field-block" style="margin-bottom:8px;">' +
           '<div style="font-size:12.5px;"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
           escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
+          (c.reason ? '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--slate);">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
         '</div>'
       ).join('')
     : '';
+  const correctionBoxHtml = overrideBoxHtml('Click the ✎ icon next to any field in the Overview, Items, or Shipment & License tab to correct it - no need to know column names.');
 
   body.innerHTML =
-    '<span class="close-btn" onclick="closeModal()">&times;</span>' +
+    '<span class="close-btn">&times;</span>' +
     '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
     '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(po.plantLabel) + ' (Imports) &middot; Country of Origin: ' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
-    '<div class="modal-tabs" id="importPoModalTabs">' +
-      '<div class="modal-tab' + (importModalTab === 'overview' ? ' active' : '') + '" data-itab="overview">Overview</div>' +
-      '<div class="modal-tab' + (importModalTab === 'items' ? ' active' : '') + '" data-itab="items">Items</div>' +
-      '<div class="modal-tab' + (importModalTab === 'shipment' ? ' active' : '') + '" data-itab="shipment">Shipment &amp; License</div>' +
-      '<div class="modal-tab' + (importModalTab === 'flags' ? ' active' : '') + '" data-itab="flags">Flags &amp; Corrections</div>' +
+    '<div class="modal-tabs" id="importPoModalTabs" role="tablist">' +
+      '<div class="modal-tab' + (importModalTab === 'overview' ? ' active' : '') + '" data-itab="overview" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'overview') + '">Overview</div>' +
+      '<div class="modal-tab' + (importModalTab === 'items' ? ' active' : '') + '" data-itab="items" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'items') + '">Items</div>' +
+      '<div class="modal-tab' + (importModalTab === 'shipment' ? ' active' : '') + '" data-itab="shipment" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'shipment') + '">Shipment &amp; License</div>' +
+      '<div class="modal-tab' + (importModalTab === 'flags' ? ' active' : '') + '" data-itab="flags" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'flags') + '">Flags &amp; Corrections</div>' +
     '</div>' +
     '<div class="modal-tab-panel" id="importPoModalOverview"' + (importModalTab !== 'overview' ? ' hidden' : '') + '>' + overviewHtml + '</div>' +
     '<div class="modal-tab-panel" id="importPoModalItems"' + (importModalTab !== 'items' ? ' hidden' : '') + '>' + itemsTabHtml + '</div>' +
     '<div class="modal-tab-panel" id="importPoModalShipment"' + (importModalTab !== 'shipment' ? ' hidden' : '') + '>' + shipmentTabHtml + '</div>' +
-    '<div class="modal-tab-panel" id="importPoModalFlags"' + (importModalTab !== 'flags' ? ' hidden' : '') + '>' + flagsTabHtml + correctionsHtml + '</div>';
+    '<div class="modal-tab-panel" id="importPoModalFlags"' + (importModalTab !== 'flags' ? ' hidden' : '') + '>' + flagsTabHtml + correctionsHtml + correctionBoxHtml + '</div>';
 
   body.querySelectorAll('[data-itab]').forEach(tab => tab.onclick = () => {
     importModalTab = tab.dataset.itab;
-    body.querySelectorAll('[data-itab]').forEach(t => t.classList.remove('active'));
+    body.querySelectorAll('[data-itab]').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
     tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
     ['overview', 'items', 'shipment', 'flags'].forEach(k => {
       document.getElementById('importPoModal' + k.charAt(0).toUpperCase() + k.slice(1)).hidden = k !== importModalTab;
     });
   });
 
   const fieldsUrl = apiBase + '/purchase-orders/' + encodeURIComponent(plantKey) + '/' + encodeURIComponent(poNumber) + '/fields';
-  wireEditableLines(body, fieldsUrl, () => onImportFieldSaved(plantKey, poNumber));
+  const switchToFlagsTab = () => { const t = body.querySelector('[data-itab="flags"]'); if (t) t.click(); };
+  wireEditIcons(body, fieldsUrl, switchToFlagsTab, () => onImportFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
 }
 

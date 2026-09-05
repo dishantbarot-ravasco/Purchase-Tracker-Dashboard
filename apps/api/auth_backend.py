@@ -44,9 +44,11 @@ from.
 """
 
 import logging
+from datetime import timedelta
 
 import bcrypt
 from django.conf import settings
+from django.utils import timezone
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidToken
 
@@ -54,6 +56,12 @@ from apps.api.permissions import is_allowed_email_domain
 from apps.core.models import PTUser
 
 logger = logging.getLogger(__name__)
+
+# Account lockout (added 2026-09-05, hardening pass) - see PTUser.
+# failed_login_attempts/locked_until's own docstring for why this exists
+# alongside, not instead of, LoginRateThrottle.
+_MAX_FAILED_ATTEMPTS = 5
+_LOCKOUT_DURATION = timedelta(minutes=15)
 
 
 def _verify_password(plain: str, hashed: str) -> bool:
@@ -87,6 +95,21 @@ def _dummy_verify() -> None:
 # 1. Django authentication backend (used at login time)
 # ─────────────────────────────────────────────────────────────────────────
 
+def _register_failed_attempt(user: PTUser) -> None:
+    """Increment PTUser.failed_login_attempts; lock the account for
+    _LOCKOUT_DURATION and reset the counter once it reaches
+    _MAX_FAILED_ATTEMPTS. A plain .update() (not user.save()) so this never
+    clobbers a concurrent request's own field changes to the same row - the
+    in-memory `user` object passed in is only read here, never written back
+    to the caller."""
+    attempts = user.failed_login_attempts + 1
+    updates = {"failed_login_attempts": attempts}
+    if attempts >= _MAX_FAILED_ATTEMPTS:
+        updates["locked_until"] = timezone.now() + _LOCKOUT_DURATION
+        updates["failed_login_attempts"] = 0
+    PTUser.objects.filter(pk=user.pk).update(**updates)
+
+
 class PTUserBackend:
     """authenticate(request, email=..., password=...) -> PTUser | None.
 
@@ -103,6 +126,17 @@ class PTUserBackend:
             _dummy_verify()
             return None
 
+        # Locked out (5 consecutive failed attempts, see
+        # _register_failed_attempt below) - refused outright, even with the
+        # correct password, until locked_until elapses. Still burns dummy
+        # bcrypt time rather than returning instantly, same reasoning as the
+        # DoesNotExist branch above: a locked account must not be
+        # distinguishable-by-timing from an unknown email or a wrong
+        # password on an unlocked one.
+        if user.locked_until and user.locked_until > timezone.now():
+            _dummy_verify()
+            return None
+
         # Always do the bcrypt work first, then check is_active - doing the
         # active check before verifying the password would make an inactive
         # account's login attempt return faster than a wrong-password
@@ -110,6 +144,12 @@ class PTUserBackend:
         # defeats the account-enumeration protection _dummy_verify() exists
         # to provide (this exact ordering bug bit the TDS app in the past).
         password_ok = _verify_password(password, user.password_hash)
+
+        if password_ok:
+            if user.failed_login_attempts or user.locked_until:
+                PTUser.objects.filter(pk=user.pk).update(failed_login_attempts=0, locked_until=None)
+        else:
+            _register_failed_attempt(user)
 
         if not user.is_active:
             return None

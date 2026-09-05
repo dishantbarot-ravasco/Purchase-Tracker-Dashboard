@@ -16,6 +16,11 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <!-- Applies a stored theme choice before first paint, so a dark-mode user
+       never sees a flash of the light theme on load - see js/auth.js's
+       initThemeToggle()/applyTheme() for the toggle this pairs with. Inline
+       and synchronous on purpose (must run before CSS paints). -->
+  <script src="js/theme-init.js"></script>
   <link rel="icon" type="image/png" href="img/indus_logo.png">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sign In - Purchase Tracker</title>
@@ -31,7 +36,7 @@
 
     /* ── Left hero panel ── */
     .login-hero {
-      background: var(--navy);
+      background: var(--navy-solid);
       background-image:
         radial-gradient(ellipse 80% 60% at 20% 40%, rgba(193,127,10,.18) 0%, transparent 55%),
         radial-gradient(ellipse 60% 40% at 80% 80%, rgba(193,127,10,.08) 0%, transparent 50%);
@@ -58,7 +63,7 @@
     .login-brand p { font-size: 11px; color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
 
     .login-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-lg); }
-    .login-card-header { padding: 22px 28px 18px; border-bottom: 1px solid var(--border); background: var(--navy); }
+    .login-card-header { padding: 22px 28px 18px; border-bottom: 1px solid var(--border); background: var(--navy-solid); }
     .login-card-header h2 { font-family: var(--font-head); font-size: 16px; font-weight: 800; letter-spacing: .04em; color: #fff; }
     .login-card-header p { font-size: 11px; color: rgba(255,255,255,.5); margin-top: 4px; }
     .login-card-body { padding: 28px; }
@@ -67,6 +72,16 @@
     .login-input-wrap { position: relative; }
     .login-input-wrap .form-control { padding-left: 42px; }
     .input-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 15px; pointer-events: none; opacity: .45; }
+    /* Show/hide password toggle - a plain eye/eye-off glyph button on the
+       right side of any password field, mirroring the left-side .input-icon
+       already used for email/password (that one's decorative/non-interactive;
+       this one is a real button). Password fields default to type="password"
+       in markup - toggling only ever flips that one attribute, nothing else
+       about the field (name/autocomplete/validation) changes. */
+    .login-input-wrap .pw-toggle { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 15px; opacity: .45; background: none; border: none; padding: 4px; line-height: 1; color: inherit; }
+    .login-input-wrap .pw-toggle:hover { opacity: .8; }
+    .login-input-wrap .pw-toggle.active { opacity: .9; color: var(--gold); }
+    .login-input-wrap.has-toggle .form-control { padding-right: 38px; }
 
     .login-options { display: flex; align-items: center; margin-bottom: 18px; }
     .form-check { display: flex; align-items: center; gap: 9px; cursor: pointer; }
@@ -74,7 +89,7 @@
     .form-check-label { font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none; }
 
     .login-btn {
-      width: 100%; padding: 14px; background: var(--navy); border: none; border-radius: var(--radius);
+      width: 100%; padding: 14px; background: var(--navy-solid); border: none; border-radius: var(--radius);
       font-family: var(--font-head); font-size: 12px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase;
       color: #fff; cursor: pointer; transition: all .2s;
     }
@@ -106,11 +121,25 @@
     .login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
     .google-btn {
       display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 11px 16px;
-      border: 1px solid var(--border); border-radius: var(--radius); background: #fff; cursor: pointer;
+      border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); cursor: pointer;
       font-size: 13px; font-weight: 600; color: var(--text); text-decoration: none;
       transition: border-color .15s, box-shadow .15s;
     }
     .google-btn:hover { border-color: var(--gold); box-shadow: 0 2px 8px rgba(193,127,10,.15); }
+
+    /* Standalone theme toggle - this page doesn't load js/auth.js (no
+       session yet to gate), so it gets its own small inline copy of the
+       toggle button/logic rather than initThemeToggle()'s topnav-relative
+       version, which assumes a '.nav-user' element this page doesn't have. */
+    .theme-toggle-btn {
+      position: fixed; top: 20px; right: 24px; z-index: 50;
+      display: flex; align-items: center; justify-content: center;
+      width: 38px; height: 38px;
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 50%;
+      font-size: 16px; cursor: pointer; box-shadow: var(--shadow-sm);
+      transition: background .15s, border-color .15s, transform .15s;
+    }
+    .theme-toggle-btn:hover { background: var(--gold-dim); border-color: var(--gold-border); transform: rotate(12deg); }
   </style>
 </head>
 <body class="login-body">
@@ -120,7 +149,7 @@
     <!-- ── Left hero panel ── -->
     <div class="login-hero">
       <div class="hero-logo-badge">
-        <img src="img/indus_logo.png" alt="Ravasco" class="hero-logo-img" onerror="this.style.display='none'">
+        <img src="img/indus_logo.png" alt="Ravasco" class="hero-logo-img" data-hide-on-error>
       </div>
 
       <div class="hero-body">
@@ -144,7 +173,7 @@
       <div class="login-panel">
 
         <div class="login-brand">
-          <img src="img/indus_logo.png" alt="Ravasco" class="login-brand-logo" onerror="this.style.display='none'">
+          <img src="img/indus_logo.png" alt="Ravasco" class="login-brand-logo" data-hide-on-error>
           <h1>Purchase Tracker</h1>
           <p>Ravasco Transmission and Packing Limited</p>
         </div>
@@ -168,9 +197,10 @@
               </div>
               <div class="form-group">
                 <label class="form-label" for="password">Password</label>
-                <div class="login-input-wrap">
+                <div class="login-input-wrap has-toggle">
                   <span class="input-icon">&#128274;</span>
                   <input type="password" id="password" name="password" class="form-control" placeholder="••••••••" autocomplete="current-password" required>
+                  <button type="button" class="pw-toggle" data-pw-target="password" aria-label="Show password" title="Show password">&#128065;</button>
                 </div>
               </div>
 
@@ -236,6 +266,8 @@
 
   </div>
 
+  <button type="button" id="themeToggleBtn" class="theme-toggle-btn"></button>
+  <script src="js/login-theme-toggle.js"></script>
   <script src="js/login.js"></script>
 </body>
 </html>

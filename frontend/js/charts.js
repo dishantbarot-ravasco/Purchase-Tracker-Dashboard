@@ -70,6 +70,16 @@ const centerTextPlugin = {
 
 function closeModal() { document.getElementById('modalBackdrop').classList.remove('open'); destroyModalCharts(); }
 
+// Every modal's own "×" close button used to carry a literal
+// onclick="closeModal()" HTML attribute (po-modal.js/import-po.js/
+// material-modal.js) - an inline event-handler attribute, which CSP's
+// script-src treats the same as an inline <script> block. Replaced with
+// this one delegated listener (added 2026-09-05, hardening pass) so
+// script-src can drop 'unsafe-inline' - see config/security_headers.py.
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.close-btn')) closeModal();
+});
+
 
 // Same idea as centerTextPlugin (PO status donut) - "TOTAL POs" -> "IMPORT
 // POs" center label, everything else identical.

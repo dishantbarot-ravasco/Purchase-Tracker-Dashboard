@@ -10,7 +10,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import HRSStockLot, MaterialCorrection, RTPAchhadStockLot
+from apps.core.models import HRSStockLot, MaterialCorrection, RTPAchhadStockLot, RTPVapiStockLot
 
 
 def _make_hrs_lot(**overrides):
@@ -131,3 +131,129 @@ class TestAchhadCorrectMaterialField:
         client.force_authenticate(user=make_user(email="e2@ravasco.com", role="editor"))
         response = client.patch(self.url, {"field": "basic_rate", "value": "1"}, format="json")
         assert response.status_code == 400
+
+    def test_editor_can_correct_msl_field(self):
+        """msl (Minimum Stock Level) is Achhad-specific - HRS/Vapi's Stock
+        sheet has no equivalent column at all."""
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e3@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "msl", "value": "50"}, format="json")
+        assert response.status_code == 200
+        self.lot.refresh_from_db()
+        assert str(self.lot.msl) == "50.000"
+
+    def test_viewer_cannot_correct(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="v2@ravasco.com", role="viewer"))
+        response = client.patch(self.url, {"field": "category", "value": "Nope"}, format="json")
+        assert response.status_code == 403
+        self.lot.refresh_from_db()
+        assert self.lot.category == "Chemicals"
+
+    def test_invalid_decimal_value_returns_400_not_500(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e4@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "rate", "value": "not-a-number"}, format="json")
+        assert response.status_code == 400
+
+    def test_rejects_non_editable_field(self):
+        """todays_stock is a computed/synced field, not user-editable."""
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e5@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "todays_stock", "value": "999"}, format="json")
+        assert response.status_code == 400
+
+    def test_editor_scoped_to_a_different_plant_is_forbidden(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e6@ravasco.com", role="editor", plants=["hrs"]))
+        response = client.patch(self.url, {"field": "category", "value": "Nope"}, format="json")
+        assert response.status_code == 403
+        self.lot.refresh_from_db()
+        assert self.lot.category == "Chemicals"
+
+    def test_unknown_lot_returns_404(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e7@ravasco.com", role="editor"))
+        response = client.patch("/api/achhad/materials/999999/fields", {"field": "category", "value": "X"}, format="json")
+        assert response.status_code == 404
+
+
+@pytest.mark.django_db
+class TestVapiCorrectMaterialField:
+    """Vapi's RTPVapiStockLot has the same category/sub_category/uom/
+    basic_rate shape as HRS's, plus its own real vendor column
+    (supplier_name, not party_name) - see vapi_views.py's
+    _MATERIAL_EDITABLE_FIELDS comment."""
+
+    def setup_method(self):
+        self.lot = RTPVapiStockLot.objects.create(
+            description="Natural Rubber", category="Rubber", sub_category="Natural",
+            basic_rate="120.5000", supplier_name="Vendor B",
+        )
+        self.url = f"/api/vapi/materials/{self.lot.id}/fields"
+
+    def test_viewer_cannot_correct(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="v@ravasco.com", role="viewer"))
+        response = client.patch(self.url, {"field": "category", "value": "Chemicals"}, format="json")
+        assert response.status_code == 403
+        self.lot.refresh_from_db()
+        assert self.lot.category == "Rubber"
+
+    def test_editor_can_correct_and_audit_row_is_written(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "category", "value": "Chemicals"}, format="json")
+        assert response.status_code == 200
+
+        self.lot.refresh_from_db()
+        assert self.lot.category == "Chemicals"
+
+        correction = MaterialCorrection.objects.get()
+        assert correction.plant == "RTP-VAPI"
+        assert correction.lot_id == self.lot.id
+        assert correction.field_name == "category"
+
+    def test_editor_can_correct_decimal_rate_field(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e2@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "basic_rate", "value": "150.75"}, format="json")
+        assert response.status_code == 200
+        self.lot.refresh_from_db()
+        assert str(self.lot.basic_rate) == "150.7500"
+
+    def test_editor_can_correct_supplier_name(self):
+        """supplier_name is Vapi's own vendor field name (not HRS's
+        party_name) - confirms the field-name difference is accepted here."""
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e3@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "supplier_name", "value": "Vendor C"}, format="json")
+        assert response.status_code == 200
+        self.lot.refresh_from_db()
+        assert self.lot.supplier_name == "Vendor C"
+
+    def test_invalid_decimal_value_returns_400_not_500(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e4@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "basic_rate", "value": "not-a-number"}, format="json")
+        assert response.status_code == 400
+
+    def test_rejects_non_editable_field(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e5@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"field": "todays_stock", "value": "999"}, format="json")
+        assert response.status_code == 400
+
+    def test_editor_scoped_to_a_different_plant_is_forbidden(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e6@ravasco.com", role="editor", plants=["achhad"]))
+        response = client.patch(self.url, {"field": "category", "value": "Nope"}, format="json")
+        assert response.status_code == 403
+        self.lot.refresh_from_db()
+        assert self.lot.category == "Rubber"
+
+    def test_unknown_lot_returns_404(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e7@ravasco.com", role="editor"))
+        response = client.patch("/api/vapi/materials/999999/fields", {"field": "category", "value": "X"}, format="json")
+        assert response.status_code == 404

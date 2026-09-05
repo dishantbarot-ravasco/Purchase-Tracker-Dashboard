@@ -23,10 +23,10 @@ import datetime
 
 from django.db import transaction
 from django.utils import timezone
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
-from apps.api.permissions import IsAdmin, IsEditor, user_can_edit_plant
+from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_edit_plant
 from apps.core.models import (
     FlagDismissal,
     HRSImportPOLineItem,
@@ -48,7 +48,6 @@ from apps.services.matching import run_full_match as _hrs_run_full_match
 from apps.services.matching_achhad import run_full_match as _achhad_run_full_match
 from apps.services.matching_vapi import run_full_match as _vapi_run_full_match
 from apps.services.sync_trigger import is_imports_sync_in_progress, trigger_plant_imports_sync
-from apps.services.validation import is_valid_email, is_valid_gstin
 
 # plant URL segment -> that plant's run_full_match() - re-run synchronously
 # by correct_field() below when an import line item edit could change its
@@ -172,6 +171,7 @@ def _correction_dict(c):
         "itemId": c.item_id,
         "oldValue": c.old_value,
         "newValue": c.new_value,
+        "reason": c.reason,
         "correctedBy": c.corrected_by_email,
         "correctedAt": c.corrected_at.isoformat(),
     }
@@ -307,6 +307,7 @@ def correct_field(request, plant, po_number):
     item_id = (request.data.get("itemId") or "").strip()
     field_name = (request.data.get("field") or "").strip()
     raw_value = request.data.get("value")
+    reason = (request.data.get("reason") or "").strip()
 
     po = po_model.objects.filter(po_number=po_number).first()
     if not po:
@@ -339,6 +340,7 @@ def correct_field(request, plant, po_number):
             field_name=field_name,
             old_value="" if old_value is None else str(old_value),
             new_value="" if new_value is None else str(new_value),
+            reason=reason,
             corrected_by=request.user if getattr(request.user, "pk", None) else None,
             corrected_by_email=getattr(request.user, "email", ""),
         )
@@ -353,24 +355,16 @@ def correct_field(request, plant, po_number):
     return Response(response)
 
 
-def _field_warning(field_name, value):
-    """Non-blocking format check for the two fields that have one (spec:
-    "warn, don't block" - a real vendor GSTIN/email can be genuinely unusual,
-    see apps/services/validation.py's module docstring)."""
-    if field_name == "vendor_gstin" and not is_valid_gstin(value):
-        return f"{value!r} doesn't look like a standard 15-character GSTIN."
-    if field_name == "vendor_email" and not is_valid_email(value):
-        return f"{value!r} doesn't look like a valid email address."
-    return None
-
-
-def _serialize(value):
-    if isinstance(value, datetime.date):
-        return value.isoformat()
-    from decimal import Decimal
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
+# _field_warning/_serialize are field-set-independent and byte-for-byte
+# identical to _domestic_base's own copies (see CLAUDE.md's "Domestic router
+# de-duplication") - shared from there rather than duplicated a fourth time.
+# _coerce_value is NOT shared: this router's _DATE_FIELDS/_DECIMAL_FIELDS are
+# a strict superset of the domestic routers' (BOE/exchange-rate fields the
+# domestic plants don't have), so _domestic_base._coerce_value (which reads
+# its own module-level field sets) can't be reused here without a further
+# refactor to parametrize it - left as its own copy rather than force a
+# fragile shared function for this pass.
+from apps.api.routers._domestic_base import _field_warning, _serialize  # noqa: E402
 
 
 def _coerce_value(field_name, raw_value):
@@ -413,6 +407,7 @@ def sync_status(request):
 
 @api_view(["POST"])
 @permission_classes([IsAdmin])
+@throttle_classes([SyncTriggerThrottle])
 def sync_trigger(request, plant):
     """POST /api/imports/sync-trigger/<plant> - kicks off that plant's
     Imports CSV sync (+ match_<plant>, see apps/services/sync_trigger.py's

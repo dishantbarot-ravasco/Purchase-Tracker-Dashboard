@@ -17,13 +17,29 @@ most.
 
 CSP notes:
   - 'self' covers all local assets (WhiteNoise-served JS/CSS/images).
-  - 'unsafe-inline' on style-src AND script-src is required because the
-    frontend has no build step: this app's own CLAUDE.md documents this —
-    static HTML+vanilla JS, WhiteNoise-served, no bundler/templating layer
-    to stamp a per-request CSP nonce into script tags. This is a real,
-    honest trade-off, not an oversight — the CSP still blocks loading any
-    script/style from an untrusted remote origin, and still restricts
-    object-src/frame-ancestors/base-uri/form-action.
+  - 'unsafe-inline' was removed from script-src (2026-09-05, hardening pass).
+    Every inline <script> block that used to appear directly in
+    frontend/*.html was extracted to its own external file under
+    frontend/js/ (theme-init.js, login-theme-toggle.js, home-page.js,
+    admin-page.js, search-po-page.js), and every inline event-handler
+    attribute (onerror="...", onclick="...") was replaced with a real
+    addEventListener - a delegated listener in theme-init.js for the
+    logo-fallback onerror pattern (every page loads this file), and one in
+    charts.js for the close-modal-button onclick pattern (only the
+    dashboard's own modals use it). 'self' already covers every external
+    file, so no nonce/hash was needed - see CLAUDE.md's "Security hardening
+    pass" for the full list of what moved where. If you ever add a new
+    inline <script> block or inline event-handler attribute to any page,
+    it will be silently blocked by this CSP with no visible error other
+    than a browser console CSP violation message - extract it to an
+    external file instead, following the same pattern.
+  - 'unsafe-inline' is still on style-src - this one was NOT addressed in
+    the 2026-09-05 pass. Dropping it would require moving every dynamically-
+    rendered inline style="..." attribute across frontend/js/*.js (used
+    pervasively - date inputs, status colors, layout tweaks) into CSS
+    classes, a much larger refactor than the script-src work above. Real,
+    honest trade-off, not an oversight - tracked as future work, not
+    silently accepted forever.
   - cdn.jsdelivr.net is explicitly allowed on script-src: frontend/index.html
     loads Chart.js from there (no vendored/bundled copy, consistent with the
     no-build-step approach above). Without this, the browser silently drops
@@ -82,7 +98,7 @@ class SecurityHeadersMiddleware:
             "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
             "font-src 'self' https://fonts.gstatic.com",
             "img-src 'self' data: blob:",
-            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+            "script-src 'self' https://cdn.jsdelivr.net",
             "connect-src 'self'",
             "frame-src 'self'",
             "frame-ancestors 'none'",

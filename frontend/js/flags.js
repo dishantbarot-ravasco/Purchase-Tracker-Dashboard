@@ -223,20 +223,43 @@ const FLAG_CATEGORY_RULES = [
 // generic table keyed by the flag's own label, and wireDismissLinks()
 // above routes data-match-type="po-flag" here via dismissPoFlag() instead
 // of dismissMatch().
-function poFlagHtml(c, po, plantKey) {
+// `isImport` (added 2026-09-05, alongside importCriticalFlagsFor() below)
+// routes the dismiss link through 'import-po-flag' instead of 'po-flag' -
+// same distinction importFlagHtml()'s own dismiss link already makes for
+// F1-F7, needed here too now that Import's own Qty/Rate discrepancy
+// critical flags (previously only shown as KPI cards, never listed
+// alongside the F1-F7 flags in this tab) reuse this same renderer.
+function poFlagHtml(c, po, plantKey, isImport) {
   const fd = (po.flagDismissals || []).find(f => f.flagKey === c.label);
   const dismissed = !!(fd && fd.dismissed);
   const dismissTag = dismissed
     ? ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (fd.dismissedBy ? ' by ' + fd.dismissedBy : '') + (fd.dismissedReason ? ': ' + fd.dismissedReason : '')) + '">dismissed</span>'
     : '';
   const link = canEditField(plantKey)
-    ? ' <span class="dismiss-link" data-match-type="po-flag" data-plant="' + plantKey + '" data-po-number="' + escapeHtml(po.poNumber) + '" data-flag-key="' + escapeHtml(c.label) + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
+    ? ' <span class="dismiss-link" data-match-type="' + (isImport ? 'import-po-flag' : 'po-flag') + '" data-plant="' + plantKey + '" data-po-number="' + escapeHtml(po.poNumber) + '" data-flag-key="' + escapeHtml(c.label) + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
     : '';
   return '<div class="field-block" style="margin-bottom:8px;' + (dismissed ? 'opacity:.6;' : '') + '">' +
     flagIconHtml(categoryColor(c.label), 'row-flag-icon') +
     ' <span class="lg-label ' + c.severity + '">' + (c.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span> ' +
     '<b' + (dismissed ? ' style="text-decoration:line-through;"' : '') + '>' + escapeHtml(c.label) + '</b>' + dismissTag + link +
   '</div>';
+}
+
+// Import's Qty/Rate discrepancy critical flags - previously only surfaced as
+// KPI cards/row icons (renderImportPoList()'s poQtyDiscMir()/poRateDiscMir())
+// and never listed in a PO's own Flags & Corrections tab alongside its
+// F1-F7 data quality flags, which the project owner flagged as an
+// inconsistency (2026-09-05: "flags and correction shouldn't only be
+// happening for data quality flags but for all the flags"). Computed here
+// per-PO (not the list-level closures those functions are, which need the
+// whole filtered array in scope) so a single PO detail modal can build its
+// own category list independent of which list view opened it.
+function importCriticalFlagsFor(po) {
+  const cats = [];
+  if (po.qtyDiscrepancy) cats.push({ label: 'Qty Discrepancy (PO vs BOE)', severity: 'critical' });
+  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Discrepancy (BOE vs MIR)', severity: 'critical' });
+  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Discrepancy (BOE vs MIR)', severity: 'critical' });
+  return cats;
 }
 
 // Import-PO equivalent of poFlagHtml() above, for one entry of an Import
@@ -261,6 +284,31 @@ function importFlagHtml(f, po, plantKey) {
     '<div style="margin-top:8px;font-size:13px;' + (dismissed ? 'text-decoration:line-through;' : '') + '">' + escapeHtml(f.message) + '</div>' +
     '<div style="margin-top:6px;font-size:11px;color:var(--slate-soft);">Fields: ' + escapeHtml((f.fields || []).join(', ')) + '</div>' +
     (f.item_id ? '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">Item: ' + escapeHtml(f.item_id) + '</div>' : '') +
+  '</div>';
+}
+
+// Material modal's Flags & Corrections tab equivalent of poFlagHtml()/
+// importFlagHtml() above, for one flagged entry of a sibling lot's
+// mirStockMatches (see material-modal.js's openMaterialModal() -
+// `m._plantKey`/`m._plantLabel` are stamped on there since a material rolls
+// up lots across all 3 plants, unlike a single-plant PO). Same field-block/
+// dismiss-link markup/wiring as the other two - wireDismissLinks() already
+// runs against the whole modal body, so a dismiss-link rendered here is
+// picked up with no extra wiring.
+function materialFlagHtml(m) {
+  const dismissed = !!m.dismissedByOverride;
+  const parts = [];
+  if (m.qtyDiffPct != null) parts.push('qty Δ' + m.qtyDiffPct.toFixed(1) + '%');
+  if (m.rateDiffPct != null) parts.push('rate Δ' + m.rateDiffPct.toFixed(1) + '%');
+  const dismissTag = dismissed ? ' <span class="dismissed-tag">dismissed</span>' : '';
+  const link = canEditField(m._plantKey)
+    ? ' <span class="dismiss-link" data-match-id="' + m.matchId + '" data-match-type="mir-stock" data-plant="' + m._plantKey + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
+    : '';
+  return '<div class="field-block" style="margin-bottom:8px;' + (dismissed ? 'opacity:.6;' : '') + '">' +
+    flagIconHtml(KPI_FLAG_COLORS.critical, 'row-flag-icon') +
+    ' <span class="lg-label critical">CRITICAL</span> ' +
+    '<b' + (dismissed ? ' style="text-decoration:line-through;"' : '') + '>' + escapeHtml(m._plantLabel) + ' &middot; MIR&harr;Stock Mismatch</b>: ' +
+    escapeHtml(parts.join(', ') || 'flagged') + dismissTag + link +
   '</div>';
 }
 
@@ -358,12 +406,44 @@ function computePoFlags(po) {
   const items = po.items || [];
   po._qtyFlag = items.some(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT);
   po._rateFlag = items.some(it => (it.rateDiffPct != null && it.rateDiffPct > FLAG_PCT) || (it.valueDiffPct != null && it.valueDiffPct > FLAG_PCT));
+  // Largest single diff percentage across every line item (qty/rate/value
+  // alike) - drives rowTintClass()'s severity-scaled row background in the
+  // "View all" table/top-5 preview, so a reviewer's eye is pulled toward the
+  // worst offenders instead of every flagged row reading identically. Only
+  // meaningful when _qtyFlag/_rateFlag is actually true - a PO with no flag
+  // may still have a small nonzero diff sitting under FLAG_PCT's zero-
+  // tolerance threshold that rounds to 0.00% and shouldn't drive any tint.
+  const allDiffs = items.flatMap(it => [it.qtyDiffPct, it.rateDiffPct, it.valueDiffPct]).filter(v => v != null);
+  po._maxDiffPct = allDiffs.length ? Math.max(...allDiffs) : 0;
   const cats = new Map();
   if (po._qtyFlag) cats.set('Quantity Discrepancy', { label: 'Quantity Discrepancy', severity: 'critical' });
   if (po._rateFlag) cats.set('Rate / Value Discrepancy', { label: 'Rate / Value Discrepancy', severity: 'critical' });
   if (po.remarks) { const c = categorizeFlag(po.remarks); cats.set(c.label, c); }
   po._categories = Array.from(cats.values());
   po._hasInfoFlag = po._categories.some(c => c.severity === 'info');
+}
+
+// Severity-scaled row background for the "View all" table/top-5 preview
+// (see .row-tint-mild/-moderate/-severe in style.css) - a quantity/rate/
+// value discrepancy already gets a flag badge in that row, but every
+// flagged row read identically regardless of whether the diff was 0.5% or
+// 80%. Bucketed rather than a continuous gradient (simpler to reason about
+// and to eyeball consistently row-to-row) - thresholds are a judgment call,
+// not measured against labeled data, same as FLAG_PCT itself (see its own
+// comment) and easy to retune in one place if they prove wrong in practice.
+// Works for any object computePoFlags() stamped with _qtyFlag/_rateFlag/
+// _maxDiffPct (Domestic POs), or Materials' own computeMaterialPoLinkage()
+// entries, which use the same fields without the underscore prefix
+// (qtyFlag/rateFlag/maxDiffPct) - checks both naming conventions rather
+// than making every caller normalize its own object shape first.
+function rowTintClass(rec) {
+  const qtyFlag = rec._qtyFlag != null ? rec._qtyFlag : rec.qtyFlag;
+  const rateFlag = rec._rateFlag != null ? rec._rateFlag : rec.rateFlag;
+  const maxDiffPct = rec._maxDiffPct != null ? rec._maxDiffPct : (rec.maxDiffPct || 0);
+  if (!qtyFlag && !rateFlag) return '';
+  if (maxDiffPct >= 20) return ' row-tint-severe';
+  if (maxDiffPct >= 5) return ' row-tint-moderate';
+  return ' row-tint-mild';
 }
 
 // Same 5-status model as the source artifact (received / partial / pending

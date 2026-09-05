@@ -1412,6 +1412,10 @@ class ImportPOCorrection(models.Model):
     field_name = models.CharField(max_length=100)
     old_value = models.TextField(blank=True)
     new_value = models.TextField(blank=True)
+    reason = models.TextField(
+        blank=True, default="",
+        help_text="Why the requester believes the old value was wrong / what they verified the new value against - optional, entered in the 'Submit a Correction' panel on the Flags & Corrections tab.",
+    )
 
     corrected_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="import_po_corrections")
     corrected_by_email = models.CharField(max_length=255, blank=True)
@@ -1446,6 +1450,7 @@ class DomesticPOCorrection(models.Model):
     field_name = models.CharField(max_length=100)
     old_value = models.TextField(blank=True)
     new_value = models.TextField(blank=True)
+    reason = models.TextField(blank=True, default="", help_text="See ImportPOCorrection.reason's help_text - same field, same purpose.")
 
     corrected_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="domestic_po_corrections")
     corrected_by_email = models.CharField(max_length=255, blank=True)
@@ -1478,6 +1483,7 @@ class MaterialCorrection(models.Model):
     field_name = models.CharField(max_length=100)
     old_value = models.TextField(blank=True)
     new_value = models.TextField(blank=True)
+    reason = models.TextField(blank=True, default="", help_text="See ImportPOCorrection.reason's help_text - same field, same purpose.")
 
     corrected_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="material_corrections")
     corrected_by_email = models.CharField(max_length=255, blank=True)
@@ -1582,6 +1588,18 @@ class PTUser(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     last_login_at = models.DateTimeField(null=True, blank=True)
 
+    # Account lockout (added 2026-09-05, hardening pass) - the existing
+    # LoginRateThrottle (apps/api/auth_views.py, 5/minute per email) is a
+    # rate limit, not a lockout: it slows down guessing but never actually
+    # stops it, forever, with no signal that an account is under sustained
+    # attack. failed_login_attempts increments on each wrong password
+    # (apps/api/auth_backend.py::PTUserBackend.authenticate()) and resets on
+    # a successful login; locked_until is set 15 minutes into the future
+    # once failed_login_attempts reaches 5, at which point login is refused
+    # outright (even with the correct password) until it elapses.
+    failed_login_attempts = models.PositiveSmallIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
+
     # ── Django/DRF auth protocol ──────────────────────────────────────────
     # PTUser does NOT inherit from AbstractBaseUser, so these must be
     # declared explicitly - DRF's IsAuthenticated permission reads
@@ -1620,6 +1638,46 @@ class OTPCode(models.Model):
 
     def __str__(self):
         return f"OTP({self.email}, expires={self.expires_at})"
+
+
+class RevokedRefreshToken(models.Model):
+    """Custom refresh-token revocation list (added 2026-09-05, hardening
+    pass) - deliberately NOT rest_framework_simplejwt's built-in
+    `rest_framework_simplejwt.token_blacklist` app. That app's own
+    OutstandingToken model FKs its `user` field to `AUTH_USER_MODEL`
+    (Django's default `auth.User`), which this app never uses for real
+    accounts - PTUser is a separate, unrelated model (see
+    apps/api/auth_backend.py's module docstring on why AUTH_USER_MODEL
+    stays at Django's default here). Confirmed incompatible the hard way:
+    enabling that app crashed device_verify with "OutstandingToken.user
+    must be a User instance" the moment a PTUser was passed to
+    RefreshToken.for_user(). This table sidesteps that entirely by keyed
+    only on the token's own `jti` claim - no user FK needed at all to check
+    or record a revocation.
+
+    Used for two things (see apps/api/auth_serializers.py's
+    PTTokenRefreshSerializer and apps/api/routers/device_views.py's
+    logout_view): (1) refresh-token rotation revokes the just-spent token's
+    jti so it can't be replayed after a successful /api/auth/token/refresh,
+    and (2) POST /api/auth/logout revokes the caller's current refresh
+    token's jti directly, so a copy made before logout stops working
+    immediately rather than surviving up to its full 30-day
+    REFRESH_TOKEN_LIFETIME."""
+
+    jti = models.CharField(max_length=255, unique=True)
+    revoked_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        help_text="Mirrors the token's own exp claim - lets a future cleanup "
+                   "command purge rows whose token would have expired naturally "
+                   "anyway. Not purged automatically yet.",
+    )
+
+    class Meta:
+        db_table = "pt_revoked_refresh_tokens"
+        indexes = [models.Index(fields=["jti"])]
+
+    def __str__(self):
+        return f"revoked jti={self.jti}"
 
 
 class TrustedDevice(models.Model):

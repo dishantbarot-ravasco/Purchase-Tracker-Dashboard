@@ -185,7 +185,11 @@ def register_device(response, user_id: int, request) -> str:
         value=device_token,
         max_age=DEVICE_COOKIE_MAX_AGE,
         httponly=True,
-        secure=getattr(settings, "PT_DEVICE_COOKIE_SECURE", False),
+        # Direct attribute reference, not getattr(..., False) - fails loudly
+        # (AttributeError) if this setting is ever removed/renamed, matching
+        # its sibling cookies' (pt_access/pt_refresh) fail-closed style
+        # rather than silently degrading to an insecure cookie.
+        secure=settings.PT_DEVICE_COOKIE_SECURE,
         samesite="Lax",
         path="/",
     )

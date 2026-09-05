@@ -52,11 +52,11 @@ import logging
 
 import bcrypt
 from django.conf import settings
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, ValidationError
 
-from apps.api.permissions import IsAdmin, is_allowed_email_domain
+from apps.api.permissions import AdminWriteThrottle, IsAdmin, is_allowed_email_domain
 from apps.core.audit_log import PTAuditLog, log_pt_action
 from apps.core.models import PTUser, TrustedDevice
 
@@ -69,6 +69,23 @@ _VALID_PLANTS = {"hrs", "achhad", "vapi"}
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _validate_password_strength(password: str, email: str) -> None:
+    """Modest strength check beyond plain length - deliberately not a full
+    breach-list/entropy policy (this is an internal tool bootstrapped by an
+    admin, not a public signup form), just closing the most obviously weak
+    cases a length-only check lets through: an 8-character password made
+    entirely of the user's own email local-part, or a purely numeric string
+    (e.g. "12345678"), or anything under 10 characters. Raises
+    ValidationError (400) the same way the existing length check does."""
+    if len(password) < 10:
+        raise ValidationError({"detail": "Password must be at least 10 characters."})
+    if password.isdigit():
+        raise ValidationError({"detail": "Password must not be entirely numeric."})
+    local_part = (email or "").split("@")[0].lower()
+    if local_part and password.lower() == local_part:
+        raise ValidationError({"detail": "Password must not be the same as your email address."})
+
 
 def _clean_plants(raw) -> list:
     """Validates an incoming `plants` array against _VALID_PLANTS. `None`/
@@ -86,8 +103,11 @@ def _clean_plants(raw) -> list:
 def _hash_password(plain: str) -> str:
     """Bcrypt-hash a plaintext password - same call shape as
     `manage.py create_pt_user` and apps/api/auth_backend.py's verify side,
-    just the create direction."""
-    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    just the create direction. rounds=12 pinned explicitly (bcrypt's own
+    library default today, confirmed by apps/api/auth_backend.py's
+    dummy-hash constant) so a future bcrypt version changing its default
+    can't silently weaken/strengthen this without a deliberate decision."""
+    return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
 def _user_out(u: PTUser) -> dict:
@@ -116,6 +136,7 @@ def list_users(request):
 
 @api_view(["POST"])
 @permission_classes([IsAdmin])
+@throttle_classes([AdminWriteThrottle])
 def create_user(request):
     """POST /api/auth/users
     Body: { "email", "password", "fullName"?, "designation"?, "role"? }
@@ -138,8 +159,7 @@ def create_user(request):
         return Response({"detail": "That email is already registered."}, status=409)
 
     password = data.get("password") or ""
-    if len(password) < 8:
-        raise ValidationError({"detail": "Password must be at least 8 characters."})
+    _validate_password_strength(password, email)
 
     plants = _clean_plants(data.get("plants")) if data.get("plants") is not None else []
 
@@ -162,6 +182,7 @@ def create_user(request):
 
 @api_view(["PATCH"])
 @permission_classes([IsAdmin])
+@throttle_classes([AdminWriteThrottle])
 def update_user(request, user_id):
     """PATCH /api/auth/users/<id>
     Body: any of { "role", "isActive", "fullName", "designation", "plants",
@@ -183,8 +204,7 @@ def update_user(request, user_id):
     data = request.data
     if "password" in data and data["password"]:
         password = data["password"]
-        if len(password) < 8:
-            raise ValidationError({"detail": "Password must be at least 8 characters."})
+        _validate_password_strength(password, user.email)
         user.password_hash = _hash_password(password)
         password_was_reset = True
 

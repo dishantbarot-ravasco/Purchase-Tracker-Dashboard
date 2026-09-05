@@ -18,6 +18,9 @@ from rest_framework import serializers
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, TokenRefreshSerializer
 from rest_framework_simplejwt.settings import api_settings
+from rest_framework_simplejwt.utils import datetime_from_epoch
+
+from apps.services.token_revocation import is_refresh_jti_revoked, revoke_refresh_jti
 
 from apps.api.auth_backend import pt_user_authentication_rule
 from apps.core.models import PTUser
@@ -121,6 +124,19 @@ class PTTokenRefreshSerializer(TokenRefreshSerializer):
     def validate(self, attrs):
         refresh = self.token_class(attrs["refresh"])
 
+        # Reject a refresh token that was already revoked (rotated away, or
+        # explicitly logged out) - see apps/services/token_revocation.py's
+        # module docstring for why this is a custom jti-keyed table rather
+        # than rest_framework_simplejwt's own token_blacklist app (that
+        # app's OutstandingToken model is incompatible with this app's
+        # PTUser architecture, confirmed by actually hitting the crash).
+        old_jti = refresh.payload.get(api_settings.JTI_CLAIM)
+        if old_jti and is_refresh_jti_revoked(old_jti):
+            raise AuthenticationFailed(
+                self.error_messages["no_active_account"],
+                "no_active_account",
+            )
+
         user_id = refresh.payload.get(api_settings.USER_ID_CLAIM, None)
         if user_id is not None:
             user = PTUser.objects.filter(pk=user_id).first()
@@ -133,15 +149,12 @@ class PTTokenRefreshSerializer(TokenRefreshSerializer):
         data = {"access": str(refresh.access_token)}
 
         if api_settings.ROTATE_REFRESH_TOKENS:
-            if api_settings.BLACKLIST_AFTER_ROTATION:
-                try:
-                    refresh.blacklist()
-                except AttributeError:
-                    pass
+            old_exp = refresh.payload.get("exp")
+            if api_settings.BLACKLIST_AFTER_ROTATION and old_jti and old_exp:
+                revoke_refresh_jti(old_jti, datetime_from_epoch(old_exp))
             refresh.set_jti()
             refresh.set_exp()
             refresh.set_iat()
-            refresh.outstand()
             data["refresh"] = str(refresh)
 
         return data

@@ -105,7 +105,7 @@ class PTTokenRefreshView(TokenRefreshView):
     serializer_class = PTTokenRefreshSerializer
 
     def post(self, request, *args, **kwargs):
-        from apps.services.device_service import REFRESH_COOKIE_NAME, set_access_cookie
+        from apps.services.device_service import REFRESH_COOKIE_NAME, set_access_cookie, set_refresh_cookie
 
         data = request.data
         if not data.get("refresh") and REFRESH_COOKIE_NAME in request.COOKIES:
@@ -115,9 +115,20 @@ class PTTokenRefreshView(TokenRefreshView):
         serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
 
-        response = Response(serializer.validated_data, status=status.HTTP_200_OK)
-        if response.data.get("access"):
-            set_access_cookie(response, response.data["access"])
+        # Body carries only `access` - the refresh token (rotated or not)
+        # only ever travels as the httpOnly pt_refresh cookie, never in a
+        # JS-readable JSON response body, same reasoning as the access token
+        # cookie. ROTATE_REFRESH_TOKENS/BLACKLIST_AFTER_ROTATION (see
+        # config/settings.py's SIMPLE_JWT) mean a successful refresh here
+        # invalidates the refresh token that was just spent - the new one
+        # (present in validated_data["refresh"] when rotation is on) must be
+        # re-cookied or the client would keep sending an already-blacklisted
+        # token on its next refresh.
+        response = Response({"access": serializer.validated_data.get("access")}, status=status.HTTP_200_OK)
+        if serializer.validated_data.get("access"):
+            set_access_cookie(response, serializer.validated_data["access"])
+        if serializer.validated_data.get("refresh"):
+            set_refresh_cookie(response, serializer.validated_data["refresh"])
         return response
 
 

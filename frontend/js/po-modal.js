@@ -109,12 +109,14 @@ async function openPoModal(compositeKey) {
         '<div class="field-block" style="margin-bottom:8px;">' +
           '<div style="font-size:12.5px;"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
           escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
+          (c.reason ? '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--slate);">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
         '</div>'
       ).join('')
     : '';
-  const flagsTabHtml = catsHtml + correctionsHtml;
+  const flagsTabHtml = catsHtml + correctionsHtml +
+    overrideBoxHtml('Click the ✎ icon next to any field in the Overview or Item & Stock tab to correct it - no need to know column names.');
 
   const backdrop = document.getElementById('modalBackdrop');
   const body = document.getElementById('modalBody');
@@ -122,13 +124,13 @@ async function openPoModal(compositeKey) {
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
   poModalTab = poModalTab || 'overview';
   body.innerHTML =
-    '<span class="close-btn" onclick="closeModal()">&times;</span>' +
+    '<span class="close-btn">&times;</span>' +
     '<h2>' + escapeHtml(po.poNumber) + '</h2>' +
     '<div class="modal-meta">' + escapeHtml(po.vendorName || 'Unknown vendor') + ' &middot; ' + escapeHtml(PLANTS[plantKey].label) + ' &middot; ' + (po.createdDate ? escapeHtml(formatDateIN(po.createdDate)) : 'no date') + '</div>' +
-    '<div class="modal-tabs" id="poModalTabs">' +
-      '<div class="modal-tab' + (poModalTab === 'overview' ? ' active' : '') + '" data-tab="overview">Overview</div>' +
-      '<div class="modal-tab' + (poModalTab === 'itemstock' ? ' active' : '') + '" data-tab="itemstock">Item &amp; Stock</div>' +
-      '<div class="modal-tab' + (poModalTab === 'flags' ? ' active' : '') + '" data-tab="flags">Flags &amp; Corrections</div>' +
+    '<div class="modal-tabs" id="poModalTabs" role="tablist">' +
+      '<div class="modal-tab' + (poModalTab === 'overview' ? ' active' : '') + '" data-tab="overview" tabindex="0" role="tab" aria-selected="' + (poModalTab === 'overview') + '">Overview</div>' +
+      '<div class="modal-tab' + (poModalTab === 'itemstock' ? ' active' : '') + '" data-tab="itemstock" tabindex="0" role="tab" aria-selected="' + (poModalTab === 'itemstock') + '">Item &amp; Stock</div>' +
+      '<div class="modal-tab' + (poModalTab === 'flags' ? ' active' : '') + '" data-tab="flags" tabindex="0" role="tab" aria-selected="' + (poModalTab === 'flags') + '">Flags &amp; Corrections</div>' +
     '</div>' +
     '<div class="modal-tab-panel" id="poModalOverview"' + (poModalTab !== 'overview' ? ' hidden' : '') + '>' + overviewHtml + '</div>' +
     '<div class="modal-tab-panel" id="poModalItemStock"' + (poModalTab !== 'itemstock' ? ' hidden' : '') + '>' + itemStockHtml + '</div>' +
@@ -136,15 +138,17 @@ async function openPoModal(compositeKey) {
 
   body.querySelectorAll('[data-tab]').forEach(tab => tab.onclick = () => {
     poModalTab = tab.dataset.tab;
-    body.querySelectorAll('[data-tab]').forEach(t => t.classList.remove('active'));
+    body.querySelectorAll('[data-tab]').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
     tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
     document.getElementById('poModalOverview').hidden = poModalTab !== 'overview';
     document.getElementById('poModalItemStock').hidden = poModalTab !== 'itemstock';
     document.getElementById('poModalFlags').hidden = poModalTab !== 'flags';
   });
 
   const fieldsUrl = apiBase + '/purchase-orders/' + encodeURIComponent(poNumber) + '/fields';
-  wireEditableLines(body, fieldsUrl, (fieldName, itemId) => onDomesticFieldSaved(plantKey, poNumber));
+  const switchToFlagsTab = () => { const t = body.querySelector('[data-tab="flags"]'); if (t) t.click(); };
+  wireEditIcons(body, fieldsUrl, switchToFlagsTab, (fieldName, itemId) => onDomesticFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onDomesticFieldSaved(plantKey, poNumber));
 }
 

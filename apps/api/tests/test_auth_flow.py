@@ -103,6 +103,53 @@ class TestLogin:
 
 
 @pytest.mark.django_db
+class TestAccountLockout:
+    """Regression tests for the 2026-09-05 hardening pass:
+    PTUser.failed_login_attempts/locked_until (apps/api/auth_backend.py's
+    PTUserBackend.authenticate()) add a real account lockout on top of the
+    existing LoginRateThrottle - a rate limit alone slows down guessing but
+    never actually stops it. cache.clear() between attempts isolates this
+    from LoginRateThrottle's own 5/minute bucket (already covered by
+    TestLogin::test_login_throttle_is_scoped_per_email_not_shared_across_ip)
+    so these tests exercise the lockout mechanism specifically, not the
+    rate throttle."""
+
+    def setup_method(self):
+        cache.clear()
+        self.client = APIClient()
+        self.password = "Str0ngPassw0rd!"
+        self.user = make_user(password=self.password)
+
+    def test_locks_account_after_5_failed_attempts_and_rejects_even_correct_password(self):
+        for _ in range(5):
+            cache.clear()
+            response = self.client.post(
+                LOGIN_URL, {"email": self.user.email, "password": "wrong-password"}, format="json"
+            )
+            assert response.status_code == 400
+
+        self.user.refresh_from_db()
+        assert self.user.locked_until is not None
+        assert self.user.failed_login_attempts == 0  # reset once locked, not left at 5
+
+        cache.clear()
+        response = self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
+        assert response.status_code == 400
+
+    def test_successful_login_resets_the_failed_attempt_counter(self):
+        cache.clear()
+        self.client.post(LOGIN_URL, {"email": self.user.email, "password": "wrong-password"}, format="json")
+        self.user.refresh_from_db()
+        assert self.user.failed_login_attempts == 1
+
+        cache.clear()
+        response = self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
+        assert response.status_code == 200
+        self.user.refresh_from_db()
+        assert self.user.failed_login_attempts == 0
+
+
+@pytest.mark.django_db
 class TestDeviceVerifyAndTrustedLogin:
     def setup_method(self):
         cache.clear()
@@ -214,3 +261,67 @@ class TestLogoutAndProtectedAccess:
         logout_response = self.client.post(LOGOUT_URL)
         assert logout_response.status_code == 200
         assert self.client.get(PO_LIST_URL).status_code == 401
+
+
+@pytest.mark.django_db
+class TestTokenRefreshRotationAndBlacklist:
+    """Regression tests for the 2026-09-05 hardening pass: SIMPLE_JWT's
+    ROTATE_REFRESH_TOKENS/BLACKLIST_AFTER_ROTATION were enabled (previously
+    False, making PTTokenRefreshSerializer's existing rotate/blacklist
+    branch dead code) so a stolen refresh token can't be replayed forever -
+    each successful /api/auth/token/refresh call issues a new refresh token
+    and blacklists the one just spent, and POST /api/auth/logout blacklists
+    the caller's current refresh token directly."""
+
+    def setup_method(self):
+        cache.clear()
+        self.client = APIClient()
+        self.password = "Str0ngPassw0rd!"
+        self.user = make_user(password=self.password)
+
+    def _login_and_verify(self):
+        self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
+        otp = _extract_otp_from_outbox()
+        return self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")
+
+    def test_refresh_rotates_and_the_old_refresh_token_is_rejected(self):
+        """A successful refresh must issue a NEW pt_refresh cookie value and
+        blacklist the old one - replaying the old refresh token afterward
+        must fail, proving rotation actually took effect end-to-end (not
+        just that the serializer's dead-code branch exists)."""
+        self._login_and_verify()
+        old_refresh_token = self.client.cookies["pt_refresh"].value
+
+        refresh_response = self.client.post(TOKEN_REFRESH_URL)
+        assert refresh_response.status_code == 200
+        assert "access" in refresh_response.data
+        # Body must never carry the raw refresh token - only the cookie does.
+        assert "refresh" not in refresh_response.data
+
+        new_refresh_token = refresh_response.cookies["pt_refresh"].value
+        assert new_refresh_token != old_refresh_token
+
+        # Replaying the OLD refresh token (as a non-browser client would, by
+        # sending it directly in the body) must now be rejected - it was
+        # blacklisted on rotation above.
+        replay = self.client.post(TOKEN_REFRESH_URL, {"refresh": old_refresh_token}, format="json")
+        assert replay.status_code == 401
+
+        # The NEW refresh token must still work - rotation didn't just
+        # break refreshing outright.
+        second_refresh = self.client.post(TOKEN_REFRESH_URL, {"refresh": new_refresh_token}, format="json")
+        assert second_refresh.status_code == 200
+
+    def test_logout_blacklists_the_current_refresh_token(self):
+        """After POST /api/auth/logout, the refresh token that was active at
+        logout time must be rejected even if presented directly in the body
+        (not relying on the cookie having been cleared client-side) - a
+        copy of the token made before logout must not still work."""
+        self._login_and_verify()
+        refresh_token = self.client.cookies["pt_refresh"].value
+
+        logout_response = self.client.post(LOGOUT_URL)
+        assert logout_response.status_code == 200
+
+        replay = self.client.post(TOKEN_REFRESH_URL, {"refresh": refresh_token}, format="json")
+        assert replay.status_code == 401

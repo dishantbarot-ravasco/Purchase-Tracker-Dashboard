@@ -28,7 +28,7 @@ const ALL_PLANTS_LABEL = 'All Plants';
 // Stock by Plant table (main.js), where each row can be a different
 // plant's own lot - see editableCell()'s data-plant below.
 function materialFieldsUrl(plantKey, lotId) {
-  return PLANTS[plantKey].apiPrefix + '/materials/' + lotId + '/fields';
+  return PLANTS[plantKey].apiPrefix + '/materials/' + encodeURIComponent(lotId) + '/fields';
 }
 // Achhad's Stock lot model names this column "rate" (its own Stock sheet
 // has no vendor/uom columns at all - see RTPAchhadStockLot's docstring);
@@ -120,6 +120,34 @@ function vendorContains(a, b) {
   return longer.indexOf(shorter) !== -1;
 }
 
+// ── Password show/hide toggle ───────────────────────────────────────────
+// Show/hide toggle for any password field on a protected page (project
+// owner, 2026-09-05: "add eye thing whenever password is required") -
+// delegated at the document level so it works for a field that doesn't
+// exist in the DOM yet at page load (admin.html's create/edit-user password
+// input lives inside a modal that's already static markup here, but
+// delegation costs nothing and stays correct if that ever changes to a
+// dynamically-rendered form). Keyed by `data-pw-target` (the input's own
+// id), not a fixed selector, so the same snippet covers every password
+// field on the page without hardcoding which one. Duplicated (not shared)
+// in login.js's own copy - login.html is the unauthenticated pre-login page
+// and deliberately loads no other scripts, so there's nothing to share this
+// with; the two copies are kept in sync manually, same as this codebase's
+// other deliberate small duplications (e.g. FLAG_PCT mirroring the backend's
+// FLAG_DIFF_PCT).
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.pw-toggle');
+  if (!btn) return;
+  const input = document.getElementById(btn.dataset.pwTarget);
+  if (!input) return;
+  const nowShowing = input.type === 'password';
+  input.type = nowShowing ? 'text' : 'password';
+  btn.classList.toggle('active', nowShowing);
+  const label = nowShowing ? 'Hide password' : 'Show password';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+});
+
 // ── Formatting helpers ──────────────────────────────────────────────────
 /** Escapes a value for safe interpolation into innerHTML. */
 function escapeHtml(s) {
@@ -150,6 +178,152 @@ function formatDateIN(iso) {
   if (!iso) return '-';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   return m ? (m[3] + '/' + m[2] + '/' + m[1]) : iso;
+}
+
+// ── Keyboard activation for div-based "buttons"/tabs ─────────────────────
+// A lot of this app's clickable UI (KPI cards, the 3-level tab bars, modal
+// tabs, search-result cards) is a plain <div data-*> with only a mouse
+// .onclick assigned by its own render function - not a native <button>/<a>,
+// so it was keyboard-invisible (no tab stop, no Enter/Space activation)
+// despite being genuinely interactive. Each render site now adds
+// tabindex="0" + a role attribute (see .kpi-card/.view-tab/etc in style.css
+// for the matching :focus-visible ring) - this one delegated listener
+// supplies the activation, so no per-file keydown wiring was needed. `role`
+// isn't checked here on purpose: this just re-dispatches a real click event,
+// which every one of these elements already has a working handler for.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const el = e.target.closest('[data-kpi], [data-matkpi], .search-result-card, .view-tab, .plant-tab, .sub-tab, .modal-tab');
+  if (!el) return;
+  e.preventDefault();
+  el.click();
+});
+
+// ── Empty / no-data state ────────────────────────────────────────────────
+// Shared "nothing here yet" icon + message, used inside every empty-list/
+// search-result panel across the app (po-list.js/materials.js/import-po.js's
+// own .empty-state, search-po.html/admin.html's .search-empty) - one visual
+// language instead of each call site being bare text. Callers keep their own
+// outer wrapper div/class (.empty-state or .search-empty already carry the
+// padding/border/centering); this just supplies the inner icon+message pair.
+// `tone` picks 'muted' (default - informational, "nothing synced yet") vs
+// 'error' (a real failure, e.g. "couldn't load the user list") - error tone
+// swaps the icon color to --red so a real problem doesn't look identical to
+// an empty-but-fine state.
+function emptyStateHtml(message, tone) {
+  const cls = tone === 'error' ? ' empty-state-icon-error' : '';
+  return '<div class="empty-state-icon' + cls + '"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M3 10l2-5a2 2 0 0 1 2-1h10a2 2 0 0 1 2 1l2 5"/>' +
+    '<path d="M3 10v8a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-8"/>' +
+    '<path d="M3 10h5a1 1 0 0 1 1 1 3 3 0 0 0 6 0 1 1 0 0 1 1-1h5"/>' +
+    '</svg></div><div class="empty-state-msg">' + message + '</div>';
+}
+
+// ── "Jump to page" control ───────────────────────────────────────────────
+// Small number input + Go button appended to every paginated "View all"
+// table's .pagination-row (po-list.js/materials.js/import-po.js) - the
+// existing prev/next/page-number buttons top out at 10 direct page buttons
+// before falling back to a plain "Page X of Y" label with no direct-jump
+// affordance at all; this covers that gap regardless of result-set size.
+// `idPrefix` namespaces the input/button ids so each view's own pagination
+// (not simultaneously visible today, but each already namespaces its own
+// prev/next/page-number ids the same way) never collides with another's.
+function jumpToPageHtml(idPrefix, totalPages) {
+  if (totalPages <= 1) return '';
+  return '<span class="jump-to-page">' +
+    '<label for="' + idPrefix + 'JumpInput">Go to</label>' +
+    '<input type="number" id="' + idPrefix + 'JumpInput" min="1" max="' + totalPages + '" placeholder="1-' + totalPages + '">' +
+    '<button type="button" id="' + idPrefix + 'JumpBtn" class="page-btn">Go</button>' +
+  '</span>';
+}
+
+// Wires a jumpToPageHtml() control's Go button + Enter-in-input to call
+// onGo(pageNumber) with a clamped/validated page number - shared so each of
+// the 3 call sites doesn't reinvent parsing/validating slightly differently.
+// Garbage or out-of-range input is silently ignored rather than clamped to
+// the nearest valid page - a typo shouldn't unexpectedly jump somewhere the
+// user didn't ask for.
+function wireJumpToPage(idPrefix, totalPages, onGo) {
+  const input = document.getElementById(idPrefix + 'JumpInput');
+  const btn = document.getElementById(idPrefix + 'JumpBtn');
+  if (!input || !btn) return;
+  const go = () => {
+    const n = Math.round(Number(input.value));
+    if (!n || n < 1 || n > totalPages) return;
+    onGo(n);
+  };
+  btn.onclick = go;
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+}
+
+// ── Info tooltip (KPI card definitions) ──────────────────────────────────
+// Small "i" glyph + instant CSS tooltip (see .info-tooltip in style.css) -
+// used next to a KPI card's label to explain what it actually counts/flags,
+// since several of these (zero-tolerance discrepancy thresholds, tier-1 vs
+// tier-2 matching, "overdue" vs "pending") are genuinely non-obvious from
+// the label alone. tabindex=0 so it's reachable by keyboard focus, not only
+// mouse hover - :focus-visible in the CSS shows the same tooltip.
+// A KPI card's info-tooltip icon sits inside the same card element that has
+// its own onclick (toggles state.statusFilter/matStatusFilter/importStatus-
+// Filter - see po-list.js/materials.js/import-po.js). Clicking the icon (to
+// show/dismiss the tooltip on a touch device that has no hover) must not
+// also toggle that filter. Capture phase, not bubble - by the time a bubble-
+// phase listener reached this far up the tree, the kpi-card's own onclick
+// (attached directly on that element) would already have run.
+document.addEventListener('click', (e) => {
+  if (e.target.closest && e.target.closest('.info-tooltip')) e.stopPropagation();
+}, true);
+
+function infoTooltipHtml(tip) {
+  return '<span class="info-tooltip kpi-info" data-tooltip="' + escapeHtml(tip) + '" tabindex="0" aria-label="' + escapeHtml(tip) + '">' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><circle cx="12" cy="7.3" r=".6" fill="currentColor" stroke="none"/>' +
+    '</svg></span>';
+}
+
+// ── KPI count-up ─────────────────────────────────────────────────────────
+// Animates a KPI's displayed number counting up from 0 to its real value on
+// load/re-render (home.html's Overview row, main.js's KPI cards) - purely a
+// display animation, wired in after the real value is already known (never
+// blocks or delays when the number is actually shown to a screen reader/
+// no-JS fallback, since textContent is set to the final value immediately
+// if prefers-reduced-motion is on). `formatter` lets a caller keep its own
+// display formatting (e.g. formatInr()) rather than this always rendering a
+// plain integer - called with the in-progress rounded value on every frame.
+function animateCountUp(el, target, opts) {
+  opts = opts || {};
+  const duration = opts.duration || 700;
+  const formatter = opts.formatter || (n => String(Math.round(n)));
+  target = Number(target) || 0;
+  if (!el || (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)) {
+    if (el) el.textContent = formatter(target);
+    return;
+  }
+  const start = performance.now();
+  function tick(now) {
+    const progress = Math.min(1, (now - start) / duration);
+    // ease-out-cubic - fast start, settles gently rather than a linear count
+    const eased = 1 - Math.pow(1 - progress, 3);
+    el.textContent = formatter(target * eased);
+    if (progress < 1) requestAnimationFrame(tick);
+    else el.textContent = formatter(target);
+  }
+  requestAnimationFrame(tick);
+}
+
+// Finds every '.kpi-card .val[data-count-target]' rendered by po-list.js's/
+// materials.js's own cardDef.map() and runs animateCountUp() on each, picking
+// the display formatter from its 'data-count-fmt' attribute ('inr' ->
+// formatInr, 'locale' -> comma-grouped, default/'int' -> plain rounded
+// integer - matches KPIs that are already plain counts, e.g. Total PO's).
+// Call once after the KPI row's innerHTML is set, same place each caller
+// already wires its [data-kpi]/[data-matkpi] click handlers.
+function wireKpiCountUps(root) {
+  (root || document).querySelectorAll('.kpi-card .val[data-count-target]').forEach(v => {
+    const fmt = v.dataset.countFmt;
+    const formatter = fmt === 'inr' ? formatInr : fmt === 'locale' ? (n => Math.round(n).toLocaleString('en-IN')) : (n => String(Math.round(n)));
+    animateCountUp(v, Number(v.dataset.countTarget), { formatter });
+  });
 }
 
 // ── Inline "Edit Everywhere" ─────────────────────────────────────────────
@@ -187,6 +361,11 @@ function plainLine(label, value) {
 // build spec's "derive from existing data" rule). Renders a plain
 // non-editable line (no pencil at all) when canEditField(plantKey) is
 // false - a non-editing viewer never even sees the affordance.
+//
+// `data-label` carries the raw field label separately from the rendered
+// "Label: value" text (which mixes both together) - selectFieldForCorrection()
+// needs the label on its own for the "Correcting: X" banner, same as the
+// artifact's fld() stashing `data-ov-label` for the same reason.
 function editableLine(plantKey, label, value, fieldName, itemId, fieldType, options) {
   if (!canEditField(plantKey)) return plainLine(label, value);
   const display = (value === null || value === undefined || value === '') ? 'Not available' : escapeHtml(String(value));
@@ -194,18 +373,17 @@ function editableLine(plantKey, label, value, fieldName, itemId, fieldType, opti
   // data-plant lets a container whose lines span more than one plant (the
   // material modal's Overview tab, once its Category/Sub Category lines
   // target the anchor lot's own plant) resolve each line's own fieldsUrl -
-  // see wireEditableLines()'s function-form fieldsUrl and editableCell()'s
+  // see wireEditIcons()'s function-form fieldsUrl and editableCell()'s
   // identical attribute below. Harmless/unused for every other existing
   // caller (Domestic/Import PO modals), which always pass one fixed
   // fieldsUrl string for their whole container.
   return '<div class="line editable-line" data-field="' + escapeHtml(fieldName) + '"' +
     (itemId ? ' data-item="' + escapeHtml(itemId) + '"' : '') +
     ' data-plant="' + escapeHtml(plantKey) + '"' +
+    ' data-label="' + escapeHtml(label) + '"' +
     ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + '>' +
     escapeHtml(label) + ': <span class="line-val">' + display + '</span>' +
-    '<span class="edit-pencil" title="Edit">&#9998;</span>' +
-    '<span class="edit-actions" hidden><span class="edit-save" title="Save">&#10003;</span><span class="edit-cancel" title="Cancel">&#10005;</span></span>' +
-    '<div class="edit-warning" hidden></div>' +
+    '<span class="edit-pencil" title="Correct this field">&#9998;</span>' +
   '</div>';
 }
 
@@ -226,9 +404,9 @@ async function dismissMatch(plantKey, matchType, matchId, dismissed, reason) {
   // the matching fetch wrapper for that router, used here instead of
   // apiForPlant()'s per-plant prefix which wouldn't resolve to the right URL.
   if (matchType === 'import-po-mir') {
-    return apiImports('/matches/po-mir/' + plantKey + '/' + matchId + '/dismiss', opts);
+    return apiImports('/matches/po-mir/' + encodeURIComponent(plantKey) + '/' + encodeURIComponent(matchId) + '/dismiss', opts);
   }
-  return apiForPlant(plantKey, '/matches/' + matchType + '/' + matchId + '/dismiss', opts);
+  return apiForPlant(plantKey, '/matches/' + encodeURIComponent(matchType) + '/' + encodeURIComponent(matchId) + '/dismiss', opts);
 }
 
 // Manual dismiss/reinstate for a PO-level flag (Quantity/Rate-Value
@@ -263,13 +441,18 @@ function distinctFieldValues(list, accessor) {
 // differently (Domestic: PLANTS[key].apiPrefix + '/purchase-orders/<po>/fields';
 // Import: '/api/imports/purchase-orders/<plant>/<po>/fields', since Import's
 // URL carries an explicit plant segment Domestic's per-plant-prefixed one
-// doesn't need) so this stays URL-shape-agnostic.
-async function savePoField(fieldsUrl, itemId, field, value) {
+// doesn't need) so this stays URL-shape-agnostic. `reason` (2026-09-05,
+// project owner: corrections should carry a reason "just like in that
+// artifact") is optional free text explaining why the old value was wrong -
+// stored on the DomesticPOCorrection/ImportPOCorrection/MaterialCorrection
+// audit row alongside old/new value (see each *_views.py's correct_field/
+// correct_material_field).
+async function savePoField(fieldsUrl, itemId, field, value, reason) {
   const res = await fetch(fieldsUrl, {
     method: 'PATCH',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ itemId: itemId || '', field: field, value: value }),
+    body: JSON.stringify({ itemId: itemId || '', field: field, value: value, reason: reason || '' }),
   });
   if (res.status === 401) {
     window.location.href = '/login.html';
@@ -301,113 +484,186 @@ async function savePoField(fieldsUrl, itemId, field, value) {
 // positioning. `itemId` here is a lot id, `plantKey` is that row's own
 // plant (materials can list lots from all 3 plants in one table - see
 // openMaterialModal's siblingLots), stashed on the element as data-plant so
-// a per-row caller can build the right per-plant fieldsUrl.
-function editableCell(plantKey, value, fieldName, itemId, fieldType, options) {
+// a per-row caller can build the right per-plant fieldsUrl. `label` (added
+// 2026-09-05 alongside the correction-panel rework below) disambiguates
+// which row/plant a correction targets in the "Correcting: X" banner, since
+// a table cell has no adjacent "Label:" text the way editableLine()'s block
+// line does - callers should pass something like 'Category (RTP-Vapi)'.
+function editableCell(plantKey, label, value, fieldName, itemId, fieldType, options) {
   const display = (value === null || value === undefined || value === '') ? '-' : escapeHtml(String(value));
   if (!canEditField(plantKey)) return display;
   const optsAttr = options && options.length ? ' data-options="' + escapeHtml(encodeURIComponent(JSON.stringify(options))) + '"' : '';
   return '<span class="editable-line cell-editable" data-field="' + escapeHtml(fieldName) + '" data-item="' + escapeHtml(String(itemId)) + '" data-plant="' + escapeHtml(plantKey) + '"' +
+    ' data-label="' + escapeHtml(label) + '"' +
     ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + '>' +
     '<span class="line-val">' + display + '</span>' +
-    '<span class="edit-pencil" title="Edit">&#9998;</span>' +
-    '<span class="edit-actions" hidden><span class="edit-save" title="Save">&#10003;</span><span class="edit-cancel" title="Cancel">&#10005;</span></span>' +
-    '<div class="edit-warning" hidden></div>' +
+    '<span class="edit-pencil" title="Correct this field">&#9998;</span>' +
   '</span>';
 }
 
-// Wires every .editable-line under `container` to swap into edit mode on
-// pencil click. `onSaved(fieldName, itemId)` runs after a successful PATCH -
-// each PO-type's caller re-fetches/re-renders differently (Domestic
-// invalidates the whole-plant list cache; Import invalidates its own list +
-// per-PO detail cache), so that stays a callback instead of baked in here.
+// ── "Submit a Correction" panel ─────────────────────────────────────────
+// Ported from the original "Purchase Tracker" Claude Artifact's fld()/
+// override-box UX (project owner, 2026-09-05: "the edit icon should be
+// taking us to flag and correction with reason, just like in that
+// artifact, not up to the point yet"). Clicking a field's pencil no longer
+// swaps it into an inline input the way startFieldEdit() used to - it
+// selects that field and jumps to wherever this modal's own "Submit a
+// Correction" panel lives (the Flags & Corrections tab for the Domestic/
+// Import PO modals; the Stock by Plant tab for the Material modal, which
+// has no separate Flags tab - see that modal's own flags-box placement),
+// mirroring the artifact's fld()/ov*/submitOverride() flow structurally.
+// The real difference: this panel actually PATCHes the live row (a real
+// write path already existed here before this pass, see CLAUDE.md's
+// "Inline 'Edit Everywhere'") and records the entered reason on the real
+// correction audit row, instead of the artifact's fake "queues a Drive
+// file for manual review" behavior.
+//
+// Only one modal is ever open at a time in this app, so SELECTED_FIELD is
+// deliberately one shared module-level variable, not per-modal state -
+// same simplification the artifact's own single global `ovSelectedLabel`
+// made.
+let SELECTED_FIELD = null;
+
+/** Markup for the override box itself - identical shape across every modal
+ * that has one (po-modal.js/import-po.js's Flags & Corrections tab,
+ * material-modal.js's Stock by Plant tab), only `hintText` differs since
+ * each modal's fields live on a different tab. */
+function overrideBoxHtml(hintText) {
+  return '<div class="override-box">' +
+    '<h4>Submit a Correction</h4>' +
+    '<div class="ov-hint" id="ovHint">' + escapeHtml(hintText) + '</div>' +
+    '<div class="ov-selected-field" id="ovSelectedField" hidden></div>' +
+    '<div class="row" id="ovValueRow"></div>' +
+    '<textarea id="ovReason" placeholder="Why is this wrong / what did you verify it against? (optional)"></textarea>' +
+    '<div class="row" style="margin-top:8px;"><button id="ovSubmit" disabled>Save Correction</button></div>' +
+    '<div id="ovStatus"></div>' +
+  '</div>';
+}
+
+/** Builds the right input control for `field.fieldType` into #ovValueRow -
+ * same select/date/number/text branch startFieldEdit() used to build
+ * inline, just targeting the override box instead of the field's own line. */
+function renderOverrideValueInput(field) {
+  const row = document.getElementById('ovValueRow');
+  if (!row) return;
+  row.innerHTML = '';
+  let input;
+  if (field.fieldType === 'select') {
+    input = document.createElement('select');
+    const opts = field.options || [];
+    const withCurrent = field.currentValue && opts.indexOf(field.currentValue) === -1 ? [field.currentValue].concat(opts) : opts;
+    withCurrent.forEach(opt => {
+      const o = document.createElement('option');
+      o.value = opt;
+      o.textContent = opt;
+      if (opt === field.currentValue) o.selected = true;
+      input.appendChild(o);
+    });
+  } else {
+    input = document.createElement('input');
+    input.type = field.fieldType === 'date' ? 'date' : (field.fieldType === 'number' ? 'number' : 'text');
+    if (field.fieldType === 'number') input.min = '0';
+    input.value = field.currentValue || '';
+  }
+  input.id = 'ovValue';
+  row.appendChild(input);
+  input.focus();
+  if (input.select && field.fieldType !== 'select') input.select();
+}
+
+/** Selects one field for correction: stashes it on SELECTED_FIELD and
+ * updates the override box's hint/selected-field banner + value input +
+ * Submit button. Does NOT switch tabs itself - the caller (wireEditIcons()'s
+ * pencil handler) does that immediately after, since only it knows which
+ * tab id this modal should jump to. */
+function selectFieldForCorrection(field) {
+  SELECTED_FIELD = field;
+  const hintEl = document.getElementById('ovHint');
+  const selEl = document.getElementById('ovSelectedField');
+  const reasonEl = document.getElementById('ovReason');
+  const statusEl = document.getElementById('ovStatus');
+  const submitBtn = document.getElementById('ovSubmit');
+  if (!hintEl || !selEl) return; // this modal has no override box in the DOM (shouldn't happen for an edit-enabled field)
+  hintEl.hidden = true;
+  selEl.hidden = false;
+  selEl.textContent = 'Correcting: ' + field.label + ' (currently: ' + (field.currentValue || 'Not available') + ')';
+  if (reasonEl) reasonEl.value = '';
+  if (statusEl) { statusEl.textContent = ''; statusEl.className = ''; }
+  if (submitBtn) submitBtn.disabled = false;
+  renderOverrideValueInput(field);
+}
+
+/** Wires the override box's Submit button, once per modal render. PATCHes
+ * via savePoField() using whatever field is currently selected (set by
+ * selectFieldForCorrection()), then calls that field's own `onSaved`
+ * callback - each PO-type's caller re-fetches/re-renders differently
+ * (Domestic invalidates the whole-plant list cache; Import invalidates its
+ * own list + per-PO detail cache; Material invalidates every plant's
+ * materials cache), so that stays a callback instead of baked in here. */
+function wireOverrideBox(root) {
+  const btn = root.querySelector('#ovSubmit');
+  if (!btn) return;
+  btn.onclick = async () => {
+    if (!SELECTED_FIELD) return;
+    const valueEl = document.getElementById('ovValue');
+    const reasonEl = document.getElementById('ovReason');
+    const statusEl = document.getElementById('ovStatus');
+    const value = valueEl ? valueEl.value : '';
+    const reason = reasonEl ? reasonEl.value.trim() : '';
+    btn.disabled = true;
+    statusEl.className = '';
+    statusEl.textContent = 'Saving…';
+    try {
+      const result = await savePoField(SELECTED_FIELD.fieldsUrl, SELECTED_FIELD.itemId, SELECTED_FIELD.fieldName, value, reason);
+      statusEl.className = 'override-status ok';
+      statusEl.textContent = 'Saved.' + (result.warning ? ' ' + result.warning : '');
+      if (SELECTED_FIELD.onSaved) await SELECTED_FIELD.onSaved(SELECTED_FIELD.fieldName, SELECTED_FIELD.itemId);
+    } catch (e) {
+      statusEl.className = 'override-status err';
+      statusEl.textContent = 'Could not save: ' + e.message;
+      btn.disabled = false;
+    }
+  };
+}
+
+// Wires every .editable-line/.cell-editable pencil under `container` to
+// select that field for correction (see selectFieldForCorrection() above)
+// and jump to wherever this modal's override box lives, then wires that
+// override box's own Submit button. Replaces the old inline
+// wireEditableLines()/startFieldEdit() swap-to-input behavior.
 // `fieldsUrl` is either the one URL every line in `container` shares (a
 // single PO's fields endpoint - Domestic/Import's own usage), or a function
 // `(lineEl) => url` for a container whose lines target different endpoints
 // (the material modal's Stock by Plant table, where each row is a different
 // plant's own lot - see editableCell()'s data-plant above and
-// materialFieldsUrl() in main.js).
-function wireEditableLines(container, fieldsUrl, onSaved) {
+// materialFieldsUrl() in shared.js). `switchToTab()` is a callback the
+// caller supplies, since each modal's tab id/attribute differs (po-modal.js
+// uses data-tab="flags", import-po.js uses data-itab="flags",
+// material-modal.js uses data-tab="stockplant" - it has no separate flags
+// tab, see that file's own comment).
+function wireEditIcons(container, fieldsUrl, switchToTab, onSaved) {
+  SELECTED_FIELD = null;
   const resolveUrl = typeof fieldsUrl === 'function' ? fieldsUrl : () => fieldsUrl;
-  container.querySelectorAll('.editable-line').forEach(lineEl => {
-    lineEl.querySelector('.edit-pencil').onclick = () => startFieldEdit(lineEl, resolveUrl(lineEl), onSaved);
+  container.querySelectorAll('.editable-line, .cell-editable').forEach(el => {
+    const pencil = el.querySelector('.edit-pencil');
+    if (!pencil) return;
+    pencil.onclick = () => {
+      const valueEl = el.querySelector('.line-val');
+      const shown = valueEl ? valueEl.textContent : '';
+      const currentValue = (shown === 'Not available' || shown === '-') ? '' : shown;
+      const options = el.dataset.options ? JSON.parse(decodeURIComponent(el.dataset.options)) : [];
+      selectFieldForCorrection({
+        label: el.dataset.label || el.dataset.field,
+        fieldName: el.dataset.field,
+        itemId: el.dataset.item || '',
+        fieldType: el.dataset.fieldType || 'text',
+        options: options,
+        currentValue: currentValue,
+        fieldsUrl: resolveUrl(el),
+        onSaved: onSaved,
+      });
+      if (switchToTab) switchToTab();
+    };
   });
-}
-
-/** Swaps one wired .editable-line/.cell-editable element into edit mode:
- * builds the right input control for its fieldType, shows the save/cancel
- * icons, and wires Enter/Escape/blur plus the icons themselves to save() or
- * revert(). save() PATCHes via savePoField() and calls `onSaved` on
- * success; a failed save alerts the error and reverts back to display mode
- * rather than leaving the input stuck mid-edit. */
-function startFieldEdit(lineEl, fieldsUrl, onSaved) {
-  const valueEl = lineEl.querySelector('.line-val');
-  const pencil = lineEl.querySelector('.edit-pencil');
-  const actions = lineEl.querySelector('.edit-actions');
-  const warningEl = lineEl.querySelector('.edit-warning');
-  const fieldType = lineEl.dataset.fieldType || 'text';
-  const current = valueEl.textContent === 'Not available' ? '' : valueEl.textContent;
-
-  let input;
-  if (fieldType === 'select') {
-    input = document.createElement('select');
-    const options = lineEl.dataset.options ? JSON.parse(decodeURIComponent(lineEl.dataset.options)) : [];
-    const withCurrent = current && options.indexOf(current) === -1 ? [current].concat(options) : options;
-    withCurrent.forEach(opt => {
-      const o = document.createElement('option');
-      o.value = opt;
-      o.textContent = opt;
-      if (opt === current) o.selected = true;
-      input.appendChild(o);
-    });
-  } else {
-    input = document.createElement('input');
-    input.type = fieldType === 'date' ? 'date' : (fieldType === 'number' ? 'number' : 'text');
-    if (fieldType === 'number') input.min = '0';
-    input.value = current;
-  }
-  input.className = 'line-input';
-  valueEl.replaceWith(input);
-  input.focus();
-  if (input.select && fieldType !== 'select') input.select();
-  pencil.style.visibility = 'hidden';
-  actions.hidden = false;
-  warningEl.hidden = true;
-  // Clicking the Save/Cancel icons would otherwise blur the input first
-  // (mousedown moves focus before the click handler runs), triggering the
-  // blur-save path before the intended save()/revert() ever fires.
-  actions.addEventListener('mousedown', (e) => e.preventDefault());
-
-  let done = false;
-  const revert = () => {
-    if (done) return;
-    done = true;
-    input.replaceWith(valueEl);
-    pencil.style.visibility = '';
-    actions.hidden = true;
-  };
-  const save = async () => {
-    if (done) return;
-    done = true;
-    const fieldName = lineEl.dataset.field;
-    const itemId = lineEl.dataset.item || '';
-    try {
-      const result = await savePoField(fieldsUrl, itemId, fieldName, input.value);
-      if (result.warning) {
-        warningEl.textContent = result.warning;
-        warningEl.hidden = false;
-      }
-      if (onSaved) await onSaved(fieldName, itemId);
-    } catch (e) {
-      alert('Could not save this change: ' + e.message);
-      done = false;
-      revert();
-    }
-  };
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') save();
-    if (e.key === 'Escape') revert();
-  });
-  input.addEventListener('blur', () => { if (!done) save(); });
-  actions.querySelector('.edit-save').onclick = save;
-  actions.querySelector('.edit-cancel').onclick = revert;
+  wireOverrideBox(container);
 }

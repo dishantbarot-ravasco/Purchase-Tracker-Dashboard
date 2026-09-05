@@ -10,6 +10,27 @@ const passwordStep = document.getElementById('passwordStep');
 const otpStep = document.getElementById('otpStep');
 const errorBox = document.getElementById('loginError');
 
+// Show/hide toggle for any password field (project owner, 2026-09-05: "add
+// eye thing whenever password is required") - delegated at the document
+// level so it works regardless of when/whether the field's markup exists
+// yet, keyed by `data-pw-target` (the input's own id) rather than a fixed
+// selector, so this same snippet works for every password field on this
+// page without hardcoding which one. Duplicated (not shared) in shared.js's
+// own copy - login.html is the unauthenticated pre-login page and
+// deliberately loads no other scripts, so there's nothing to share it with.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.pw-toggle');
+  if (!btn) return;
+  const input = document.getElementById(btn.dataset.pwTarget);
+  if (!input) return;
+  const nowShowing = input.type === 'password';
+  input.type = nowShowing ? 'text' : 'password';
+  btn.classList.toggle('active', nowShowing);
+  const label = nowShowing ? 'Hide password' : 'Show password';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+});
+
 // ── "Remember me" via the browser's Credential Management API ─────────
 // "Remember me" hands the credential to the BROWSER's own password manager
 // via the standard Credential Management API, rather than caching it

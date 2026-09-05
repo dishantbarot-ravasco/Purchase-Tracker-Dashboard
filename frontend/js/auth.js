@@ -148,6 +148,67 @@ function renderNavTabs(container, activePage) {
   ).join('');
 }
 
+// ── Theme toggle (dark mode) ────────────────────────────────────────────
+// 'pt-theme' in localStorage holds an explicit override ('light'/'dark');
+// absent, the page follows the OS/browser's prefers-color-scheme instead
+// (see brand.css's/style.css's own dark-mode blocks - both the media-query-
+// guarded and the [data-theme] tokens exist for exactly this reason). Every
+// protected page's <head> also runs a tiny inline copy of applyTheme()'s
+// localStorage read, synchronously, before first paint - this module-level
+// version is for the toggle button's own click handling and for pages that
+// load this file, not a replacement for that inline snippet.
+const THEME_KEY = 'pt-theme';
+
+function getStoredTheme() {
+  try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; }
+}
+
+function applyTheme(theme) {
+  if (theme === 'light' || theme === 'dark') {
+    document.documentElement.setAttribute('data-theme', theme);
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+}
+
+/** True if the page is currently rendering dark, whether that's from an
+ * explicit override or the OS preference (no override stored). */
+function isEffectivelyDark() {
+  const stored = getStoredTheme();
+  if (stored) return stored === 'dark';
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+/**
+ * Inserts a light/dark toggle button into the shared top nav (right before
+ * the user badge) on every protected page - called once from each page's own
+ * bootstrap script, alongside renderNavTabs()/renderUserBadge(). Self-locates
+ * '.nav-user' rather than requiring every page to add its own placeholder
+ * element, since the shared topnav markup is otherwise identical everywhere.
+ */
+function initThemeToggle() {
+  const navUser = document.querySelector('.nav-user');
+  if (!navUser || document.getElementById('themeToggleBtn')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = 'themeToggleBtn';
+  btn.className = 'theme-toggle-btn';
+  const render = () => {
+    const dark = isEffectivelyDark();
+    btn.innerHTML = dark ? '&#9728;&#65039;' : '&#127769;'; // sun / crescent moon
+    btn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+    btn.setAttribute('aria-label', btn.title);
+  };
+  btn.addEventListener('click', () => {
+    const next = isEffectivelyDark() ? 'light' : 'dark';
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* best-effort */ }
+    render();
+  });
+  render();
+  navUser.parentNode.insertBefore(btn, navUser);
+}
+
 // ── Local helpers ───────────────────────────────────────────────────────
 // Local copy - auth.js loads before main.js and must have no imports/
 // dependency on it (same rule the TDS app documents for its own auth.js).

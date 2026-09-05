@@ -112,17 +112,97 @@ async function openMaterialModal(compositeKey) {
   // per plant's lot until someone corrects them to match - same "each row
   // is its own real row, corrections don't auto-propagate" situation the
   // artifact's own multi-field correction UX never had to deal with either.
-  const stockByPlantHtml = siblingLots.length
+  const stockTableHtml = siblingLots.length
     ? '<div class="table-wrap"><table><thead><tr><th>Plant</th><th>Category</th><th>Qty</th><th>Rate</th><th>Value</th><th>MIR↔Stock Match</th></tr></thead><tbody>' +
         siblingLots.map(l => '<tr><td>' + escapeHtml(l._plantLabel) + '</td>' +
-          '<td>' + editableCell(l._plantKey, l.category, 'category', l.lotId, 'text') + '</td>' +
+          '<td>' + editableCell(l._plantKey, 'Category (' + l._plantLabel + ')', l.category, 'category', l.lotId, 'text') + '</td>' +
           '<td>' + (l.qty != null ? l.qty : '-') + '</td>' +
-          '<td>' + editableCell(l._plantKey, l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
+          '<td>' + editableCell(l._plantKey, 'Rate (' + l._plantLabel + ')', l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
           '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
           '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>').join('') +
         '<tr style="font-weight:700;"><td>Total</td><td></td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
       '</tbody></table></div>'
     : '<div class="no-data-note">No stock found for this material at any plant.</div>';
+
+  // "Flags & Corrections" (2026-09-05): the original "Purchase Tracker"
+  // artifact this UI is modeled on never gave the material/analysis modal
+  // its own Flags & Corrections tab the way its PO detail modal has one -
+  // confirmed by reading the artifact's real openMaterialModalByKey()
+  // source directly (Artifact tool). Its MIR-vs-Stock mismatch callout
+  // (`entry.mirStockFlags`) lives inline at the bottom of the Stock by
+  // Plant tab instead, styled as a single `.flags-box` box. Same
+  // placement/structure here (not a new tab) - only the data source is
+  // real (this app's own mirStockMatches per sibling lot, aggregated across
+  // all 3 plants, instead of the artifact's own live-recomputed diff), and
+  // correction history (MaterialCorrection - a real audit trail the
+  // artifact never had, since it had no in-place edit capability at all)
+  // is appended in the same box for the same reason there's nowhere else
+  // in this modal's structure for it to live without inventing a tab the
+  // reference design doesn't have.
+  const flaggedMatches = [];
+  siblingLots.forEach(l => (l.mirStockMatches || []).forEach(m => {
+    if (m.isFlagged) flaggedMatches.push(Object.assign({}, m, { _plantKey: l._plantKey, _plantLabel: l._plantLabel }));
+  }));
+
+  // PO<->MIR Quantity/Rate discrepancy flags for this material's own linked
+  // PO line items (2026-09-05, project owner: "flags and correction
+  // shouldn't only be happening for data quality flags but for all the
+  // flags" - this box used to show MIR<->Stock mismatches only, missing the
+  // Quantity/Rate Discrepancy flags that already drive this same view's own
+  // "Quantity Discrepancies"/"Rate Discrepancies" KPI cards). Reuses
+  // computeMaterialPoLinkage()'s own per-item-scoped logic (materials.js) -
+  // checked against `l.item`'s own diff%, not a PO's blanket _qtyFlag/
+  // _rateFlag, so a discrepancy on a different line item in a multi-item PO
+  // is never misattributed to this material. Not individually dismissable
+  // here - the underlying flag is a real per-PO Quantity/Rate-Value
+  // Discrepancy flag with its own dismiss control already on that PO's own
+  // Flags & Corrections tab (poFlagHtml, po-modal.js); this box just needs
+  // to stop hiding that it exists.
+  const materialCritPos = new Map(); // label -> Set of "PO (plant)" strings
+  linked.forEach(l => {
+    if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) {
+      if (!materialCritPos.has('Quantity Discrepancy')) materialCritPos.set('Quantity Discrepancy', new Set());
+      materialCritPos.get('Quantity Discrepancy').add(l.po.poNumber + ' (' + l.plantLabel + ')');
+    }
+    if ((l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) || (l.item.valueDiffPct != null && l.item.valueDiffPct > FLAG_PCT)) {
+      if (!materialCritPos.has('Rate / Value Discrepancy')) materialCritPos.set('Rate / Value Discrepancy', new Set());
+      materialCritPos.get('Rate / Value Discrepancy').add(l.po.poNumber + ' (' + l.plantLabel + ')');
+    }
+  });
+  const materialCritFlagsHtml = Array.from(materialCritPos.entries()).map(([label, poSet]) =>
+    '<div class="field-block" style="margin-bottom:8px;">' +
+      flagIconHtml(categoryColor(label), 'row-flag-icon') +
+      ' <span class="lg-label critical">CRITICAL</span> <b>' + escapeHtml(label) + '</b>' +
+      '<div style="margin-top:4px;font-size:11.5px;color:var(--slate-soft);">Affects: ' + escapeHtml(Array.from(poSet).join(', ')) + ' - open that PO\'s own detail view to dismiss.</div>' +
+    '</div>'
+  ).join('');
+  const totalFlagCount = flaggedMatches.length + materialCritPos.size;
+
+  const allMaterialCorrections = [];
+  siblingLots.forEach(l => (l.corrections || []).forEach(c => allMaterialCorrections.push(Object.assign({}, c, { _plantLabel: l._plantLabel }))));
+  allMaterialCorrections.sort((a, b) => (b.correctedAt || '').localeCompare(a.correctedAt || ''));
+
+  const materialFlagsBoxHtml =
+    '<div class="flags-box' + (totalFlagCount ? ' has-critical' : '') + '" style="margin-top:16px;">' +
+      '<h4>Discrepancy and MIR&harr;Stock Match Flags</h4>' +
+      (totalFlagCount
+        ? materialCritFlagsHtml + flaggedMatches.map(materialFlagHtml).join('')
+        : '<div class="no-data-note">No discrepancy or MIR&harr;Stock match flags for this material.</div>') +
+      (allMaterialCorrections.length
+        ? '<div class="section-title" style="margin:14px 0 8px;">Correction History</div>' +
+          allMaterialCorrections.map(c =>
+            '<div class="field-block" style="margin-bottom:8px;">' +
+              '<div style="font-size:12.5px;"><b>' + escapeHtml(c._plantLabel) + ' &middot; ' + escapeHtml(c.fieldName) + ':</b> ' +
+              escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
+              (c.reason ? '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--slate);">"' + escapeHtml(c.reason) + '"</div>' : '') +
+              '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">' + escapeHtml(c.correctedBy || 'unknown') +
+              ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
+            '</div>'
+          ).join('')
+        : '') +
+    '</div>' +
+    overrideBoxHtml('Click the ✎ icon next to Category/Sub Category (Overview tab) or Category/Rate (this table) to correct it - no need to know column names.');
+  const stockByPlantHtml = stockTableHtml + materialFlagsBoxHtml;
 
   const purchaseActivityHtml =
     '<div class="field-block"><h4>Quantity</h4>' + atAGlanceHtml + '</div>' +
@@ -140,15 +220,15 @@ async function openMaterialModal(compositeKey) {
     '<div class="no-data-note" style="margin-top:8px;">Moving averages are a trailing calendar-day average of actual PO prices (21/50/100 days back from each PO date) - since POs happen irregularly rather than daily, this smooths the line without inventing prices on days with no PO.</div>';
 
   body.innerHTML =
-    '<span class="close-btn" onclick="closeModal()">&times;</span>' +
+    '<span class="close-btn">&times;</span>' +
     '<h2>' + escapeHtml(anchor.description || anchor.materialCode) + '</h2>' +
     '<div class="modal-meta">' + escapeHtml(category || 'Uncategorized') + ' &middot; rolled up across ' + siblingLots.length + ' plant location' + (siblingLots.length === 1 ? '' : 's') + '</div>' +
-    '<div class="validation-note">⚠️ <div>Purchase Activity, Price Trend, Vendors, and "Also known as" are computed by automatically matching this material to purchase order line items by description (and vendor, where known) - not guaranteed-correct identity resolution. <strong>Verify manually before treating a match as ground truth.</strong></div></div>' +
-    '<div class="modal-tabs" id="matModalTabs">' +
-      '<div class="modal-tab active" data-tab="overview">Overview</div>' +
-      '<div class="modal-tab" data-tab="stockplant">Stock by Plant</div>' +
-      '<div class="modal-tab" data-tab="poactivity">Purchase Activity' + (openLinked.length ? ' (' + openLinked.length + ' open)' : '') + '</div>' +
-      '<div class="modal-tab" data-tab="pricetrend">Price Trend</div>' +
+    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>Purchase Activity, Price Trend, Vendors, and "Also known as" are computed by automatically matching this material to purchase order line items by description (and vendor, where known) - not guaranteed-correct identity resolution. <strong>Verify manually before treating a match as ground truth.</strong></div></div>' +
+    '<div class="modal-tabs" id="matModalTabs" role="tablist">' +
+      '<div class="modal-tab active" data-tab="overview" tabindex="0" role="tab" aria-selected="true">Overview</div>' +
+      '<div class="modal-tab" data-tab="stockplant" tabindex="0" role="tab" aria-selected="false">Stock by Plant' + (totalFlagCount ? ' (' + totalFlagCount + ' flagged)' : '') + '</div>' +
+      '<div class="modal-tab" data-tab="poactivity" tabindex="0" role="tab" aria-selected="false">Purchase Activity' + (openLinked.length ? ' (' + openLinked.length + ' open)' : '') + '</div>' +
+      '<div class="modal-tab" data-tab="pricetrend" tabindex="0" role="tab" aria-selected="false">Price Trend</div>' +
     '</div>' +
     '<div class="modal-tab-panel" id="matModalOverview">' + overviewHtml + '</div>' +
     '<div class="modal-tab-panel" id="matModalStockPlant" hidden>' + stockByPlantHtml + '</div>' +
@@ -164,10 +244,15 @@ async function openMaterialModal(compositeKey) {
   });
 
   // Each row's .editable-line carries its own data-plant (see the
-  // stockByPlantHtml row template above) - wireEditableLines' fieldsUrl
+  // stockByPlantHtml row template above) - wireEditIcons' fieldsUrl
   // function reads that back per line instead of one fixed URL, since this
   // table's rows can target 3 different plants' own PATCH endpoints.
-  wireEditableLines(body, (lineEl) => materialFieldsUrl(lineEl.dataset.plant, lineEl.dataset.item), async () => {
+  // switchToTab always jumps to Stock by Plant, even for an Overview-tab
+  // pencil (Category/Sub Category) - that's where this modal's own
+  // "Submit a Correction" panel lives (see materialFlagsBoxHtml above),
+  // since this modal has no separate Flags & Corrections tab.
+  const switchToStockPlantTab = () => { const t = body.querySelector('[data-tab="stockplant"]'); if (t) t.click(); };
+  wireEditIcons(body, (lineEl) => materialFieldsUrl(lineEl.dataset.plant, lineEl.dataset.item), switchToStockPlantTab, async () => {
     PLANT_KEYS.forEach(key => { MATERIALS_BY_PLANT[key] = null; });
     await openMaterialModal(compositeKey);
     renderMaterialsView();
@@ -175,8 +260,9 @@ async function openMaterialModal(compositeKey) {
 
   const panelIds = { overview: 'matModalOverview', stockplant: 'matModalStockPlant', poactivity: 'matModalPoActivity', pricetrend: 'matModalPriceTrend' };
   body.querySelectorAll('[data-tab]').forEach(tab => tab.onclick = () => {
-    body.querySelectorAll('[data-tab]').forEach(t => t.classList.remove('active'));
+    body.querySelectorAll('[data-tab]').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
     tab.classList.add('active');
+    tab.setAttribute('aria-selected', 'true');
     Object.entries(panelIds).forEach(([key, id]) => { document.getElementById(id).hidden = tab.dataset.tab !== key; });
   });
 
@@ -241,7 +327,7 @@ async function openMaterialModal(compositeKey) {
   // the stock-trend endpoint only knows about one specific lot id), appended
   // under the Stock by Plant table.
   try {
-    const data = await apiForPlant(plantKey, '/materials/' + lotId + '/stock-trend');
+    const data = await apiForPlant(plantKey, '/materials/' + encodeURIComponent(lotId) + '/stock-trend');
     if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
     const stockPlantPanel = document.getElementById('matModalStockPlant');
     if (!stockPlantPanel) return; // modal closed/replaced while this was in flight
