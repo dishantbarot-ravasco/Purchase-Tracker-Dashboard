@@ -23,7 +23,8 @@ class TestEnsureSchedules:
         assert schedules.count() == 1
         schedule = schedules.get()
         assert schedule.func == "apps.services.sync_trigger.run_daily_sync_all_plants"
-        assert schedule.schedule_type == Schedule.DAILY
+        assert schedule.schedule_type == Schedule.MINUTES
+        assert schedule.minutes == 180
         assert schedule.next_run is not None
         assert "created" in out.getvalue()
 
@@ -58,3 +59,21 @@ class TestEnsureSchedules:
         schedule.refresh_from_db()
         assert schedule.func == "apps.services.sync_trigger.run_daily_sync_all_plants"
         assert schedule.next_run == original_next_run
+
+    def test_migrates_an_existing_daily_row_to_every_3_hours(self):
+        """Simulates an environment that already has the old DAILY schedule
+        row from before the 2026-09-07 interval change - the row must be
+        corrected in place (same name), not duplicated."""
+        Schedule.objects.create(
+            name="daily-sync-all-plants",
+            func="apps.services.sync_trigger.run_daily_sync_all_plants",
+            schedule_type=Schedule.DAILY,
+        )
+
+        call_command("ensure_schedules")
+
+        schedules = Schedule.objects.filter(name="daily-sync-all-plants")
+        assert schedules.count() == 1
+        schedule = schedules.get()
+        assert schedule.schedule_type == Schedule.MINUTES
+        assert schedule.minutes == 180

@@ -333,6 +333,17 @@ JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", SECRET_KEY)
 # dashboard to work.
 SAFECUBE_API_KEY = os.environ.get("SAFECUBE_API_KEY", "")
 
+# ---------------------------------------------------------------------------
+# Daily consumption-report cron trigger
+# ---------------------------------------------------------------------------
+# Shared secret for apps/api/routers/reports_views.py's trigger_daily_report -
+# an external free scheduler (cron-job.org) hits that endpoint once a day
+# (20:00 IST) since Render's free web plan has no built-in cron and its own
+# Cron Jobs feature isn't free either. Same pattern as the TDS Automation
+# App's own REPORT_CRON_SECRET. Empty means the endpoint refuses every
+# request (503) rather than failing open - see that view's own docstring.
+REPORT_CRON_SECRET = os.environ.get("REPORT_CRON_SECRET", "")
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
     # 30 days - backs the persistent 'remember me' pt_refresh cookie.

@@ -15,10 +15,14 @@ from django.urls import include, path
 
 from apps.api import views
 from apps.api.auth_views import PTLoginView, PTTokenRefreshView, PTTokenVerifyView, whoami
-from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, password_views, review_views, vapi_views
+from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, password_views, reports_views, review_views, vapi_views
 
 urlpatterns = [
     path("health", views.health, name="health"),
+    # Hit once a day (20:00 IST) by an external free scheduler (cron-job.org)
+    # - see reports_views.py's own module docstring for the shared-secret
+    # auth scheme (no login session/JWT possible for that caller).
+    path("internal/send-daily-report", reports_views.trigger_daily_report, name="trigger-daily-report"),
 
     # ── Authentication ────────────────────────────────────────────────────
     path("auth/login", PTLoginView.as_view(), name="auth-login"),
