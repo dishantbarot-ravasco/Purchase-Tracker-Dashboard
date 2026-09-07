@@ -160,12 +160,12 @@ async function openMaterialModal(compositeKey) {
   const materialCritPos = new Map(); // label -> Set of "PO (plant)" strings
   linked.forEach(l => {
     if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) {
-      if (!materialCritPos.has('Quantity Discrepancy')) materialCritPos.set('Quantity Discrepancy', new Set());
-      materialCritPos.get('Quantity Discrepancy').add(l.po.poNumber + ' (' + l.plantLabel + ')');
+      if (!materialCritPos.has('Quantity Mismatch in MIR')) materialCritPos.set('Quantity Mismatch in MIR', new Set());
+      materialCritPos.get('Quantity Mismatch in MIR').add(l.po.poNumber + ' (' + l.plantLabel + ')');
     }
     if ((l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) || (l.item.valueDiffPct != null && l.item.valueDiffPct > FLAG_PCT)) {
-      if (!materialCritPos.has('Rate / Value Discrepancy')) materialCritPos.set('Rate / Value Discrepancy', new Set());
-      materialCritPos.get('Rate / Value Discrepancy').add(l.po.poNumber + ' (' + l.plantLabel + ')');
+      if (!materialCritPos.has('Rate / Value Mismatch in MIR')) materialCritPos.set('Rate / Value Mismatch in MIR', new Set());
+      materialCritPos.get('Rate / Value Mismatch in MIR').add(l.po.poNumber + ' (' + l.plantLabel + ')');
     }
   });
   const materialCritFlagsHtml = Array.from(materialCritPos.entries()).map(([label, poSet]) =>

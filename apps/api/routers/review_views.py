@@ -1,10 +1,12 @@
 """
 Match Accuracy Programme, Phase 1 (doc 03, 1.2): a deliberately minimal
-review screen. Shows one random unreviewed match with both sides side by
-side and records a Correct/Incorrect/Unsure verdict as a MatchReview row
-(apps/core/models.py) - no filtering, no search, no bulk actions. The design
-goal is throughput (roughly 200 reviews spread across plants and tiers), not
-a full audit UI.
+review screen. Shows a batch of random unreviewed matches (_BATCH_SIZE = 5,
+bumped up from 1 on 2026-09-07 for throughput - see next_review()'s own
+docstring) with both sides side by side per match, and records a
+Correct/Incorrect/Unsure verdict as a MatchReview row (apps/core/models.py)
+per match - no filtering, no search, no bulk actions beyond the batch size
+itself. The design goal is throughput (roughly 200 reviews spread across
+plants and tiers), not a full audit UI.
 
 Cross-plant by design, like imports_views.py - a reviewer picks up whatever
 match needs reviewing next regardless of plant, so this is one shared router
@@ -126,37 +128,74 @@ def _serialize(config, match_type, match):
     return _mir_stock_sides(config, match)
 
 
+_BATCH_SIZE = 5
+
+
+def _pick_one(match_type, plant, exclude_ids):
+    config = _CONFIGS[plant]
+    model = _model_for(config, match_type)
+    qs = model.objects.exclude(id__in=exclude_ids)
+    if match_type == MatchReview.MatchType.MIR_STOCK:
+        qs = qs.select_related("mir_entry", "stock_lot")
+    else:
+        qs = qs.select_related("mir_entry", "po_line_item__purchase_order")
+    return qs.order_by("?").first()
+
+
+def _match_payload(match_type, plant, match):
+    config = _CONFIGS[plant]
+    left, right, meta = _serialize(config, match_type, match)
+    return {
+        "plant": plant,
+        "plantLabel": _PLANT_LABELS[plant],
+        "matchType": match_type,
+        "matchTypeLabel": _MATCH_TYPE_LABELS[match_type],
+        "matchId": match.id,
+        "left": left,
+        "right": right,
+        **meta,
+    }
+
+
 @api_view(["GET"])
 def next_review(request):
-    """Picks one random unreviewed match from a random (match_type, plant)
-    group, trying each of the 9 groups in turn until one has an unreviewed
-    row left. Returns {"done": true} once every group is exhausted."""
+    """Picks up to _BATCH_SIZE random unreviewed matches (project owner,
+    2026-09-07: reviewing 1 at a time was too slow for the ~200-review
+    throughput goal - see this module's own docstring). Spreads the batch
+    across groups round-robin (one fresh pick per (match_type, plant) group
+    per pass) rather than filling all 5 from whichever group happens first
+    in the shuffle, so a batch still samples multiple plants/tiers the way
+    the original one-at-a-time version did over many calls. Returns fewer
+    than _BATCH_SIZE once few unreviewed matches remain, and {"done": true}
+    (no "matches" key) only once every group is genuinely exhausted."""
     groups = list(_GROUPS)
     random.shuffle(groups)
-    for match_type, plant in groups:
-        config = _CONFIGS[plant]
-        model = _model_for(config, match_type)
-        reviewed_ids = MatchReview.objects.filter(plant=plant, match_type=match_type).values_list("match_id", flat=True)
-        qs = model.objects.exclude(id__in=list(reviewed_ids))
-        if match_type == MatchReview.MatchType.MIR_STOCK:
-            qs = qs.select_related("mir_entry", "stock_lot")
-        else:
-            qs = qs.select_related("mir_entry", "po_line_item__purchase_order")
-        match = qs.order_by("?").first()
-        if match is None:
-            continue
-        left, right, meta = _serialize(config, match_type, match)
-        return Response({
-            "plant": plant,
-            "plantLabel": _PLANT_LABELS[plant],
-            "matchType": match_type,
-            "matchTypeLabel": _MATCH_TYPE_LABELS[match_type],
-            "matchId": match.id,
-            "left": left,
-            "right": right,
-            **meta,
-        })
-    return Response({"done": True})
+    reviewed_ids_by_group = {
+        (mt, plant): set(MatchReview.objects.filter(plant=plant, match_type=mt).values_list("match_id", flat=True))
+        for mt, plant in groups
+    }
+    picked_ids_by_group = {g: set() for g in groups}
+    picked = []
+
+    while len(picked) < _BATCH_SIZE:
+        progressed = False
+        for match_type, plant in groups:
+            if len(picked) >= _BATCH_SIZE:
+                break
+            group = (match_type, plant)
+            exclude_ids = reviewed_ids_by_group[group] | picked_ids_by_group[group]
+            match = _pick_one(match_type, plant, exclude_ids)
+            if match is None:
+                continue
+            picked_ids_by_group[group].add(match.id)
+            picked.append(_match_payload(match_type, plant, match))
+            progressed = True
+        if not progressed:
+            break  # every group exhausted - stop even if picked is short of _BATCH_SIZE
+
+    if not picked:
+        return Response({"done": True})
+    return Response({"matches": picked})
 
 
 @api_view(["POST"])

@@ -41,6 +41,8 @@ from apps.core.models import (
     RTPVapiImportPurchaseOrder,
     SyncRun,
 )
+from apps.api.routers._domestic_base import _category_reference_map, _po_material_categories
+from apps.services import bl_tracking
 from apps.services import import_flags as flags
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
@@ -213,7 +215,7 @@ def _flag_dismissal_dict(fd):
     }
 
 
-def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None):
+def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_reference=None):
     items = list(po.items.all())
     today = datetime.date.today()
     item_dicts = [_item_dict(i) for i in items]
@@ -247,6 +249,12 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None):
         "paymentTerms": po.payment_terms,
         "incoterms": po.incoterms,
         "items": item_dicts,
+        # Same canonical Category/Sub Category lookup the domestic Purchase
+        # Orders page uses (see _domestic_base.py's _po_material_categories
+        # docstring) - added 2026-09-07 so Import POs' own "Filter by
+        # Category"/"Sub Category" dropdowns mean material data too, not
+        # just the domestic page.
+        "materialCategories": _po_material_categories(items, category_reference),
     }
     if detail:
         corrections = (
@@ -291,6 +299,7 @@ def purchase_orders(request):
     excluded from the combined list rather than erroring the whole
     request, same "you see less, not an error" shape as the rest of this
     filter already has for plants with zero rows."""
+    category_reference = _category_reference_map()
     result = []
     for plant_key, (po_model, _item_model, _sr_plant, label, _match_model) in _PLANTS.items():
         if not user_can_access_plant(request.user, plant_key):
@@ -298,7 +307,7 @@ def purchase_orders(request):
         qs = po_model.objects.prefetch_related(
             "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
         )
-        result.extend(_po_dict(po, plant_key, label) for po in qs)
+        result.extend(_po_dict(po, plant_key, label, category_reference=category_reference) for po in qs)
     result.sort(key=lambda d: d["createdDate"] or "", reverse=True)
     return Response({"purchaseOrders": result})
 
@@ -323,7 +332,7 @@ def purchase_order_detail(request, plant, po_number):
     ).filter(po_number=po_number).first()
     if not po:
         return Response({"error": "Purchase order not found."}, status=404)
-    return Response(_po_dict(po, plant, label, detail=True, sr_plant=sr_plant))
+    return Response(_po_dict(po, plant, label, detail=True, sr_plant=sr_plant, category_reference=_category_reference_map()))
 
 
 # ── Inline field corrections ──────────────────────────────────────────────────
@@ -443,6 +452,29 @@ def sync_status(request):
             "syncInProgress": is_imports_sync_in_progress(plant_key),
         }
     return Response({"sync": latest_by_plant})
+
+
+@api_view(["GET"])
+def track_bl(request):
+    """GET /api/imports/track-bl?bl=<BL number> - live shipment lookup via
+    SafeCube's Container Tracking API (apps/services/bl_tracking.py),
+    backing the "Track" link next to a PO's BL Number on the Import
+    Purchases page. IsAuthenticated only (any role) - same as every other
+    read endpoint on this page; there's nothing plant-scoped or writeable
+    here; a BL number isn't itself a plant-restricted concept the way a PO
+    row is. Returns SafeCube's own response payload as-is on success (the
+    frontend picks out the fields it wants to show) - a 502 with a
+    human-readable {"error": ...} on any failure (unconfigured key,
+    SafeCube downtime, or SafeCube's own "can't find/auto-detect this
+    document" response, which is a normal, expected outcome for an older or
+    uncovered shipment, not a bug)."""
+    bl_number = (request.query_params.get("bl") or "").strip()
+    if not bl_number:
+        return Response({"error": "Missing 'bl' query parameter."}, status=400)
+    result = bl_tracking.track_bl(bl_number)
+    if not result["ok"]:
+        return Response({"error": result["error"]}, status=502)
+    return Response(result["data"])
 
 
 @api_view(["POST"])

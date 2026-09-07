@@ -199,8 +199,21 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 }
 
 /* ── KPI cards ───────────────────────────────────────────────────────── */
-.kpi-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:14px; margin-bottom:20px; }
-.kpi-card { position:relative; background:var(--card); border:1px solid var(--border); border-left:5px solid var(--border-strong); border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--shadow); }
+/* Flexbox, not CSS Grid - two grid approaches were tried and rejected first:
+   `auto-fit` stretched cards wider on whichever page happened to have fewer
+   of them (Raw Material Analysis's 7 rendered visibly bigger than Purchase
+   Orders' 8); switching to `auto-fill` fixed that but traded it for a worse
+   problem - Import Purchases' 13 cards wrap to a full row of 8 plus a short
+   row of 5, and auto-fill's unfilled *columns* are real empty grid cells
+   reserved on every row, so that second row visibly trails off with a
+   chunk of dead space on the right, looking broken rather than just "a
+   shorter row." Flexbox with a fixed basis and no grow doesn't have this
+   failure mode: every card is the same natural width on every page
+   regardless of that page's own card count (no stretching, so no cross-
+   page mismatch), and a wrapped row with fewer cards just ends where its
+   last card ends - no reserved-but-empty cells, nothing to look unbalanced. */
+.kpi-grid { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:20px; }
+.kpi-card { flex:0 1 190px; position:relative; background:var(--card); border:1px solid var(--border); border-left:5px solid var(--border-strong); border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--shadow); }
 /* Colored flag icon (top-right corner of the card) - see main.js's
    flagIconHtml()/KPI_FLAG_COLORS. Red = qty/rate discrepancy (money or
    quantity problem), amber = delivery-timing group (Overdue/Pending/Date
@@ -223,6 +236,21 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .info-tooltip:hover, .info-tooltip:focus-visible { opacity:1; color:var(--gold-accent-text); }
 .info-tooltip svg { display:block; }
 .kpi-info svg { width:13px; height:13px; }
+/* KPI cards' own "i" icon sits inline at the end of the label text, which
+   (for a long label like "Rate / Value Mismatches" in a narrow ~140px
+   .kpi-grid card) can land near the card's right edge. Centering the
+   ~230px-wide tooltip on that icon directly (the default .info-tooltip
+   behavior - position:relative on the icon itself) pushed the tooltip box
+   sideways across the KPI row, overlapping the neighboring cards' own
+   numbers/labels while hovered (reported by the project owner - a "Rate /
+   Value Mismatches" tooltip visibly covering "Overdue"/"On Order" next to
+   it). Overriding position:static here removes the icon as the nearest
+   positioned ancestor, so .info-tooltip::after/::before's percentage
+   anchors (bottom:100%, left:50%) resolve against .kpi-card instead (also
+   position:relative, see above) - the tooltip now always centers on its
+   own card and opens in the empty space above the whole KPI row, not level
+   with the row, regardless of where the icon sits inside the label. */
+.kpi-info { position:static; }
 .info-tooltip::after {
   content: attr(data-tooltip); position:absolute; bottom:calc(100% + 9px); left:50%; transform:translateX(-50%);
   background:var(--navy-solid); color:#fff; font-size:11.5px; font-weight:500; line-height:1.4; white-space:normal; width:max-content; max-width:230px;
@@ -619,10 +647,15 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .override-status.err { color:var(--red); }
 .ov-selected-field { background:var(--gold-accent-soft); border:1px solid var(--gold-accent-border); border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:10px; color:var(--gold-accent-text); font-weight:600; }
 .ov-hint { font-size:12.5px; color:var(--slate-soft); font-style:italic; margin-bottom:10px; }
+.ov-disclaimer { font-size:11.5px; color:var(--slate-soft); margin-top:10px; padding-top:10px; border-top:1px dashed var(--border); }
 
 .mat-toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
 .mat-search { flex:1; min-width:220px; padding:9px 13px; border:1px solid var(--border-strong); border-radius:9px; font-size:13px; }
-.mat-cards { display:grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap:12px; margin-bottom:18px; }
+/* KPI row now reuses .kpi-grid directly (Purchase Orders' own class) instead
+   of this near-duplicate with slightly different sizing (150px/12px gap vs
+   .kpi-grid's 140px/14px) - the mismatch was exactly what made the two
+   pages' KPI cards feel inconsistent side by side. Kept no .mat-cards rule
+   here at all now that nothing references it - grep before reintroducing. */
 
 .mini-stepper { display:flex; align-items:center; gap:0; }
 .mini-stepper .step-dot { width:9px; height:9px; border-radius:50%; background:var(--border-strong); flex:none; }

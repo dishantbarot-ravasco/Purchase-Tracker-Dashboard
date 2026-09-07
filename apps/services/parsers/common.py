@@ -46,11 +46,25 @@ def to_str(value) -> str:
     return "" if s.upper() == "NULL" else s
 
 
+_EXCEL_EPOCH = datetime.date(1899, 12, 30)
+# Bare digits in this range parse as an Excel/Sheets date serial number
+# (days since 1899-12-30, the classic Lotus-1-2-3-compatible epoch Excel
+# still uses) - roughly 2000-01-01 (36526) to 2099-12-31 (73050). Narrow
+# range deliberately: to_date() is only ever called on genuine date fields,
+# but a tight bound still avoids ever misreading a stray small integer
+# (e.g. a miskeyed quantity) as a date by accident.
+_EXCEL_SERIAL_RANGE = range(36526, 73051)
+
+
 def to_date(value) -> datetime.date | None:
     """Handles the several date shapes actually seen in these source files:
     a real datetime (openpyxl gives these for real Excel date cells), an
-    ISO string, or a few common slash/dot formats. Never raises - an
-    unparseable date becomes None, since MIR is known to have at least one
+    ISO string, a few common slash/dot formats, or a bare Excel date serial
+    number as a string (confirmed 2026-09-07: RTP-Vapi's live Imports PO CSV
+    started exporting "PO Created Date" as a raw serial like "46064" instead
+    of a formatted date string - a spreadsheet column-format regression, not
+    a new date shape this parser was ever designed against). Never raises -
+    an unparseable date becomes None, since MIR is known to have at least one
     date typo (delivery date printed earlier than the PO's own created
     date) that shouldn't crash a whole sync."""
     if value is None:
@@ -67,6 +81,8 @@ def to_date(value) -> datetime.date | None:
             return datetime.datetime.strptime(s, fmt).date()
         except ValueError:
             continue
+    if s.isdigit() and int(s) in _EXCEL_SERIAL_RANGE:
+        return _EXCEL_EPOCH + datetime.timedelta(days=int(s))
     return None
 
 

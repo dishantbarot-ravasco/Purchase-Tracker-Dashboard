@@ -328,6 +328,17 @@ async function triggerRealSyncAndRefresh(btn) {
       } catch (e) {
         if (e.status !== 409) throw e;
       }
+      // Also kick off that plant's Import PO CSV sync - a separate
+      // pipeline from the domestic one just triggered above (see
+      // sync_trigger.py's _run_pipeline vs _run_imports_pipeline). Found
+      // 2026-09-07 that "Refresh Data" never triggered this at all, so
+      // Import PO data only ever updated via a direct API call, never
+      // through this button.
+      try {
+        await apiImports('/sync-trigger/' + key, { method: 'POST' });
+      } catch (e) {
+        if (e.status !== 409) throw e;
+      }
     }));
   } catch (e) {
     console.error('sync-trigger failed:', e);
@@ -357,7 +368,12 @@ async function pollSyncUntilDone(btn, targetKeys) {
     let stillRunning;
     try {
       const results = await Promise.all(targetKeys.map(key => apiForPlant(key, '/sync-status')));
-      stillRunning = results.some(r => r.syncInProgress);
+      // imports/sync-status is a single cross-plant endpoint (unlike the
+      // domestic per-plant one above) - see imports_views.py's sync_status()
+      // docstring - so it's fetched once and narrowed to targetKeys here.
+      const importsStatus = await apiImports('/sync-status');
+      stillRunning = results.some(r => r.syncInProgress) ||
+        targetKeys.some(key => importsStatus.sync[key] && importsStatus.sync[key].syncInProgress);
     } catch (e) {
       console.error('Polling sync-status failed:', e);
       continue; // one bad poll shouldn't abandon the wait - try again next tick

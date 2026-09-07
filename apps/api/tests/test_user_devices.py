@@ -153,7 +153,7 @@ class TestUserManagementAuditLog:
     def test_create_user_writes_an_audit_row(self):
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new-audit@ravasco.com", "password": "Str0ngPassw0rd!", "role": "viewer"},
+            {"email": "new-audit@ravasco.com", "password": "Str0ngPassw0rd!", "role": "viewer", "fullName": "Audit Test User"},
             format="json",
         )
         assert response.status_code == 201

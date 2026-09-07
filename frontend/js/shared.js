@@ -424,6 +424,130 @@ async function dismissPoFlag(plantKey, poNumber, flagKey, dismissed, reason, isI
   return apiForPlant(plantKey, '/purchase-orders/' + encodeURIComponent(poNumber) + '/flags/dismiss', opts);
 }
 
+// ── BL (Bill of Lading) shipment tracking ───────────────────────────────
+// Backs the "Track" link next to a PO's BL Number on the Import Purchases
+// page (import-po.js) - GET /api/imports/track-bl?bl=<number>, a thin
+// server-side passthrough to SafeCube's Container Tracking API (see
+// apps/services/bl_tracking.py; the SafeCube API key never reaches the
+// frontend). Reuses the one shared #modalBackdrop/#modalBody element every
+// other modal on this page already uses (openPoModal()/openMaterialModal())
+// rather than building a second modal component - only one modal is ever
+// open at a time, and closeModal() (charts.js) already tears it down.
+function blTrackingFieldHtml(label, value) {
+  if (value === null || value === undefined || value === '') return '';
+  return plainLine(label, value);
+}
+
+// SafeCube's response shape is deep/carrier-dependent (see
+// bl_tracking.py's docstring on what's actually been confirmed live) - this
+// pulls out the fields most useful for a quick glance (status, sealine,
+// locations, vessel) defensively (every access guarded), and falls back to
+// a collapsible raw-JSON block so nothing SafeCube returns is ever hidden,
+// even a field this function doesn't know to look for by name.
+function blTrackingResultHtml(blNumber, data) {
+  const meta = data.metadata || {};
+  const statusLabel = (meta.shippingStatus || 'UNKNOWN').replace(/_/g, ' ');
+  const locations = Array.isArray(data.locations) ? data.locations : [];
+  const vessels = Array.isArray(data.vessels) ? data.vessels : [];
+  const warnings = Array.isArray(meta.warnings) ? meta.warnings : [];
+  const locationsHtml = locations.length
+    ? '<div class="field-block"><h4>Locations</h4>' +
+        locations.map(l => blTrackingFieldHtml(l.name || l.locode || 'Location', [l.country, l.locode].filter(Boolean).join(' - '))).join('') +
+      '</div>'
+    : '';
+  const vesselsHtml = vessels.length
+    ? '<div class="field-block"><h4>Vessel</h4>' +
+        vessels.map(v => blTrackingFieldHtml(v.name || 'Vessel', v.imo ? 'IMO ' + v.imo : '')).join('') +
+      '</div>'
+    : '';
+  return (
+    '<div class="field-block"><h4>Shipment Status</h4>' +
+      blTrackingFieldHtml('BL Number', blNumber) +
+      blTrackingFieldHtml('Status', statusLabel) +
+      blTrackingFieldHtml('Shipping Line', meta.sealineName || meta.sealine) +
+      blTrackingFieldHtml('Last Updated', meta.updatedAt ? formatDateIN(meta.updatedAt.slice(0, 10)) : null) +
+      blTrackingFieldHtml('Notes', warnings.length ? warnings.join(', ') : null) +
+    '</div>' +
+    locationsHtml + vesselsHtml +
+    '<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:12.5px;color:var(--slate-soft);">Full tracking data</summary>' +
+      '<pre style="white-space:pre-wrap;word-break:break-word;font-size:11.5px;background:var(--panel-alt,#f6f7f9);padding:10px;border-radius:8px;max-height:320px;overflow:auto;">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>' +
+    '</details>'
+  );
+}
+
+async function trackBlNumber(blNumber) {
+  const backdrop = document.getElementById('modalBackdrop');
+  const body = document.getElementById('modalBody');
+  backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
+  body.innerHTML =
+    '<div class="modal-head"><div><h2>Track Shipment</h2><div class="modal-meta">' + escapeHtml(blNumber) + '</div></div></div>' +
+    '<div id="blTrackingBody" style="margin-top:16px;">Looking up live shipment status&hellip;</div>';
+  backdrop.classList.add('open');
+  try {
+    const data = await apiImports('/track-bl?bl=' + encodeURIComponent(blNumber));
+    document.getElementById('blTrackingBody').innerHTML = blTrackingResultHtml(blNumber, data);
+  } catch (e) {
+    document.getElementById('blTrackingBody').innerHTML =
+      '<div class="no-data-note">Could not track this shipment: ' + escapeHtml(e.message || 'unknown error') + '</div>';
+  }
+}
+
+// ── PO line item <-> Raw Material Analysis linkage ──────────────────────
+// Backs a "View full material analysis" link on each line item in the
+// Domestic/Import PO detail modals' Items tables (po-modal.js/import-po.js)
+// - jumps straight into the Raw Material Analysis modal for whichever Stock
+// lot that item's material actually resolves to, instead of a reviewer
+// switching views and searching by hand. Reuses materials.js's own
+// materialLinksToItem() (normalized-description-or-token-overlap match,
+// gated on vendor when available) - the SAME best-effort, not-guaranteed-
+// correct linkage the Raw Material Analysis view already uses to compute
+// its own PO-linkage numbers, so a line item either links here or doesn't
+// exactly as consistently as it would if you opened Raw Material Analysis
+// yourself and looked for it.
+//
+// Requires MATERIALS_BY_PLANT to already be populated for the plants being
+// searched - callers (openPoModal()/openImportPoModal()) await
+// ensureMaterialsLoaded(PLANT_KEYS) before rendering, same as
+// materials.js's own loadAndRenderMaterials() does for its own view.
+function findMaterialLotsFor(description, vendorName, plantKeys) {
+  const fakePo = { vendorName: vendorName };
+  const fakeItem = { description: description };
+  const hits = [];
+  plantKeys.forEach(key => {
+    (MATERIALS_BY_PLANT[key] || []).forEach(lot => {
+      if (materialLinksToItem(lot, fakePo, fakeItem)) hits.push({ plantKey: key, lot: lot });
+    });
+  });
+  return hits;
+}
+
+// `currentPlantKey` is null for a PO with no single home plant (shouldn't
+// happen in practice - every PO belongs to exactly one plant - but guarded
+// rather than assumed). Returns '' (renders nothing) when the material
+// can't be linked to any Stock lot in any plant at all - a bare "not
+// stocked anywhere" line with no link to follow would be dead weight, not
+// useful context.
+function materialAnalysisLinkHtml(description, vendorName, currentPlantKey) {
+  if (!description) return '';
+  const allHits = findMaterialLotsFor(description, vendorName, PLANT_KEYS);
+  if (!allHits.length) return '';
+  const uom = allHits[0].lot.uom || '';
+  const thisPlantHits = allHits.filter(h => h.plantKey === currentPlantKey);
+  const thisPlantQty = thisPlantHits.reduce((sum, h) => sum + (h.lot.qty || 0), 0);
+  const allQty = allHits.reduce((sum, h) => sum + (h.lot.qty || 0), 0);
+  const anchor = thisPlantHits[0] || allHits[0];
+  const plantLabel = currentPlantKey ? PLANTS[currentPlantKey].label : null;
+  const stockLine = plantLabel
+    ? (thisPlantHits.length
+        ? escapeHtml(plantLabel) + ' stock: ' + thisPlantQty.toLocaleString('en-IN') + ' ' + escapeHtml(uom)
+        : escapeHtml(plantLabel) + ' stock: Not stocked at this plant')
+    : '';
+  return '<div class="line" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">' +
+    '<span>' + stockLine + (stockLine ? ' &middot; ' : '') + 'All plants total: ' + allQty.toLocaleString('en-IN') + ' ' + escapeHtml(uom) + '</span>' +
+    '<span class="row-link" data-material-link="' + escapeHtml(anchor.plantKey + '::' + anchor.lot.lotId) + '">View full material analysis &rarr;</span>' +
+  '</div>';
+}
+
 // Distinct, already-seen values for a field across an already-loaded PO
 // list - backs 'select' fieldType dropdowns without a dedicated backend
 // endpoint or any hardcoded option list (build spec: "derive the option
@@ -537,6 +661,17 @@ function overrideBoxHtml(hintText) {
     '<textarea id="ovReason" placeholder="Why is this wrong / what did you verify it against? (optional)"></textarea>' +
     '<div class="row" style="margin-top:8px;"><button id="ovSubmit" disabled>Save Correction</button></div>' +
     '<div id="ovStatus"></div>' +
+    // Unlike the original artifact this UX is ported from (which queued a
+    // request in a Drive folder for a human to apply to the master CSV by
+    // hand - see this function's own header comment), a correction here
+    // writes the real row immediately. But the source CSV/xlsx file on
+    // Drive is untouched - the next sync re-parses that file and will
+    // silently overwrite this correction unless the file itself is also
+    // fixed, since sync_utils.unchanged()'s diff-and-upsert always trusts
+    // the source file as the truth. Said explicitly here rather than left
+    // implicit, since "the dashboard shows the fix" otherwise reads as "the
+    // problem is solved" when it's actually only solved until next sync.
+    '<div class="ov-disclaimer">This updates the database immediately, but not the source file - the CSV/spreadsheet itself still needs to be corrected by the person in charge, or the next sync will overwrite this correction.</div>' +
   '</div>';
 }
 

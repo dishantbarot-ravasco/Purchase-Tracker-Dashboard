@@ -45,27 +45,36 @@ function renderPoList(el) {
   // subCategoryFilter narrow `filtered` further, so the dropdowns keep
   // showing every option's count while one is selected - same cascading
   // pattern as Raw Material Analysis's own Category/Sub Category pair.
-  // Category here is flag *severity* (critical/info - a PO's closest
-  // equivalent of a material's Category field, see state.categoryFilter's
-  // own comment); Sub Category cascades to a specific DISCREPANCY_LEGEND
-  // label within the selected severity (or across all severities when none
-  // is selected). All are "global" filters like from/to above: they narrow
-  // `filtered` itself, so the KPI counts and both charts below reflect the
-  // selection, not just the table.
+  // Category/Sub Category here are the MATERIAL category/subcategory a PO's
+  // own line items belong to (apps/api/routers/_domestic_base.py's
+  // materialCategories field, backed by MaterialCategoryReference - same
+  // canonical lookup the Raw Material Analysis page uses) - a PO can touch
+  // more than one category, so it's counted once per DISTINCT category it
+  // touches (a Set per PO), not once per line item. This is a 2026-09-08
+  // change (project owner): "Category"/"Sub Category" on this page used to
+  // mean Data Quality Flag severity/label instead, which was never material
+  // data at all - that filtering moved into "Filter by Flags" below
+  // (Critical Issues/Informational Issues), not lost, just relabeled to
+  // where it actually belongs. All three dropdowns are still "global"
+  // filters like from/to above: they narrow `filtered` itself, so the KPI
+  // counts and both charts below reflect the selection, not just the table.
   const categoryCounts = {};
-  filtered.forEach(po => (po._categories || []).forEach(c => { categoryCounts[c.severity] = (categoryCounts[c.severity] || 0) + 1; }));
+  filtered.forEach(po => new Set((po.materialCategories || []).map(c => c.category)).forEach(cat => {
+    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+  }));
   const dateRangeCount = filtered.length; // "All Categories (N)" option's count - before category narrowing
-  const inSelectedSeverity = state.categoryFilter
-    ? filtered.filter(po => (po._categories || []).some(c => c.severity === state.categoryFilter))
+  const inSelectedCategory = state.categoryFilter
+    ? filtered.filter(po => (po.materialCategories || []).some(c => c.category === state.categoryFilter))
     : filtered;
   const subCategoryCounts = {};
-  inSelectedSeverity.forEach(po => (po._categories || []).forEach(c => {
-    if (state.categoryFilter && c.severity !== state.categoryFilter) return;
-    subCategoryCounts[c.label] = (subCategoryCounts[c.label] || 0) + 1;
-  }));
-  const subCategoryBaseCount = inSelectedSeverity.length; // "All Sub Categories (N)" option's count
-  if (state.categoryFilter) filtered = filtered.filter(po => (po._categories || []).some(c => c.severity === state.categoryFilter));
-  if (state.subCategoryFilter) filtered = filtered.filter(po => (po._categories || []).some(c => c.label === state.subCategoryFilter));
+  inSelectedCategory.forEach(po => new Set(
+    (po.materialCategories || [])
+      .filter(c => !state.categoryFilter || c.category === state.categoryFilter)
+      .map(c => c.subCategory || 'Uncategorized')
+  ).forEach(sub => { subCategoryCounts[sub] = (subCategoryCounts[sub] || 0) + 1; }));
+  const subCategoryBaseCount = inSelectedCategory.length; // "All Sub Categories (N)" option's count
+  if (state.categoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => c.category === state.categoryFilter));
+  if (state.subCategoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => (c.subCategory || 'Uncategorized') === state.subCategoryFilter));
 
   const counts = { received: 0, partial: 0, pending: 0, overdue: 0, unknown: 0 };
   filtered.forEach(po => counts[po._status]++);
@@ -73,6 +82,11 @@ function renderPoList(el) {
   const qtyDiscCount = filtered.filter(po => po._qtyFlag).length;
   const rateDiscCount = filtered.filter(po => po._rateFlag).length;
   const flagsCount = filtered.filter(po => po._hasInfoFlag).length;
+  // "Critical Issues" in "Filter by Flags" below - the combined qty-OR-rate
+  // count, filling in for what "Filter by Category" used to mean before
+  // Category/Sub Category were repurposed for material data (2026-09-08) -
+  // see that comment above for the full story.
+  const criticalCount = filtered.filter(po => po._qtyFlag || po._rateFlag).length;
 
   // Order requested by the project owner (2026-09-04): Total -> Material
   // Inwarded -> Partial Delivered -> the two "critical" (money/quantity)
@@ -89,8 +103,8 @@ function renderPoList(el) {
     { key: 'total', cls: '', label: "Total PO's Created", val: total, tip: 'All purchase orders in the selected date range and plant(s).' },
     { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has a matched MIR entry - the material has been received.' },
     { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items on this PO have a matched MIR entry yet.' },
-    { key: 'qtydisc', cls: 'critical', label: 'Quantity Discrepancies', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags.' },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate / Value Discrepancies', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate or pre-tax value differs between the PO and its matched MIR entry - zero tolerance.' },
+    { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate / Value Mismatches', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate/value mismatch in MIR: rate or pre-tax value differs between the PO and its matched MIR entry - zero tolerance.' },
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully matched to MIR.' },
     { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched to MIR.' },
     { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
@@ -103,6 +117,7 @@ function renderPoList(el) {
   let tableRecs = filtered;
   if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
   else if (state.statusFilter === 'ratedisc') tableRecs = filtered.filter(po => po._rateFlag);
+  else if (state.statusFilter === 'critical') tableRecs = filtered.filter(po => po._qtyFlag || po._rateFlag);
   else if (state.statusFilter === 'flags') tableRecs = filtered.filter(po => po._hasInfoFlag);
   else if (state.statusFilter && state.statusFilter !== 'total') tableRecs = filtered.filter(po => po._status === state.statusFilter);
   // Table-only filters (never touch the KPI counts/charts above, which stay
@@ -171,27 +186,35 @@ function renderPoList(el) {
   ).join('');
   // Category/Sub Category/Flags dropdowns, rendered just above the chart row
   // (see el.innerHTML below) - same 3-dropdown pattern as Raw Material
-  // Analysis's own Category/Sub Category/Flags bar. Category = severity
-  // ('Critical Issues'/'Informational Issues'); Sub Category cascades to the
-  // specific DISCREPANCY_LEGEND label within the selected severity; Flags is
-  // a coarse KPI-style shortcut sharing state.statusFilter with the KPI
+  // Analysis's own Category/Sub Category/Flags bar, and now genuinely the
+  // same MEANING too (2026-09-08): Category/Sub Category are the material
+  // category/subcategory a PO's line items belong to (see categoryCounts's
+  // own comment above) - flag severity/label filtering (what these two used
+  // to mean) moved into "Filter by Flags" as "Critical Issues"/"Data
+  // Quality Flag" alongside the existing qty/rate mismatch shortcuts. Flags
+  // is a coarse KPI-style shortcut sharing state.statusFilter with the KPI
   // cards above (see statusChartData's `key` comment - one source of truth,
-  // never disagreeing), same qtydisc/ratedisc/flags options the KPI row
-  // already computes. Only options actually present in the current date
+  // never disagreeing). Only options actually present in the current date
   // range are listed, so a dropdown never shows an option with nothing
   // behind it.
-  const SEVERITY_LABELS = { critical: 'Critical Issues', info: 'Informational Issues' };
   const categoryOptionsHtml = Object.entries(categoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([sev, n]) => '<option value="' + sev + '"' + (state.categoryFilter === sev ? ' selected' : '') + '>' + escapeHtml(SEVERITY_LABELS[sev] || sev) + ' (' + n + ')</option>')
+    .map(([cat, n]) => '<option value="' + escapeHtml(cat) + '"' + (state.categoryFilter === cat ? ' selected' : '') + '>' + escapeHtml(cat) + ' (' + n + ')</option>')
     .join('');
   const subCategoryOptionsHtml = Object.entries(subCategoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.subCategoryFilter === label ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + n + ')</option>')
+    .map(([sub, n]) => '<option value="' + escapeHtml(sub) + '"' + (state.subCategoryFilter === sub ? ' selected' : '') + '>' + escapeHtml(sub) + ' (' + n + ')</option>')
     .join('');
+  // "Data Quality Flag" already meant "informational severity" (po._hasInfoFlag,
+  // see computePoFlags()) before this page had any material-category
+  // concept - kept under that same name/value ('flags') rather than adding
+  // a second, differently-labeled option for the identical underlying set.
+  // "Critical Issues" is new here: the qty-OR-rate combined count that
+  // "Filter by Category" used to expose as one of its two severity buckets.
   const flagsOptionsHtml =
-    '<option value="qtydisc"' + (state.statusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy (' + qtyDiscCount + ')</option>' +
-    '<option value="ratedisc"' + (state.statusFilter === 'ratedisc' ? ' selected' : '') + '>Rate / Value Discrepancy (' + rateDiscCount + ')</option>' +
+    '<option value="qtydisc"' + (state.statusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch (' + qtyDiscCount + ')</option>' +
+    '<option value="ratedisc"' + (state.statusFilter === 'ratedisc' ? ' selected' : '') + '>Rate / Value Mismatch (' + rateDiscCount + ')</option>' +
+    '<option value="critical"' + (state.statusFilter === 'critical' ? ' selected' : '') + '>Critical Issues (' + criticalCount + ')</option>' +
     '<option value="flags"' + (state.statusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flagsCount + ')</option>';
   // Per-column header filter content - "as per their data": text (contains)
   // for PO Number/Vendor, date-range for Created On (bound directly to the
@@ -262,7 +285,7 @@ function renderPoList(el) {
             flagsOptionsHtml +
           '</select>' +
         '</div>' +
-        ((state.categoryFilter || state.subCategoryFilter || ['qtydisc', 'ratedisc', 'flags'].includes(state.statusFilter)) ? '<button id="clearCategoryFilter">Clear</button>' : '') +
+        ((state.categoryFilter || state.subCategoryFilter || ['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter)) ? '<button id="clearCategoryFilter">Clear</button>' : '') +
       '</div>' : '') +
     ((statusChartData.length || months.length) ?
       '<div class="chart-row">' +
@@ -382,7 +405,7 @@ function renderPoList(el) {
   const clearCategoryBtn = document.getElementById('clearCategoryFilter');
   if (clearCategoryBtn) clearCategoryBtn.onclick = () => {
     state.categoryFilter = null; state.subCategoryFilter = null;
-    if (['qtydisc', 'ratedisc', 'flags'].includes(state.statusFilter)) state.statusFilter = null;
+    if (['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter)) state.statusFilter = null;
     state.tablePage = 1; renderPoList(el);
   };
 

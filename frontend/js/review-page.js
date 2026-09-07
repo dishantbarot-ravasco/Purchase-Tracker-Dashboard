@@ -2,7 +2,12 @@
 // comment for why this is deliberately self-contained (its own fetch
 // wrapper, no dependency on js/main.js's per-plant caches/modal).
 
-let CURRENT_MATCH = null;
+// CURRENT_BATCH holds the batch _BATCH_SIZE (review_views.py) matches
+// currently on screen, one .review-card per entry - reviewing one no longer
+// immediately fetches a replacement (project owner, 2026-09-07: "add 5
+// instead of 1" for throughput); the next batch is only fetched once every
+// card in the current one has a verdict recorded (see maybeLoadNextBatch()).
+let CURRENT_BATCH = [];
 let REVIEWED_COUNT = 0;
 
 (async function () {
@@ -56,71 +61,94 @@ function diffPill(label, value) {
   return '<span class="diff-pill' + (flagged ? ' flagged' : '') + '">' + escapeHtml(label) + ' &Delta;' + value.toFixed(2) + '%</span>';
 }
 
+function cardHtml(data, idx) {
+  const metaBits = [
+    '<span><b>Plant:</b> ' + escapeHtml(data.plantLabel) + '</span>',
+    '<span><b>Type:</b> ' + escapeHtml(data.matchTypeLabel) + '</span>',
+  ];
+  if (data.tier) metaBits.push('<span><b>Tier:</b> ' + escapeHtml(data.tier) + '</span>');
+  if (data.matchScore != null) metaBits.push('<span><b>Score:</b> ' + data.matchScore.toFixed(4) + '</span>');
+
+  return '<div class="review-card" id="reviewCard' + idx + '" data-idx="' + idx + '">' +
+      '<div class="review-meta">' + metaBits.join('') + '</div>' +
+      '<div class="review-sides">' + sideHtml('Left (PO / MIR)', data.left) + sideHtml('Right (MIR / Stock)', data.right) + '</div>' +
+      '<div class="review-diffs">' +
+        diffPill('qty', data.qtyDiffPct) + diffPill('rate', data.rateDiffPct) + diffPill('value', data.valueDiffPct) +
+      '</div>' +
+      '<div class="review-actions" id="reviewActions' + idx + '">' +
+        '<button type="button" class="review-btn correct" data-verdict="correct">&#10003; Correct</button>' +
+        '<button type="button" class="review-btn incorrect" data-verdict="incorrect">&#10007; Incorrect</button>' +
+        '<button type="button" class="review-btn unsure" data-verdict="unsure">? Unsure</button>' +
+      '</div>' +
+      '<textarea class="review-note" id="reviewNote' + idx + '" placeholder="Optional note..."></textarea>' +
+    '</div>';
+}
+
+function updateProgress() {
+  const remaining = CURRENT_BATCH.filter(m => !m._verdict).length;
+  document.getElementById('reviewProgress').textContent =
+    REVIEWED_COUNT + ' reviewed this session' + (remaining ? ' · ' + remaining + ' left in this batch' : '');
+}
+
 async function loadNext() {
   const area = document.getElementById('reviewArea');
   const progress = document.getElementById('reviewProgress');
-  progress.textContent = 'Loading next match...';
+  progress.textContent = 'Loading next batch...';
   try {
     const data = await apiReview('/next');
     if (data.done) {
-      CURRENT_MATCH = null;
+      CURRENT_BATCH = [];
       progress.textContent = REVIEWED_COUNT + ' reviewed this session.';
       area.innerHTML = '<div class="review-done">Every current match has been reviewed. Nice work - run <code>manage.py report_match_accuracy</code> to see where things stand.</div>';
       return;
     }
-    CURRENT_MATCH = data;
-    progress.textContent = REVIEWED_COUNT + ' reviewed this session.';
-    const metaBits = [
-      '<span><b>Plant:</b> ' + escapeHtml(data.plantLabel) + '</span>',
-      '<span><b>Type:</b> ' + escapeHtml(data.matchTypeLabel) + '</span>',
-    ];
-    if (data.tier) metaBits.push('<span><b>Tier:</b> ' + escapeHtml(data.tier) + '</span>');
-    if (data.matchScore != null) metaBits.push('<span><b>Score:</b> ' + data.matchScore.toFixed(4) + '</span>');
-
-    area.innerHTML =
-      '<div class="review-card">' +
-        '<div class="review-meta">' + metaBits.join('') + '</div>' +
-        '<div class="review-sides">' + sideHtml('Left (PO / MIR)', data.left) + sideHtml('Right (MIR / Stock)', data.right) + '</div>' +
-        '<div class="review-diffs">' +
-          diffPill('qty', data.qtyDiffPct) + diffPill('rate', data.rateDiffPct) + diffPill('value', data.valueDiffPct) +
-        '</div>' +
-        '<div class="review-actions">' +
-          '<button type="button" class="review-btn correct" data-verdict="correct">&#10003; Correct</button>' +
-          '<button type="button" class="review-btn incorrect" data-verdict="incorrect">&#10007; Incorrect</button>' +
-          '<button type="button" class="review-btn unsure" data-verdict="unsure">? Unsure</button>' +
-        '</div>' +
-        '<textarea class="review-note" id="reviewNote" placeholder="Optional note..."></textarea>' +
-      '</div>';
-
-    area.querySelectorAll('.review-btn').forEach(btn => {
-      btn.onclick = () => submitVerdict(btn.dataset.verdict);
+    CURRENT_BATCH = data.matches;
+    updateProgress();
+    area.innerHTML = CURRENT_BATCH.map((m, i) => cardHtml(m, i)).join('');
+    area.querySelectorAll('.review-card').forEach(card => {
+      const idx = Number(card.dataset.idx);
+      card.querySelectorAll('.review-btn').forEach(btn => {
+        btn.onclick = () => submitVerdict(idx, btn.dataset.verdict);
+      });
     });
   } catch (e) {
-    area.innerHTML = '<div class="review-error">Could not load the next match: ' + escapeHtml(e.message) + '</div>';
+    area.innerHTML = '<div class="review-error">Could not load the next batch: ' + escapeHtml(e.message) + '</div>';
     progress.textContent = '';
   }
 }
 
-async function submitVerdict(verdict) {
-  if (!CURRENT_MATCH) return;
-  const note = (document.getElementById('reviewNote') || {}).value || '';
-  const buttons = document.querySelectorAll('.review-btn');
+async function submitVerdict(idx, verdict) {
+  const match = CURRENT_BATCH[idx];
+  if (!match || match._verdict) return;
+  const noteEl = document.getElementById('reviewNote' + idx);
+  const note = noteEl ? noteEl.value : '';
+  const actionsEl = document.getElementById('reviewActions' + idx);
+  const buttons = actionsEl.querySelectorAll('.review-btn');
   buttons.forEach(b => b.disabled = true);
   try {
     await apiReview('', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        plant: CURRENT_MATCH.plant,
-        matchType: CURRENT_MATCH.matchType,
-        matchId: CURRENT_MATCH.matchId,
+        plant: match.plant,
+        matchType: match.matchType,
+        matchId: match.matchId,
         verdict,
         note,
       }),
     });
+    match._verdict = verdict;
     REVIEWED_COUNT += 1;
     showToast('Recorded: ' + verdict);
-    await loadNext();
+    // Leave the reviewed card visible (buttons stay disabled, its verdict
+    // shown) rather than removing it - a reviewer working through 5 at once
+    // benefits from seeing what they've already done in this batch, same
+    // reasoning a form doesn't erase a field the instant you fill it in.
+    if (noteEl) noteEl.disabled = true;
+    const card = document.getElementById('reviewCard' + idx);
+    if (card) card.classList.add('reviewed-' + verdict);
+    updateProgress();
+    if (CURRENT_BATCH.every(m => m._verdict)) await loadNext();
   } catch (e) {
     buttons.forEach(b => b.disabled = false);
     showToast('Could not save: ' + e.message);

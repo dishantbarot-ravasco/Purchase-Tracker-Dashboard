@@ -47,6 +47,16 @@
     .status-pill.matched { background: var(--green-pale); color: var(--green); }
     .status-pill.unmatched { background: var(--bg-section); color: var(--text-muted); }
     @media (max-width: 700px) { .detail-grid { grid-template-columns: 1fr; } }
+    /* Vendor/Material/Date filters - a second, optional row below the
+       primary PO Number search box. Kept visually secondary (smaller
+       label, no max-width cap) since PO Number is still the common case;
+       these widen what a search can match on, not replace it. */
+    .search-filters-row { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; margin: -12px 0 28px; }
+    .search-filter-field { display: flex; flex-direction: column; gap: 4px; }
+    .search-filter-field label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); font-family: var(--font-head); }
+    .search-filter-field .form-control { font-size: 13.5px; padding: 9px 12px; }
+    .search-filter-field.search-filter-date-range { flex-direction: row; align-items: center; gap: 6px; }
+    .search-filter-date-range label { margin-right: 2px; }
   </style>
 </head>
 <body>
@@ -69,6 +79,26 @@
     <div class="search-box">
       <input type="text" class="form-control" id="searchInput" placeholder="Enter a PO number (e.g. 3000001104, HRS/HO/26-27/003)&hellip;" autofocus>
       <button type="button" class="btn btn-primary" id="searchBtn">Search</button>
+    </div>
+    <div class="search-filters-row">
+      <div class="search-filter-field">
+        <label for="vendorInput">Vendor</label>
+        <input type="text" class="form-control" id="vendorInput" placeholder="Vendor name contains&hellip;">
+      </div>
+      <div class="search-filter-field">
+        <label for="materialInput">Material</label>
+        <input type="text" class="form-control" id="materialInput" placeholder="Material description contains&hellip;">
+      </div>
+      <div class="search-filter-field search-filter-date-range">
+        <label for="dateFromInput">Created</label>
+        <input type="date" class="form-control" id="dateFromInput">
+        <span style="color:var(--text-muted);font-size:12px;">to</span>
+        <input type="date" class="form-control" id="dateToInput">
+      </div>
+      <div class="search-filter-field">
+        <label>&nbsp;</label>
+        <button type="button" class="btn" id="clearFiltersBtn">Clear filters</button>
+      </div>
     </div>
 
     <div id="resultsArea"></div>

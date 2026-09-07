@@ -237,8 +237,26 @@ def _group_by(objects, attr):
     return grouped
 
 
+def _po_material_categories(items, category_reference) -> list[dict]:
+    """De-duplicated {category, subCategory} pairs across this PO's own line
+    items, looked up the same canonical way _lot_dict() looks up a Stock
+    lot's category - see MaterialCategoryReference's own docstring
+    (apps/core/models.py). Added 2026-09-08 so the Purchase Orders page can
+    filter/group by the materials a PO actually orders - "Filter by
+    Category"/"Sub Category" on this page previously meant Data Quality
+    Flag severity/label instead (moved to "Filter by Flags" - see
+    po-list.js's own comment on why), which was never material data at all."""
+    seen: dict[tuple[str, str], dict] = {}
+    for item in items:
+        ref = (category_reference or {}).get(normalize_material(item.description))
+        category = ref.category if ref else "Uncategorized"
+        subcategory = ref.subcategory if ref else ""
+        seen[(category, subcategory)] = {"category": category, "subCategory": subcategory}
+    return list(seen.values())
+
+
 def _po_dict(cfg: _PlantConfig, po, corrections_by_po=None, flag_dismissals_by_po=None,
-             item_flags_by_item=None, mir_flags_by_mir_entry=None):
+             item_flags_by_item=None, mir_flags_by_mir_entry=None, category_reference=None):
     items = list(po.items.all())
     # N+1 fix (see CLAUDE.md): make_purchase_orders() batches these four
     # queries once for the whole queryset and passes per-PO/per-item maps in,
@@ -290,6 +308,7 @@ def _po_dict(cfg: _PlantConfig, po, corrections_by_po=None, flag_dismissals_by_p
         "incoterms": po.incoterms,
         "remarks": po.remarks,
         "isOldFormat": po.is_old_format_template,
+        "materialCategories": _po_material_categories(items, category_reference),
         "items": [_line_item_dict(i) for i in items],
         "corrections": [_correction_dict(c) for c in corrections],
         "flagDismissals": [_flag_dismissal_dict(fd) for fd in flag_dismissals],
@@ -450,10 +469,14 @@ def make_purchase_orders(cfg: _PlantConfig):
             ),
             "source_id",
         )
+        category_reference = _category_reference_map()
 
         return Response({
             "purchaseOrders": [
-                _po_dict(cfg, po, corrections_by_po, flag_dismissals_by_po, item_flags_by_item, mir_flags_by_mir_entry)
+                _po_dict(
+                    cfg, po, corrections_by_po, flag_dismissals_by_po, item_flags_by_item, mir_flags_by_mir_entry,
+                    category_reference,
+                )
                 for po in pos
             ]
         })

@@ -85,10 +85,10 @@ function matchStatusHtml(it, plantKey) {
   // (see FLAG_PCT's own comment) a genuinely flagged 0.1% diff would
   // otherwise round to "Δ0%", which reads as "no difference" and
   // contradicts the badge existing at all.
-  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Qty received differs from PO qty by ' + it.qtyDiffPct.toFixed(2) + '% - likely a partial/over delivery, verify manually">qty Δ' + it.qtyDiffPct.toFixed(1) + '%</span>';
-  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate differs from PO rate by ' + it.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + it.rateDiffPct.toFixed(1) + '%</span>';
-  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity is recorded in a different unit family on each side (e.g. mass vs count) - not directly comparable, verify manually">uom mismatch</span>';
-  if (valueFlag && it.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value differs from PO value by ' + it.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + it.valueDiffPct.toFixed(1) + '%</span>';
+  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity mismatch in MIR: qty received differs from PO qty by ' + it.qtyDiffPct.toFixed(2) + '% - likely a partial/over delivery, verify manually">qty Δ' + it.qtyDiffPct.toFixed(1) + '%</span>';
+  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate mismatch in MIR: rate differs from PO rate by ' + it.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + it.rateDiffPct.toFixed(1) + '%</span>';
+  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="UOM mismatch in MIR: quantity is recorded in a different unit family on each side (e.g. mass vs count) - not directly comparable, verify manually">uom mismatch</span>';
+  if (valueFlag && it.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value mismatch in MIR: value differs from PO value by ' + it.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + it.valueDiffPct.toFixed(1) + '%</span>';
 
   if (anyFlag && it.dismissedByOverride) {
     out += ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (it.dismissedBy ? ' by ' + it.dismissedBy : '') + (it.dismissedReason ? ': ' + it.dismissedReason : '')) + '">dismissed</span>';
@@ -127,10 +127,10 @@ function importMatchStatusHtml(it, plantKey) {
   const anyFlag = qtyFlag || rateFlag || valueFlag || uomFlag;
   const dismissedCls = m.dismissedByOverride ? ' dismissed' : '';
   const severityCls = m.severity ? ' sev-' + m.severity : '';
-  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Qty (as per BOE) differs from MIR qty by ' + m.qtyDiffPct.toFixed(2) + '% - verify manually">qty Δ' + m.qtyDiffPct.toFixed(1) + '%</span>';
-  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate (converted to INR) differs from MIR rate by ' + m.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + m.rateDiffPct.toFixed(1) + '%</span>';
-  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity is recorded in a different unit family on each side - not directly comparable, verify manually">uom mismatch</span>';
-  if (valueFlag && m.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value differs from MIR value by ' + m.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + m.valueDiffPct.toFixed(1) + '%</span>';
+  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity mismatch in MIR: qty (as per BOE) differs from MIR qty by ' + m.qtyDiffPct.toFixed(2) + '% - verify manually">qty Δ' + m.qtyDiffPct.toFixed(1) + '%</span>';
+  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate mismatch in MIR: rate (converted to INR) differs from MIR rate by ' + m.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + m.rateDiffPct.toFixed(1) + '%</span>';
+  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="UOM mismatch in MIR: quantity is recorded in a different unit family on each side - not directly comparable, verify manually">uom mismatch</span>';
+  if (valueFlag && m.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value mismatch in MIR: value differs from MIR value by ' + m.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + m.valueDiffPct.toFixed(1) + '%</span>';
 
   if (anyFlag && m.dismissedByOverride) {
     out += ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (m.dismissedReason ? ': ' + m.dismissedReason : '')) + '">dismissed</span>';
@@ -153,9 +153,16 @@ function mirStockMatchHtml(lot, plantKey) {
   return flagged.map(m => {
     const dismissedCls = m.dismissedByOverride ? ' dismissed' : '';
     const parts = [];
-    if (m.rateDiffPct != null) parts.push('rate Δ' + m.rateDiffPct.toFixed(1) + '%');
-    if (m.qtyDiffPct != null) parts.push('qty Δ' + m.qtyDiffPct.toFixed(1) + '%');
-    let badge = '<span class="flag-badge' + dismissedCls + '">' + escapeHtml(parts.join(', ') || 'flagged') + '</span>';
+    const titleParts = [];
+    if (m.rateDiffPct != null) {
+      parts.push('rate Δ' + m.rateDiffPct.toFixed(1) + '%');
+      titleParts.push('Rate mismatch in RM: rate recorded in this material\'s Raw Material stock differs from the matched MIR entry\'s rate by ' + m.rateDiffPct.toFixed(2) + '% - verify manually');
+    }
+    if (m.qtyDiffPct != null) {
+      parts.push('qty Δ' + m.qtyDiffPct.toFixed(1) + '%');
+      titleParts.push('Quantity mismatch in RM: qty recorded in this material\'s Raw Material stock differs from the matched MIR entry\'s qty by ' + m.qtyDiffPct.toFixed(2) + '% - verify manually');
+    }
+    let badge = '<span class="flag-badge' + dismissedCls + '" title="' + escapeHtml(titleParts.join(' | ') || 'Flagged in RM: this material\'s Raw Material stock does not line up with its matched MIR entry - verify manually') + '">' + escapeHtml(parts.join(', ') || 'flagged') + '</span>';
     if (m.dismissedByOverride) {
       badge += ' <span class="dismissed-tag">dismissed</span>';
       if (canEditField(plantKey)) badge += ' <span class="dismiss-link" data-match-id="' + m.matchId + '" data-match-type="mir-stock" data-plant="' + plantKey + '" data-dismiss="false">reinstate</span>';
@@ -276,9 +283,9 @@ function poFlagHtml(c, po, plantKey, isImport) {
 // own category list independent of which list view opened it.
 function importCriticalFlagsFor(po) {
   const cats = [];
-  if (po.qtyDiscrepancy) cats.push({ label: 'Qty Discrepancy (PO vs BOE)', severity: 'critical' });
-  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Discrepancy (BOE vs MIR)', severity: 'critical' });
-  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Discrepancy (BOE vs MIR)', severity: 'critical' });
+  if (po.qtyDiscrepancy) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical' });
+  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
+  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
   return cats;
 }
 
@@ -369,8 +376,8 @@ function categorizeFlag(text) {
 // explicitly rather than interpolating FLAG_PCT ("by more than 0 percent"
 // is technically correct but reads oddly; "any difference" is clearer).
 const DISCREPANCY_LEGEND = [
-  { label: 'Quantity Discrepancy', severity: 'critical', meaning: 'A line item’s received quantity (from the matched MIR entry) does not exactly match the PO’s ordered quantity - any difference at all counts, there is no tolerance (e.g. 999kg received against a 1000kg order still flags). Can mean a short shipment, an over shipment, or a receipt logged against the wrong PO.' },
-  { label: 'Rate / Value Discrepancy', severity: 'critical', meaning: 'A line item’s received rate or value (from the matched MIR entry) does not exactly match the PO’s rate or value - any difference at all counts, there is no tolerance. Can mean a price change was not reflected on the PO, a tax calculation difference, or a billing error.' },
+  { label: 'Quantity Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received quantity (from the matched MIR entry) does not exactly match the PO’s ordered quantity - any difference at all counts, there is no tolerance (e.g. 999kg received against a 1000kg order still flags). Can mean a short shipment, an over shipment, or a receipt logged against the wrong PO.' },
+  { label: 'Rate / Value Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received rate or value (from the matched MIR entry) does not exactly match the PO’s rate or value - any difference at all counts, there is no tolerance. Can mean a price change was not reflected on the PO, a tax calculation difference, or a billing error.' },
   { label: 'Misfiled: wrong plant or company', severity: 'info', meaning: 'The PO document was found filed under the wrong plant or company folder in Drive.' },
   { label: 'Duplicate file or PO', severity: 'info', meaning: 'The same PO appears to have been saved or extracted more than once.' },
   { label: 'Revision or superseded PO conflict', severity: 'info', meaning: 'A later revision of the PO exists, or PO numbering suggests it replaced an earlier one, and both versions are present.' },
@@ -399,8 +406,8 @@ const DISCREPANCY_LEGEND = [
 // you add a new category there, add its color here too, or it silently
 // falls back to DEFAULT_CATEGORY_COLOR.
 const CATEGORY_COLORS = {
-  'Quantity Discrepancy': '#dc2626',
-  'Rate / Value Discrepancy': '#dc2626',
+  'Quantity Mismatch in MIR': '#dc2626',
+  'Rate / Value Mismatch in MIR': '#dc2626',
   'Tax calculation or labeling mismatch': '#d97706',
   'Vendor GSTIN anomaly': '#d97706',
   'Misfiled: wrong plant or company': '#6366f1',
@@ -457,8 +464,8 @@ function computePoFlags(po) {
   const allDiffs = items.flatMap(it => [it.qtyDiffPct, it.rateDiffPct, it.valueDiffPct]).filter(v => v != null);
   po._maxDiffPct = allDiffs.length ? Math.max(...allDiffs) : 0;
   const cats = new Map();
-  if (po._qtyFlag) cats.set('Quantity Discrepancy', { label: 'Quantity Discrepancy', severity: 'critical' });
-  if (po._rateFlag) cats.set('Rate / Value Discrepancy', { label: 'Rate / Value Discrepancy', severity: 'critical' });
+  if (po._qtyFlag) cats.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
+  if (po._rateFlag) cats.set('Rate / Value Mismatch in MIR', { label: 'Rate / Value Mismatch in MIR', severity: 'critical' });
   if (po.remarks) { const c = categorizeFlag(po.remarks); cats.set(c.label, c); }
   po._categories = Array.from(cats.values());
   po._hasInfoFlag = po._categories.some(c => c.severity === 'info');
@@ -486,7 +493,7 @@ function computePoFlags(po) {
 // remarks-specific) DISCREPANCY_LEGEND panel, since this applies to every
 // list (PO/Materials/Import) uniformly.
 function rowTintLegendHtml() {
-  return '<span class="row-tint-legend">Row shading = discrepancy size:' +
+  return '<span class="row-tint-legend">Row shading = mismatch size:' +
     '<span class="row-tint-swatch row-tint-mild"></span>Mild' +
     '<span class="row-tint-swatch row-tint-moderate"></span>Moderate' +
     '<span class="row-tint-swatch row-tint-severe"></span>Severe</span>';

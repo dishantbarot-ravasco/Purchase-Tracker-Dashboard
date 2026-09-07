@@ -13,7 +13,14 @@ let loadPromise = null;
   initThemeToggle();
 
   document.getElementById('searchBtn').onclick = runSearch;
-  document.getElementById('searchInput').addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+  ['searchInput', 'vendorInput', 'materialInput'].forEach(id =>
+    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); })
+  );
+  document.getElementById('clearFiltersBtn').onclick = () => {
+    ['searchInput', 'vendorInput', 'materialInput', 'dateFromInput', 'dateToInput'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('detailArea').innerHTML = '';
+    document.getElementById('resultsArea').innerHTML = '';
+  };
 })();
 
 // All 3 plants' PO data is fetched once, lazily, on the first search -
@@ -33,26 +40,62 @@ function ensureLoaded() {
   return loadPromise;
 }
 
+// Minimum length for a text filter to actually narrow results - a 1-
+// character vendor/material filter would match almost everything and
+// isn't worth a slow full-item scan across all 3 plants for. Below this,
+// a non-empty field is just ignored (not an error) - only the PO Number
+// field keeps its own "too short" message, since that's the field every
+// user starts with by habit (see runSearch()).
+const MIN_FILTER_LEN = 2;
+
+function activeFilters() {
+  const trimLower = id => document.getElementById(id).value.trim().toLowerCase();
+  return {
+    po: trimLower('searchInput'),
+    vendor: trimLower('vendorInput'),
+    material: trimLower('materialInput'),
+    from: document.getElementById('dateFromInput').value || null,
+    to: document.getElementById('dateToInput').value || null,
+  };
+}
+
+function poMatchesFilters(po, f) {
+  if (f.po.length >= MIN_FILTER_LEN && !(po.poNumber || '').toLowerCase().includes(f.po)) return false;
+  if (f.vendor.length >= MIN_FILTER_LEN && !(po.vendorName || '').toLowerCase().includes(f.vendor)) return false;
+  if (f.material.length >= MIN_FILTER_LEN && !(po.items || []).some(it => (it.description || '').toLowerCase().includes(f.material))) return false;
+  if (f.from && (!po.createdDate || po.createdDate < f.from)) return false;
+  if (f.to && (!po.createdDate || po.createdDate > f.to)) return false;
+  return true;
+}
+
 async function runSearch() {
-  const query = document.getElementById('searchInput').value.trim();
   document.getElementById('detailArea').innerHTML = '';
   const resultsEl = document.getElementById('resultsArea');
-  if (query.length < 2) {
-    resultsEl.innerHTML = '<div class="search-empty">Enter at least 2 characters of a PO number to search.</div>';
+  const f = activeFilters();
+
+  const hasUsableFilter = f.po.length >= MIN_FILTER_LEN || f.vendor.length >= MIN_FILTER_LEN || f.material.length >= MIN_FILTER_LEN || f.from || f.to;
+  if (!hasUsableFilter) {
+    const shortField = [
+      f.po && 'PO number', f.vendor && 'vendor', f.material && 'material',
+    ].filter(Boolean);
+    resultsEl.innerHTML = '<div class="search-empty">' +
+      (shortField.length
+        ? 'Enter at least ' + MIN_FILTER_LEN + ' characters for ' + shortField.join('/') + ', or a date range, to search.'
+        : 'Enter a PO number, vendor, or material (at least ' + MIN_FILTER_LEN + ' characters), or a date range, to search.') +
+      '</div>';
     return;
   }
   resultsEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><span>Searching&hellip;</span></div>';
   await ensureLoaded();
-  renderResults(query);
+  renderResults(f);
 }
 
-function renderResults(query) {
-  const q = query.toLowerCase();
+function renderResults(f) {
   const failedPlants = PLANT_KEYS.filter(k => POS_BY_PLANT[k] === null);
   const matches = [];
   PLANT_KEYS.forEach(key => {
     (POS_BY_PLANT[key] || []).forEach(po => {
-      if (po.poNumber && po.poNumber.toLowerCase().includes(q)) matches.push({ po, plantKey: key });
+      if (poMatchesFilters(po, f)) matches.push({ po, plantKey: key });
     });
   });
 
@@ -62,16 +105,36 @@ function renderResults(query) {
       ' failed to load - results from ' + (failedPlants.length > 1 ? 'those plants are' : 'that plant is') + ' missing. Refresh and try again.</div>'
     : '';
 
+  // Human-readable recap of what was actually searched for - useful once
+  // there can be up to 4 filters combined at once, not just a single PO
+  // number query the way the empty/found messages used to read.
+  const criteria = [
+    f.po.length >= MIN_FILTER_LEN && 'PO number "' + f.po + '"',
+    f.vendor.length >= MIN_FILTER_LEN && 'vendor "' + f.vendor + '"',
+    f.material.length >= MIN_FILTER_LEN && 'material "' + f.material + '"',
+    (f.from || f.to) && ('created ' + (f.from ? 'from ' + formatDateIN(f.from) : '') + (f.from && f.to ? ' ' : '') + (f.to ? 'to ' + formatDateIN(f.to) : '')),
+  ].filter(Boolean).map(escapeHtml).join(', ');
+
   if (!matches.length) {
-    resultsEl.innerHTML = warnHtml + '<div class="search-empty">' + emptyStateHtml('No purchase order matching "' + escapeHtml(query) + '" was found in any plant.') + '</div>';
+    resultsEl.innerHTML = warnHtml + '<div class="search-empty">' + emptyStateHtml('No purchase order matching ' + criteria + ' was found in any plant.') + '</div>';
     return;
   }
 
   resultsEl.innerHTML = warnHtml +
+    '<div class="search-empty" style="padding:0 0 12px;text-align:left;font-size:12.5px;">' + matches.length + ' result' + (matches.length > 1 ? 's' : '') + ' for ' + criteria + '</div>' +
     '<div class="search-results">' + matches.map((m, i) => {
       const po = m.po;
       const matchedCount = (po.items || []).filter(it => it.matched).length;
       const totalCount = (po.items || []).length;
+      // When a material filter is active, surface which line item(s) it
+      // actually matched - "Vendor A, PO 12345" alone wouldn't otherwise
+      // show why this PO showed up for a material search.
+      const materialHit = f.material.length >= MIN_FILTER_LEN
+        ? (po.items || []).filter(it => (it.description || '').toLowerCase().includes(f.material)).map(it => it.description)
+        : [];
+      const materialHtml = materialHit.length
+        ? '<div class="search-result-meta">Matched material: ' + escapeHtml(materialHit.join(', ')) + '</div>'
+        : '';
       return '<div class="search-result-card" data-idx="' + i + '" tabindex="0" role="button" aria-label="View details for PO ' + escapeHtml(po.poNumber) + '">' +
         '<div class="search-result-top">' +
           '<span class="search-result-po">' + escapeHtml(po.poNumber) + '</span>' +
@@ -80,6 +143,7 @@ function renderResults(query) {
         '<div class="search-result-meta">' + escapeHtml(po.vendorName || 'Vendor not recorded') + ' &middot; Created ' + escapeHtml(formatDateIN(po.createdDate)) +
           ' &middot; ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : 'Value not recorded') +
           ' &middot; ' + matchedCount + ' / ' + totalCount + ' line items matched to MIR</div>' +
+        materialHtml +
       '</div>';
     }).join('') + '</div>';
 

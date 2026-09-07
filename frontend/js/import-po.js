@@ -49,17 +49,22 @@ const IMPORT_FLAG_LABELS = {
   F6: 'BOE filed, Currency (After Taxes) blank',
   F7: 'Delivery date not parseable',
 };
-// Unified per-PO category list for Import, same shape/role as domestic's
-// po._categories (see computePoFlags()) - Category filter narrows by
-// severity, Sub Category cascades to a specific label within it. Critical =
-// the 3 discrepancy KPI cards (qty PO-vs-BOE, qty BOE-vs-MIR, rate
-// BOE-vs-MIR); info = the F1-F7 data quality flags, deduped by code (a PO
-// can carry the same code on more than one line item).
+// Unified per-PO severity/label list for Import - NOT the material Category/
+// Sub Category filters (those read po.materialCategories instead, see
+// renderImportPoList()'s own comment on categoryCounts). This one only feeds
+// the row-tint flags (_qtyFlag/_rateFlag below) and the Data Quality Flag
+// tooltip data; it used to also back "Filter by Category"/"Sub Category"
+// before those were repurposed for material data (2026-09-07) - that
+// severity/label filtering now lives in "Filter by Flags" instead (see
+// criticalCount/flagsOptionsHtml). Critical = the 3 discrepancy KPI cards
+// (qty PO-vs-BOE, qty BOE-vs-MIR, rate BOE-vs-MIR); info = the F1-F7 data
+// quality flags, deduped by code (a PO can carry the same code on more than
+// one line item).
 function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
   const cats = [];
-  if (po.qtyDiscrepancy) cats.push({ label: 'Qty Discrepancy (PO vs BOE)', severity: 'critical', key: 'qtydisc' });
-  if (poQtyDiscMir(po)) cats.push({ label: 'Qty Discrepancy (BOE vs MIR)', severity: 'critical', key: 'qtydiscmir' });
-  if (poRateDiscMir(po)) cats.push({ label: 'Rate Discrepancy (BOE vs MIR)', severity: 'critical', key: 'ratedisc' });
+  if (po.qtyDiscrepancy) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical', key: 'qtydisc' });
+  if (poQtyDiscMir(po)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical', key: 'qtydiscmir' });
+  if (poRateDiscMir(po)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical', key: 'ratedisc' });
   const seenCodes = new Set();
   (po.dataQualityFlags || []).forEach(f => {
     if (seenCodes.has(f.code)) return;
@@ -67,6 +72,18 @@ function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
     cats.push({ label: IMPORT_FLAG_LABELS[f.code] || (f.code + ': ' + f.message), severity: 'info', key: 'flags' });
   });
   return cats;
+}
+
+// BL Number cell content, shared by the "View all" table and the top5 grid -
+// the bare number plus a "Track" link (data-track-bl, wired once after
+// render alongside every other [data-...] handler below) that opens the
+// shared modal with live shipment status via shared.js's trackBlNumber()
+// (see that function's own header comment for why the SAME #modalBackdrop
+// every other modal on this page uses is reused here, not a new component).
+function blNumberCellHtml(po, emptyText) {
+  if (!po.billOfLadingNumber) return emptyText;
+  return escapeHtml(po.billOfLadingNumber) +
+    ' <span class="row-link" data-track-bl="' + escapeHtml(po.billOfLadingNumber) + '" style="font-size:11px;">Track</span>';
 }
 
 function applyImportColFilters(recs) {
@@ -98,7 +115,6 @@ function renderImportPoList(el) {
     return true;
   };
   let filtered = all.filter(inRange);
-  const dateRangeCount = filtered.length; // "All Categories (N)" option's count - before category narrowing
 
   // A PO "has" a MIR condition if ANY of its line items does - same
   // any-item-triggers-the-PO-level-flag convention Domestic's own
@@ -122,22 +138,34 @@ function renderImportPoList(el) {
     po._maxDiffPct = itemDiffs.length ? Math.max(...itemDiffs) : 0;
   });
 
-  // Category/Sub Category counts and narrowing - same cascading
-  // severity/label pattern as Domestic's renderPoList() (see its own
-  // comment on categoryCounts/subCategoryCounts for the full reasoning).
+  // Category/Sub Category counts and narrowing - these are now the MATERIAL
+  // category/subcategory an import PO's line items belong to (po.materialCategories,
+  // backed by MaterialCategoryReference - see apps/api/routers/imports_views.py's
+  // _po_dict()), not flag severity/label. Same 2026-09-07 change already made to
+  // Domestic's renderPoList() (see its own comment on categoryCounts for the full
+  // story) - "Filter by Category"/"Sub Category" never meant material data here
+  // either, that was flag severity/label, which is now folded into "Filter by
+  // Flags" as a "Critical Issues" shortcut alongside the existing qty/rate
+  // mismatch options (the info-severity/per-flag-code granularity is not
+  // reproduced there beyond the existing aggregate "Data Quality Flag" option -
+  // same disclosed simplification Domestic's own fold-in made).
   const categoryCounts = {};
-  filtered.forEach(po => po._categories.forEach(c => { categoryCounts[c.severity] = (categoryCounts[c.severity] || 0) + 1; }));
-  const inSelectedSeverity = state.importCategoryFilter
-    ? filtered.filter(po => po._categories.some(c => c.severity === state.importCategoryFilter))
+  filtered.forEach(po => new Set((po.materialCategories || []).map(c => c.category)).forEach(cat => {
+    categoryCounts[cat] = (categoryCounts[cat] || 0) + 1;
+  }));
+  const dateRangeCount = filtered.length; // "All Categories (N)" option's count - before category narrowing
+  const inSelectedCategory = state.importCategoryFilter
+    ? filtered.filter(po => (po.materialCategories || []).some(c => c.category === state.importCategoryFilter))
     : filtered;
   const subCategoryCounts = {};
-  inSelectedSeverity.forEach(po => po._categories.forEach(c => {
-    if (state.importCategoryFilter && c.severity !== state.importCategoryFilter) return;
-    subCategoryCounts[c.label] = (subCategoryCounts[c.label] || 0) + 1;
-  }));
-  const subCategoryBaseCount = inSelectedSeverity.length;
-  if (state.importCategoryFilter) filtered = filtered.filter(po => po._categories.some(c => c.severity === state.importCategoryFilter));
-  if (state.importSubCategoryFilter) filtered = filtered.filter(po => po._categories.some(c => c.label === state.importSubCategoryFilter));
+  inSelectedCategory.forEach(po => new Set(
+    (po.materialCategories || [])
+      .filter(c => !state.importCategoryFilter || c.category === state.importCategoryFilter)
+      .map(c => c.subCategory || 'Uncategorized')
+  ).forEach(sub => { subCategoryCounts[sub] = (subCategoryCounts[sub] || 0) + 1; }));
+  const subCategoryBaseCount = inSelectedCategory.length;
+  if (state.importCategoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => c.category === state.importCategoryFilter));
+  if (state.importSubCategoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => (c.subCategory || 'Uncategorized') === state.importSubCategoryFilter));
   const total = filtered.length;
 
   const counts = {
@@ -154,6 +182,11 @@ function renderImportPoList(el) {
     shipped: filtered.filter(p => p.shipmentStage === 'Shipped (BL)').length,
     cleared: filtered.filter(p => p.shipmentStage === 'Cleared (BOE)').length,
   };
+  // "Critical Issues" in "Filter by Flags" below - the combined qty-OR-rate
+  // count, filling in for what "Filter by Category" used to mean (severity
+  // 'critical') before Category/Sub Category were repurposed for material
+  // data - same fold-in as Domestic's own renderPoList().
+  const criticalCount = filtered.filter(po => po._qtyFlag || po._rateFlag).length;
 
   // Same card shape/order philosophy as Domestic's cardDef (file/comment
   // above renderPoList()'s own cardDef): overall total, then the MIR-backed
@@ -167,9 +200,9 @@ function renderImportPoList(el) {
     { key: 'total', cls: '', label: 'Total Import POs', val: total, tip: 'All import purchase orders in the selected date range.' },
     { key: 'inwarded', cls: 'received', label: 'Material Inwarded', val: counts.inwarded, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this import PO has a matched MIR entry.' },
     { key: 'partial', cls: 'partial', label: 'Partial Delivered', val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items received against this import PO.' },
-    { key: 'qtydisc', cls: 'critical', label: 'Qty Discrepancies (PO vs BOE)', val: counts.qtyDisc, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity ordered differs from the quantity cleared on the Bill of Entry.' },
-    { key: 'qtydiscmir', cls: 'critical', label: 'Qty Discrepancies (BOE vs MIR)', val: counts.qtyDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Bill of Entry quantity differs from the matched MIR entry\'s quantity.' },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate Discrepancies', val: counts.rateDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Landed rate (converted to INR) differs from the matched MIR entry\'s rate.' },
+    { key: 'qtydisc', cls: 'critical', label: 'Qty Mismatches (PO vs BOE)', val: counts.qtyDisc, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity ordered differs from the quantity cleared on the Bill of Entry.' },
+    { key: 'qtydiscmir', cls: 'critical', label: 'Qty Mismatches in MIR (BOE vs MIR)', val: counts.qtyDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: Bill of Entry quantity differs from the matched MIR entry\'s quantity.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches in MIR', val: counts.rateDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: landed rate (converted to INR) differs from the matched MIR entry\'s rate.' },
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully received.' },
     { key: 'onorder', cls: 'pending', label: 'Pending Deliveries / On Order', val: counts.onOrder, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched.' },
     { key: 'unknowndate', cls: 'unknown', label: 'Delivery Date Unknown', val: counts.unknownDate, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
@@ -193,6 +226,7 @@ function renderImportPoList(el) {
   else if (sf === 'qtydisc') tableRecs = filtered.filter(p => p.qtyDiscrepancy);
   else if (sf === 'qtydiscmir') tableRecs = filtered.filter(poQtyDiscMir);
   else if (sf === 'ratedisc') tableRecs = filtered.filter(poRateDiscMir);
+  else if (sf === 'critical') tableRecs = filtered.filter(p => p._qtyFlag || p._rateFlag);
   else if (sf === 'overdue') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Overdue');
   else if (sf === 'onorder') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'On Order');
   else if (sf === 'unknowndate') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Unknown');
@@ -233,19 +267,19 @@ function renderImportPoList(el) {
     (state.importCategoryFilter ? 1 : 0) + (state.importSubCategoryFilter ? 1 : 0) +
     (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
 
-  const SEVERITY_LABELS = { critical: 'Critical Issues', info: 'Informational Issues' };
   const categoryOptionsHtml = Object.entries(categoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([sev, n]) => '<option value="' + sev + '"' + (state.importCategoryFilter === sev ? ' selected' : '') + '>' + escapeHtml(SEVERITY_LABELS[sev] || sev) + ' (' + n + ')</option>')
+    .map(([cat, n]) => '<option value="' + escapeHtml(cat) + '"' + (state.importCategoryFilter === cat ? ' selected' : '') + '>' + escapeHtml(cat) + ' (' + n + ')</option>')
     .join('');
   const subCategoryOptionsHtml = Object.entries(subCategoryCounts)
     .sort((a, b) => b[1] - a[1])
     .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.importSubCategoryFilter === label ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + n + ')</option>')
     .join('');
   const flagsOptionsHtml =
-    '<option value="qtydisc"' + (state.importStatusFilter === 'qtydisc' ? ' selected' : '') + '>Qty Discrepancy - PO vs BOE (' + counts.qtyDisc + ')</option>' +
-    '<option value="qtydiscmir"' + (state.importStatusFilter === 'qtydiscmir' ? ' selected' : '') + '>Qty Discrepancy - BOE vs MIR (' + counts.qtyDiscMir + ')</option>' +
-    '<option value="ratedisc"' + (state.importStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy (' + counts.rateDiscMir + ')</option>' +
+    '<option value="qtydisc"' + (state.importStatusFilter === 'qtydisc' ? ' selected' : '') + '>Qty Mismatch - PO vs BOE (' + counts.qtyDisc + ')</option>' +
+    '<option value="qtydiscmir"' + (state.importStatusFilter === 'qtydiscmir' ? ' selected' : '') + '>Qty Mismatch in MIR - BOE vs MIR (' + counts.qtyDiscMir + ')</option>' +
+    '<option value="ratedisc"' + (state.importStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch in MIR (' + counts.rateDiscMir + ')</option>' +
+    '<option value="critical"' + (state.importStatusFilter === 'critical' ? ' selected' : '') + '>Critical Issues (' + criticalCount + ')</option>' +
     '<option value="flags"' + (state.importStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + counts.flags + ')</option>';
 
   // No Value column filter here - min/max value narrowing was removed
@@ -301,7 +335,7 @@ function renderImportPoList(el) {
             flagsOptionsHtml +
           '</select>' +
         '</div>' +
-        ((state.importCategoryFilter || state.importSubCategoryFilter || ['qtydisc', 'qtydiscmir', 'ratedisc', 'flags'].includes(state.importStatusFilter)) ? '<button id="importClearCategoryFilter">Clear</button>' : '') +
+        ((state.importCategoryFilter || state.importSubCategoryFilter || ['qtydisc', 'qtydiscmir', 'ratedisc', 'critical', 'flags'].includes(state.importStatusFilter)) ? '<button id="importClearCategoryFilter">Clear</button>' : '') +
       '</div>' : '') +
     ((stageChartData.length || months.length) ?
       '<div class="chart-row">' +
@@ -342,7 +376,7 @@ function renderImportPoList(el) {
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
               '<td>' + escapeHtml(po.countryOfOrigin || '-') + '</td>' +
               '<td>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-') + '</td>' +
-              '<td>' + (po.billOfLadingNumber ? escapeHtml(po.billOfLadingNumber) : '-') + '</td>' +
+              '<td>' + blNumberCellHtml(po, '-') + '</td>' +
               '<td><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</td>' +
               '<td><span class="row-link" data-impo="' + key + '">View details</span></td></tr>';
           }).join('') + '</tbody></table></div>' + paginationHtml;
@@ -356,7 +390,7 @@ function renderImportPoList(el) {
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
             '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
             '<div>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : 'Not available') + '</div>' +
-            '<div>' + (po.billOfLadingNumber ? escapeHtml(po.billOfLadingNumber) : 'Not available') + '</div>' +
+            '<div>' + blNumberCellHtml(po, 'Not available') + '</div>' +
             '<div><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</div>' +
             '<div><span class="row-link" data-impo="' + key + '">View details</span></div></div>';
         }).join('') + '</div>';
@@ -383,6 +417,7 @@ function renderImportPoList(el) {
   const toggleBtn = document.getElementById('importToggleAllBtn');
   if (toggleBtn) toggleBtn.onclick = () => { state.importShowAllPOs = !state.importShowAllPOs; state.importTablePage = 1; renderImportPoList(el); };
   document.querySelectorAll('[data-impo]').forEach(el2 => el2.onclick = () => openImportPoModal(el2.dataset.impo));
+  document.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = (e) => { e.stopPropagation(); trackBlNumber(el2.dataset.trackBl); });
 
   const prevPageBtn = document.getElementById('importPrevPageBtn');
   if (prevPageBtn) prevPageBtn.onclick = () => { state.importTablePage = Math.max(1, state.importTablePage - 1); renderImportPoList(el); };
@@ -400,7 +435,7 @@ function renderImportPoList(el) {
   const importClearCategoryBtn = document.getElementById('importClearCategoryFilter');
   if (importClearCategoryBtn) importClearCategoryBtn.onclick = () => {
     state.importCategoryFilter = null; state.importSubCategoryFilter = null;
-    if (['qtydisc', 'qtydiscmir', 'ratedisc', 'flags'].includes(state.importStatusFilter)) state.importStatusFilter = null;
+    if (['qtydisc', 'qtydiscmir', 'ratedisc', 'critical', 'flags'].includes(state.importStatusFilter)) state.importStatusFilter = null;
     state.importTablePage = 1; renderImportPoList(el);
   };
 
@@ -561,6 +596,15 @@ async function openImportPoModal(compositeKey) {
     body.innerHTML = '<div class="modal-head"><div></div><span class="close-btn">&times;</span></div><div class="noaccess">Couldn\'t load this purchase order. Please close and try again.</div>';
     return;
   }
+  // See po-modal.js's openPoModal() for why this loads all 3 plants (the
+  // "View full material analysis" link's "All plants total" figure) and is
+  // best-effort (a failure here just means no material-analysis links on
+  // this open, not a broken modal).
+  try {
+    await ensureMaterialsLoaded(PLANT_KEYS);
+  } catch (e) {
+    console.error('openImportPoModal: ensureMaterialsLoaded failed:', e);
+  }
   if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
   renderImportPoModalBody(plantKey, poNumber, po);
 }
@@ -621,7 +665,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
     '<div class="field-block full-width" style="margin-top:14px;"><h4>Remarks</h4>' + edit('Remarks', po.remarks, 'remarks') + '</div>';
 
   const itemsHtml = (po.items || []).length
-    ? '<table class="items-table"><thead><tr><th>Item Id</th><th>Description</th><th>HSN</th><th>Qty (As Per PO)</th><th>Qty (As Per BOE)</th><th>Variance</th><th>Net Price</th><th>Net Value</th><th>MIR Match</th></tr></thead><tbody>' +
+    ? '<table class="items-table"><thead><tr><th>Item Id</th><th>Description</th><th>HSN</th><th>Qty (As Per PO)</th><th>Qty (As Per BOE)</th><th>Variance</th><th>Net Price</th><th>Net Value</th><th>MIR Match</th><th>Material Analysis</th></tr></thead><tbody>' +
         po.items.map(it => {
           const variance = it.qtyDiscrepancyPct != null ? it.qtyDiscrepancyPct.toFixed(1) + '%' : '-';
           const color = it.qtyDiscrepancy ? (it.qtyDiscrepancyPct >= 0 ? 'var(--green)' : 'var(--red)') : 'inherit';
@@ -630,7 +674,8 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
             '</td><td>' + (it.qtyAsPerBoe != null ? it.qtyAsPerBoe : '-') + ' ' + escapeHtml(it.uom || '') +
             '</td><td style="color:' + color + ';font-weight:700;">' + variance + '</td>' +
             '<td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') + '</td><td>' + (it.netValue != null ? formatInr(it.netValue) : '-') + '</td>' +
-            '<td>' + importMatchStatusHtml(it, plantKey) + '</td></tr>';
+            '<td>' + importMatchStatusHtml(it, plantKey) + '</td>' +
+            '<td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span style="color:var(--slate-soft);">Not tracked in Stock</span>') + '</td></tr>';
         }).join('') + '</tbody></table>'
     : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
   const itemsTabHtml = '<div class="section-title" style="margin-top:0;">Material / Product Details</div>' + itemsHtml;
@@ -640,6 +685,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
       '<div class="field-grid">' +
         '<div class="field-block"><h4>Shipment and Customs' + (it.itemId ? ' - Item ' + escapeHtml(it.itemId) : '') + '</h4>' +
           edit('Bill of Lading No.', it.billOfLadingNumber, 'bill_of_lading_number', it.itemId) +
+          (it.billOfLadingNumber ? '<div class="line"><span class="row-link" data-track-bl="' + escapeHtml(it.billOfLadingNumber) + '">Track this shipment</span></div>' : '') +
           edit('Laden on Board date', it.ladenOnBoardDate, 'laden_on_board_date', it.itemId, 'date') +
           edit('BOE (Bill of Entry) No.', it.boeNumber, 'boe_number', it.itemId) +
           edit('Exchange Rate', it.exchangeRate, 'exchange_rate', it.itemId, 'number') +
@@ -708,6 +754,8 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const switchToFlagsTab = () => { const t = body.querySelector('[data-itab="flags"]'); if (t) t.click(); };
   wireEditIcons(body, fieldsUrl, switchToFlagsTab, () => onImportFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
+  body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () => trackBlNumber(el2.dataset.trackBl));
+  body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
 }
 
 // A corrected field can move a PO in/out of a KPI bucket (e.g. fixing a bad

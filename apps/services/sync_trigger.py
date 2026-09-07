@@ -164,6 +164,16 @@ def run_daily_sync_all_plants() -> None:
     practice _run_pipeline() already catches per-command, per-plant
     failures internally and always clears its own lock in a `finally`; this
     is the belt-and-braces outer guard for anything that isn't.
+
+    Also runs each plant's Import PO pipeline (_run_imports_pipeline(),
+    same as trigger_plant_imports_sync()) right after its domestic pipeline
+    - found 2026-09-07 that this function only ever covered the domestic
+    side, so Import PO CSVs never synced on their own at all (only a manual
+    admin trigger against /api/imports/sync-trigger/<plant> could run them,
+    and no frontend control ever called that endpoint either - see
+    triggerRealSyncAndRefresh() in frontend/js/main.js for the matching
+    frontend-side fix). Uses the separate _imports_lock_key() namespace so
+    an in-flight manual imports sync isn't skipped-then-double-run.
     """
     for plant_key in _PLANT_COMMANDS:
         if not cache.add(_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
@@ -176,6 +186,18 @@ def run_daily_sync_all_plants() -> None:
             _run_pipeline(plant_key)
         except Exception:
             log.exception("run_daily_sync_all_plants: pipeline failed for plant=%s", plant_key)
+
+    for plant_key in _IMPORT_PLANT_COMMANDS:
+        if not cache.add(_imports_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
+            log.info(
+                "run_daily_sync_all_plants: skipping %s imports - a manual refresh is already in progress",
+                plant_key,
+            )
+            continue
+        try:
+            _run_imports_pipeline(plant_key)
+        except Exception:
+            log.exception("run_daily_sync_all_plants: imports pipeline failed for plant=%s", plant_key)
 
 
 def trigger_plant_sync(plant_key: str) -> bool:

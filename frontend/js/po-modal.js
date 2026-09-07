@@ -44,8 +44,21 @@ async function openPoModal(compositeKey) {
   const apiBase = PLANTS[plantKey].apiPrefix;
   const edit = (label, value, field, itemId, fieldType, options) => editableLine(plantKey, label, value, field, itemId, fieldType, options);
 
+  // Loaded across all 3 plants (not just this PO's own) so the "View full
+  // material analysis" link below can show an "All plants total" figure,
+  // same cross-plant framing Raw Material Analysis itself uses - cached
+  // per plant (shared.js's findMaterialLotsFor()), so this is a no-op
+  // re-fetch once any PO/material modal has opened once this session.
+  // Best-effort: a failure here just means no material-analysis links on
+  // this open, not a broken modal.
+  try {
+    await ensureMaterialsLoaded(PLANT_KEYS);
+  } catch (e) {
+    console.error('openPoModal: ensureMaterialsLoaded failed:', e);
+  }
+
   const itemsHtml = (po.items || []).length
-    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th><th>MIR Matched</th></tr></thead><tbody>' +
+    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th><th>MIR Matched</th><th>Material Analysis</th></tr></thead><tbody>' +
         po.items.map(it => {
           // Domestic line items have no stable item_id in a meaningful
           // number of real rows (see DomesticPOCorrection's docstring) -
@@ -56,6 +69,7 @@ async function openPoModal(compositeKey) {
           '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
           '</td><td>' + escapeHtml(formatDateIN(it.deliveryDate)) + '</td><td>' +
           matchStatusHtml(it, plantKey) +
+          '</td><td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span style="color:var(--slate-soft);">Not tracked in Stock</span>') +
           '</td></tr>';
         }).join('') + '</tbody></table>'
     : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
@@ -155,5 +169,6 @@ async function openPoModal(compositeKey) {
   const switchToFlagsTab = () => { const t = body.querySelector('[data-tab="flags"]'); if (t) t.click(); };
   wireEditIcons(body, fieldsUrl, switchToFlagsTab, (fieldName, itemId) => onDomesticFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onDomesticFieldSaved(plantKey, poNumber));
+  body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
 }
 

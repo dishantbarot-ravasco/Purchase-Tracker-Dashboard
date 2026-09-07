@@ -228,8 +228,8 @@ function computeMaterialPoLinkage(materials, plantKeys) {
     // finer-grained source exists) - same as computePoFlags() itself.
     const catMap = new Map();
     links.forEach(l => {
-      if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) catMap.set('Quantity Discrepancy', { label: 'Quantity Discrepancy', severity: 'critical' });
-      if ((l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) || (l.item.valueDiffPct != null && l.item.valueDiffPct > FLAG_PCT)) catMap.set('Rate / Value Discrepancy', { label: 'Rate / Value Discrepancy', severity: 'critical' });
+      if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) catMap.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
+      if ((l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) || (l.item.valueDiffPct != null && l.item.valueDiffPct > FLAG_PCT)) catMap.set('Rate / Value Mismatch in MIR', { label: 'Rate / Value Mismatch in MIR', severity: 'critical' });
       if (l.po.remarks) { const c = categorizeFlag(l.po.remarks); catMap.set(c.label, c); }
     });
     const categories = Array.from(catMap.values());
@@ -241,8 +241,8 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       links,
       openLinks,
       categories,
-      qtyFlag: categories.some(c => c.label === 'Quantity Discrepancy'),
-      rateFlag: categories.some(c => c.label === 'Rate / Value Discrepancy'),
+      qtyFlag: categories.some(c => c.label === 'Quantity Mismatch in MIR'),
+      rateFlag: categories.some(c => c.label === 'Rate / Value Mismatch in MIR'),
       hasInfoFlag: categories.some(c => c.severity === 'info'),
       maxDiffPct: allDiffs.length ? Math.max(...allDiffs) : 0,
     };
@@ -368,8 +368,8 @@ function renderMaterialsView() {
     { key: 'value', cls: '', label: 'Total Inventory Value (Warehouse)', raw: totalValue, fmt: 'inr', tip: 'Current stock quantity x rate, summed across every lot in the selected plant(s).' },
     { key: 'transit', cls: 'partial', label: 'Inventory Value in Transit (Open POs)', raw: inTransitValue, fmt: 'inr', tip: 'Value of ordered-but-not-yet-received line items linked to this material.' },
     { key: 'qtyordered', cls: 'partial', label: 'Quantity Ordered (Open POs)', raw: qtyOrderedOpen, fmt: 'locale', tip: 'Total quantity still open on purchase orders linked to this material.' },
-    { key: 'qtydisc', cls: 'critical', label: 'Quantity Discrepancies', raw: qtyDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'A linked PO line item\'s quantity differs from its matched MIR entry.' },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate Discrepancies', raw: rateDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'A linked PO line item\'s rate differs from its matched MIR entry.' },
+    { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', raw: qtyDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: a linked PO line item\'s quantity differs from its matched MIR entry.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', raw: rateDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: a linked PO line item\'s rate differs from its matched MIR entry.' },
     { key: 'lowstock', cls: 'critical', label: 'Low Stock (Reorder Soon)', raw: lowStockMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Under 15 days of cover at the current consumption rate, or already at/below Achhad\'s minimum stock level.' },
     { key: 'flags', cls: 'flags', label: 'Data Quality Flags', raw: flaggedMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.quality, tip: 'Paperwork/process notes on a linked PO\'s remarks - not a money or quantity problem.' },
   ];
@@ -441,8 +441,8 @@ function renderMaterialsView() {
     '',
     '', // Days Left - no header-row control of its own, same reasoning as Stock/Inventory Value/Latest Rate above.
     '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
-      '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy</option>' +
-      '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy</option>' +
+      '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch</option>' +
+      '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch</option>' +
       '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock</option>' +
       '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag</option>' +
     '</select>',
@@ -471,8 +471,8 @@ function renderMaterialsView() {
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
     '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + '. Click a row for its full cross-plant analysis.</div>' +
-    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>"Inventory Value in Transit", "Quantity Ordered", and the discrepancy/flag columns below are computed by automatically matching each material to purchase order line items by description (and vendor, where known) - the same best-effort approach this app already uses for PO&harr;MIR matching. <strong>Not guaranteed-correct identity resolution - verify manually before relying on it.</strong> "Days Left" is likewise an estimate, derived from recent stock-snapshot history, not a figure reported by the sheet - the confidence dot next to it shows how much history it's based on.</div></div>' +
-    '<div class="mat-cards">' + kpiHtml + '</div>' +
+    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>"Inventory Value in Transit", "Quantity Ordered", and the mismatch/flag columns below are computed by automatically matching each material to purchase order line items by description (and vendor, where known) - the same best-effort approach this app already uses for PO&harr;MIR matching. <strong>Not guaranteed-correct identity resolution - verify manually before relying on it.</strong> "Days Left" is likewise an estimate, derived from recent stock-snapshot history, not a figure reported by the sheet - the confidence dot next to it shows how much history it is based on.</div></div>' +
+    '<div class="kpi-grid">' + kpiHtml + '</div>' +
     // "Filter by Category" / "Filter by Sub Category" / "Filter by Flags"
     // bar - moved above the chart (project owner, 2026-09-04) so the chart
     // itself already reflects the selection. All three are "global"
@@ -500,8 +500,8 @@ function renderMaterialsView() {
         '<label>Filter by Flags</label>' +
         '<select id="matFlagsSelect" style="min-width:200px;">' +
           '<option value="">All flags</option>' +
-          '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy (' + qtyDiscMats.length + ')</option>' +
-          '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy (' + rateDiscMats.length + ')</option>' +
+          '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch (' + qtyDiscMats.length + ')</option>' +
+          '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch (' + rateDiscMats.length + ')</option>' +
           '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock (' + lowStockMats.length + ')</option>' +
           '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flaggedMats.length + ')</option>' +
         '</select>' +
@@ -656,7 +656,17 @@ function renderMaterialsChart(materials) {
       '<div class="chart-breadcrumb">' + crumbHtml + '</div>' +
       '<div class="no-data-note">No materials in this ' + (state.matChartLevel === 'category' ? 'view' : state.matChartLevel) + ' to chart.</div></div>';
   }
-  const chartHeight = Math.max(180, bars.length * 34);
+  // Capped range (was Math.max(180, bars.length * 34), uncapped - at the
+  // 13-bar max (MAT_CHART_TOP_N + one "Other" bucket), that rendered a
+  // ~440px-tall panel, dwarfing the fixed 250px .chart-box every other
+  // page's charts use and making Raw Material Analysis feel visually
+  // inconsistent next to Purchase Orders/Import Purchases side by side.
+  // Chart.js's own maxBarThickness (below) still caps how THICK a bar can
+  // get when there's room to spare; nothing here stops it from shrinking
+  // bars thinner than that to fit when there are many categories - a
+  // legible tradeoff for a panel that stays roughly the same size as every
+  // other chart on this dashboard, not a case-by-case judgment call.
+  const chartHeight = Math.min(300, Math.max(220, bars.length * 22));
   return '<div class="chart-panel" style="margin-bottom:20px;"><h4>Inventory Value by Category' + (state.matChartLevel !== 'category' ? ' &rsaquo; Subcategory' : '') + (state.matChartLevel === 'material' ? ' &rsaquo; Material' : '') + '</h4>' +
     '<div class="chart-breadcrumb">' + crumbHtml + '</div>' +
     '<div class="chart-box" style="height:' + chartHeight + 'px;"><canvas id="matDrillChart"></canvas></div>' +

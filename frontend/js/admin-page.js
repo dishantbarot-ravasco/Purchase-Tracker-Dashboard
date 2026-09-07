@@ -23,6 +23,7 @@ let editingUserId = null;
   document.getElementById('uf-close').onclick = closeForm;
   document.getElementById('uf-cancel').onclick = closeForm;
   document.getElementById('uf-submit').onclick = submitForm;
+  document.getElementById('uf-role').onchange = updatePlantsRowVisibility;
 
   await Promise.all([loadSyncCards(), loadUsers()]);
 })();
@@ -143,6 +144,19 @@ function readPlantsCheckboxes() {
   return Array.from(document.querySelectorAll('#uf-plants input[type="checkbox"]:checked')).map(cb => cb.value);
 }
 
+// An admin's own access is never plant-scoped - every admin-only endpoint
+// (sync_trigger, every users_views.py view) ignores PTUser.plants entirely,
+// and users_views.py's create_user()/update_user() now force plants=[]
+// server-side for role=admin regardless of what's submitted (see that
+// file's own comment) - so showing the checkboxes for an admin account
+// would just be a control that quietly does nothing, which reads as a bug
+// ("I checked HRS only, why can this admin still edit every plant?") more
+// than a feature. Hidden here for exactly that reason, not to save space.
+function updatePlantsRowVisibility() {
+  const isAdmin = document.getElementById('uf-role').value === 'admin';
+  document.getElementById('uf-plants-row').style.display = isAdmin ? 'none' : 'block';
+}
+
 function openForm(user) {
   editingUserId = user ? user.userId : null;
   const edit = !!user;
@@ -155,6 +169,7 @@ function openForm(user) {
   document.getElementById('uf-role').value = user ? user.role : 'viewer';
   document.getElementById('uf-password').value = '';
   renderPlantsCheckboxes(user ? user.plants : []);
+  updatePlantsRowVisibility();
   // Password row now stays visible in edit mode too (added 2026-09-04,
   // in-app reset) - just optional there: label/hint/required-asterisk
   // swap to make "blank = leave unchanged" obvious.
@@ -244,8 +259,12 @@ async function submitForm() {
   const designation = document.getElementById('uf-designation').value.trim();
   const role = document.getElementById('uf-role').value;
   const isActive = document.getElementById('uf-active').value === 'true';
-  const plants = readPlantsCheckboxes();
+  // Server-side already forces plants=[] for role=admin regardless of what's
+  // sent (users_views.py) - zeroed here too so a role switched to Admin
+  // after checking some plants doesn't submit stale, now-meaningless values.
+  const plants = role === 'admin' ? [] : readPlantsCheckboxes();
 
+  if (!fullName) { return showFormError('Full name is required.'); }
   if (!editingUserId) {
     if (!email) { return showFormError('Email is required.'); }
     if (password.length < 8) { return showFormError('Password must be at least 8 characters.'); }

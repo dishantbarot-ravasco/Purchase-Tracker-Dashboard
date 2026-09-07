@@ -320,6 +320,16 @@ REST_FRAMEWORK = {
 # one context compromises the other.
 JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", SECRET_KEY)
 
+# ---------------------------------------------------------------------------
+# SafeCube (Sinay) Container Tracking API
+# ---------------------------------------------------------------------------
+# Backs the Import Purchases page's "Track" links (BL-number shipment
+# lookup - see apps/services/bl_tracking.py). Blank in an environment
+# without a key: bl_tracking.track_bl() returns a clean "not configured"
+# error rather than the view crashing - never required for the rest of the
+# dashboard to work.
+SAFECUBE_API_KEY = os.environ.get("SAFECUBE_API_KEY", "")
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
     # 30 days - backs the persistent 'remember me' pt_refresh cookie.

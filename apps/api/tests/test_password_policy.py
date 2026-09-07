@@ -56,7 +56,7 @@ class TestCreateUserPasswordStrength:
         confirms the tightened rule isn't accidentally rejecting everything."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "reasonable@ravasco.com", "password": "Str0ngPassw0rd!", "role": "viewer"},
+            {"email": "reasonable@ravasco.com", "password": "Str0ngPassw0rd!", "role": "viewer", "fullName": "Reasonable Person"},
             format="json",
         )
         assert response.status_code == 201

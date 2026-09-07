@@ -95,6 +95,7 @@ urlpatterns = [
     path("imports/sync-trigger/<str:plant>", imports_views.sync_trigger, name="imports-sync-trigger"),
     path("imports/matches/po-mir/<str:plant>/<int:match_id>/dismiss", imports_views.dismiss_import_po_mir_match, name="imports-dismiss-po-mir"),
     path("imports/purchase-orders/<str:plant>/<str:po_number>/flags/dismiss", imports_views.dismiss_flag, name="imports-dismiss-flag"),
+    path("imports/track-bl", imports_views.track_bl, name="imports-track-bl"),
 
     # Match Accuracy Programme, Phase 1 - the review screen (doc 03, 1.2).
     # Cross-plant like imports_views.py above, not per-plant-prefixed - see

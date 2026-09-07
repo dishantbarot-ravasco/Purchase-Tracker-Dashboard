@@ -24,7 +24,7 @@ class TestUsersPlants:
         PTUser row and echoes it back in the create response."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "plants": ["hrs", "vapi"]},
+            {"email": "new@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "plants": ["hrs", "vapi"], "fullName": "New Editor"},
             format="json",
         )
         assert response.status_code == 201
@@ -37,7 +37,7 @@ class TestUsersPlants:
         list, not null or a crash."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new2@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor"},
+            {"email": "new2@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "fullName": "New Editor Two"},
             format="json",
         )
         assert response.status_code == 201
@@ -48,7 +48,7 @@ class TestUsersPlants:
         rejected with a 400 rather than silently accepted."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new3@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "plants": ["mars"]},
+            {"email": "new3@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "plants": ["mars"], "fullName": "New Editor Three"},
             format="json",
         )
         assert response.status_code == 400
@@ -61,6 +61,55 @@ class TestUsersPlants:
         assert response.json()["plants"] == ["achhad"]
         user.refresh_from_db()
         assert user.plants == ["achhad"]
+
+    def test_create_user_requires_full_name(self):
+        """Full name became a required field 2026-09-07 (project owner) -
+        omitting it must 400, not silently create a nameless account."""
+        response = self.client.post(
+            "/api/auth/users/create",
+            {"email": "noname@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor"},
+            format="json",
+        )
+        assert response.status_code == 400
+        assert not PTUser.objects.filter(email="noname@ravasco.com").exists()
+
+    def test_update_user_rejects_blank_full_name(self):
+        """A PATCH that explicitly blanks out fullName must 400 too - full
+        name is required going forward for existing accounts, not just new
+        ones."""
+        user = make_user(email="named@ravasco.com", role="editor")
+        response = self.client.patch(f"/api/auth/users/{user.user_id}", {"fullName": "  "}, format="json")
+        assert response.status_code == 400
+
+    def test_create_user_forces_empty_plants_for_admin_role(self):
+        """An admin account's own access is never plant-scoped (every
+        admin-only endpoint ignores PTUser.plants entirely) - a `plants`
+        list submitted alongside role=admin must be silently dropped to []
+        rather than persisted, so it can never look like it's restricting
+        an admin when it actually isn't."""
+        response = self.client.post(
+            "/api/auth/users/create",
+            {
+                "email": "newadmin@ravasco.com", "password": "Str0ngPassw0rd!",
+                "role": "admin", "plants": ["hrs"], "fullName": "New Admin",
+            },
+            format="json",
+        )
+        assert response.status_code == 201
+        assert response.json()["plants"] == []
+        user = PTUser.objects.get(email="newadmin@ravasco.com")
+        assert user.plants == []
+
+    def test_update_user_forces_empty_plants_when_role_changed_to_admin(self):
+        """Promoting an existing plant-scoped editor to admin must clear
+        `plants` too, not leave a stale, now-meaningless restriction on the
+        row."""
+        user = make_user(email="promoted@ravasco.com", role="editor", plants=["hrs"])
+        response = self.client.patch(f"/api/auth/users/{user.user_id}", {"role": "admin"}, format="json")
+        assert response.status_code == 200
+        assert response.json()["plants"] == []
+        user.refresh_from_db()
+        assert user.plants == []
 
 
 @pytest.mark.django_db

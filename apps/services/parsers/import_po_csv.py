@@ -123,7 +123,18 @@ def parse_import_po_csv(csv_text: str) -> list[ParsedImportPurchaseOrder]:
     function stays plant-agnostic. Raises HeaderMismatch immediately on a
     header mismatch; rows with a blank PO Number are skipped."""
     reader = csv.DictReader(io.StringIO(csv_text))
-    if reader.fieldnames is None or [h.strip() for h in reader.fieldnames] != [h.strip() for h in EXPECTED_HEADER]:
+    # Trailing blank-named columns (e.g. two stray "" headers past the last
+    # real one) are a spreadsheet-export artifact, not a real schema change -
+    # confirmed 2026-09-07 on a live RTP-Vapi sync failure: someone had
+    # added/removed columns in the source Sheet, leaving 2 headerless trailing
+    # columns with no data intent behind them. None of this parser's row
+    # access below ever reads a blank-named column, so dropping them before
+    # the equality check is safe - a REAL header change (a renamed/reordered/
+    # removed real column) still raises HeaderMismatch exactly as before.
+    fieldnames = list(reader.fieldnames or [])
+    while fieldnames and not (fieldnames[-1] or "").strip():
+        fieldnames.pop()
+    if reader.fieldnames is None or [h.strip() for h in fieldnames] != [h.strip() for h in EXPECTED_HEADER]:
         raise HeaderMismatch(
             f"CSV header does not match expected schema.\nExpected: {EXPECTED_HEADER}\nGot: {reader.fieldnames}"
         )

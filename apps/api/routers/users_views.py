@@ -151,6 +151,10 @@ def create_user(request):
     if role not in _VALID_ROLES:
         raise ValidationError({"detail": f"role must be one of {sorted(_VALID_ROLES)}"})
 
+    full_name = (data.get("fullName") or "").strip()
+    if not full_name:
+        raise ValidationError({"detail": "Full name is required."})
+
     email = (data.get("email") or "").strip().lower()
     if not is_allowed_email_domain(email):
         raise ValidationError({"detail": f"Only @{settings.ALLOWED_EMAIL_DOMAIN} email addresses are allowed."})
@@ -161,12 +165,22 @@ def create_user(request):
     password = data.get("password") or ""
     _validate_password_strength(password, email)
 
-    plants = _clean_plants(data.get("plants")) if data.get("plants") is not None else []
+    # An admin's own access is never plant-scoped in practice (every
+    # admin-only endpoint - sync_trigger, this file's own views - ignores
+    # PTUser.plants entirely), but user_can_access_plant()/
+    # user_can_edit_plant() don't special-case role at all - they'd still
+    # honor a non-empty `plants` list against an admin account, which would
+    # silently lock that admin out of correcting fields on an unscoped
+    # plant. Forcing plants=[] for role=admin here closes that off at
+    # creation time rather than relying on the frontend never sending one
+    # (see admin-page.js's own role-change handler, which hides the Plants
+    # section for this exact reason).
+    plants = [] if role == PTUser.Role.ADMIN else (_clean_plants(data.get("plants")) if data.get("plants") is not None else [])
 
     user = PTUser.objects.create(
         email=email,
         password_hash=_hash_password(password),
-        full_name=(data.get("fullName") or "").strip() or None,
+        full_name=full_name,
         designation=(data.get("designation") or "").strip() or None,
         role=role,
         plants=plants,
@@ -229,10 +243,17 @@ def update_user(request, user_id):
     user.role = new_role
     user.is_active = new_is_active
     if "fullName" in data and data["fullName"] is not None:
-        user.full_name = data["fullName"].strip() or None
+        new_full_name = data["fullName"].strip()
+        if not new_full_name:
+            raise ValidationError({"detail": "Full name is required."})
+        user.full_name = new_full_name
     if "designation" in data and data["designation"] is not None:
         user.designation = data["designation"].strip() or None
-    if "plants" in data and data["plants"] is not None:
+    # See create_user()'s own comment on why an admin's `plants` is always
+    # forced empty rather than trusted from the request body.
+    if new_role == PTUser.Role.ADMIN:
+        user.plants = []
+    elif "plants" in data and data["plants"] is not None:
         user.plants = _clean_plants(data["plants"])
     user.save()
 
