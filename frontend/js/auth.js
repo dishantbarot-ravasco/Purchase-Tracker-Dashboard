@@ -141,6 +141,10 @@ function renderNavTabs(container, activePage) {
     { key: 'home', href: '/home.html', label: 'Home' },
     { key: 'dashboard', href: '/', label: 'Dashboard' },
     { key: 'search', href: '/search-po.html', label: 'Search PO' },
+    // Match Accuracy Programme, Phase 1 (doc 03) - any authenticated role
+    // can review, not just admin/editor, since throughput (~200 reviews)
+    // matters more than gating here (see review_views.py's own docstring).
+    { key: 'review', href: '/review.html', label: 'Review Matches' },
   ];
   if (CURRENT_USER.role === 'admin') tabs.push({ key: 'admin', href: '/admin.html', label: 'Admin' });
   container.innerHTML = tabs.map(t =>

@@ -124,6 +124,12 @@ def _mir_match_dict(item):
         "rateDiffPct": _f(match.rate_diff_pct),
         "valueDiffPct": _f(match.value_diff_pct),
         "isFlagged": match.is_flagged,
+        # Match Accuracy Programme fixes 2.C/3.F - see matching_core.py and
+        # _domestic_base.py's _line_item_dict() (same two fields, same
+        # reasoning - the frontend must not re-derive a value flag from
+        # valueDiffPct alone, that would ignore the value epsilon).
+        "uomMismatch": match.uom_mismatch,
+        "severity": match.severity,
         "dismissedByOverride": match.dismissed_by_override,
         "dismissedReason": match.dismissed_reason,
         # Relies on purchase_orders()'s prefetch_related including

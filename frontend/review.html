@@ -1,0 +1,85 @@
+<!--
+  review.html - Match Accuracy Programme, Phase 1 (doc 03, 1.2): a
+  deliberately minimal review screen. Shows one random unreviewed match with
+  both sides side by side and three buttons (Correct/Incorrect/Unsure) - no
+  filtering, no search, no bulk actions. The design goal is throughput
+  (roughly 200 reviews spread across plants and tiers), not a full audit UI.
+
+  Deliberately self-contained, same reasoning as search-po.html's own header
+  comment - this page fetches from apps/api/routers/review_views.py directly
+  rather than depending on js/main.js's per-plant caches or modal, since a
+  review is cross-plant by nature (see review_views.py's module docstring).
+
+  Protected page: requireAuth() (js/auth.js) redirects to /login.html if
+  there's no active session. Any authenticated role can review.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <script src="js/theme-init.js"></script>
+  <link rel="icon" type="image/png" href="img/indus_logo.png">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Review Matches - Purchase Tracker</title>
+  <link rel="stylesheet" href="css/brand.css">
+  <style>
+    .review-wrap { max-width: 900px; margin: 0 auto; }
+    .review-progress { font-size: 12.5px; color: var(--text-muted); margin-bottom: 14px; }
+    .review-card {
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-xl);
+      padding: 28px; box-shadow: var(--shadow-sm);
+    }
+    .review-meta { font-size: 12.5px; color: var(--text-muted); margin-bottom: 18px; display: flex; gap: 14px; flex-wrap: wrap; }
+    .review-meta b { color: var(--text); }
+    .review-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 22px; }
+    .review-side { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; }
+    .review-side h4 { font-family: var(--font-head); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin: 0 0 10px; }
+    .review-field { display: flex; justify-content: space-between; font-size: 13.5px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+    .review-field:last-child { border-bottom: none; }
+    .review-field .label { color: var(--text-muted); }
+    .review-field .value { color: var(--text); font-weight: 600; text-align: right; }
+    .review-diffs { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+    .diff-pill { font-size: 11.5px; padding: 3px 10px; border-radius: 999px; background: var(--bg-section); color: var(--text-muted); }
+    .diff-pill.flagged { background: var(--red-pale, #fde8e8); color: var(--red, #dc2626); }
+    .review-actions { display: flex; gap: 10px; margin-bottom: 14px; }
+    .review-btn { flex: 1; padding: 12px; border-radius: var(--radius-lg); border: 1px solid var(--border); font-weight: 700; font-size: 14px; cursor: pointer; background: var(--bg-card); color: var(--text); }
+    .review-btn.correct:hover { background: var(--green-pale, #e6f4ea); border-color: var(--green, #16a34a); color: var(--green, #16a34a); }
+    .review-btn.incorrect:hover { background: var(--red-pale, #fde8e8); border-color: var(--red, #dc2626); color: var(--red, #dc2626); }
+    .review-btn.unsure:hover { background: var(--amber-pale, #fef3c7); border-color: var(--amber, #d97706); color: var(--amber, #d97706); }
+    .review-note { width: 100%; box-sizing: border-box; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 8px 10px; font-size: 13px; font-family: inherit; resize: vertical; min-height: 44px; background: var(--bg-card); color: var(--text); }
+    .review-done, .review-error { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+    .review-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--navy); color: #fff; padding: 8px 18px; border-radius: 999px; font-size: 12.5px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+    .review-toast.show { opacity: 1; }
+    @media (max-width: 700px) { .review-sides { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+
+  <nav class="topnav">
+    <a href="home.html" class="nav-brand">
+      <img src="img/indus_logo.png" alt="Ravasco" class="nav-logo" data-hide-on-error>
+      <div class="nav-brand-text">
+        <h1>Purchase Tracker</h1>
+        <p>Ravasco Transmission &amp; Packing</p>
+      </div>
+    </a>
+    <div class="nav-tabs" id="navTabs"></div>
+    <div class="nav-spacer"></div>
+    <div class="nav-user" id="navUser"></div>
+  </nav>
+
+  <div class="page-wrap">
+    <div class="section-title">Review Matches</div>
+    <div class="review-wrap">
+      <div class="review-progress" id="reviewProgress">Loading...</div>
+      <div id="reviewArea"></div>
+    </div>
+  </div>
+
+  <div class="review-toast" id="reviewToast"></div>
+
+  <script src="js/auth.js"></script>
+  <script src="js/shared.js"></script>
+  <script src="js/review-page.js"></script>
+</body>
+</html>

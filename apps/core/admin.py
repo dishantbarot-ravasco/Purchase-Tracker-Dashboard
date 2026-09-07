@@ -25,7 +25,9 @@ from apps.core.models import (
     HRSPurchaseOrder,
     HRSStockLot,
     HRSStockSnapshot,
+    DataQualityFlag,
     ImportPOCorrection,
+    MatchReview,
     RTPAchhadImportPOLineItem,
     RTPAchhadImportPurchaseOrder,
     RTPAchhadMIREntry,
@@ -75,6 +77,8 @@ admin.site.register(RTPVapiStockSnapshot)
 admin.site.register(RTPVapiPOMirMatch)
 admin.site.register(RTPVapiMirStockMatch)
 admin.site.register(SyncRun)
+admin.site.register(MatchReview)
+admin.site.register(DataQualityFlag)
 
 # ── Per-plant import PO tables ──────────────────────────────────────────────
 admin.site.register(HRSImportPurchaseOrder)

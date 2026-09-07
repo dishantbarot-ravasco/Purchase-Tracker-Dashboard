@@ -474,6 +474,7 @@ async function loadSyncStatus() {
           anyFailed: Object.values(data.sync).some(r => r.status !== 'success'),
           failedTitle: failedDetails.join(' | '),
           inProgress: !!data.syncInProgress,
+          snapshotGapDays: data.snapshotGapDays,
         };
       }));
       el.innerHTML = perPlant.map(p => {
@@ -482,10 +483,18 @@ async function loadSyncStatus() {
         // triggered from another browser/tab/session, since it's read from
         // the shared DB-backed lock, not client-side state.
         const syncingBadge = p.inProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '';
-        if (!p.latest) return '<span class="badge stale">' + escapeHtml(p.label) + ': never synced</span>' + syncingBadge;
+        // snapshotGapDays (Snapshot Pipeline Rebuild, Phase B - see
+        // apps/api/routers/_domestic_base.py's make_sync_status()) makes a
+        // silently-dead daily snapshot job visible instead of looking
+        // identical to a healthy one - reuses the existing .badge.stale
+        // style rather than adding new CSS.
+        const gapBadge = p.snapshotGapDays > 1
+          ? ' <span class="badge stale" title="No stock snapshot in ' + p.snapshotGapDays + ' days">snapshot gap: ' + p.snapshotGapDays + 'd</span>'
+          : '';
+        if (!p.latest) return '<span class="badge stale">' + escapeHtml(p.label) + ': never synced</span>' + syncingBadge + gapBadge;
         const when = new Date(p.latest).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
         const titleAttr = p.anyFailed && p.failedTitle ? ' title="' + escapeHtml(p.failedTitle) + '"' : '';
-        return '<span class="badge ' + (p.anyFailed ? 'failed' : '') + '"' + titleAttr + '>' + escapeHtml(p.label) + ': ' + when + '</span>' + syncingBadge;
+        return '<span class="badge ' + (p.anyFailed ? 'failed' : '') + '"' + titleAttr + '>' + escapeHtml(p.label) + ': ' + when + '</span>' + syncingBadge + gapBadge;
       }).join('');
     } else {
       const data = await apiForPlant(state.plant, '/sync-status');
@@ -496,6 +505,11 @@ async function loadSyncStatus() {
       // see SyncRun.Source.MATCH's own comment (apps/core/models.py).
       const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM', match: 'Matching' };
       const syncingBadge = data.syncInProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '';
+      // See the isAllPlants() branch above for what snapshotGapDays means
+      // and why .badge.stale is reused rather than adding new CSS.
+      const gapBadge = data.snapshotGapDays > 1
+        ? ' <span class="badge stale" title="No stock snapshot in ' + data.snapshotGapDays + ' days">snapshot gap: ' + data.snapshotGapDays + 'd</span>'
+        : '';
       el.innerHTML = Object.keys(labels).map(src => {
         const run = data.sync[src];
         if (!run) return '<span class="badge stale">' + labels[src] + ': never synced</span>';
@@ -510,7 +524,7 @@ async function loadSyncStatus() {
         // something that needs its own dedicated UI.
         const titleAttr = cls === 'failed' && run.errorDetail ? ' title="' + escapeHtml(run.errorDetail) + '"' : '';
         return '<span class="badge ' + cls + '"' + titleAttr + '>' + labels[src] + ': ' + when + '</span>';
-      }).join('') + syncingBadge;
+      }).join('') + syncingBadge + gapBadge;
     }
   } catch (e) {
     // Logged, and shown as a visible badge rather than silently leaving the

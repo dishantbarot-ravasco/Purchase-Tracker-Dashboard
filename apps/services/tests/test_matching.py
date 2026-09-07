@@ -7,27 +7,28 @@ scoring rationale) - mirrors the TDS Automation App's
 apps/services/tests/test_calculations.py convention: pure-function unit
 tests, no Django DB, no mocking.
 
-matching_achhad.py and matching_vapi.py carry byte-for-byte identical
-copies of these same five helpers (confirmed against the source - this is a
-deliberate, documented duplication, not an oversight: each plant's matching
-module is independently readable end-to-end rather than importing shared
-internals from a "matching_common" module - see CLAUDE.md's "Per-plant
-models, not a shared schema" section for the same reasoning applied one
-layer up, at the model level). Testing HRS's copy exercises the identical
-logic all three plants run; a change to any plant's copy without the same
-change to the others would only be caught by this file if you also update
-which module it imports from - keep that in mind if the three ever
-genuinely diverge on purpose.
+As of the Match Accuracy Programme's Phase 0 (see apps/services/matching_core.py's
+module docstring), these five helpers live in exactly one place -
+matching_core.py - and matching.py/matching_achhad.py/matching_vapi.py each
+build a _MatchConfig around it rather than carrying their own copies. This
+file imports them from matching_core directly, so it now genuinely exercises
+the same code all three plants run, not just HRS's own copy of it.
+FLAG_DIFF_PCT/MATCH_THRESHOLD stay imported from matching.py (HRS) - each
+plant still owns its own module-level constants, per matching_core.py's own
+docstring, even though all three currently use the same values.
 """
 from decimal import Decimal
 
-from apps.services.matching import (
-    FLAG_DIFF_PCT,
-    MATCH_THRESHOLD,
+from apps.services.matching import FLAG_DIFF_PCT, MATCH_THRESHOLD
+from apps.services.matching_core import (
+    _MatchConfig,
+    _Matchable,
     _closeness,
     _diff_pct,
+    _diffs_and_flag,
     _po_number_matches,
     _token_overlap,
+    _uom_adjust,
     _vendor_matches,
 )
 
@@ -223,6 +224,26 @@ class TestPoNumberMatches:
         """Two genuinely different PO numbers, even similarly shaped, don't match."""
         assert _po_number_matches("3000001075", "3000001099") is False
 
+    def test_prefix_collision_does_not_match(self):
+        # Fix 2.E: matching.py:130 used to do a plain `in` substring test,
+        # making 'HRS/HO/26-27/003' a false tier-1 hit against
+        # 'HRS/HO/26-27/0031' - a genuinely different PO. Whole-token
+        # comparison must reject this.
+        """Regression test for fix 2.E: a PO number that is a textual prefix
+        of a different, longer PO number must NOT match - the old plain
+        substring test treated 'HRS/HO/26-27/003' as contained in
+        'HRS/HO/26-27/0031', which is a different PO."""
+        assert _po_number_matches("HRS/HO/26-27/003", "HRS/HO/26-27/0031") is False
+
+    def test_trailing_float_artifact_still_matches(self):
+        # Real data shape: openpyxl reads some PO-number cells as floats, so
+        # po_number_raw can carry a literal '.0' suffix the PO's own
+        # po_number field never has (e.g. '3000001081.0' vs '3000001081').
+        """A '.0' float-parsing artifact on the MIR side (confirmed real
+        data shape - openpyxl reads some PO-number cells as floats) must
+        still match the PO's own clean integer-looking po_number."""
+        assert _po_number_matches("3000001081", "3000001081.0") is True
+
 
 def test_match_threshold_constant_unchanged():
     # A sentinel, not a real behavioral test - documents the current cutoff
@@ -236,3 +257,137 @@ def test_match_threshold_constant_unchanged():
     not measured against labeled ground truth - this test exists to make any
     future change to it a deliberate, visible decision."""
     assert MATCH_THRESHOLD == Decimal("0.55")
+
+
+# ── _uom_adjust()/_diffs_and_flag(): fixes 2.C (UOM normalization) and 3.F ──
+# (value epsilon + severity). No Django DB needed - a plain duck-typed
+# object stands in for a MIR entry, since these functions only ever read
+# plain attributes off it (never touch the ORM).
+
+class _FakeMir:
+    def __init__(self, description, qty, uom, rate, taxable_value, po_number_raw=""):
+        self.material_description = description
+        self.qty = qty
+        self.uom = uom
+        self.rate = rate
+        self.taxable_value = taxable_value
+        self.po_number_raw = po_number_raw
+
+
+def _test_config(**overrides):
+    defaults = dict(
+        po_item_model=None, import_item_model=None, mir_model=None,
+        po_mir_match_model=None, import_po_mir_match_model=None,
+        mir_stock_match_model=None, stock_lot_model=None,
+        match_threshold=Decimal("0.55"), flag_diff_pct=Decimal("0"),
+        value_flag_epsilon=Decimal("1.00"),
+        weight_material=Decimal("0.30"), weight_qty=Decimal("0.20"),
+        weight_rate=Decimal("0.20"), weight_value=Decimal("0.30"),
+        mir_value=lambda mir: mir.taxable_value,
+        stock_rate_field="basic_rate", stock_vendor_field="party_name",
+    )
+    defaults.update(overrides)
+    return _MatchConfig(**defaults)
+
+
+class TestUomAdjust:
+    def test_same_family_converts_qty_and_inverts_rate(self):
+        # 2 MT = 2000 KG; a rate of 40/KG converts to 40000/MT (inverse of
+        # the qty factor - price-per-unit scales inversely to unit size).
+        """Same-family units (KG vs MT) convert qty by the unit factor and
+        rate by its inverse, so a true match's qty/rate closeness is scored
+        on comparable base-unit values instead of raw 1000x-apart numbers."""
+        qty_a, qty_b, rate_a, rate_b, mismatch = _uom_adjust(Decimal("2"), "MT", Decimal("2000"), "KG", Decimal("40000"), Decimal("40"))
+        assert mismatch is False
+        assert qty_a == Decimal("2000")
+        assert qty_b == Decimal("2000")
+        assert rate_a == Decimal("40")
+        assert rate_b == Decimal("40")
+
+    def test_different_families_is_a_mismatch(self):
+        """Mass vs count is a genuine unit-family mismatch, not a rate/qty
+        discrepancy - fix 2.C's whole point (the doc's own worked example:
+        'A PO in MT matching a MIR in KG' should still score as a match;
+        this is the deliberately-different case where the units genuinely
+        aren't comparable at all)."""
+        qty_a, qty_b, rate_a, rate_b, mismatch = _uom_adjust(Decimal("100"), "KG", Decimal("100"), "NOS", Decimal("5"), Decimal("5"))
+        assert mismatch is True
+        assert (qty_a, qty_b, rate_a, rate_b) == (None, None, None, None)
+
+    def test_unrecognized_unit_passes_through_unconverted(self):
+        """An unrecognized unit on either side (blank, or a real-but-
+        ambiguous code like 'TO') passes both values through unconverted
+        rather than guessing a wrong conversion - see normalize_uom()'s own
+        docstring for why."""
+        qty_a, qty_b, rate_a, rate_b, mismatch = _uom_adjust(Decimal("100"), "TO", Decimal("100"), "KG", Decimal("5"), Decimal("5"))
+        assert mismatch is False
+        assert (qty_a, qty_b, rate_a, rate_b) == (Decimal("100"), Decimal("100"), Decimal("5"), Decimal("5"))
+
+
+class TestDiffsAndFlagValueEpsilon:
+    def test_value_diff_under_epsilon_is_not_flagged(self):
+        # ₹0.50 absolute diff on a ₹5000 base - well under the ₹1.00
+        # epsilon, even though the percentage (0.01%) is technically nonzero.
+        """Fix 3.F: a value difference under the ₹1.00 absolute epsilon does
+        not flag, even though qty and rate keep exact-zero tolerance - value
+        is derived (qty x rate, plus tax-split rounding), so a rupee or two
+        of rounding isn't a real discrepancy."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.50"))
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        assert is_flagged is False
+        assert uom_mismatch is False
+
+    def test_value_diff_over_epsilon_is_flagged(self):
+        """A value difference exceeding the ₹1.00 absolute epsilon does flag,
+        confirming the epsilon has a real ceiling and doesn't swallow every
+        value discrepancy."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("4995.00"))
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        assert is_flagged is True
+
+    def test_quantity_keeps_exact_zero_tolerance_regardless_of_value_epsilon(self):
+        """Quantity is directly reported (not derived like value) and stays
+        at exact-zero tolerance - the value epsilon must never leak into the
+        qty/rate comparison."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("1000"), "KG", Decimal("50"), Decimal("50000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("999"), "KG", Decimal("50"), Decimal("50000.00"))  # 1kg out of 1000kg
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        assert is_flagged is True
+
+    def test_uom_mismatch_flags_with_material_severity_and_none_qty_rate_diff(self):
+        """Fix 2.C + 3.F together: a genuine unit-family mismatch always
+        flags as "material" severity, and qty_diff_pct/rate_diff_pct are
+        None (not a nonsense 9999.99%-style percentage)."""
+        config = _test_config()
+        item = _Matchable("Reclaim Rubber", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Reclaim Rubber", Decimal("100"), "NOS", Decimal("50"), Decimal("5000.00"))
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        assert uom_mismatch is True
+        assert qty_diff is None
+        assert rate_diff is None
+        assert is_flagged is True
+        assert severity == "material"
+
+    def test_exact_match_has_no_severity(self):
+        """An exact match on every factor has no measurable discrepancy at
+        all - severity is None, not "rounding" (there's nothing to round)."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        assert is_flagged is False
+        assert severity is None
+
+    def test_large_discrepancy_is_material_severity(self):
+        """A qty discrepancy well past the 20% cut point is "material"
+        severity - reusing flags.js's rowTintClass() thresholds, not a new one."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("1000"), "KG", Decimal("50"), Decimal("50000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("700"), "KG", Decimal("50"), Decimal("35000.00"))  # 30% off
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        assert severity == "material"

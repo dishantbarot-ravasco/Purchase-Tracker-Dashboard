@@ -39,7 +39,9 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import HRSPOLineItem, HRSPurchaseOrder, SyncRun
+from apps.core.models import DataQualityFlag, HRSPOLineItem, HRSPurchaseOrder, SyncRun
+from apps.services.arithmetic_checks import check_po_line_item
+from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
@@ -99,6 +101,8 @@ class Command(BaseCommand):
                     changed = self._upsert_order(parsed)
                     if changed:
                         rows_changed += 1
+
+            self._sync_data_quality_flags()
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_po_csv: {rows_seen} POs seen, {rows_changed} created/updated "
@@ -187,3 +191,14 @@ class Command(BaseCommand):
             for item in parsed.items
         ])
         return True
+
+    def _sync_data_quality_flags(self) -> None:
+        """Match Accuracy Programme fix 3.G: qty x rate ~= net_value over
+        every currently-active HRS PO line item (not just the ones this sync
+        happened to touch - cheap, and keeps a flag correctly cleared if a
+        row was fixed in the source sheet on some other path)."""
+        results = {
+            item.id: check_po_line_item(item.qty, item.net_price, item.net_value)
+            for item in HRSPOLineItem.objects.all()
+        }
+        sync_data_quality_flags(SyncRun.Plant.HRS, DataQualityFlag.SourceType.PO_LINE_ITEM, results)

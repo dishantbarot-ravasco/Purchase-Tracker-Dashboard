@@ -82,6 +82,14 @@ function materialLinksToItem(material, po, item) {
   return true;
 }
 
+// Days-left confidence bands, weakest to strongest (see
+// apps/services/stock_consumption.py's own _BANDS) - used both to pick a
+// group's overall confidence (the weakest contributing lot's band, never
+// the best or a mean - see aggregateMaterialsByName() below) and to color
+// the confidence dot (daysLeftCellHtml()).
+const CONF_RANK = { none: 0, low: 1, medium: 2, high: 3 };
+const CONF_DOT_CLASS = { high: 'conf-dot-high', medium: 'conf-dot-medium', low: 'conf-dot-low', none: 'conf-dot-low' };
+
 // One row per unique material NAME within the current plant scope (sums
 // qty/value across every vendor lot contributing to it, and across all 3
 // plants when "All Plants" is selected) - per the project owner's
@@ -117,17 +125,72 @@ function aggregateMaterialsByName(lots) {
   // summed across vendors/plants a single "rate" is otherwise misleading
   // (which lot's rate would it even be?), same reasoning as the reference
   // design's own "Not available" cells for multi-lot materials.
-  return Array.from(groups.values()).map(g => ({
-    description: g.description, materialCode: g.materialCode,
-    category: g.category, subCategory: g.subCategory,
-    qty: g.qty, value: g.value,
-    rate: g.rates.size === 1 ? Array.from(g.rates)[0] : null,
-    // True if ANY contributing lot has a real Stock<->MIR match (see the
-    // backend's `mirMatched` field, apps/api/routers/*_views.py) - not a
-    // frontend-computed proxy.
-    mirMatched: g.lots.some(l => l.mirMatched),
-    vendors: g.vendors, lots: g.lots, anchorLot: g.lots[0],
-  }));
+  return Array.from(groups.values()).map(g => {
+    // Days-left is not summable (averaging/adding days across lots is
+    // simply wrong) - sum the consumption *rates* instead, then divide the
+    // already-summed quantity. Group confidence is the weakest contributing
+    // lot's band: one thin lot makes the whole group's rate thin, and
+    // taking the best or the mean would overstate it. A lot with no
+    // consumption block yet (brand-new, or too little history) counts as
+    // 'none' for this purpose, same as the backend's own confidence value.
+    let avgDaily = 0;
+    let weakest = null;
+    g.lots.forEach(l => {
+      const c = l.consumption;
+      const conf = (c && c.confidence) || 'none';
+      if (c && c.avgDaily) avgDaily += c.avgDaily;
+      if (!weakest || CONF_RANK[conf] < CONF_RANK[weakest.confidence]) {
+        weakest = { confidence: conf, historyDays: c ? c.historyDays : 0, intervalsUsed: c ? c.intervalsUsed : 0 };
+      }
+    });
+    return {
+      description: g.description, materialCode: g.materialCode,
+      category: g.category, subCategory: g.subCategory,
+      qty: g.qty, value: g.value,
+      rate: g.rates.size === 1 ? Array.from(g.rates)[0] : null,
+      // True if ANY contributing lot has a real Stock<->MIR match (see the
+      // backend's `mirMatched` field, apps/api/routers/*_views.py) - not a
+      // frontend-computed proxy.
+      mirMatched: g.lots.some(l => l.mirMatched),
+      vendors: g.vendors, lots: g.lots, anchorLot: g.lots[0],
+      consumption: {
+        avgDaily: avgDaily > 0 ? avgDaily : null,
+        daysLeft: avgDaily > 0 ? g.qty / avgDaily : null,
+        confidence: weakest ? weakest.confidence : 'none',
+        historyDays: weakest ? weakest.historyDays : 0,
+        intervalsUsed: weakest ? weakest.intervalsUsed : 0,
+      },
+    };
+  });
+}
+
+// Below-15-days-of-cover, or already at/below Achhad's msl reorder point
+// (daysToMsl === 0 - see _domestic_base.py's _lot_dict()) on any
+// contributing lot - wired into the Status filter (matStatusFilter
+// 'lowstock') alongside the existing qtydisc/ratedisc/flags states.
+function isMaterialLowStock(m) {
+  if (m.consumption && m.consumption.daysLeft != null && m.consumption.daysLeft < 15) return true;
+  return (m.lots || []).some(l => l.daysToMsl === 0);
+}
+
+// Days Left cell: the number plus a confidence dot (green/amber/grey),
+// tooltipped with the history it's based on - the visible half of the
+// decision to show a days-left figure even on thin history (see
+// apps/services/stock_consumption.py's module docstring). Band 'none'
+// renders an em dash instead of a number - a two-day estimate must never
+// look identical to a month-long one.
+function daysLeftCellHtml(m) {
+  const c = m.consumption;
+  const confidence = (c && c.confidence) || 'none';
+  const dotClass = CONF_DOT_CLASS[confidence] || CONF_DOT_CLASS.none;
+  if (confidence === 'none' || !c) {
+    return '<span class="days-left-cell"><span class="days-left-value">&mdash;</span>' +
+      '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="Not enough snapshot history yet" tabindex="0"></span></span>';
+  }
+  const valueText = c.daysLeft != null ? Math.round(c.daysLeft).toLocaleString('en-IN') + ' d' : 'No movement';
+  const tip = 'Based on ' + c.historyDays + ' day' + (c.historyDays === 1 ? '' : 's') + ' of history (' + c.intervalsUsed + ' interval' + (c.intervalsUsed === 1 ? '' : 's') + ')';
+  return '<span class="days-left-cell"><span class="days-left-value">' + escapeHtml(valueText) + '</span>' +
+    '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="' + escapeHtml(tip) + '" tabindex="0"></span></span>';
 }
 
 // All (po, item) pairs across the given plant keys' cached PO data that link
@@ -291,6 +354,7 @@ function renderMaterialsView() {
   const qtyDiscMats = linkage.filter(l => l.qtyFlag);
   const rateDiscMats = linkage.filter(l => l.rateFlag);
   const flaggedMats = linkage.filter(l => l.hasInfoFlag);
+  const lowStockMats = filtered.filter(isMaterialLowStock);
 
   // Same visual language as Purchase Orders' KPI row (renderPoList()) -
   // colored left border + flag icon for discrepancy/quality cards, plain
@@ -306,6 +370,7 @@ function renderMaterialsView() {
     { key: 'qtyordered', cls: 'partial', label: 'Quantity Ordered (Open POs)', raw: qtyOrderedOpen, fmt: 'locale', tip: 'Total quantity still open on purchase orders linked to this material.' },
     { key: 'qtydisc', cls: 'critical', label: 'Quantity Discrepancies', raw: qtyDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'A linked PO line item\'s quantity differs from its matched MIR entry.' },
     { key: 'ratedisc', cls: 'critical', label: 'Rate Discrepancies', raw: rateDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'A linked PO line item\'s rate differs from its matched MIR entry.' },
+    { key: 'lowstock', cls: 'critical', label: 'Low Stock (Reorder Soon)', raw: lowStockMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Under 15 days of cover at the current consumption rate, or already at/below Achhad\'s minimum stock level.' },
     { key: 'flags', cls: 'flags', label: 'Data Quality Flags', raw: flaggedMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.quality, tip: 'Paperwork/process notes on a linked PO\'s remarks - not a money or quantity problem.' },
   ];
   const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.matStatusFilter === c.key ? 'active' : '') + '" data-matkpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.matStatusFilter === c.key) + '">' +
@@ -320,6 +385,7 @@ function renderMaterialsView() {
   let tableRecs = filtered;
   if (state.matStatusFilter === 'qtydisc') tableRecs = qtyDiscMats.map(l => l.material);
   else if (state.matStatusFilter === 'ratedisc') tableRecs = rateDiscMats.map(l => l.material);
+  else if (state.matStatusFilter === 'lowstock') tableRecs = lowStockMats;
   else if (state.matStatusFilter === 'flags') tableRecs = flaggedMats.map(l => l.material);
   tableRecs = applyMatColFilters(tableRecs);
   // "Materials by Stock Quantity" - sorted by stock qty descending, not
@@ -373,9 +439,11 @@ function renderMaterialsView() {
     '',
     '',
     '',
+    '', // Days Left - no header-row control of its own, same reasoning as Stock/Inventory Value/Latest Rate above.
     '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
       '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy</option>' +
       '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy</option>' +
+      '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock</option>' +
       '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag</option>' +
     '</select>',
     '<select class="col-filter-input" data-mcf="progress"><option value="">All</option>' +
@@ -403,7 +471,7 @@ function renderMaterialsView() {
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
     '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + '. Click a row for its full cross-plant analysis.</div>' +
-    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>"Inventory Value in Transit", "Quantity Ordered", and the discrepancy/flag columns below are computed by automatically matching each material to purchase order line items by description (and vendor, where known) - the same best-effort approach this app already uses for PO&harr;MIR matching. <strong>Not guaranteed-correct identity resolution - verify manually before relying on it.</strong></div></div>' +
+    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>"Inventory Value in Transit", "Quantity Ordered", and the discrepancy/flag columns below are computed by automatically matching each material to purchase order line items by description (and vendor, where known) - the same best-effort approach this app already uses for PO&harr;MIR matching. <strong>Not guaranteed-correct identity resolution - verify manually before relying on it.</strong> "Days Left" is likewise an estimate, derived from recent stock-snapshot history, not a figure reported by the sheet - the confidence dot next to it shows how much history it's based on.</div></div>' +
     '<div class="mat-cards">' + kpiHtml + '</div>' +
     // "Filter by Category" / "Filter by Sub Category" / "Filter by Flags"
     // bar - moved above the chart (project owner, 2026-09-04) so the chart
@@ -434,6 +502,7 @@ function renderMaterialsView() {
           '<option value="">All flags</option>' +
           '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Discrepancy (' + qtyDiscMats.length + ')</option>' +
           '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Discrepancy (' + rateDiscMats.length + ')</option>' +
+          '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock (' + lowStockMats.length + ')</option>' +
           '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flaggedMats.length + ')</option>' +
         '</select>' +
       '</div>' +
@@ -453,7 +522,7 @@ function renderMaterialsView() {
       // the fuller reasoning). "View all" still renders as a plain <table>
       // for all three views.
       if (showingAll) {
-        return '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Sub Category</th><th>Stock' + stockAllPlantsSuffix + '</th><th>Inventory Value' + stockAllPlantsSuffix + '</th><th>Latest Rate</th><th>Status</th><th>Progress</th><th>Details</th></tr>' +
+        return '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Sub Category</th><th>Stock' + stockAllPlantsSuffix + '</th><th>Inventory Value' + stockAllPlantsSuffix + '</th><th>Latest Rate</th><th>Days Left</th><th>Status</th><th>Progress</th><th>Details</th></tr>' +
           colFilterRow +
         '</thead><tbody>' +
         listRecs.map(m => {
@@ -466,13 +535,14 @@ function renderMaterialsView() {
           '<td>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</td>' +
           '<td>' + formatInr(m.value || 0) + '</td>' +
           '<td>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</td>' +
+          '<td>' + daysLeftCellHtml(m) + '</td>' +
           (() => { const st = computeMaterialStatus(m, entry); return '<td><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry) + '</td>'; })() +
           '<td>' + materialStepperHtml(m) + '</td>' +
           '<td><span class="row-link" data-lot="' + key + '">View analysis</span></td></tr>';
         }).join('') +
         '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>Material</div><div>Category</div><div>Sub Category</div><div>Stock' + stockAllPlantsSuffix + '</div><div>Inventory Value' + stockAllPlantsSuffix + '</div><div>Latest Rate</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols"><div>Material</div><div>Category</div><div>Sub Category</div><div>Stock' + stockAllPlantsSuffix + '</div><div>Inventory Value' + stockAllPlantsSuffix + '</div><div>Latest Rate</div><div>Days Left</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + matFilterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="matTop5List">' + listRecs.map(m => {
           const anchor = m.anchorLot;
@@ -486,6 +556,7 @@ function renderMaterialsView() {
             '<div>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</div>' +
             '<div>' + formatInr(m.value || 0) + '</div>' +
             '<div>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</div>' +
+            '<div>' + daysLeftCellHtml(m) + '</div>' +
             '<div><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry) + '</div>' +
             '<div>' + materialStepperHtml(m) + '</div>' +
             '<div><span class="row-link" data-lot="' + key + '">View analysis</span></div></div>';

@@ -42,7 +42,9 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import HRSMIREntry, SyncRun
+from apps.core.models import DataQualityFlag, HRSMIREntry, SyncRun
+from apps.services.arithmetic_checks import check_mir_entry
+from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.mir import HeaderMismatch, parse_mir_xlsx
 from apps.services.sync_utils import unchanged
 
@@ -98,6 +100,8 @@ class Command(BaseCommand):
                     .update(is_active=False)
                 )
 
+            self._sync_data_quality_flags()
+
             self.stdout.write(self.style.SUCCESS(
                 f"sync_mir: {rows_seen} MIR rows seen, {rows_changed} created/updated, "
                 f"{deactivated} deactivated (no longer in sheet) "
@@ -147,3 +151,14 @@ class Command(BaseCommand):
             defaults={f: getattr(parsed, f) for f in _FIELDS} | {"last_synced_at": timezone.now(), "is_active": True},
         )
         return True
+
+    def _sync_data_quality_flags(self) -> None:
+        """Match Accuracy Programme fix 3.G: taxable + gst + tcs - discount
+        ~= final, over every currently-active HRS MIR row. gst is the sum of
+        HRS's three GST-amount columns (India's GST is either IGST alone or
+        CGST+SGST together, never both, so summing all three is safe)."""
+        results = {}
+        for entry in HRSMIREntry.objects.filter(is_active=True):
+            gst_amt = (entry.igst or 0) + (entry.cgst_amt or 0) + (entry.sgst_amt or 0)
+            results[entry.id] = check_mir_entry(entry.taxable_value, gst_amt, entry.tcs_amt, entry.discount_amt, entry.invoice_final_value)
+        sync_data_quality_flags(SyncRun.Plant.HRS, DataQualityFlag.SourceType.MIR_ENTRY, results)

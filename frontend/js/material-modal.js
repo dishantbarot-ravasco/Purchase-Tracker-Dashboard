@@ -175,14 +175,22 @@ async function openMaterialModal(compositeKey) {
       '<div style="margin-top:4px;font-size:11.5px;color:var(--slate-soft);">Affects: ' + escapeHtml(Array.from(poSet).join(', ')) + ' - open that PO\'s own detail view to dismiss.</div>' +
     '</div>'
   ).join('');
-  const totalFlagCount = flaggedMatches.length + materialCritPos.size;
+  // Match Accuracy Programme fix 3.G: each sibling lot's own stock-balance
+  // arithmetic flag, if any - a real source-sheet formula problem, not a
+  // matching artifact, so it's shown alongside the MIR<->Stock/discrepancy
+  // flags above rather than only being visible in Django Admin.
+  const dataQualityFlagsHtml = [];
+  siblingLots.forEach(l => (l.dataQualityFlags || []).forEach(f =>
+    dataQualityFlagsHtml.push(dataQualityFlagHtml(Object.assign({}, f, { _plantLabel: l._plantLabel })))
+  ));
+  const totalFlagCount = flaggedMatches.length + materialCritPos.size + dataQualityFlagsHtml.length;
 
   const allMaterialCorrections = [];
   siblingLots.forEach(l => (l.corrections || []).forEach(c => allMaterialCorrections.push(Object.assign({}, c, { _plantLabel: l._plantLabel }))));
   allMaterialCorrections.sort((a, b) => (b.correctedAt || '').localeCompare(a.correctedAt || ''));
 
   const materialFlagsListHtml = totalFlagCount
-    ? materialCritFlagsHtml + flaggedMatches.map(materialFlagHtml).join('')
+    ? materialCritFlagsHtml + flaggedMatches.map(materialFlagHtml).join('') + dataQualityFlagsHtml.join('')
     : '<div style="text-align:center;color:var(--slate-soft);padding:14px;">No discrepancy or MIR&harr;Stock match flags for this material.</div>';
   const materialCorrectionsHtml = allMaterialCorrections.length
     ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +

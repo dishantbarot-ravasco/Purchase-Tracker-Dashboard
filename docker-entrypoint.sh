@@ -7,6 +7,11 @@ set -e
 
 uv run python manage.py migrate --noinput
 
+# Idempotent (get_or_create on name) - see that command's own module
+# docstring for why a repeat run never resets next_run once the schedule
+# already exists.
+uv run python manage.py ensure_schedules
+
 # createcachetable is not safely re-runnable against an existing table on
 # every Django version's own terms - `|| true` makes a container restart
 # non-fatal on "table already exists" (the expected, common case for this

@@ -30,6 +30,7 @@ uv run python manage.py runserver          # dev server
 uv run python manage.py migrate            # apply migrations
 uv run python manage.py makemigrations core
 uv run python manage.py createcachetable   # one-off: creates DatabaseCache's table (pt_cache_table)
+uv run python manage.py ensure_schedules   # idempotent: creates/corrects the daily-sync-all-plants django-q2 Schedule row
 uv run pytest                              # test suite (real Postgres, no mocking - see below)
 uv run python manage.py check --deploy --fail-level WARNING  # production security check - also runs in CI, see below
 
@@ -853,6 +854,60 @@ rejected as a lever** - not a technical fix, a training/process one, and out of 
 solve. Vapi in particular will likely keep running on the weighted score alone indefinitely; don't
 assume Tier-1 coverage will improve on its own.
 
+## Days-Left Engine (added 2026-09-05)
+
+Per-material consumption rate and days-of-cover, added to the Raw Material Analysis view. Built
+from a project-owner-authored build plan ("Document 02 of 03: Days-Left Engine") which itself
+depended on a prerequisite "Document 01: stable lot identity" that **does not exist in this repo**
+(confirmed by a full search of code/docs/git history before starting - no such document or prior
+work exists). Lot identity today is genuinely not stable: every `*StockLot` model is uniquely
+keyed on `source_row_ref` (a row-position reference into the synced spreadsheet), and
+`is_active`'s own help_text already documents that a row shift in the source sheet can flip a lot
+inactive and create a "new" lot row for the same real-world material, silently resetting its
+snapshot history. Built anyway, on the project owner's explicit decision, relying on the
+confidence-band mechanism below as the mitigation rather than waiting on an unstarted lot-identity
+fix - a lot whose history keeps resetting will simply sit at LOW/NONE confidence rather than
+reporting a wrong number with false certainty.
+
+**Why this can't use `issued`/`received`**: those columns mean a different thing at each plant's
+Stock sheet - RTP-Achhad's `issued` is a period-to-date summary that resets each period; HRS's/
+RTP-Vapi's `issued`/`received` are formula cells pulled from a separate Receipt/Issue tab, and
+HRS's own `received` is already documented elsewhere in this file as reading 0 for nearly every
+real lot. The one field that means the same thing everywhere is the closing balance,
+`todays_stock` - so the portable signal is the day-over-day drawdown between consecutive
+snapshots of it, not either of those columns.
+
+- **`apps/services/stock_consumption.py`** - the pure algorithm (`consumption_stats()`), tested
+  dependency-free in `apps/services/tests/test_stock_consumption.py` (no DB), same convention as
+  `matching.py`/`test_matching.py`. Skips any consecutive-snapshot gap over 7 days (averaging
+  across a long hole would invent a drawdown that never happened) and excludes any interval where
+  stock rose (a receipt landed) entirely rather than counting it as zero consumption, which would
+  drag the average down and overstate days-left - the exact direction of error that hides a real
+  reorder need. Confidence travels in the payload as `high`/`medium`/`low`/`none` (based on days
+  spanned + usable intervals), rendered rather than used as a hidden filter - the whole point is to
+  show a thin-history figure while being honest about how thin it is. `issued` still feeds a
+  secondary cross-check (`estimatesAgree`) where it happens to behave cumulatively, but never
+  overrides the primary drawdown-based number.
+- **`apps/api/routers/_domestic_base.py`** - `make_materials()`'s `_consumption_by_lot()` fetches
+  every active lot's window of snapshots in one query (`values_list` + `itertools.groupby`), not
+  one query per lot - regression-tested in `apps/api/tests/test_materials_days_left.py` via
+  `django_assert_num_queries(1)`. `_lot_dict()` exposes the result as a `consumption` block per
+  lot, plus `daysToMsl` (Achhad's `msl` column only - HRS/Vapi have no equivalent field at all,
+  same `getattr(lot, "msl", None)` no-branching pattern already used for `no_of_days`/
+  `sub_category`). `daysToMsl` is `0` the instant current stock is at/below msl, independent of
+  whether a consumption rate is even known yet (already-below-reorder-point shouldn't wait on 30
+  days of history to surface); otherwise an ETA once `avgDaily` is available, else `None`.
+- **`frontend/js/materials.js`** - a "Days Left" column (with a green/amber/grey confidence dot,
+  tooltipped with the history it's based on) in both the "View all" `<table>` and the top-5
+  `.top5-row` grid preview, plus `matFilterCells`'s placeholder-entry convention (an empty `''`
+  keeps the header-filter row's columns aligned even for a column with no filter control of its
+  own). `aggregateMaterialsByName()` sums consumption *rates* across a group's contributing lots,
+  then divides the already-summed quantity - days-left itself is never summed or averaged across
+  lots, that's simply wrong. Group confidence is the **weakest** contributing lot's band, not the
+  best or a mean - one thin lot makes the whole group's rate thin. A new "Low Stock" state on the
+  existing Status filter (`matStatusFilter`, KPI card + both `<select>`s) fires on `daysLeft < 15`
+  or any contributing lot's `daysToMsl === 0`.
+
 ## Artifact-parity decisions (dashboard redesign)
 
 The dashboard's nav structure and PO-list KPI row were rebuilt to match the original "Purchase
@@ -1238,12 +1293,20 @@ had no MIR-derived fields at all; the three previously-`disabled: true` "Awaitin
 - **Licenses (Advance Authorisation tracking)** — deferred to v2, see the roadmap section above.
   Confirmed still true as of 2026-09-04: no `License`/`AdvanceLicense` model exists anywhere in
   `apps/core/models.py`.
-- **No scheduling** — deferred to v2, see the roadmap section above. Every sync/match command still
-  only runs when invoked manually or via the admin-triggered `sync-trigger` endpoints.
-- **Daily `*StockSnapshot` capture is a side effect of `sync_stock`/`sync_achhad_stock`/
-  `sync_vapi_stock` only** — there's no independent daily trigger, so a day where a plant's stock
-  sync doesn't run has no snapshot for that day and nothing backfills it. Tied to the scheduling
-  gap above - fixing that would fix this too, as a side effect, not a separate build.
+- ~~**No scheduling**~~ — **built, 2026-09-05 (Snapshot Pipeline Rebuild, Phase B)**. Admin-triggered
+  `sync-trigger` endpoints still exist unchanged, but every plant's sync+match pipeline now also
+  runs on its own once a day: `apps/services/sync_trigger.py`'s `run_daily_sync_all_plants()`,
+  scheduled as a real `django_q.models.Schedule` row by `manage.py ensure_schedules` (idempotent,
+  wired into `render.yaml`'s `buildCommand` and `docker-entrypoint.sh`, see that command's own
+  module docstring). Per-plant skip (not queue-behind) if a manual refresh is already mid-flight for
+  that plant.
+- ~~**Daily `*StockSnapshot` capture is a side effect of `sync_stock`/`sync_achhad_stock`/
+  `sync_vapi_stock` only**~~ — **built, 2026-09-05, same pass as directly above** (this was always
+  tied to the scheduling gap, exactly as this bullet predicted). A day where qcluster was down still
+  has no snapshot (deliberately not backfilled - see stock_identity.py/the Snapshot Pipeline Rebuild
+  plan's "deliberately not building" note), but that gap is now visible: `sync-status`'s
+  `lastSnapshotDate`/`snapshotGapDays` fields, surfaced as a badge in the dashboard's sync-status
+  banner when `snapshotGapDays > 1`.
 - **Superseded again (2026-09-04): "Imports has no MIR-equivalent reconciliation" was actually
   wrong, not just half-true — see "Import PO <-> MIR reconciliation" below.** The premise behind
   both this bullet's earlier versions (and the roadmap section's original "Import PO parsing for

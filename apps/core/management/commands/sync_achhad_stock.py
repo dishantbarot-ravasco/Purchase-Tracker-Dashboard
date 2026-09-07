@@ -1,19 +1,23 @@
 """
 apps/core/management/commands/sync_achhad_stock.py — syncs RAVASCO ACHHAD RM
-STOCK FILE.xlsx from Drive into RTPAchhadStockLot, keyed by source_row_ref
-(the sheet row number), and captures today's RTPAchhadStockSnapshot for
-every lot synced.
+STOCK FILE.xlsx from Drive into RTPAchhadStockLot, keyed by natural_key (a
+stable business identity - see apps/services/stock_identity.py), and
+captures today's RTPAchhadStockSnapshot for every lot synced.
 
 Same shape as sync_stock.py for HRS - see that file for the general design
-(row-shift reasoning, sync_utils.unchanged(), the separate per-day snapshot
-upsert, --file/--no-snapshot). What's genuinely different for this plant:
-the Drive folder is settings.ACHHAD_MIR_STOCK_FOLDER_ID; the file's single
-tab is renamed every month (e.g. 'Aug 26-27'), so the parser reads
-wb.sheetnames[0] instead of matching a literal tab name; and Achhad's Stock
-sheet is one row per material full stop, with no vendor column at all
-(_FIELDS below has no party_name, unlike HRS's HRSStockLot) - a materially
-weaker match guarantee for MIR<->Stock than HRS's/Vapi's (material, vendor)
-gate, documented in apps/services/matching_achhad.py's module docstring.
+(natural_key vs. the old source_row_ref, sync_utils.unchanged(), the
+separate per-day snapshot upsert, --file/--no-snapshot). What's genuinely
+different for this plant: the Drive folder is settings.ACHHAD_MIR_STOCK_FOLDER_ID;
+the file's single tab is renamed every month (e.g. 'Aug 26-27'), so the
+parser reads wb.sheetnames[0] instead of matching a literal tab name; and
+Achhad's Stock sheet is one row per material full stop, with no vendor
+column at all (_FIELDS below has no party_name, unlike HRS's HRSStockLot) -
+so this plant's natural_key has no vendor segment (vendor="" is passed to
+OccurrenceCounter.key_for below), a materially weaker identity guarantee by
+necessity (two lots of the same material are separated only by the
+occurrence counter), documented in stock_identity.py and
+apps/services/matching_achhad.py's module docstrings - still strictly
+better than a row number.
 
 Usage:
     python manage.py sync_achhad_stock
@@ -27,8 +31,11 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import RTPAchhadStockLot, RTPAchhadStockSnapshot, SyncRun
+from apps.core.models import DataQualityFlag, RTPAchhadStockLot, RTPAchhadStockSnapshot, SyncRun
+from apps.services.arithmetic_checks import check_stock_lot
+from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.achhad_stock import HeaderMismatch, parse_achhad_stock_xlsx
+from apps.services.stock_identity import OccurrenceCounter
 from apps.services.sync_utils import unchanged
 
 _FIELDS = [
@@ -56,6 +63,7 @@ class Command(BaseCommand):
         t0 = time.monotonic()
         rows_seen = 0
         rows_changed = 0
+        rows_skipped = 0
         status = SyncRun.Status.SUCCESS
         error_detail = ""
 
@@ -64,24 +72,36 @@ class Command(BaseCommand):
             lots = parse_achhad_stock_xlsx(file_bytes)
             rows_seen = len(lots)
             today = timezone.localdate()
+            counter = OccurrenceCounter()
 
             with transaction.atomic():
-                seen_refs = []
+                seen_keys = []
                 for parsed in lots:
-                    seen_refs.append(parsed.source_row_ref)
-                    lot, changed = self._upsert_lot(parsed)
+                    key = counter.key_for(code=parsed.sap_code, description=parsed.description, vendor="")
+                    if not key:
+                        rows_skipped += 1
+                        continue
+                    seen_keys.append(key)
+                    lot, changed = self._upsert_lot(parsed, key)
                     if changed:
                         rows_changed += 1
                     if not options["no_snapshot"]:
                         self._upsert_snapshot(lot, today)
                 deactivated = (
                     RTPAchhadStockLot.objects.filter(is_active=True)
-                    .exclude(source_row_ref__in=seen_refs)
+                    .exclude(natural_key__in=seen_keys)
                     .update(is_active=False)
                 )
 
+            self._sync_data_quality_flags()
+
+            if rows_skipped:
+                status = SyncRun.Status.PARTIAL
+                error_detail = f"{rows_skipped} row(s) skipped: no material code or description to key on."
+
             self.stdout.write(self.style.SUCCESS(
                 f"sync_achhad_stock: {rows_seen} stock rows seen, {rows_changed} created/updated, "
+                f"{rows_skipped} skipped (no identity), "
                 f"{deactivated} deactivated (no longer in sheet) "
                 f"({time.monotonic() - t0:.1f}s)"
             ))
@@ -118,15 +138,17 @@ class Command(BaseCommand):
         file_id = find_file_id_by_title(settings.ACHHAD_STOCK_FILE_TITLE, parent_id=settings.ACHHAD_MIR_STOCK_FOLDER_ID)
         return download_file_bytes(file_id)
 
-    def _upsert_lot(self, parsed) -> tuple[RTPAchhadStockLot, bool]:
-        """See sync_stock.py's _upsert_lot - same unchanged()-and-skip logic."""
-        existing = RTPAchhadStockLot.objects.filter(source_row_ref=parsed.source_row_ref).first()
+    def _upsert_lot(self, parsed, natural_key: str) -> tuple[RTPAchhadStockLot, bool]:
+        """See sync_stock.py's _upsert_lot - same natural_key-lookup,
+        unchanged()-and-skip logic."""
+        existing = RTPAchhadStockLot.objects.filter(natural_key=natural_key).first()
         if existing and existing.is_active and unchanged(RTPAchhadStockLot, existing, parsed, _FIELDS):
             return existing, False
 
         lot, _ = RTPAchhadStockLot.objects.update_or_create(
-            source_row_ref=parsed.source_row_ref,
-            defaults={f: getattr(parsed, f) for f in _FIELDS} | {"last_synced_at": timezone.now(), "is_active": True},
+            natural_key=natural_key,
+            defaults={f: getattr(parsed, f) for f in _FIELDS}
+            | {"source_row_ref": parsed.source_row_ref, "last_synced_at": timezone.now(), "is_active": True},
         )
         return lot, True
 
@@ -137,3 +159,14 @@ class Command(BaseCommand):
             snapshot_date=snapshot_date,
             defaults={f: getattr(lot, f) for f in _SNAPSHOT_FIELDS},
         )
+
+    def _sync_data_quality_flags(self) -> None:
+        """See sync_stock.py's own _sync_data_quality_flags (Match Accuracy
+        Programme fix 3.G) - same check, this plant's model. Confirmed
+        empirically: reconciles 99.7% of the time; the one real mismatch
+        found is the same "stock materialized from nowhere" shape as HRS's."""
+        results = {
+            lot.id: check_stock_lot(lot.opening_stock, lot.received, lot.issued, lot.todays_stock)
+            for lot in RTPAchhadStockLot.objects.filter(is_active=True)
+        }
+        sync_data_quality_flags(SyncRun.Plant.RTP_ACHHAD, DataQualityFlag.SourceType.STOCK_LOT, results)

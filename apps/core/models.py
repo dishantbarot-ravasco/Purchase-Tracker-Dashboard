@@ -274,19 +274,34 @@ class HRSStockLot(models.Model):
                    "HRS's own Stock file tracks some shared-warehouse lots under this tag.",
     )
 
-    source_row_ref = models.CharField(max_length=20, blank=True)
+    source_row_ref = models.CharField(
+        max_length=20, blank=True,
+        help_text="Sheet row number at last sync - diagnostic only. natural_key (below) is the real "
+                   "identity; a row number shifts if a row is inserted/deleted above it, see "
+                   "natural_key's own help_text.",
+    )
+    natural_key = models.CharField(
+        max_length=200, blank=True, db_index=True,
+        help_text="Stable business identity - see apps/services/stock_identity.py. Replaces "
+                   "source_row_ref as the sync upsert key so an inserted sheet row can't silently "
+                   "re-label this lot as a different material.",
+    )
     last_synced_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(
         default=True,
-        help_text="False once a sync no longer sees this source_row_ref in the sheet (lot sold out/"
-                   "removed, or a row shift). Deactivating instead of deleting preserves this lot's "
+        help_text="False once a sync no longer sees this natural_key in the sheet (lot sold out/"
+                   "removed). Deactivating instead of deleting preserves this lot's "
                    "HRSStockSnapshot history (CASCADE) and excludes it from matching - see "
-                   "HRSMIREntry.is_active's help_text for the full row-shift reasoning.",
+                   "HRSMIREntry.is_active's help_text for the same is_active/CASCADE reasoning "
+                   "(that model still keys on source_row_ref; this one no longer does).",
     )
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["source_row_ref"], name="uniq_hrs_stock_row")
+            models.UniqueConstraint(
+                fields=["natural_key"], condition=models.Q(natural_key__gt=""),
+                name="uniq_hrs_stock_natural_key",
+            )
         ]
         indexes = [
             models.Index(fields=["description"]),
@@ -317,7 +332,13 @@ class HRSStockSnapshot(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["stock_lot", "snapshot_date"], name="uniq_hrs_snapshot_per_lot_per_day")
         ]
-        indexes = [models.Index(fields=["snapshot_date"])]
+        indexes = [
+            models.Index(fields=["snapshot_date"]),
+            # Phase C (Snapshot Pipeline Rebuild) reads "every lot's position
+            # on date D" - scans by date, joins by lot; the Days-Left Engine
+            # reads the same shape.
+            models.Index(fields=["snapshot_date", "stock_lot"]),
+        ]
 
     def __str__(self):
         return f"{self.stock_lot.description} @ {self.snapshot_date}"
@@ -352,6 +373,34 @@ class HRSPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+
+    # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
+    # uom_mismatch is True when qty/rate's units belong to different
+    # families (e.g. mass vs count) - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    # field_coverage is the summed weight (0..1) of the four scoring factors
+    # actually present for this match - a sparse MIR row (blank rate, blank
+    # taxable value) still matches on what IS present instead of being
+    # scored as though missing data were a bad value, but the interface can
+    # use this to distinguish a confident match from one resting on thin
+    # evidence.
+    uom_mismatch = models.BooleanField(default=False)
+    field_coverage = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+
+    class Severity(models.TextChoices):
+        ROUNDING = "rounding", "Rounding"
+        MINOR = "minor", "Minor"
+        MATERIAL = "material", "Material"
+
+    # Match Accuracy Programme fix 3.F: splits the single is_flagged boolean
+    # into a severity band so a reviewer sees material discrepancies first
+    # instead of hunting for them among rounding noise - nothing is
+    # discarded, every flagged match is still shown, just groupable by
+    # seriousness. None when there's no measurable discrepancy at all (every
+    # diff is None or exactly zero). Bucketed at the same 5%/20% cut points
+    # frontend/js/flags.js's rowTintClass() already uses for row-shading -
+    # not a newly-invented threshold.
+    severity = models.CharField(max_length=10, choices=Severity.choices, null=True, blank=True)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -591,7 +640,17 @@ class RTPAchhadStockLot(models.Model):
 
     received_date = models.DateField(null=True, blank=True)
 
-    source_row_ref = models.CharField(max_length=20, blank=True)
+    source_row_ref = models.CharField(
+        max_length=20, blank=True,
+        help_text="See HRSStockLot.source_row_ref's help_text - diagnostic only, Achhad's copy.",
+    )
+    natural_key = models.CharField(
+        max_length=200, blank=True, db_index=True,
+        help_text="See HRSStockLot.natural_key's help_text. Achhad's key is weaker by necessity - "
+                   "no vendor column, so two lots of the same material are separated only by the "
+                   "occurrence counter (apps/services/stock_identity.py) - the same weaker-gate "
+                   "precedent matching_achhad.py already sets, still strictly better than a row number.",
+    )
     last_synced_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(
         default=True,
@@ -600,7 +659,10 @@ class RTPAchhadStockLot(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["source_row_ref"], name="uniq_achhad_stock_row")
+            models.UniqueConstraint(
+                fields=["natural_key"], condition=models.Q(natural_key__gt=""),
+                name="uniq_achhad_stock_natural_key",
+            )
         ]
         indexes = [
             models.Index(fields=["description"]),
@@ -630,7 +692,10 @@ class RTPAchhadStockSnapshot(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["stock_lot", "snapshot_date"], name="uniq_achhad_snapshot_per_lot_per_day")
         ]
-        indexes = [models.Index(fields=["snapshot_date"])]
+        indexes = [
+            models.Index(fields=["snapshot_date"]),
+            models.Index(fields=["snapshot_date", "stock_lot"]),
+        ]
 
     def __str__(self):
         return f"{self.stock_lot.description} @ {self.snapshot_date}"
@@ -651,6 +716,34 @@ class RTPAchhadPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+
+    # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
+    # uom_mismatch is True when qty/rate's units belong to different
+    # families (e.g. mass vs count) - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    # field_coverage is the summed weight (0..1) of the four scoring factors
+    # actually present for this match - a sparse MIR row (blank rate, blank
+    # taxable value) still matches on what IS present instead of being
+    # scored as though missing data were a bad value, but the interface can
+    # use this to distinguish a confident match from one resting on thin
+    # evidence.
+    uom_mismatch = models.BooleanField(default=False)
+    field_coverage = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+
+    class Severity(models.TextChoices):
+        ROUNDING = "rounding", "Rounding"
+        MINOR = "minor", "Minor"
+        MATERIAL = "material", "Material"
+
+    # Match Accuracy Programme fix 3.F: splits the single is_flagged boolean
+    # into a severity band so a reviewer sees material discrepancies first
+    # instead of hunting for them among rounding noise - nothing is
+    # discarded, every flagged match is still shown, just groupable by
+    # seriousness. None when there's no measurable discrepancy at all (every
+    # diff is None or exactly zero). Bucketed at the same 5%/20% cut points
+    # frontend/js/flags.js's rowTintClass() already uses for row-shading -
+    # not a newly-invented threshold.
+    severity = models.CharField(max_length=10, choices=Severity.choices, null=True, blank=True)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -921,7 +1014,15 @@ class RTPVapiStockLot(models.Model):
     material_location = models.CharField(max_length=100, blank=True)
     hsn_code = models.CharField(max_length=20, blank=True)
 
-    source_row_ref = models.CharField(max_length=20, blank=True)
+    source_row_ref = models.CharField(
+        max_length=20, blank=True,
+        help_text="See HRSStockLot.source_row_ref's help_text - diagnostic only, Vapi's copy.",
+    )
+    natural_key = models.CharField(
+        max_length=200, blank=True, db_index=True,
+        help_text="See HRSStockLot.natural_key's help_text - Vapi's copy, keyed on hsn_code/"
+                   "supplier_name (apps/services/stock_identity.py).",
+    )
     last_synced_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(
         default=True,
@@ -930,7 +1031,10 @@ class RTPVapiStockLot(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["source_row_ref"], name="uniq_vapi_stock_row")
+            models.UniqueConstraint(
+                fields=["natural_key"], condition=models.Q(natural_key__gt=""),
+                name="uniq_vapi_stock_natural_key",
+            )
         ]
         indexes = [
             models.Index(fields=["description"]),
@@ -959,7 +1063,10 @@ class RTPVapiStockSnapshot(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["stock_lot", "snapshot_date"], name="uniq_vapi_snapshot_per_lot_per_day")
         ]
-        indexes = [models.Index(fields=["snapshot_date"])]
+        indexes = [
+            models.Index(fields=["snapshot_date"]),
+            models.Index(fields=["snapshot_date", "stock_lot"]),
+        ]
 
     def __str__(self):
         return f"{self.stock_lot.description} @ {self.snapshot_date}"
@@ -984,6 +1091,34 @@ class RTPVapiPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+
+    # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
+    # uom_mismatch is True when qty/rate's units belong to different
+    # families (e.g. mass vs count) - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    # field_coverage is the summed weight (0..1) of the four scoring factors
+    # actually present for this match - a sparse MIR row (blank rate, blank
+    # taxable value) still matches on what IS present instead of being
+    # scored as though missing data were a bad value, but the interface can
+    # use this to distinguish a confident match from one resting on thin
+    # evidence.
+    uom_mismatch = models.BooleanField(default=False)
+    field_coverage = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+
+    class Severity(models.TextChoices):
+        ROUNDING = "rounding", "Rounding"
+        MINOR = "minor", "Minor"
+        MATERIAL = "material", "Material"
+
+    # Match Accuracy Programme fix 3.F: splits the single is_flagged boolean
+    # into a severity band so a reviewer sees material discrepancies first
+    # instead of hunting for them among rounding noise - nothing is
+    # discarded, every flagged match is still shown, just groupable by
+    # seriousness. None when there's no measurable discrepancy at all (every
+    # diff is None or exactly zero). Bucketed at the same 5%/20% cut points
+    # frontend/js/flags.js's rowTintClass() already uses for row-shading -
+    # not a newly-invented threshold.
+    severity = models.CharField(max_length=10, choices=Severity.choices, null=True, blank=True)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -1172,6 +1307,34 @@ class HRSImportPOMirMatch(models.Model):
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
+    # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
+    # uom_mismatch is True when qty/rate's units belong to different
+    # families (e.g. mass vs count) - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    # field_coverage is the summed weight (0..1) of the four scoring factors
+    # actually present for this match - a sparse MIR row (blank rate, blank
+    # taxable value) still matches on what IS present instead of being
+    # scored as though missing data were a bad value, but the interface can
+    # use this to distinguish a confident match from one resting on thin
+    # evidence.
+    uom_mismatch = models.BooleanField(default=False)
+    field_coverage = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+
+    class Severity(models.TextChoices):
+        ROUNDING = "rounding", "Rounding"
+        MINOR = "minor", "Minor"
+        MATERIAL = "material", "Material"
+
+    # Match Accuracy Programme fix 3.F: splits the single is_flagged boolean
+    # into a severity band so a reviewer sees material discrepancies first
+    # instead of hunting for them among rounding noise - nothing is
+    # discarded, every flagged match is still shown, just groupable by
+    # seriousness. None when there's no measurable discrepancy at all (every
+    # diff is None or exactly zero). Bucketed at the same 5%/20% cut points
+    # frontend/js/flags.js's rowTintClass() already uses for row-shading -
+    # not a newly-invented threshold.
+    severity = models.CharField(max_length=10, choices=Severity.choices, null=True, blank=True)
+
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
     dismissed_by = models.ForeignKey("PTUser", null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
@@ -1272,6 +1435,34 @@ class RTPAchhadImportPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+
+    # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
+    # uom_mismatch is True when qty/rate's units belong to different
+    # families (e.g. mass vs count) - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    # field_coverage is the summed weight (0..1) of the four scoring factors
+    # actually present for this match - a sparse MIR row (blank rate, blank
+    # taxable value) still matches on what IS present instead of being
+    # scored as though missing data were a bad value, but the interface can
+    # use this to distinguish a confident match from one resting on thin
+    # evidence.
+    uom_mismatch = models.BooleanField(default=False)
+    field_coverage = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+
+    class Severity(models.TextChoices):
+        ROUNDING = "rounding", "Rounding"
+        MINOR = "minor", "Minor"
+        MATERIAL = "material", "Material"
+
+    # Match Accuracy Programme fix 3.F: splits the single is_flagged boolean
+    # into a severity band so a reviewer sees material discrepancies first
+    # instead of hunting for them among rounding noise - nothing is
+    # discarded, every flagged match is still shown, just groupable by
+    # seriousness. None when there's no measurable discrepancy at all (every
+    # diff is None or exactly zero). Bucketed at the same 5%/20% cut points
+    # frontend/js/flags.js's rowTintClass() already uses for row-shading -
+    # not a newly-invented threshold.
+    severity = models.CharField(max_length=10, choices=Severity.choices, null=True, blank=True)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -1376,6 +1567,34 @@ class RTPVapiImportPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+
+    # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
+    # uom_mismatch is True when qty/rate's units belong to different
+    # families (e.g. mass vs count) - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    # field_coverage is the summed weight (0..1) of the four scoring factors
+    # actually present for this match - a sparse MIR row (blank rate, blank
+    # taxable value) still matches on what IS present instead of being
+    # scored as though missing data were a bad value, but the interface can
+    # use this to distinguish a confident match from one resting on thin
+    # evidence.
+    uom_mismatch = models.BooleanField(default=False)
+    field_coverage = models.DecimalField(max_digits=3, decimal_places=2, null=True, blank=True)
+
+    class Severity(models.TextChoices):
+        ROUNDING = "rounding", "Rounding"
+        MINOR = "minor", "Minor"
+        MATERIAL = "material", "Material"
+
+    # Match Accuracy Programme fix 3.F: splits the single is_flagged boolean
+    # into a severity band so a reviewer sees material discrepancies first
+    # instead of hunting for them among rounding noise - nothing is
+    # discarded, every flagged match is still shown, just groupable by
+    # seriousness. None when there's no measurable discrepancy at all (every
+    # diff is None or exactly zero). Bucketed at the same 5%/20% cut points
+    # frontend/js/flags.js's rowTintClass() already uses for row-shading -
+    # not a newly-invented threshold.
+    severity = models.CharField(max_length=10, choices=Severity.choices, null=True, blank=True)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -1537,6 +1756,99 @@ class FlagDismissal(models.Model):
 
     def __str__(self):
         return f"{self.plant}/{self.po_number}/{self.flag_key} dismissed={self.dismissed}"
+
+
+class DataQualityFlag(models.Model):
+    """Match Accuracy Programme, fix 3.G: one row per source-sheet
+    arithmetic inconsistency found by apps/services/arithmetic_checks.py
+    (qty x rate vs net_value on a PO line item, taxable+gst+tcs-discount vs
+    final on a MIR entry, opening+received-issued vs closing on a Stock
+    lot) - a real typo in the spreadsheet itself, not a matching artifact.
+    Surfaced in the existing Flags & Corrections tab (frontend/js/flags.js)
+    rather than a new screen, same rendering shape as FlagDismissal-backed
+    flags, just a different data source.
+
+    Generic like FlagDismissal above - `source_type` + `source_id` point at
+    whichever of the 9 PO-line-item/MIR-entry/Stock-lot model classes
+    `plant` + `source_type` implies, not a real FK, since the target lives
+    in a different model class per plant. Upserted in place by
+    apps/services/data_quality.py's sync_data_quality_flags() (keyed on
+    plant+source_type+source_id+check_name) - a row that stops mismatching
+    on a later sync is deleted, not left stale."""
+
+    class SourceType(models.TextChoices):
+        PO_LINE_ITEM = "po_line_item", "PO line item"
+        MIR_ENTRY = "mir_entry", "MIR entry"
+        STOCK_LOT = "stock_lot", "Stock lot"
+
+    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    source_type = models.CharField(max_length=20, choices=SourceType.choices)
+    source_id = models.PositiveIntegerField()
+    check_name = models.CharField(max_length=50)
+
+    expected = models.DecimalField(max_digits=16, decimal_places=4)
+    actual = models.DecimalField(max_digits=16, decimal_places=4)
+    detected_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plant", "source_type", "source_id", "check_name"], name="uniq_data_quality_flag")
+        ]
+        indexes = [models.Index(fields=["plant", "source_type"])]
+
+    def __str__(self):
+        return f"{self.plant}/{self.source_type}/{self.source_id}: {self.check_name} expected={self.expected} actual={self.actual}"
+
+
+class MatchReview(models.Model):
+    """One human judgement on one algorithmic match, for the Match Accuracy
+    Programme's measurement harness (doc 03, Phase 1) - CLAUDE.md's "Match
+    accuracy: manual validation is required, not optional" section is the
+    reason this exists: MATCH_THRESHOLD and the four scoring weights were
+    picked by judgement, never validated, because there was no accuracy
+    measurement anywhere in this codebase. report_match_accuracy (the
+    management command that reads this table) is what finally makes that
+    number falsifiable.
+
+    Not a real FK to the underlying match row - `match_id` is a plain
+    PositiveIntegerField, resolved against whichever of the 9 *POMirMatch/
+    *ImportPOMirMatch/*MirStockMatch model classes `plant` + `match_type`
+    implies (see review_views.py). Same "generic pointer by id" shape
+    FlagDismissal's own `flag_key` already uses above, for the same reason:
+    the target lives in one of several different model classes depending on
+    context, not one fixed table a real FK could point at.
+
+    `match_type` splits PO<->MIR, import PO<->MIR, and MIR<->Stock because
+    their error profiles genuinely differ (doc 03, 1.1) - a single blended
+    accuracy figure would hide that. One reviewer can review the same match
+    more than once (no unique constraint) - report_match_accuracy uses the
+    most recent verdict per match, so a reviewer correcting their own earlier
+    call isn't stuck with it."""
+
+    class MatchType(models.TextChoices):
+        PO_MIR = "po_mir", "PO <-> MIR"
+        IMPORT_PO_MIR = "import_po_mir", "Import PO <-> MIR"
+        MIR_STOCK = "mir_stock", "MIR <-> Stock"
+
+    class Verdict(models.TextChoices):
+        CORRECT = "correct", "Correct"
+        INCORRECT = "incorrect", "Incorrect"
+        UNSURE = "unsure", "Unsure"
+
+    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    match_type = models.CharField(max_length=20, choices=MatchType.choices)
+    match_id = models.PositiveIntegerField()
+
+    reviewer = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="match_reviews")
+    verdict = models.CharField(max_length=10, choices=Verdict.choices)
+    note = models.TextField(blank=True)
+    reviewed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["plant", "match_type", "match_id"])]
+
+    def __str__(self):
+        return f"{self.plant}/{self.match_type}/{self.match_id} -> {self.verdict}"
 
 
 # ── Auth: PTUser, OTPCode, TrustedDevice (device-aware 2FA) ────────────────

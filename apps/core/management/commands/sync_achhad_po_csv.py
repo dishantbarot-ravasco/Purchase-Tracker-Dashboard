@@ -23,7 +23,9 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import RTPAchhadPOLineItem, RTPAchhadPurchaseOrder, SyncRun
+from apps.core.models import DataQualityFlag, RTPAchhadPOLineItem, RTPAchhadPurchaseOrder, SyncRun
+from apps.services.arithmetic_checks import check_po_line_item
+from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
@@ -72,6 +74,8 @@ class Command(BaseCommand):
                 for parsed in orders:
                     if self._upsert_order(parsed):
                         rows_changed += 1
+
+            self._sync_data_quality_flags()
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_achhad_po_csv: {rows_seen} POs seen, {rows_changed} created/updated "
@@ -156,3 +160,12 @@ class Command(BaseCommand):
             for item in parsed.items
         ])
         return True
+
+    def _sync_data_quality_flags(self) -> None:
+        """See sync_po_csv.py's own _sync_data_quality_flags - Match
+        Accuracy Programme fix 3.G, same check, this plant's model."""
+        results = {
+            item.id: check_po_line_item(item.qty, item.net_price, item.net_value)
+            for item in RTPAchhadPOLineItem.objects.all()
+        }
+        sync_data_quality_flags(SyncRun.Plant.RTP_ACHHAD, DataQualityFlag.SourceType.PO_LINE_ITEM, results)

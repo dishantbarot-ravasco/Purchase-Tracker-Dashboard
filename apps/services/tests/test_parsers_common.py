@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from apps.services.parsers.common import (
     normalize_material,
+    normalize_uom,
     normalize_vendor,
     to_code_str,
     to_date,
@@ -201,3 +202,47 @@ class TestToCodeStr:
     def test_string_value_passes_through_to_str(self):
         """A value that's already a string (the common case) passes through unchanged."""
         assert to_code_str("3000001075") == "3000001075"
+
+
+# ── normalize_uom(): Match Accuracy Programme fix 2.C ──────────────────────
+
+class TestNormalizeUom:
+    def test_same_unit_is_recognized_mass(self):
+        """A plain recognized mass unit resolves to the mass family with a 1:1 factor."""
+        assert normalize_uom("KG") == ("mass", Decimal("1"))
+
+    def test_metric_ton_converts_to_1000kg(self):
+        """MT is mass, 1000x the KG base unit - the real 'PO in MT vs MIR in
+        KG' case the Match Accuracy Programme's own acceptance checklist names."""
+        assert normalize_uom("MT") == ("mass", Decimal("1000"))
+
+    def test_case_insensitive(self):
+        """Unit lookup is case-insensitive - source sheets aren't consistent about casing."""
+        assert normalize_uom("kg") == ("mass", Decimal("1"))
+
+    def test_trailing_dot_stripped(self):
+        # Real data shape: RTP-Achhad's MIR sheet has a 'MT.' variant.
+        """A trailing '.' (a real variant seen in RTP-Achhad's MIR data,
+        'MT.') is stripped before lookup."""
+        assert normalize_uom("MT.") == ("mass", Decimal("1000"))
+
+    def test_blank_is_unrecognized(self):
+        """A blank/empty unit is unrecognized - normalize_uom must never guess a family for missing data."""
+        assert normalize_uom("") == (None, None)
+        assert normalize_uom(None) == (None, None)
+
+    def test_ambiguous_real_code_is_unrecognized(self):
+        # 'TO' is a real value seen in RTP-Achhad's PO data but too
+        # ambiguous to confidently classify - see _UOM_FAMILIES' own comment.
+        """A real but deliberately-excluded ambiguous code (e.g. 'TO') is
+        unrecognized rather than guessed - guessing wrong is worse than not
+        converting at all."""
+        assert normalize_uom("TO") == (None, None)
+
+    def test_different_families_have_different_labels(self):
+        """Mass and count are reported as different family labels, so a
+        caller comparing families can tell a genuine mismatch (mass vs
+        count) from a same-family unit difference (KG vs MT)."""
+        mass_family, _ = normalize_uom("KG")
+        count_family, _ = normalize_uom("NOS")
+        assert mass_family != count_family

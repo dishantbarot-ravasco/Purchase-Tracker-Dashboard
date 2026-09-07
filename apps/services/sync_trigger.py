@@ -137,6 +137,47 @@ def _run_pipeline(plant_key: str) -> None:
         cache.delete(_lock_key(plant_key))
 
 
+def run_daily_sync_all_plants() -> None:
+    """Snapshot Pipeline Rebuild, Phase B (see CLAUDE.md) - the scheduled
+    job apps/core/management/commands/ensure_schedules.py wires up as a
+    daily django-q2 Schedule row. Before this function existed, a
+    HRS/Achhad/Vapi *StockSnapshot was only ever captured as a side effect
+    of a human clicking "Refresh Data" - qcluster was deployed and running,
+    but nothing ever told it to run anything on its own.
+
+    Runs each plant's full sync+match pipeline (_run_pipeline(), same as a
+    manual trigger) sequentially, not as three separate async_task() calls -
+    Q_CLUSTER["workers"] is 2, so three parallel pipelines would starve the
+    queue, and three concurrent Drive syncs would contend on the same
+    shared MIR/Stock files per plant. This function itself already runs
+    ON a qcluster worker (django-q2 invokes a Schedule's `func` the same
+    way it invokes any queued task), so calling _run_pipeline() directly
+    here - not via trigger_plant_sync()/async_task() - is correct, not a
+    shortcut: queuing a second async_task from inside a worker would just
+    make this worker wait on its sibling for no reason.
+
+    Respects the existing per-plant cache lock (_lock_key()): if a manual
+    refresh is already mid-flight for a plant when this runs, that plant is
+    skipped (logged, not queued behind) rather than blocking the other two
+    plants' scheduled runs on it. Each plant is wrapped in its own
+    try/except so one plant's failure can't skip the other two - though in
+    practice _run_pipeline() already catches per-command, per-plant
+    failures internally and always clears its own lock in a `finally`; this
+    is the belt-and-braces outer guard for anything that isn't.
+    """
+    for plant_key in _PLANT_COMMANDS:
+        if not cache.add(_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
+            log.info(
+                "run_daily_sync_all_plants: skipping %s - a manual refresh is already in progress",
+                plant_key,
+            )
+            continue
+        try:
+            _run_pipeline(plant_key)
+        except Exception:
+            log.exception("run_daily_sync_all_plants: pipeline failed for plant=%s", plant_key)
+
+
 def trigger_plant_sync(plant_key: str) -> bool:
     """Starts plant_key's sync+match pipeline on a background thread if one
     isn't already running for that plant. Returns True if a new run was

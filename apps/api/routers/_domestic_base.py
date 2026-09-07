@@ -20,6 +20,7 @@ inline here.
 
 import datetime
 import decimal
+import itertools
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Optional
@@ -29,9 +30,10 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.response import Response
 
 from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
-from apps.core.models import DomesticPOCorrection, FlagDismissal, MaterialCorrection
+from apps.core.models import DataQualityFlag, DomesticPOCorrection, FlagDismissal, MaterialCorrection
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
+from apps.services.stock_consumption import DEFAULT_WINDOW_DAYS, consumption_stats
 from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
 from apps.services.validation import is_valid_email, is_valid_gstin
 
@@ -153,6 +155,20 @@ def _flag_dismissal_dict(fd):
     }
 
 
+def _data_quality_flag_dict(flag):
+    """Match Accuracy Programme fix 3.G: one apps/services/arithmetic_checks.py
+    mismatch, surfaced in the Flags & Corrections tab alongside
+    FlagDismissal-backed flags (see poFlagHtml()'s own comment in
+    frontend/js/flags.js for the rendering side)."""
+    return {
+        "sourceType": flag.source_type,
+        "checkName": flag.check_name,
+        "expected": float(flag.expected),
+        "actual": float(flag.actual),
+        "detectedAt": flag.detected_at.isoformat() if flag.detected_at else None,
+    }
+
+
 def _line_item_dict(item):
     match = getattr(item, "mir_match", None)
     return {
@@ -173,6 +189,13 @@ def _line_item_dict(item):
         "qtyDiffPct": float(match.qty_diff_pct) if match and match.qty_diff_pct is not None else None,
         "rateDiffPct": float(match.rate_diff_pct) if match and match.rate_diff_pct is not None else None,
         "valueDiffPct": float(match.value_diff_pct) if match and match.value_diff_pct is not None else None,
+        # Match Accuracy Programme fixes 2.C/3.F - see matching_core.py.
+        # uomMismatch/severity are the real, stored backend decision; the
+        # frontend must not re-derive a value flag from valueDiffPct alone
+        # anymore (that would ignore the value epsilon) - see flags.js's
+        # matchStatusHtml() for how these are actually used.
+        "uomMismatch": bool(match and match.uom_mismatch),
+        "severity": match.severity if match else None,
         "matchedMirNo": match.mir_entry.mir_no if match else None,
         "stockMatched": bool(match and len(match.mir_entry.stock_matches.all()) > 0),
     }
@@ -182,6 +205,17 @@ def _po_dict(cfg: _PlantConfig, po):
     items = list(po.items.all())
     corrections = DomesticPOCorrection.objects.filter(plant=cfg.syncrun_plant, po_number=po.po_number)
     flag_dismissals = FlagDismissal.objects.filter(plant=cfg.syncrun_plant, po_number=po.po_number)
+    # Match Accuracy Programme fix 3.G: this PO's own line items' arithmetic
+    # flags, plus any flag on the MIR entry a line item matched to (a real
+    # MIR data-quality issue is still relevant here even though MIR has no
+    # detail view of its own to attach it to directly).
+    item_ids = [i.id for i in items]
+    mir_entry_ids = [i.mir_match.mir_entry_id for i in items if getattr(i, "mir_match", None)]
+    data_quality_flags = list(DataQualityFlag.objects.filter(
+        plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.PO_LINE_ITEM, source_id__in=item_ids,
+    )) + list(DataQualityFlag.objects.filter(
+        plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.MIR_ENTRY, source_id__in=mir_entry_ids,
+    ))
     return {
         "poNumber": po.po_number,
         "vendorName": po.vendor_name,
@@ -203,12 +237,35 @@ def _po_dict(cfg: _PlantConfig, po):
         "items": [_line_item_dict(i) for i in items],
         "corrections": [_correction_dict(c) for c in corrections],
         "flagDismissals": [_flag_dismissal_dict(fd) for fd in flag_dismissals],
+        "dataQualityFlags": [_data_quality_flag_dict(f) for f in data_quality_flags],
     }
 
 
-def _lot_dict(cfg: _PlantConfig, lot):
+def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None):
     corrections = MaterialCorrection.objects.filter(plant=cfg.syncrun_plant, lot_id=lot.id)
+    # Match Accuracy Programme fix 3.G: this lot's own stock-balance
+    # arithmetic flag, if any (opening + received - issued vs todays_stock).
+    data_quality_flags = DataQualityFlag.objects.filter(
+        plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.STOCK_LOT, source_id=lot.id,
+    )
     rate = getattr(lot, cfg.lot_rate_field)
+    consumption = (consumption_by_lot or {}).get(lot.id)
+    # Achhad's Stock sheet has a Minimum Stock Level column HRS/Vapi lack
+    # entirely (RTPAchhadStockLot.msl) - getattr's default None means this
+    # is always None on HRS/Vapi rows without any per-plant branching, same
+    # pattern as no_of_days/sub_category above. daysToMsl is 0 the moment
+    # current stock is at/below msl (independent of whether a consumption
+    # rate is even known yet - "already need to reorder" shouldn't wait on
+    # 30 days of snapshot history to surface), else an ETA once avgDaily is
+    # available, else None (below msl not yet reached, no rate to project).
+    msl = getattr(lot, "msl", None)
+    days_to_msl = None
+    if msl is not None:
+        remaining = float(lot.todays_stock) - float(msl)
+        if remaining <= 0:
+            days_to_msl = 0.0
+        elif consumption and consumption.get("avgDaily"):
+            days_to_msl = remaining / consumption["avgDaily"]
     return {
         "lotId": lot.id,
         "materialCode": getattr(lot, cfg.lot_code_field) or str(lot.id),
@@ -228,6 +285,14 @@ def _lot_dict(cfg: _PlantConfig, lot):
         # none - getattr's default None reproduces both hrs_views.py's real
         # value and vapi_views.py's/achhad_views.py's hardcoded None.
         "noOfDays": getattr(lot, "no_of_days", None),
+        # See apps/services/stock_consumption.py's module docstring for why
+        # this is drawdown-of-todays_stock based rather than issued/received
+        # based - None when there isn't yet a second snapshot to draw down
+        # from (a brand-new lot, or one whose history reset - see CLAUDE.md's
+        # source_row_ref/is_active notes on lot identity not being stable
+        # across a source-sheet row shift).
+        "consumption": consumption,
+        "daysToMsl": days_to_msl,
         "mirMatched": len(lot.mir_matches.all()) > 0,
         "mirStockMatches": [
             {
@@ -239,6 +304,7 @@ def _lot_dict(cfg: _PlantConfig, lot):
             }
             for m in lot.mir_matches.all()
         ],
+        "dataQualityFlags": [_data_quality_flag_dict(f) for f in data_quality_flags],
     }
 
 
@@ -325,13 +391,33 @@ def make_correct_field(cfg: _PlantConfig):
     return correct_field
 
 
+def _consumption_by_lot(cfg: _PlantConfig):
+    """One query for every active lot's snapshot history inside the
+    consumption engine's window, grouped by lot id and run through
+    consumption_stats() - not one query per lot, which would be an N+1
+    across however many hundred lots a plant has. See
+    apps/services/stock_consumption.py for the algorithm itself."""
+    window_start = datetime.date.today() - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
+    rows = (
+        cfg.stock_snapshot_model.objects
+        .filter(stock_lot__is_active=True, snapshot_date__gte=window_start)
+        .values_list("stock_lot_id", "snapshot_date", "todays_stock", "received", "issued")
+        .order_by("stock_lot_id", "snapshot_date")
+    )
+    return {
+        lot_id: consumption_stats([(date, stock, received, issued) for _, date, stock, received, issued in group])
+        for lot_id, group in itertools.groupby(rows, key=lambda row: row[0])
+    }
+
+
 def make_materials(cfg: _PlantConfig):
     @api_view(["GET"])
     def materials(request):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's materials."}, status=403)
         qs = cfg.stock_lot_model.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
-        return Response({"materials": [_lot_dict(cfg, lot) for lot in qs]})
+        consumption_by_lot = _consumption_by_lot(cfg)
+        return Response({"materials": [_lot_dict(cfg, lot, consumption_by_lot) for lot in qs]})
 
     return materials
 
@@ -403,9 +489,98 @@ def make_stock_trend(cfg: _PlantConfig):
     return stock_trend
 
 
+def make_stock_snapshot_dates(cfg: _PlantConfig):
+    """Snapshot Pipeline Rebuild, Phase C.1 (see CLAUDE.md) - distinct
+    snapshot dates for this plant, each with a lot count. Drives a date
+    picker; the count doubles as a health signal - a date with far fewer
+    lots than its neighbours means a partial sync."""
+
+    @api_view(["GET"])
+    def stock_snapshot_dates(request):
+        from django.db.models import Count
+
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's stock snapshots."}, status=403)
+        rows = (
+            cfg.stock_snapshot_model.objects.values("snapshot_date")
+            .annotate(lotCount=Count("id"))
+            .order_by("-snapshot_date")
+        )
+        return Response({"dates": [{"date": r["snapshot_date"].isoformat(), "lotCount": r["lotCount"]} for r in rows]})
+
+    return stock_snapshot_dates
+
+
+def make_stock_snapshots_for_date(cfg: _PlantConfig):
+    """Snapshot Pipeline Rebuild, Phase C.2 (see CLAUDE.md) - a whole
+    plant's stock position on one date, joined to stock_lot for
+    description/category/vendor. Defaults to the latest available date
+    when `date` is omitted. Returns 404 with the nearest available dates
+    when the requested (or defaulted) date has no snapshot rows at all -
+    never an empty 200, which a client would render as "zero stock
+    everywhere" and a reader would believe."""
+
+    @api_view(["GET"])
+    def stock_snapshots_for_date(request):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's stock snapshots."}, status=403)
+
+        date_param = request.query_params.get("date")
+        if date_param:
+            try:
+                target_date = datetime.date.fromisoformat(date_param)
+            except ValueError:
+                return Response({"error": f"{date_param!r} is not a valid YYYY-MM-DD date."}, status=400)
+        else:
+            target_date = (
+                cfg.stock_snapshot_model.objects.order_by("-snapshot_date")
+                .values_list("snapshot_date", flat=True)
+                .first()
+            )
+            if target_date is None:
+                return Response({"error": "No snapshot history exists yet for this plant.", "availableDates": []}, status=404)
+
+        snapshots = (
+            cfg.stock_snapshot_model.objects.filter(snapshot_date=target_date)
+            .select_related("stock_lot")
+            .order_by("stock_lot__description")
+        )
+        if not snapshots.exists():
+            nearest = (
+                cfg.stock_snapshot_model.objects.values_list("snapshot_date", flat=True)
+                .distinct()
+                .order_by("-snapshot_date")[:5]
+            )
+            return Response({
+                "error": f"No snapshot exists for {target_date.isoformat()}.",
+                "availableDates": [d.isoformat() for d in nearest],
+            }, status=404)
+
+        return Response({
+            "date": target_date.isoformat(),
+            "lots": [
+                {
+                    "lotId": s.stock_lot_id,
+                    "materialCode": getattr(s.stock_lot, cfg.lot_code_field) or str(s.stock_lot_id),
+                    "description": s.stock_lot.description,
+                    "category": getattr(s.stock_lot, "category", ""),
+                    "vendor": getattr(s.stock_lot, cfg.lot_vendor_field, None) if cfg.lot_vendor_field else None,
+                    "qty": float(s.todays_stock),
+                    "rate": float(getattr(s, cfg.lot_rate_field)) if getattr(s, cfg.lot_rate_field) is not None else None,
+                    "value": float(s.value) if s.value is not None else None,
+                }
+                for s in snapshots
+            ],
+        })
+
+    return stock_snapshots_for_date
+
+
 def make_sync_status(cfg: _PlantConfig):
     @api_view(["GET"])
     def sync_status(request):
+        from django.utils import timezone
+
         from apps.core.models import SyncRun
 
         if not user_can_access_plant(request.user, cfg.key):
@@ -422,10 +597,24 @@ def make_sync_status(cfg: _PlantConfig):
                     "rowsChanged": run.rows_changed,
                     "errorDetail": run.error_detail or None,
                 }
+
+        # Snapshot Pipeline Rebuild, Phase B.4 (see CLAUDE.md) - makes a
+        # silently-dead qcluster visible instead of indistinguishable from a
+        # healthy one: without this, the only symptom of a missed daily
+        # snapshot is the Days-Left Engine going quietly wrong weeks later.
+        last_snapshot_date = (
+            cfg.stock_snapshot_model.objects.order_by("-snapshot_date")
+            .values_list("snapshot_date", flat=True)
+            .first()
+        )
+        snapshot_gap_days = (timezone.localdate() - last_snapshot_date).days if last_snapshot_date else None
+
         return Response({
             "sync": latest_by_source,
             "mirEntryCount": cfg.mir_model.objects.filter(is_active=True).count(),
             "syncInProgress": is_sync_in_progress(cfg.key),
+            "lastSnapshotDate": last_snapshot_date.isoformat() if last_snapshot_date else None,
+            "snapshotGapDays": snapshot_gap_days,
         })
 
     return sync_status

@@ -100,8 +100,13 @@ async function openPoModal(compositeKey) {
     '<div style="margin:0 0 16px;">' + miniStepperHtml(po) + '</div>' +
     '<div class="section-title" style="margin-top:0;">Material / Product Details</div>' + itemsHtml;
 
-  const catsHtml = (po._categories || []).length
-    ? po._categories.map(c => poFlagHtml(c, po, plantKey)).join('')
+  // Match Accuracy Programme fix 3.G: arithmetic-mismatch flags
+  // (dataQualityFlagHtml, flags.js) alongside the existing remarks-derived
+  // categories (poFlagHtml) - a real source-sheet typo, not a matching
+  // artifact, so it's shown even when po._categories is empty.
+  const arithmeticFlagsHtml = (po.dataQualityFlags || []).map(dataQualityFlagHtml).join('');
+  const catsHtml = (po._categories || []).length || arithmeticFlagsHtml
+    ? po._categories.map(c => poFlagHtml(c, po, plantKey)).join('') + arithmeticFlagsHtml
     : '<div style="text-align:center;color:var(--slate-soft);padding:14px;">No data quality flags on this PO.</div>';
   const correctionsHtml = (po.corrections || []).length
     ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +

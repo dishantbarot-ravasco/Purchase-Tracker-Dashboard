@@ -27,7 +27,11 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import RTPVapiMIREntry, SyncRun
+from decimal import Decimal
+
+from apps.core.models import DataQualityFlag, RTPVapiMIREntry, SyncRun
+from apps.services.arithmetic_checks import check_mir_entry
+from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.vapi_mir import HeaderMismatch, parse_vapi_mir_xlsx
 from apps.services.sync_utils import unchanged
 
@@ -75,6 +79,8 @@ class Command(BaseCommand):
                     .exclude(source_row_ref__in=seen_refs)
                     .update(is_active=False)
                 )
+
+            self._sync_data_quality_flags()
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_vapi_mir: {rows_seen} MIR rows seen, {rows_changed} created/updated, "
@@ -126,3 +132,18 @@ class Command(BaseCommand):
             defaults={f: getattr(parsed, f) for f in _FIELDS} | {"last_synced_at": timezone.now(), "is_active": True},
         )
         return True
+
+    def _sync_data_quality_flags(self) -> None:
+        """See sync_mir.py's own _sync_data_quality_flags (Match Accuracy
+        Programme fix 3.G). Vapi's own formula is genuinely different from
+        HRS's/Achhad's, confirmed empirically against real data (100%
+        reconciliation once others_with_gst is included, ~4% mismatch rate
+        without it): Vapi has no discount column at all (discount_amt=0),
+        its IGST field is named igst_amt (not igst), and others_with_gst -
+        an additional taxable charge - must be added into the gst sum for
+        the arithmetic to actually hold."""
+        results = {}
+        for entry in RTPVapiMIREntry.objects.filter(is_active=True):
+            gst_amt = (entry.igst_amt or 0) + (entry.cgst_amt or 0) + (entry.sgst_amt or 0) + (entry.others_with_gst or 0)
+            results[entry.id] = check_mir_entry(entry.taxable_value, gst_amt, entry.tcs_amt, Decimal("0"), entry.invoice_final_value)
+        sync_data_quality_flags(SyncRun.Plant.RTP_VAPI, DataQualityFlag.SourceType.MIR_ENTRY, results)

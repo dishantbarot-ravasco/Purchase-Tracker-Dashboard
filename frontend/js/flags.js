@@ -61,19 +61,34 @@ function matchStatusHtml(it, plantKey) {
 
   const qtyFlag = it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT;
   const rateFlag = it.rateDiffPct != null && it.rateDiffPct > FLAG_PCT;
-  const valueFlag = it.valueDiffPct != null && it.valueDiffPct > FLAG_PCT && !qtyFlag;
-  const anyFlag = qtyFlag || rateFlag || valueFlag;
+  const uomFlag = !!it.uomMismatch;
+  // Match Accuracy Programme fix 3.F (2026-09-05): value gets a small
+  // absolute-currency epsilon on the backend now (matching_core.py's
+  // VALUE_FLAG_EPSILON), not zero tolerance like qty/rate - re-deriving a
+  // value flag here from `valueDiffPct > FLAG_PCT` would ignore that
+  // epsilon and show a badge the backend no longer considers a real
+  // discrepancy. `it.matchFlagged` (match.is_flagged) is the backend's own
+  // decision; once qty/rate/uom are accounted for, any remaining
+  // matchFlagged must be the value epsilon firing.
+  const valueFlag = !!it.matchFlagged && !qtyFlag && !rateFlag && !uomFlag;
+  const anyFlag = qtyFlag || rateFlag || valueFlag || uomFlag;
   // Dismissed (apps/services/match_dismiss.py) keeps the badges visible but
   // muted, rather than hiding them - a reviewer who dismissed a flag should
   // still be able to see what was dismissed and why, not lose the record.
   const dismissedCls = it.dismissedByOverride ? ' dismissed' : '';
+  // Severity band (fix 3.F) as a CSS modifier class - see style.css's
+  // .flag-badge.sev-material/.sev-minor/.sev-rounding - so a reviewer's eye
+  // is pulled toward material discrepancies first instead of hunting for
+  // them among rounding noise, without hiding or discarding anything.
+  const severityCls = it.severity ? ' sev-' + it.severity : '';
   // Badge text uses 1 decimal place, not toFixed(0) - with zero tolerance
   // (see FLAG_PCT's own comment) a genuinely flagged 0.1% diff would
   // otherwise round to "Δ0%", which reads as "no difference" and
   // contradicts the badge existing at all.
-  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + '" title="Qty received differs from PO qty by ' + it.qtyDiffPct.toFixed(2) + '% - likely a partial/over delivery, verify manually">qty Δ' + it.qtyDiffPct.toFixed(1) + '%</span>';
-  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + '" title="Rate differs from PO rate by ' + it.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + it.rateDiffPct.toFixed(1) + '%</span>';
-  if (valueFlag) out += ' <span class="flag-badge' + dismissedCls + '" title="Value differs from PO value by ' + it.valueDiffPct.toFixed(2) + '%, not explained by qty - verify manually">value Δ' + it.valueDiffPct.toFixed(1) + '%</span>';
+  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Qty received differs from PO qty by ' + it.qtyDiffPct.toFixed(2) + '% - likely a partial/over delivery, verify manually">qty Δ' + it.qtyDiffPct.toFixed(1) + '%</span>';
+  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate differs from PO rate by ' + it.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + it.rateDiffPct.toFixed(1) + '%</span>';
+  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity is recorded in a different unit family on each side (e.g. mass vs count) - not directly comparable, verify manually">uom mismatch</span>';
+  if (valueFlag && it.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value differs from PO value by ' + it.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + it.valueDiffPct.toFixed(1) + '%</span>';
 
   if (anyFlag && it.dismissedByOverride) {
     out += ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (it.dismissedBy ? ' by ' + it.dismissedBy : '') + (it.dismissedReason ? ': ' + it.dismissedReason : '')) + '">dismissed</span>';
@@ -105,12 +120,17 @@ function importMatchStatusHtml(it, plantKey) {
 
   const qtyFlag = m.qtyDiffPct != null && m.qtyDiffPct > FLAG_PCT;
   const rateFlag = m.rateDiffPct != null && m.rateDiffPct > FLAG_PCT;
-  const valueFlag = m.valueDiffPct != null && m.valueDiffPct > FLAG_PCT && !qtyFlag;
-  const anyFlag = qtyFlag || rateFlag || valueFlag;
+  const uomFlag = !!m.uomMismatch;
+  // See matchStatusHtml()'s own comment (fix 3.F) - value flags per the
+  // backend's epsilon-aware isFlagged, not a client-side re-derivation.
+  const valueFlag = !!m.isFlagged && !qtyFlag && !rateFlag && !uomFlag;
+  const anyFlag = qtyFlag || rateFlag || valueFlag || uomFlag;
   const dismissedCls = m.dismissedByOverride ? ' dismissed' : '';
-  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + '" title="Qty (as per BOE) differs from MIR qty by ' + m.qtyDiffPct.toFixed(2) + '% - verify manually">qty Δ' + m.qtyDiffPct.toFixed(1) + '%</span>';
-  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + '" title="Rate (converted to INR) differs from MIR rate by ' + m.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + m.rateDiffPct.toFixed(1) + '%</span>';
-  if (valueFlag) out += ' <span class="flag-badge' + dismissedCls + '" title="Value differs from MIR value by ' + m.valueDiffPct.toFixed(2) + '%, not explained by qty - verify manually">value Δ' + m.valueDiffPct.toFixed(1) + '%</span>';
+  const severityCls = m.severity ? ' sev-' + m.severity : '';
+  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Qty (as per BOE) differs from MIR qty by ' + m.qtyDiffPct.toFixed(2) + '% - verify manually">qty Δ' + m.qtyDiffPct.toFixed(1) + '%</span>';
+  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate (converted to INR) differs from MIR rate by ' + m.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + m.rateDiffPct.toFixed(1) + '%</span>';
+  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity is recorded in a different unit family on each side - not directly comparable, verify manually">uom mismatch</span>';
+  if (valueFlag && m.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value differs from MIR value by ' + m.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + m.valueDiffPct.toFixed(1) + '%</span>';
 
   if (anyFlag && m.dismissedByOverride) {
     out += ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (m.dismissedReason ? ': ' + m.dismissedReason : '')) + '">dismissed</span>';
@@ -309,6 +329,27 @@ function materialFlagHtml(m) {
     ' <span class="lg-label critical">CRITICAL</span> ' +
     '<b' + (dismissed ? ' style="text-decoration:line-through;"' : '') + '>' + escapeHtml(m._plantLabel) + ' &middot; MIR&harr;Stock Mismatch</b>: ' +
     escapeHtml(parts.join(', ') || 'flagged') + dismissTag + link +
+  '</div>';
+}
+
+// Match Accuracy Programme fix 3.G: one apps/services/arithmetic_checks.py
+// mismatch (a real typo in the source spreadsheet itself - qty x rate vs
+// net_value, tax arithmetic, or a broken stock formula - not a matching
+// artifact). Rendered in the same Flags & Corrections tab as
+// FlagDismissal-backed flags, no dismiss link - this is a computed fact
+// about the source data, not a judgment call a reviewer overrides.
+const DATA_QUALITY_CHECK_LABELS = {
+  po_qty_rate_value: 'Qty × Rate does not match Net Value',
+  mir_tax_arithmetic: 'Taxable + GST + TCS − Discount does not match Final Value',
+  stock_balance: 'Opening + Received − Issued does not match Current Stock',
+};
+function dataQualityFlagHtml(f) {
+  const label = DATA_QUALITY_CHECK_LABELS[f.checkName] || f.checkName;
+  const plantPrefix = f._plantLabel ? escapeHtml(f._plantLabel) + ' &middot; ' : '';
+  return '<div class="field-block" style="margin-bottom:8px;">' +
+    flagIconHtml(KPI_FLAG_COLORS.critical, 'row-flag-icon') +
+    ' <span class="lg-label critical">DATA QUALITY</span> ' +
+    '<b>' + plantPrefix + escapeHtml(label) + '</b>: expected ' + formatInr(f.expected) + ', sheet says ' + formatInr(f.actual) +
   '</div>';
 }
 

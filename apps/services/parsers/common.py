@@ -101,6 +101,67 @@ def tokenize(text: str) -> list[str]:
     return [t for t in normalize_material(text).split(" ") if t]
 
 
+# Match Accuracy Programme, fix 2.C: built from the actual distinct `uom`
+# values found across every plant's PO/MIR/Stock tables
+# (dev_smoke_test.sqlite3, 2026-09-05) - not guessed. Each entry maps a
+# recognized unit to (family, factor_to_base) - qty/rate on both sides of a
+# comparison get converted to the same family's base unit
+# (mass->KG, volume->LTR, count->NOS, length->M) before scoring, so a PO in
+# MT against a MIR in KG doesn't collapse a true match's qty/rate score to
+# near-zero.
+#
+# Deliberately excludes a handful of real but ambiguous codes seen in that
+# data: TO, BAG, BQ2, Bottle (too ambiguous to confidently classify from the
+# code alone - e.g. "TO" plausibly means "Tonne" but could be something
+# else entirely) and Sqm/SQMT/SQMTR/M2 (area - not one of the four families
+# matching.py's scoring compares). These pass through unrecognized rather
+# than risk a wrong guess - see normalize_uom()'s own docstring.
+_UOM_FAMILIES: dict[str, tuple[str, Decimal]] = {
+    # mass -> base KG
+    "KG": ("mass", Decimal("1")),
+    "KGS": ("mass", Decimal("1")),
+    "GM": ("mass", Decimal("0.001")),
+    "MT": ("mass", Decimal("1000")),
+    "TON": ("mass", Decimal("1000")),
+    "QTL": ("mass", Decimal("100")),
+    # volume -> base LTR
+    "L": ("volume", Decimal("1")),
+    "LTR": ("volume", Decimal("1")),
+    "LTRS": ("volume", Decimal("1")),
+    "KL": ("volume", Decimal("1000")),
+    "ML": ("volume", Decimal("0.001")),
+    # count -> base NOS
+    "NOS": ("count", Decimal("1")),
+    "PCS": ("count", Decimal("1")),
+    "PC": ("count", Decimal("1")),
+    "EA": ("count", Decimal("1")),
+    "UNIT": ("count", Decimal("1")),
+    "SET": ("count", Decimal("1")),
+    # length -> base M
+    "M": ("length", Decimal("1")),
+    "CM": ("length", Decimal("0.01")),
+    "MM": ("length", Decimal("0.001")),
+    "MTR": ("length", Decimal("1")),
+    "MTRS": ("length", Decimal("1")),
+    "MTS": ("length", Decimal("1")),
+}
+
+
+def normalize_uom(value: str) -> tuple[str | None, Decimal | None]:
+    """Returns (family, factor_to_base) for a recognized unit of measure, or
+    (None, None) for a blank or unrecognized one. A trailing '.' is stripped
+    before lookup ('MT.' -> 'MT', a real variant seen in RTP-Achhad's MIR
+    data) alongside the usual case-insensitivity. An unrecognized unit is a
+    deliberate outcome, not a bug - see _UOM_FAMILIES' own comment for which
+    real codes are excluded and why; the caller must leave qty/rate
+    unconverted (not silently mis-scaled) whenever this returns (None, None)
+    on either side."""
+    if not value:
+        return None, None
+    key = value.strip().upper().rstrip(".")
+    return _UOM_FAMILIES.get(key, (None, None))
+
+
 def to_code_str(value) -> str:
     """Coerces a SAP code / PO number cell to a clean string, no trailing
     '.0' - openpyxl hands these back as float when the source column has no

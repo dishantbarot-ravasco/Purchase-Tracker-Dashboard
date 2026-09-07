@@ -237,6 +237,19 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .info-tooltip:focus-visible::after, .info-tooltip:focus-visible::before { opacity:1; visibility:visible; }
 .info-tooltip:focus-visible { outline:none; }
 
+/* ── Days Left confidence dot (Raw Material Analysis) ───────────────────
+   Reuses .info-tooltip's hover/focus tooltip mechanism above (same
+   data-tooltip attribute, same ::after/::before) but renders a small solid
+   circle instead of an "i" glyph - color signals how much snapshot history
+   the days-left figure behind it is based on (materials.js's
+   daysLeftCellHtml()/CONF_DOT_CLASS). */
+.days-left-cell { display:inline-flex; align-items:center; gap:6px; }
+.days-left-value { font-variant-numeric: tabular-nums; }
+.conf-dot { width:8px; height:8px; border-radius:50%; margin-left:0; flex:none; }
+.conf-dot-high { background:var(--green); }
+.conf-dot-medium { background:var(--amber); }
+.conf-dot-low { background:var(--gray); }
+
 .kpi-card.unknown { border-left-color:var(--gray); }
 .kpi-card.unknown .val { color:var(--gray); }
 .kpi-card.overdue { border-left-color:var(--red); }
@@ -455,6 +468,16 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .flag-badge.info { background:var(--indigo-soft); color:var(--indigo-text); }
 /* Dismissed (apps/services/match_dismiss.py) - muted + struck-through
    rather than hidden, so a reviewer can still see what was dismissed. */
+/* Match Accuracy Programme fix 3.F - severity band (rounding/minor/material),
+   same 5%/20% cut points as .row-tint-mild/-moderate/-severe below. Material
+   keeps .flag-badge's own default red (already the most attention-grabbing);
+   minor and rounding step down through amber and gray so a reviewer's eye is
+   pulled toward material discrepancies first, without hiding anything.
+   Defined BEFORE .dismissed below, so .dismissed's muted/struck-through
+   style always wins the cascade when both classes are present on one badge
+   (equal specificity - later source order wins). */
+.flag-badge.sev-minor { background:var(--amber-soft); color:var(--amber-text); }
+.flag-badge.sev-rounding { background:var(--gray-soft); color:var(--gray); }
 .flag-badge.dismissed { background:var(--border); color:var(--slate-soft); text-decoration:line-through; }
 .dismissed-tag { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:6px; background:var(--border); color:var(--slate-soft); cursor:default; }
 .dismiss-link { display:inline-block; font-size:10.5px; font-weight:600; margin-left:6px; color:var(--gold-accent-text); cursor:pointer; }
