@@ -10,11 +10,11 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import DomesticPOCorrection, HRSPOLineItem, HRSPurchaseOrder
+from apps.core.models import DomesticPOCorrection, HRSDomesticPOLineItem, HRSDomesticPurchaseOrder
 
 
 def _make_po(po_number="1000001511", **overrides):
-    """Build a minimal real HRSPurchaseOrder for correct_field to edit."""
+    """Build a minimal real HRSDomesticPurchaseOrder for correct_field to edit."""
     defaults = dict(
         po_drive_folder_name=po_number,
         po_number=po_number,
@@ -23,15 +23,15 @@ def _make_po(po_number="1000001511", **overrides):
         currency="INR",
     )
     defaults.update(overrides)
-    return HRSPurchaseOrder.objects.create(**defaults)
+    return HRSDomesticPurchaseOrder.objects.create(**defaults)
 
 
 def _make_item(po, item_id="1", **overrides):
-    """Build a minimal real HRSPOLineItem attached to `po`, for correct_field
+    """Build a minimal real HRSDomesticPOLineItem attached to `po`, for correct_field
     tests that target a line-item field instead of a PO-level field."""
     defaults = dict(purchase_order=po, item_id=item_id, description="Widget", qty="100", net_price="1.5")
     defaults.update(overrides)
-    return HRSPOLineItem.objects.create(**defaults)
+    return HRSDomesticPOLineItem.objects.create(**defaults)
 
 
 @pytest.mark.django_db

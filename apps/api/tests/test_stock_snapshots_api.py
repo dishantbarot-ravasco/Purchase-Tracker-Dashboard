@@ -14,7 +14,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import HRSStockLot, HRSStockSnapshot
+from apps.core.models import HRSRMLot, HRSRMSnapshot
 
 DATES_URL = "/api/stock-snapshots/dates"
 SNAPSHOTS_URL = "/api/stock-snapshots"
@@ -23,7 +23,7 @@ SNAPSHOTS_URL = "/api/stock-snapshots"
 def _make_lot(**kwargs):
     defaults = dict(description="Zinc Oxide", sap_item_code="H1", party_name="Kedar Metals", natural_key="H1|kedarmetals")
     defaults.update(kwargs)
-    return HRSStockLot.objects.create(**defaults)
+    return HRSRMLot.objects.create(**defaults)
 
 
 @pytest.mark.django_db
@@ -35,9 +35,9 @@ class TestStockSnapshotDates:
     def test_returns_distinct_dates_with_lot_counts(self):
         lot1 = _make_lot(natural_key="H1|kedarmetals")
         lot2 = _make_lot(natural_key="H2|ganesh", description="Stearic Acid", sap_item_code="H2", party_name="Ganesh")
-        HRSStockSnapshot.objects.create(stock_lot=lot1, snapshot_date="2026-09-01", opening_stock=10, received=0, issued=0, todays_stock=10)
-        HRSStockSnapshot.objects.create(stock_lot=lot2, snapshot_date="2026-09-01", opening_stock=5, received=0, issued=0, todays_stock=5)
-        HRSStockSnapshot.objects.create(stock_lot=lot1, snapshot_date="2026-09-02", opening_stock=10, received=0, issued=1, todays_stock=9)
+        HRSRMSnapshot.objects.create(stock_lot=lot1, snapshot_date="2026-09-01", opening_stock=10, received=0, issued=0, todays_stock=10)
+        HRSRMSnapshot.objects.create(stock_lot=lot2, snapshot_date="2026-09-01", opening_stock=5, received=0, issued=0, todays_stock=5)
+        HRSRMSnapshot.objects.create(stock_lot=lot1, snapshot_date="2026-09-02", opening_stock=10, received=0, issued=1, todays_stock=9)
 
         response = self.client.get(DATES_URL)
         assert response.status_code == 200
@@ -51,7 +51,7 @@ class TestStockSnapshotsForDate:
         self.client = APIClient()
         self.client.force_authenticate(user=make_user(email="v2@ravasco.com", role="viewer"))
         self.lot = _make_lot()
-        HRSStockSnapshot.objects.create(
+        HRSRMSnapshot.objects.create(
             stock_lot=self.lot, snapshot_date="2026-09-01",
             opening_stock=10, received=0, issued=1, todays_stock=9, basic_rate="105.5", value="949.5",
         )
@@ -71,7 +71,7 @@ class TestStockSnapshotsForDate:
         assert lot["rate"] == 105.5
 
     def test_omitted_date_defaults_to_latest(self):
-        HRSStockSnapshot.objects.create(
+        HRSRMSnapshot.objects.create(
             stock_lot=self.lot, snapshot_date="2026-09-03",
             opening_stock=9, received=0, issued=1, todays_stock=8,
         )
@@ -90,7 +90,7 @@ class TestStockSnapshotsForDate:
         assert response.status_code == 400
 
     def test_no_snapshot_history_at_all_returns_404_not_empty_200(self):
-        HRSStockSnapshot.objects.all().delete()
+        HRSRMSnapshot.objects.all().delete()
         response = self.client.get(SNAPSHOTS_URL)
         assert response.status_code == 404
         assert response.json()["availableDates"] == []

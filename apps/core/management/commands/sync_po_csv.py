@@ -1,7 +1,7 @@
 """
 apps/core/management/commands/sync_po_csv.py — syncs
 Master_HRS_SILVASSA_Domestic_Purchase_Data.csv from Drive into
-HRSPurchaseOrder / HRSPOLineItem.
+HRSDomesticPurchaseOrder / HRSDomesticPOLineItem.
 
 The PO master CSV format is identical across HRS/Achhad/Vapi (confirmed
 byte-for-byte identical header against real files), so apps/services/
@@ -39,7 +39,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DataQualityFlag, HRSPOLineItem, HRSPurchaseOrder, SyncRun
+from apps.core.models import DataQualityFlag, HRSDomesticPOLineItem, HRSDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
@@ -68,15 +68,15 @@ def _po_hash(order) -> str:
 # ── Command ────────────────────────────────────────────────────────────────
 
 class Command(BaseCommand):
-    """Sync the HRS PO master CSV from Drive (or --file) into HRSPurchaseOrder/
-    HRSPOLineItem, and record the outcome as a SyncRun row.
+    """Sync the HRS PO master CSV from Drive (or --file) into HRSDomesticPurchaseOrder/
+    HRSDomesticPOLineItem, and record the outcome as a SyncRun row.
 
     Idempotent: an order whose _po_hash matches the stored
     synced_from_row_hash is left untouched; only orders that changed (or are
     new) get their line items deleted and rebuilt. Safe to re-run any time.
     """
 
-    help = "Sync the HRS Purchase Order master CSV from Drive into HRSPurchaseOrder/HRSPOLineItem."
+    help = "Sync the HRS Purchase Order master CSV from Drive into HRSDomesticPurchaseOrder/HRSDomesticPOLineItem."
 
     def add_arguments(self, parser):
         parser.add_argument("--file", help="Parse a local CSV file instead of fetching from Drive.")
@@ -145,11 +145,11 @@ class Command(BaseCommand):
         """Upsert one parsed PO by po_number; returns False (no-op) when the
         whole-order hash matches what's already stored."""
         row_hash = _po_hash(parsed)
-        existing = HRSPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
+        existing = HRSDomesticPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
         if existing and existing.synced_from_row_hash == row_hash:
             return False
 
-        order, _ = HRSPurchaseOrder.objects.update_or_create(
+        order, _ = HRSDomesticPurchaseOrder.objects.update_or_create(
             po_number=parsed.po_number,
             defaults=dict(
                 po_drive_folder_name=parsed.po_drive_folder_name,
@@ -176,8 +176,8 @@ class Command(BaseCommand):
         # Line items have no independent identity worth diffing - simplest
         # correct approach is delete-and-rebuild rather than per-item upsert.
         order.items.all().delete()
-        HRSPOLineItem.objects.bulk_create([
-            HRSPOLineItem(
+        HRSDomesticPOLineItem.objects.bulk_create([
+            HRSDomesticPOLineItem(
                 purchase_order=order,
                 item_id=item.item_id,
                 description=item.description,
@@ -199,6 +199,6 @@ class Command(BaseCommand):
         row was fixed in the source sheet on some other path)."""
         results = {
             item.id: check_po_line_item(item.qty, item.net_price, item.net_value)
-            for item in HRSPOLineItem.objects.all()
+            for item in HRSDomesticPOLineItem.objects.all()
         }
         sync_data_quality_flags(SyncRun.Plant.HRS, DataQualityFlag.SourceType.PO_LINE_ITEM, results)

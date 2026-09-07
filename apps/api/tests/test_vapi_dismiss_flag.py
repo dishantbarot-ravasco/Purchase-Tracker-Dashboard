@@ -11,13 +11,13 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import FlagDismissal, RTPVapiPurchaseOrder
+from apps.core.models import FlagDismissal, RTPVapiDomesticPurchaseOrder
 
 
 @pytest.mark.django_db
 class TestVapiDismissFlag:
     def setup_method(self):
-        self.po = RTPVapiPurchaseOrder.objects.create(
+        self.po = RTPVapiDomesticPurchaseOrder.objects.create(
             po_drive_folder_name="2000009998", po_number="2000009998", vendor_name="Test Vendor Ltd",
         )
         self.url = f"/api/vapi/purchase-orders/{self.po.po_number}/flags/dismiss"

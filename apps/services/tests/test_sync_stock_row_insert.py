@@ -4,7 +4,7 @@ defect this whole phase exists to fix (see apps/services/stock_identity.py
 and sync_stock.py's module docstrings): a stock lot used to be keyed on
 `source_row_ref` (the raw openpyxl row index), so inserting one row
 mid-sheet silently re-labeled an existing lot as whatever material now
-occupied its old row, while that lot's HRSStockSnapshot history stayed
+occupied its old row, while that lot's HRSRMSnapshot history stayed
 attached by foreign key.
 
 **Deliberate, narrow exception to CLAUDE.md's "the Drive-sync/parse/
@@ -25,7 +25,7 @@ import openpyxl
 import pytest
 from django.core.management import call_command
 
-from apps.core.models import HRSStockLot
+from apps.core.models import HRSRMLot
 
 _HEADER_ROW = 6
 _DATA_START_ROW = 7
@@ -86,7 +86,7 @@ class TestSyncStockSurvivesARowInsert:
         fixture_path.write_bytes(_build_workbook([_ROW_A, _ROW_B, _ROW_C]))
         call_command("sync_stock", file=str(fixture_path))
 
-        zinc_oxide = HRSStockLot.objects.get(sap_item_code="H2")
+        zinc_oxide = HRSRMLot.objects.get(sap_item_code="H2")
         original_id = zinc_oxide.id
         original_snapshot_count = zinc_oxide.snapshots.count()
         assert original_snapshot_count == 1
@@ -104,5 +104,5 @@ class TestSyncStockSurvivesARowInsert:
         assert zinc_oxide.snapshots.count() == original_snapshot_count, (
             "Snapshot history was duplicated/lost across the row-shifted re-sync."
         )
-        assert HRSStockLot.objects.filter(sap_item_code="H4", description="Carbon Black N330").exists()
-        assert HRSStockLot.objects.count() == 4
+        assert HRSRMLot.objects.filter(sap_item_code="H4", description="Carbon Black N330").exists()
+        assert HRSRMLot.objects.count() == 4

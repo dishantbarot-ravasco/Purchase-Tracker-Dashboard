@@ -1,7 +1,7 @@
 """
 apps/services/parsers/vapi_stock.py — parses RAVASCO VAPI RM STOCK
 FILE.xlsx, 'Stock' sheet, into a flat list of row dicts ready to upsert
-into RTPVapiStockLot.
+into RTPVapiRMLot.
 
 Exact header (row 6; data from row 7), verified against the live file this
 session:

@@ -25,11 +25,11 @@ from apps.api.routers import _domestic_base as _base
 from apps.core.models import (
     HRSMIREntry,
     HRSMirStockMatch,
-    HRSPOLineItem,
+    HRSDomesticPOLineItem,
     HRSPOMirMatch,
-    HRSPurchaseOrder,
-    HRSStockLot,
-    HRSStockSnapshot,
+    HRSDomesticPurchaseOrder,
+    HRSRMLot,
+    HRSRMSnapshot,
     SyncRun,
 )
 from apps.services.matching import run_full_match
@@ -37,13 +37,13 @@ from apps.services.matching import run_full_match
 _CONFIG = _base._PlantConfig(
     key="hrs",
     syncrun_plant=SyncRun.Plant.HRS,
-    po_model=HRSPurchaseOrder,
-    item_model=HRSPOLineItem,
+    po_model=HRSDomesticPurchaseOrder,
+    item_model=HRSDomesticPOLineItem,
     mir_model=HRSMIREntry,
     po_mir_match_model=HRSPOMirMatch,
     mir_stock_match_model=HRSMirStockMatch,
-    stock_lot_model=HRSStockLot,
-    stock_snapshot_model=HRSStockSnapshot,
+    stock_lot_model=HRSRMLot,
+    stock_snapshot_model=HRSRMSnapshot,
     run_full_match=run_full_match,
     # See hrs_views.py's previous version / CLAUDE.md's "Inline Edit
     # Everywhere" section for why quantity/value/date columns are

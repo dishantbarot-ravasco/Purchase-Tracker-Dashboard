@@ -1,8 +1,8 @@
 """
 apps/core/management/commands/sync_achhad_stock.py — syncs RAVASCO ACHHAD RM
-STOCK FILE.xlsx from Drive into RTPAchhadStockLot, keyed by natural_key (a
+STOCK FILE.xlsx from Drive into RTPAchhadRMLot, keyed by natural_key (a
 stable business identity - see apps/services/stock_identity.py), and
-captures today's RTPAchhadStockSnapshot for every lot synced.
+captures today's RTPAchhadRMSnapshot for every lot synced.
 
 Same shape as sync_stock.py for HRS - see that file for the general design
 (natural_key vs. the old source_row_ref, sync_utils.unchanged(), the
@@ -11,7 +11,7 @@ different for this plant: the Drive folder is settings.ACHHAD_MIR_STOCK_FOLDER_I
 the file's single tab is renamed every month (e.g. 'Aug 26-27'), so the
 parser reads wb.sheetnames[0] instead of matching a literal tab name; and
 Achhad's Stock sheet is one row per material full stop, with no vendor
-column at all (_FIELDS below has no party_name, unlike HRS's HRSStockLot) -
+column at all (_FIELDS below has no party_name, unlike HRS's HRSRMLot) -
 so this plant's natural_key has no vendor segment (vendor="" is passed to
 OccurrenceCounter.key_for below), a materially weaker identity guarantee by
 necessity (two lots of the same material are separated only by the
@@ -31,7 +31,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DataQualityFlag, RTPAchhadStockLot, RTPAchhadStockSnapshot, SyncRun
+from apps.core.models import DataQualityFlag, RTPAchhadRMDailyMovement, RTPAchhadRMLot, RTPAchhadRMSnapshot, SyncRun
 from apps.services.arithmetic_checks import check_stock_lot
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.achhad_stock import HeaderMismatch, parse_achhad_stock_xlsx
@@ -48,11 +48,11 @@ _SNAPSHOT_FIELDS = ["opening_stock", "received", "issued", "todays_stock", "rate
 
 class Command(BaseCommand):
     """Sync the RTP-Achhad Stock xlsx from Drive (or --file) into
-    RTPAchhadStockLot, capturing today's snapshot per lot unless
+    RTPAchhadRMLot, capturing today's snapshot per lot unless
     --no-snapshot. See sync_stock.py's Command docstring for the
     idempotency design (unchanged from HRS)."""
 
-    help = "Sync the RTP-Achhad Stock xlsx from Drive into RTPAchhadStockLot and capture today's snapshot."
+    help = "Sync the RTP-Achhad Stock xlsx from Drive into RTPAchhadRMLot and capture today's snapshot."
 
     def add_arguments(self, parser):
         parser.add_argument("--file", help="Parse a local xlsx file instead of fetching from Drive.")
@@ -64,6 +64,7 @@ class Command(BaseCommand):
         rows_seen = 0
         rows_changed = 0
         rows_skipped = 0
+        movements_written = 0
         status = SyncRun.Status.SUCCESS
         error_detail = ""
 
@@ -87,8 +88,9 @@ class Command(BaseCommand):
                         rows_changed += 1
                     if not options["no_snapshot"]:
                         self._upsert_snapshot(lot, today)
+                    movements_written += self._upsert_daily_movements(lot, parsed.daily_movements)
                 deactivated = (
-                    RTPAchhadStockLot.objects.filter(is_active=True)
+                    RTPAchhadRMLot.objects.filter(is_active=True)
                     .exclude(natural_key__in=seen_keys)
                     .update(is_active=False)
                 )
@@ -101,6 +103,7 @@ class Command(BaseCommand):
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_achhad_stock: {rows_seen} stock rows seen, {rows_changed} created/updated, "
+                f"{movements_written} daily movement(s) recorded, "
                 f"{rows_skipped} skipped (no identity), "
                 f"{deactivated} deactivated (no longer in sheet) "
                 f"({time.monotonic() - t0:.1f}s)"
@@ -138,27 +141,53 @@ class Command(BaseCommand):
         file_id = find_file_id_by_title(settings.ACHHAD_STOCK_FILE_TITLE, parent_id=settings.ACHHAD_MIR_STOCK_FOLDER_ID)
         return download_file_bytes(file_id)
 
-    def _upsert_lot(self, parsed, natural_key: str) -> tuple[RTPAchhadStockLot, bool]:
+    def _upsert_lot(self, parsed, natural_key: str) -> tuple[RTPAchhadRMLot, bool]:
         """See sync_stock.py's _upsert_lot - same natural_key-lookup,
         unchanged()-and-skip logic."""
-        existing = RTPAchhadStockLot.objects.filter(natural_key=natural_key).first()
-        if existing and existing.is_active and unchanged(RTPAchhadStockLot, existing, parsed, _FIELDS):
+        existing = RTPAchhadRMLot.objects.filter(natural_key=natural_key).first()
+        if existing and existing.is_active and unchanged(RTPAchhadRMLot, existing, parsed, _FIELDS):
             return existing, False
 
-        lot, _ = RTPAchhadStockLot.objects.update_or_create(
+        lot, _ = RTPAchhadRMLot.objects.update_or_create(
             natural_key=natural_key,
             defaults={f: getattr(parsed, f) for f in _FIELDS}
             | {"source_row_ref": parsed.source_row_ref, "last_synced_at": timezone.now(), "is_active": True},
         )
         return lot, True
 
-    def _upsert_snapshot(self, lot: RTPAchhadStockLot, snapshot_date) -> None:
+    def _upsert_snapshot(self, lot: RTPAchhadRMLot, snapshot_date) -> None:
         """Record/overwrite today's snapshot for this lot."""
-        RTPAchhadStockSnapshot.objects.update_or_create(
+        RTPAchhadRMSnapshot.objects.update_or_create(
             stock_lot=lot,
             snapshot_date=snapshot_date,
             defaults={f: getattr(lot, f) for f in _SNAPSHOT_FIELDS},
         )
+
+    def _upsert_daily_movements(self, lot: RTPAchhadRMLot, movements: list) -> int:
+        """Upserts one RTPAchhadRMDailyMovement row per activity day parsed
+        for this lot (see achhad_stock.py's ParsedDailyMovement - only real
+        activity days are parsed at all, so `movements` is already sparse).
+        A day's own received/issued total only ever grows within the live
+        month (confirmed by the reconciliation check this feature was built
+        on), so overwriting on every sync is correct, not just idempotent -
+        no need for sync_utils.unchanged() here, an update_or_create per row
+        is cheap at this row count (one plant, real activity days only, not
+        one row per day per material). Returns how many rows were written,
+        for the command's own summary line."""
+        written = 0
+        for m in movements:
+            RTPAchhadRMDailyMovement.objects.update_or_create(
+                stock_lot=lot,
+                movement_date=m.movement_date,
+                defaults={
+                    "received": m.received,
+                    "issued": m.issued,
+                    "source_row_ref": lot.source_row_ref,
+                    "last_synced_at": timezone.now(),
+                },
+            )
+            written += 1
+        return written
 
     def _sync_data_quality_flags(self) -> None:
         """See sync_stock.py's own _sync_data_quality_flags (Match Accuracy
@@ -167,6 +196,6 @@ class Command(BaseCommand):
         found is the same "stock materialized from nowhere" shape as HRS's."""
         results = {
             lot.id: check_stock_lot(lot.opening_stock, lot.received, lot.issued, lot.todays_stock)
-            for lot in RTPAchhadStockLot.objects.filter(is_active=True)
+            for lot in RTPAchhadRMLot.objects.filter(is_active=True)
         }
         sync_data_quality_flags(SyncRun.Plant.RTP_ACHHAD, DataQualityFlag.SourceType.STOCK_LOT, results)

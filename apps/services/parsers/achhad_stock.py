@@ -1,7 +1,7 @@
 """
 apps/services/parsers/achhad_stock.py — parses RAVASCO ACHHAD RM STOCK
 FILE.xlsx into a flat list of row dicts ready to upsert into
-RTPAchhadStockLot.
+RTPAchhadRMLot.
 
 Genuinely different shape from HRS's Stock file (apps/services/parsers/
 stock.py), confirmed against the live file this session - not just
@@ -20,17 +20,25 @@ relabeled columns:
     matcher does (see apps/services/matching_achhad.py) - a real,
     weaker-confidence difference, not an oversight.
   - Header sits across two rows for the numbered day-of-month columns
-    (a 'Recp./Issue' sub-header under a bare day number), and the sheet
-    embeds a full daily receipt/issue transaction matrix (one Recp/Issue
-    column pair per day of the month) plus a same-day dispatch breakdown by
-    destination sub-plant (HRA/HRS/RTP VAPI/SILLI/RETURN TO PARTY/MGPL/2M
-    Elastomers) to the right of that. Deliberately NOT parsed here, same
-    scoping decision HRS's Stock parser made for its own formula-only
-    Receipt/Issue tab references - this parser captures the per-material
-    summary row only (opening/received/issued/closing/value/physical),
-    mirroring the level HRS's own StockLot reached. A future pass could add
-    a daily-snapshot-shaped model for the per-day matrix if that level of
-    detail turns out to matter.
+    (a 'Recp./Issue' sub-header under a bare day number). The sheet embeds a
+    full daily receipt/issue transaction matrix (one Recp/Issue column pair
+    per day of the month) - parsed here as of 2026-09-08 (see
+    ParsedAchhadStockLot.daily_movements below) after confirming against the
+    live file this session that it reconciles exactly: summed across all 31
+    day-columns, Recp equals the row's own `Received` summary and Issue
+    equals `Issued`, for 323 of 325 real material rows exactly (the other 2
+    differ only by float rounding in the verification script, not the
+    source data) - not noisy, safe to trust. The point of parsing it isn't
+    that it's more accurate than the summary (it's numerically identical) -
+    it's that it gives a real CALENDAR DATE for each receipt/issue, which
+    the monthly summary alone can't (see stock_consumption.py's own
+    docstring on why RTP-Achhad's `issued` column couldn't be used as a
+    Days-Left Engine signal - that concern was about the *monthly* summary
+    resetting each period, not about this daily-dated data underneath it).
+    Same-day dispatch breakdown by destination sub-plant (HRA/HRS/RTP VAPI/
+    SILLI/RETURN TO PARTY/MGPL/2M Elastomers) to the right of the day matrix
+    is still NOT parsed - no feature consumes inter-plant dispatch tracking
+    today, unlike the day-matrix's Days-Left Engine use.
   - Category is not a column - it's a section-divider row (only the
     'NAME OF MATERIAL' cell filled, e.g. 'Natural Rubber' / 'Synthetic
     Rubbers') scattered through the data. This parser tracks the most
@@ -48,8 +56,10 @@ C NAME OF MATERIAL | D Rec.Date | E SAP Code | F RATE | G Zone | H MSL |
 I Opening | J Received | K Issued | L Closing | M Value | N Physical
 """
 
+import datetime
 import io
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 import openpyxl
 
@@ -68,8 +78,27 @@ EXPECTED_HEADERS = {
     "L": "Closing", "M": "Value", "N": "Physical",
 }
 
+# Row 1 carries a literal "RM STOCK - DD.MM.YYYY" title (confirmed against
+# the live file - a single value in A1, nowhere else on that row) - the only
+# place in the sheet that names a full 4-digit year, needed to turn the day
+# matrix's bare day numbers (1-31) into real dates. The day-of-month tab name
+# itself ("Aug 26-27") is a fiscal-year-range label, not precise enough.
+_TITLE_DATE_RE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
+
 
 # ── Parsed-row shape ─────────────────────────────────────────────────────────
+
+@dataclass
+class ParsedDailyMovement:
+    """One day's real receipt/issue activity for one material row - see
+    module docstring for why this is trusted (reconciles exactly with the
+    row's own Received/Issued summary) and why it's captured (a real
+    calendar date the summary alone can't give)."""
+
+    movement_date: datetime.date
+    received: object
+    issued: object
+
 
 @dataclass
 class ParsedAchhadStockLot:
@@ -89,6 +118,7 @@ class ParsedAchhadStockLot:
     physical_stock: object
     received_date: object
     source_row_ref: str
+    daily_movements: list = field(default_factory=list)  # list[ParsedDailyMovement], activity days only
 
 
 class HeaderMismatch(Exception):
@@ -97,6 +127,38 @@ class HeaderMismatch(Exception):
 
 def _strip(v):
     return (v or "").strip() if isinstance(v, str) else v
+
+
+def _sheet_month_year(ws) -> tuple[int, int]:
+    """Extracts (year, month) from row 1's "RM STOCK - DD.MM.YYYY" title.
+    Raises HeaderMismatch if that title isn't there in the expected shape -
+    better to fail loudly than silently misdate every movement in the file."""
+    title = _strip(ws["A1"].value) or ""
+    m = _TITLE_DATE_RE.search(title)
+    if not m:
+        raise HeaderMismatch(f"Expected a 'RM STOCK - DD.MM.YYYY' title in A1, found {title!r}")
+    _day, month, year = m.groups()
+    return int(year), int(month)
+
+
+def _day_columns(ws) -> dict[int, tuple[int, int]]:
+    """Scans HEADER_ROW for bare day numbers (1-31) - each one marks a
+    (Recp., Issue) column pair, confirmed against the live file to always
+    appear as two adjacent columns per day. Returns {day: (recp_col, issue_col)}
+    using 1-based openpyxl column numbers. Column O is where the day matrix
+    starts in the live file, but this scans dynamically rather than
+    hardcoding that, since a template revision could shift it."""
+    day_cols: dict[int, tuple[int, int]] = {}
+    col = 1
+    max_col = ws.max_column
+    while col <= max_col:
+        v = ws.cell(row=HEADER_ROW, column=col).value
+        if isinstance(v, (int, float)) and float(v).is_integer() and 1 <= int(v) <= 31:
+            day_cols[int(v)] = (col, col + 1)
+            col += 2
+        else:
+            col += 1
+    return day_cols
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -116,6 +178,9 @@ def parse_achhad_stock_xlsx(file_bytes: bytes) -> list[ParsedAchhadStockLot]:
         if actual != expected:
             raise HeaderMismatch(f"Column {col}{HEADER_ROW}: expected {expected!r}, found {actual!r}")
 
+    year, month = _sheet_month_year(ws)
+    day_cols = _day_columns(ws)
+
     lots = []
     current_category = ""
     for r in range(DATA_START_ROW, ws.max_row + 1):
@@ -131,6 +196,19 @@ def parse_achhad_stock_xlsx(file_bytes: bytes) -> list[ParsedAchhadStockLot]:
             continue
         if not description:
             continue
+
+        daily_movements = []
+        for day, (recp_col, issue_col) in day_cols.items():
+            try:
+                movement_date = datetime.date(year, month, day)
+            except ValueError:
+                continue  # e.g. day 31 in a 30-day month - the column exists, the date doesn't
+            recp = to_decimal(ws.cell(row=r, column=recp_col).value) or 0
+            issue = to_decimal(ws.cell(row=r, column=issue_col).value) or 0
+            if recp == 0 and issue == 0:
+                continue  # only real activity days are worth a row - see module docstring
+            daily_movements.append(ParsedDailyMovement(movement_date=movement_date, received=recp, issued=issue))
+        daily_movements.sort(key=lambda m: m.movement_date)
 
         lots.append(
             ParsedAchhadStockLot(
@@ -150,6 +228,7 @@ def parse_achhad_stock_xlsx(file_bytes: bytes) -> list[ParsedAchhadStockLot]:
                 physical_stock=to_decimal(ws[f"N{r}"].value),
                 received_date=to_date(ws[f"D{r}"].value),
                 source_row_ref=str(r),
+                daily_movements=daily_movements,
             )
         )
     return lots

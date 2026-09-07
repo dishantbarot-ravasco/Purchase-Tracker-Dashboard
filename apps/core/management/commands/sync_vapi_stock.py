@@ -1,8 +1,8 @@
 """
 apps/core/management/commands/sync_vapi_stock.py — syncs RAVASCO VAPI RM
-STOCK FILE.xlsx from Drive into RTPVapiStockLot, keyed by natural_key (a
+STOCK FILE.xlsx from Drive into RTPVapiRMLot, keyed by natural_key (a
 stable business identity - see apps/services/stock_identity.py), and
-captures today's RTPVapiStockSnapshot for every lot synced.
+captures today's RTPVapiRMSnapshot for every lot synced.
 
 Same shape as sync_stock.py for HRS - see that file for the general design
 (natural_key vs. the old source_row_ref, sync_utils.unchanged(), the
@@ -30,7 +30,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DataQualityFlag, RTPVapiStockLot, RTPVapiStockSnapshot, SyncRun
+from apps.core.models import DataQualityFlag, RTPVapiRMLot, RTPVapiRMSnapshot, SyncRun
 from apps.services.arithmetic_checks import check_stock_lot
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.vapi_stock import HeaderMismatch, parse_vapi_stock_xlsx
@@ -47,11 +47,11 @@ _SNAPSHOT_FIELDS = ["opening_stock", "received", "issued", "todays_stock", "basi
 
 class Command(BaseCommand):
     """Sync the RTP-Vapi Stock xlsx from Drive (or --file) into
-    RTPVapiStockLot, capturing today's snapshot per lot unless
+    RTPVapiRMLot, capturing today's snapshot per lot unless
     --no-snapshot. See sync_stock.py's Command docstring for the
     idempotency design (unchanged from HRS)."""
 
-    help = "Sync the RTP-Vapi Stock xlsx from Drive into RTPVapiStockLot and capture today's snapshot."
+    help = "Sync the RTP-Vapi Stock xlsx from Drive into RTPVapiRMLot and capture today's snapshot."
 
     def add_arguments(self, parser):
         parser.add_argument("--file", help="Parse a local xlsx file instead of fetching from Drive.")
@@ -87,7 +87,7 @@ class Command(BaseCommand):
                     if not options["no_snapshot"]:
                         self._upsert_snapshot(lot, today)
                 deactivated = (
-                    RTPVapiStockLot.objects.filter(is_active=True)
+                    RTPVapiRMLot.objects.filter(is_active=True)
                     .exclude(natural_key__in=seen_keys)
                     .update(is_active=False)
                 )
@@ -137,23 +137,23 @@ class Command(BaseCommand):
         file_id = find_file_id_by_title(settings.VAPI_STOCK_FILE_TITLE, parent_id=settings.VAPI_MIR_STOCK_FOLDER_ID)
         return download_file_bytes(file_id)
 
-    def _upsert_lot(self, parsed, natural_key: str) -> tuple[RTPVapiStockLot, bool]:
+    def _upsert_lot(self, parsed, natural_key: str) -> tuple[RTPVapiRMLot, bool]:
         """See sync_stock.py's _upsert_lot - same natural_key-lookup,
         unchanged()-and-skip logic."""
-        existing = RTPVapiStockLot.objects.filter(natural_key=natural_key).first()
-        if existing and existing.is_active and unchanged(RTPVapiStockLot, existing, parsed, _FIELDS):
+        existing = RTPVapiRMLot.objects.filter(natural_key=natural_key).first()
+        if existing and existing.is_active and unchanged(RTPVapiRMLot, existing, parsed, _FIELDS):
             return existing, False
 
-        lot, _ = RTPVapiStockLot.objects.update_or_create(
+        lot, _ = RTPVapiRMLot.objects.update_or_create(
             natural_key=natural_key,
             defaults={f: getattr(parsed, f) for f in _FIELDS}
             | {"source_row_ref": parsed.source_row_ref, "last_synced_at": timezone.now(), "is_active": True},
         )
         return lot, True
 
-    def _upsert_snapshot(self, lot: RTPVapiStockLot, snapshot_date) -> None:
+    def _upsert_snapshot(self, lot: RTPVapiRMLot, snapshot_date) -> None:
         """Record/overwrite today's snapshot for this lot."""
-        RTPVapiStockSnapshot.objects.update_or_create(
+        RTPVapiRMSnapshot.objects.update_or_create(
             stock_lot=lot,
             snapshot_date=snapshot_date,
             defaults={f: getattr(lot, f) for f in _SNAPSHOT_FIELDS},
@@ -165,6 +165,6 @@ class Command(BaseCommand):
         empirically: reconciles 100% of the time on real Vapi data."""
         results = {
             lot.id: check_stock_lot(lot.opening_stock, lot.received, lot.issued, lot.todays_stock)
-            for lot in RTPVapiStockLot.objects.filter(is_active=True)
+            for lot in RTPVapiRMLot.objects.filter(is_active=True)
         }
         sync_data_quality_flags(SyncRun.Plant.RTP_VAPI, DataQualityFlag.SourceType.STOCK_LOT, results)

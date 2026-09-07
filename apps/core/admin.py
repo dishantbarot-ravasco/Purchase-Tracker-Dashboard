@@ -20,11 +20,11 @@ from apps.core.models import (
     HRSImportPurchaseOrder,
     HRSMIREntry,
     HRSMirStockMatch,
-    HRSPOLineItem,
+    HRSDomesticPOLineItem,
     HRSPOMirMatch,
-    HRSPurchaseOrder,
-    HRSStockLot,
-    HRSStockSnapshot,
+    HRSDomesticPurchaseOrder,
+    HRSRMLot,
+    HRSRMSnapshot,
     DataQualityFlag,
     ImportPOCorrection,
     MatchReview,
@@ -32,20 +32,21 @@ from apps.core.models import (
     RTPAchhadImportPurchaseOrder,
     RTPAchhadMIREntry,
     RTPAchhadMirStockMatch,
-    RTPAchhadPOLineItem,
+    RTPAchhadDomesticPOLineItem,
     RTPAchhadPOMirMatch,
-    RTPAchhadPurchaseOrder,
-    RTPAchhadStockLot,
-    RTPAchhadStockSnapshot,
+    RTPAchhadDomesticPurchaseOrder,
+    RTPAchhadRMLot,
+    RTPAchhadRMSnapshot,
     RTPVapiImportPOLineItem,
     RTPVapiImportPurchaseOrder,
     RTPVapiMIREntry,
     RTPVapiMirStockMatch,
-    RTPVapiPOLineItem,
+    RTPVapiDomesticPOLineItem,
     RTPVapiPOMirMatch,
-    RTPVapiPurchaseOrder,
-    RTPVapiStockLot,
-    RTPVapiStockSnapshot,
+    RTPVapiDomesticPurchaseOrder,
+    RTPVapiRMLot,
+    RTPVapiRMSnapshot,
+    MaterialCategoryReference,
     SyncRun,
     PTUser,
     OTPCode,
@@ -55,30 +56,46 @@ from apps.core.models import (
 # ── Per-plant domestic PO / MIR / Stock / match tables ─────────────────────
 # Plain default ModelAdmin for all of these - read-only browsing/spot-checks
 # only, no bespoke list_display/search needed for a debugging surface.
-admin.site.register(HRSPurchaseOrder)
-admin.site.register(HRSPOLineItem)
+admin.site.register(HRSDomesticPurchaseOrder)
+admin.site.register(HRSDomesticPOLineItem)
 admin.site.register(HRSMIREntry)
-admin.site.register(HRSStockLot)
-admin.site.register(HRSStockSnapshot)
+admin.site.register(HRSRMLot)
+admin.site.register(HRSRMSnapshot)
 admin.site.register(HRSPOMirMatch)
 admin.site.register(HRSMirStockMatch)
-admin.site.register(RTPAchhadPurchaseOrder)
-admin.site.register(RTPAchhadPOLineItem)
+admin.site.register(RTPAchhadDomesticPurchaseOrder)
+admin.site.register(RTPAchhadDomesticPOLineItem)
 admin.site.register(RTPAchhadMIREntry)
-admin.site.register(RTPAchhadStockLot)
-admin.site.register(RTPAchhadStockSnapshot)
+admin.site.register(RTPAchhadRMLot)
+admin.site.register(RTPAchhadRMSnapshot)
 admin.site.register(RTPAchhadPOMirMatch)
 admin.site.register(RTPAchhadMirStockMatch)
-admin.site.register(RTPVapiPurchaseOrder)
-admin.site.register(RTPVapiPOLineItem)
+admin.site.register(RTPVapiDomesticPurchaseOrder)
+admin.site.register(RTPVapiDomesticPOLineItem)
 admin.site.register(RTPVapiMIREntry)
-admin.site.register(RTPVapiStockLot)
-admin.site.register(RTPVapiStockSnapshot)
+admin.site.register(RTPVapiRMLot)
+admin.site.register(RTPVapiRMSnapshot)
 admin.site.register(RTPVapiPOMirMatch)
 admin.site.register(RTPVapiMirStockMatch)
 admin.site.register(SyncRun)
 admin.site.register(MatchReview)
 admin.site.register(DataQualityFlag)
+
+
+@admin.register(MaterialCategoryReference)
+class MaterialCategoryReferenceAdmin(admin.ModelAdmin):
+    """Real list_display/search, unlike the plain registrations above -
+    this table is meant for ad-hoc staff correction (a new material added,
+    a typo in a category), not just read-only debugging. See the model's
+    own docstring (apps/core/models.py) for the full design - normalized_
+    description is the actual match key, read-only here since editing it
+    without also fixing every plant's own Stock description would silently
+    break the lookup."""
+
+    list_display = ("description", "category", "subcategory", "hsn_code", "uom")
+    list_filter = ("category",)
+    search_fields = ("description", "normalized_description", "category", "subcategory", "sap_item_code")
+    readonly_fields = ("normalized_description", "source_row_ref", "last_synced_at")
 
 # ── Per-plant import PO tables ──────────────────────────────────────────────
 admin.site.register(HRSImportPurchaseOrder)

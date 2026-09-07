@@ -1,13 +1,13 @@
 """
 apps/core/management/commands/sync_vapi_po_csv.py — syncs
 Master_RTP_VAPI_Domestic_Purchase_Data.csv from Drive into
-RTPVapiPurchaseOrder / RTPVapiPOLineItem.
+RTPVapiDomesticPurchaseOrder / RTPVapiDomesticPOLineItem.
 
 Same shape as sync_po_csv.py for HRS - see that file for the general design.
 What's different for this plant: the Drive file title comes from
 settings.VAPI_PO_CSV_TITLE (still the shared settings.PURCHASE_TRACKER_DB_
-FOLDER_ID), and the target models are RTPVapiPurchaseOrder/
-RTPVapiPOLineItem plus SyncRun.Plant.RTP_VAPI. The reused po_csv parser was
+FOLDER_ID), and the target models are RTPVapiDomesticPurchaseOrder/
+RTPVapiDomesticPOLineItem plus SyncRun.Plant.RTP_VAPI. The reused po_csv parser was
 confirmed against Vapi's live file this session - its header matched
 EXPECTED_HEADER exactly, same as HRS/Achhad.
 
@@ -23,7 +23,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DataQualityFlag, RTPVapiPOLineItem, RTPVapiPurchaseOrder, SyncRun
+from apps.core.models import DataQualityFlag, RTPVapiDomesticPOLineItem, RTPVapiDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
@@ -49,10 +49,10 @@ def _po_hash(order) -> str:
 
 class Command(BaseCommand):
     """Sync the RTP-Vapi PO master CSV from Drive (or --file) into
-    RTPVapiPurchaseOrder/RTPVapiPOLineItem. See sync_po_csv.py's Command
+    RTPVapiDomesticPurchaseOrder/RTPVapiDomesticPOLineItem. See sync_po_csv.py's Command
     docstring for the idempotency design (unchanged from HRS)."""
 
-    help = "Sync the RTP-Vapi Purchase Order master CSV from Drive into RTPVapiPurchaseOrder/RTPVapiPOLineItem."
+    help = "Sync the RTP-Vapi Purchase Order master CSV from Drive into RTPVapiDomesticPurchaseOrder/RTPVapiDomesticPOLineItem."
 
     def add_arguments(self, parser):
         parser.add_argument("--file", help="Parse a local CSV file instead of fetching from Drive.")
@@ -116,11 +116,11 @@ class Command(BaseCommand):
     def _upsert_order(self, parsed) -> bool:
         """See sync_po_csv.py's _upsert_order - same hash-and-skip logic."""
         row_hash = _po_hash(parsed)
-        existing = RTPVapiPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
+        existing = RTPVapiDomesticPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
         if existing and existing.synced_from_row_hash == row_hash:
             return False
 
-        order, _ = RTPVapiPurchaseOrder.objects.update_or_create(
+        order, _ = RTPVapiDomesticPurchaseOrder.objects.update_or_create(
             po_number=parsed.po_number,
             defaults=dict(
                 po_drive_folder_name=parsed.po_drive_folder_name,
@@ -145,8 +145,8 @@ class Command(BaseCommand):
             ),
         )
         order.items.all().delete()
-        RTPVapiPOLineItem.objects.bulk_create([
-            RTPVapiPOLineItem(
+        RTPVapiDomesticPOLineItem.objects.bulk_create([
+            RTPVapiDomesticPOLineItem(
                 purchase_order=order,
                 item_id=item.item_id,
                 description=item.description,
@@ -166,6 +166,6 @@ class Command(BaseCommand):
         Accuracy Programme fix 3.G, same check, this plant's model."""
         results = {
             item.id: check_po_line_item(item.qty, item.net_price, item.net_value)
-            for item in RTPVapiPOLineItem.objects.all()
+            for item in RTPVapiDomesticPOLineItem.objects.all()
         }
         sync_data_quality_flags(SyncRun.Plant.RTP_VAPI, DataQualityFlag.SourceType.PO_LINE_ITEM, results)

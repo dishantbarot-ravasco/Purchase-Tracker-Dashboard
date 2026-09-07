@@ -6,7 +6,7 @@ extraction. Mirrors test_dismiss_match.py's HRS-only suite (that file's own
 docstring explains why only HRS was tested directly for logic shared
 byte-for-byte across all three plants) - this file closes that gap for
 Achhad specifically, ahead of the refactor that will make all three share
-one implementation. Note RTPAchhadStockLot has no vendor column at all (see
+one implementation. Note RTPAchhadRMLot has no vendor column at all (see
 CLAUDE.md's "Per-plant models" section) - the MIR<->Stock match fixture
 below omits any vendor field accordingly.
 """
@@ -18,18 +18,18 @@ from apps.api.tests.factories import make_user
 from apps.core.models import (
     RTPAchhadMIREntry,
     RTPAchhadMirStockMatch,
-    RTPAchhadPOLineItem,
+    RTPAchhadDomesticPOLineItem,
     RTPAchhadPOMirMatch,
-    RTPAchhadPurchaseOrder,
-    RTPAchhadStockLot,
+    RTPAchhadDomesticPurchaseOrder,
+    RTPAchhadRMLot,
 )
 
 
 def _make_po_mir_match():
-    po = RTPAchhadPurchaseOrder.objects.create(
+    po = RTPAchhadDomesticPurchaseOrder.objects.create(
         po_drive_folder_name="3000009999", po_number="3000009999", vendor_name="Test Vendor Ltd",
     )
-    item = RTPAchhadPOLineItem.objects.create(
+    item = RTPAchhadDomesticPOLineItem.objects.create(
         purchase_order=po, item_id="1", description="Widget", qty="100", net_price="1.5", net_value="150",
     )
     mir = RTPAchhadMIREntry.objects.create(
@@ -44,7 +44,7 @@ def _make_po_mir_match():
 
 def _make_mir_stock_match():
     mir = RTPAchhadMIREntry.objects.create(mir_no="MIR-2", party_name="Vendor B", material_description="Gadget", source_row_ref="11")
-    lot = RTPAchhadStockLot.objects.create(description="Gadget", source_row_ref="20")
+    lot = RTPAchhadRMLot.objects.create(description="Gadget", source_row_ref="20")
     return RTPAchhadMirStockMatch.objects.create(mir_entry=mir, stock_lot=lot, rate_diff_pct="8.00", is_flagged=True)
 
 

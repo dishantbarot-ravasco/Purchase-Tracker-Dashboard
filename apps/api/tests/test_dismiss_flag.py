@@ -16,13 +16,13 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import FlagDismissal, HRSPurchaseOrder, RTPVapiImportPurchaseOrder
+from apps.core.models import FlagDismissal, HRSDomesticPurchaseOrder, RTPVapiImportPurchaseOrder
 
 
 @pytest.mark.django_db
 class TestDismissDomesticFlag:
     def setup_method(self):
-        self.po = HRSPurchaseOrder.objects.create(
+        self.po = HRSDomesticPurchaseOrder.objects.create(
             po_drive_folder_name="1000009998", po_number="1000009998", vendor_name="Test Vendor Ltd",
         )
         self.url = f"/api/purchase-orders/{self.po.po_number}/flags/dismiss"

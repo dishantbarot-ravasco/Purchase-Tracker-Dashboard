@@ -11,13 +11,13 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import FlagDismissal, RTPAchhadPurchaseOrder
+from apps.core.models import FlagDismissal, RTPAchhadDomesticPurchaseOrder
 
 
 @pytest.mark.django_db
 class TestAchhadDismissFlag:
     def setup_method(self):
-        self.po = RTPAchhadPurchaseOrder.objects.create(
+        self.po = RTPAchhadDomesticPurchaseOrder.objects.create(
             po_drive_folder_name="3000009998", po_number="3000009998", vendor_name="Test Vendor Ltd",
         )
         self.url = f"/api/achhad/purchase-orders/{self.po.po_number}/flags/dismiss"

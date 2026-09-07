@@ -17,13 +17,13 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import HRSPurchaseOrder, RTPAchhadPurchaseOrder, RTPVapiImportPurchaseOrder
+from apps.core.models import HRSDomesticPurchaseOrder, RTPAchhadDomesticPurchaseOrder, RTPVapiImportPurchaseOrder
 
 
 @pytest.mark.django_db
 class TestDomesticReadEndpointsRespectPlantScoping:
     def setup_method(self):
-        HRSPurchaseOrder.objects.create(po_drive_folder_name="p1", po_number="p1", vendor_name="V")
+        HRSDomesticPurchaseOrder.objects.create(po_drive_folder_name="p1", po_number="p1", vendor_name="V")
 
     def test_unscoped_viewer_can_still_read_every_plant(self):
         """The default (empty plants list) - the vast majority of accounts,
@@ -63,7 +63,7 @@ class TestImportsReadEndpointsRespectPlantScoping:
         self.po = RTPVapiImportPurchaseOrder.objects.create(
             po_drive_folder_name="IMP-1", po_number="IMP-1", vendor_name="Test Vendor Ltd",
         )
-        RTPAchhadPurchaseOrder.objects.create(po_drive_folder_name="a1", po_number="a1", vendor_name="V")
+        RTPAchhadDomesticPurchaseOrder.objects.create(po_drive_folder_name="a1", po_number="a1", vendor_name="V")
 
     def test_unscoped_viewer_sees_every_plant_in_the_combined_list(self):
         client = APIClient()

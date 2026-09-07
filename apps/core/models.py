@@ -87,7 +87,7 @@ class SyncRun(models.Model):
 # The reference plant - every other plant's equivalent model below is
 # documented relative to this section rather than repeating itself.
 
-class HRSPurchaseOrder(models.Model):
+class HRSDomesticPurchaseOrder(models.Model):
     """Synced from Master_HRS_SILVASSA_Domestic_Purchase_Data.csv (the CSV
     itself is populated the existing way: new PO folders detected,
     extracted by hand, appended to the CSV - this app only reads it)."""
@@ -138,15 +138,15 @@ class HRSPurchaseOrder(models.Model):
         return f"{self.po_number} ({self.vendor_name})"
 
 
-class HRSPOLineItem(models.Model):
-    """One line of an HRSPurchaseOrder (one row per material/qty/price on
+class HRSDomesticPOLineItem(models.Model):
+    """One line of an HRSDomesticPurchaseOrder (one row per material/qty/price on
     the PO). `item_id` is the PO's own item/line identifier as printed on
     the source document - not a Django PK and, per the "Domestic line items
     have no stable natural key" note in CLAUDE.md, not guaranteed unique or
     even present; a plant's sync command deletes and recreates every line
     item belonging to a PO on any change rather than diffing item-by-item."""
 
-    purchase_order = models.ForeignKey(HRSPurchaseOrder, on_delete=models.CASCADE, related_name="items")
+    purchase_order = models.ForeignKey(HRSDomesticPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
     hsn = models.CharField(max_length=20, blank=True)
@@ -245,7 +245,7 @@ class HRSMIREntry(models.Model):
         return f"MIR {self.mir_no}: {self.material_description} from {self.party_name}"
 
 
-class HRSStockLot(models.Model):
+class HRSRMLot(models.Model):
     """One row per (material, vendor lot) as HRS's own sheet actually
     structures it - NOT one row per material. This is what makes the
     improved MIR<->Stock match possible: match on (material, vendor), not
@@ -291,7 +291,7 @@ class HRSStockLot(models.Model):
         default=True,
         help_text="False once a sync no longer sees this natural_key in the sheet (lot sold out/"
                    "removed). Deactivating instead of deleting preserves this lot's "
-                   "HRSStockSnapshot history (CASCADE) and excludes it from matching - see "
+                   "HRSRMSnapshot history (CASCADE) and excludes it from matching - see "
                    "HRSMIREntry.is_active's help_text for the same is_active/CASCADE reasoning "
                    "(that model still keys on source_row_ref; this one no longer does).",
     )
@@ -313,13 +313,13 @@ class HRSStockLot(models.Model):
         return f"{self.description} ({self.party_name})"
 
 
-class HRSStockSnapshot(models.Model):
+class HRSRMSnapshot(models.Model):
     """One row per (stock lot, day). Captured once daily by a scheduled job
     - replaces dated whole-file copies with real history: trend a rate over
     time, see exactly when a discrepancy first appeared."""
 
     snapshot_date = models.DateField()
-    stock_lot = models.ForeignKey(HRSStockLot, on_delete=models.CASCADE, related_name="snapshots")
+    stock_lot = models.ForeignKey(HRSRMLot, on_delete=models.CASCADE, related_name="snapshots")
 
     opening_stock = models.DecimalField(max_digits=14, decimal_places=3)
     received = models.DecimalField(max_digits=14, decimal_places=3)
@@ -345,7 +345,7 @@ class HRSStockSnapshot(models.Model):
 
 
 class HRSPOMirMatch(models.Model):
-    """Reconciliation result linking one HRSPOLineItem to the HRSMIREntry
+    """Reconciliation result linking one HRSDomesticPOLineItem to the HRSMIREntry
     it was matched against (see apps/services/matching.py's module
     docstring for the full scoring approach). `tier` records HOW the match
     was found - PO_NUMBER is a free exact/substring shortcut on MIR's own
@@ -363,9 +363,10 @@ class HRSPOMirMatch(models.Model):
 
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
-        WEIGHTED = "weighted", "Vendor-gated weighted match"
+        MATERIAL = "material", "Material description match"
+        WEIGHTED = "weighted", "Vendor-gated weighted match (legacy, pre-2026-09-07)"
 
-    po_line_item = models.OneToOneField(HRSPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
+    po_line_item = models.OneToOneField(HRSDomesticPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(HRSMIREntry, on_delete=models.CASCADE, related_name="po_matches")
     tier = models.CharField(max_length=20, choices=Tier.choices)
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
@@ -373,6 +374,43 @@ class HRSPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Identification/Financial-Check redesign (2026-09-07, project owner
+    # spec - see apps/services/matching_core.py's module docstring for the
+    # full algorithm): identification is now "vendor mandatory plus one of
+    # material/PO number", not a blended score - these two record which of
+    # the latter two actually fired for the winning candidate (vendor is
+    # implied True on every row here, it's the hard gate that built the
+    # candidate pool in the first place).
+    material_matched = models.BooleanField(default=False)
+    po_number_matched = models.BooleanField(default=False)
+    # Financial check now only raises a hard error for Qty/Rate - these two
+    # ARE what `is_flagged` means now. Kept as their own columns (not just
+    # derived from qty_diff_pct/rate_diff_pct at read time) so a reviewer-
+    # facing "Qty Mismatched"/"Rate Mismatched" label doesn't have to
+    # re-derive the zero-tolerance comparison from the raw percentage.
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    # Everything else the financial check compares - UOM family, Net-value,
+    # Taxable Value (single-line-item POs only, see
+    # matching_core.py's _po_matchable() docstring), GST-type structural
+    # consistency, and Final/Invoice Value - folds into this one bucket
+    # instead of being blended into is_flagged/severity.
+    data_mismatch = models.BooleanField(default=False)
+    tax_type_mismatch = models.BooleanField(
+        default=False,
+        help_text="True when the PO's declared Tax Type (IGST vs CGST+SGST) is structurally "
+                   "inconsistent with which GST columns MIR actually populated.",
+    )
+    taxable_value_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="PO's Total Value vs MIR's Taxable Value - only computed for a single-line-item "
+                   "PO, see matching_core.py's _po_matchable() docstring for why.",
+    )
+    final_value_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="PO's Total Inclusive Value vs MIR's Final/Invoice Value - same single-line-item "
+                   "caveat as taxable_value_diff_pct.",
+    )
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -414,23 +452,40 @@ class HRSPOMirMatch(models.Model):
 
 
 class HRSMirStockMatch(models.Model):
-    """Reconciliation result linking one HRSMIREntry to the HRSStockLot it
-    was matched against, gated on (material description, vendor) - see
-    apps/services/matching.py. No `tier`/`match_score` here unlike
-    *POMirMatch - this pairing only ever has one matching strategy (no
-    exact-shortcut tier to distinguish), and no qty comparison either:
-    HRSStockLot.received reads 0 for nearly every real lot (evidently
-    clearing once allocated rather than holding a running total), so only
-    `rate_diff_pct` is meaningful; `qty_diff_pct` is kept for schema
-    symmetry with *POMirMatch but is not populated by the matcher.
+    """Reconciliation result linking one HRSMIREntry to the HRSRMLot it
+    was matched against - see apps/services/matching_core.py's
+    match_mir_entry_stock() docstring for the full identification/financial-
+    check design (2026-09-08 extension, HRS only for now). No `tier`/
+    `match_score` here unlike *POMirMatch - this pairing only ever has one
+    matching strategy per candidate (not a scored pick among many).
     UniqueConstraint on (mir_entry, stock_lot) makes update_or_create()'s
     upsert idempotent across repeated match runs."""
 
     mir_entry = models.ForeignKey(HRSMIREntry, on_delete=models.CASCADE, related_name="stock_matches")
-    stock_lot = models.ForeignKey(HRSStockLot, on_delete=models.CASCADE, related_name="mir_matches")
+    stock_lot = models.ForeignKey(HRSRMLot, on_delete=models.CASCADE, related_name="mir_matches")
 
-    qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    qty_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="Stock's REC vs MIR's Qty - only ever populated when REC is nonzero AND this "
+                   "candidate matched via date_matched (see match_mir_entry_stock()'s docstring).",
+    )
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    value_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="MIR's net/taxable value (config.mir_value) vs Stock's own Value column.",
+    )
+
+    # Identification (2026-09-08 extension): vendor mandatory (the existing
+    # gate) plus one of these two - material stays the same normalized exact
+    # comparison this model always used; date_matched (Rec. DT. == MIR's own
+    # Date) is the new alternate identification path.
+    material_matched = models.BooleanField(default=False)
+    date_matched = models.BooleanField(default=False)
+    # Financial check: only Rate produces a hard error
+    # (rate_mismatched -> is_flagged); Qty and Value fold into data_mismatch.
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -460,14 +515,14 @@ class HRSMirStockMatch(models.Model):
 #   - RTPAchhadMIREntry has no sap_grn_number (Achhad's register never
 #     records one) and only one PO-number/PO-date pair (no separate
 #     "SAP P.O." columns HRS's file carries).
-#   - RTPAchhadStockLot has no vendor/party_name at all - Achhad's Stock
+#   - RTPAchhadRMLot has no vendor/party_name at all - Achhad's Stock
 #     sheet is one row per material, not one row per (material, vendor)
 #     lot like HRS's - see apps/core/matching_achhad.py for what that means
 #     for MIR<->Stock matching confidence.
 
-class RTPAchhadPurchaseOrder(models.Model):
+class RTPAchhadDomesticPurchaseOrder(models.Model):
     """Synced from Master_RTP_Achhad_Domestic_Purchase_Data.csv - identical
-    shape to HRSPurchaseOrder, see that model's docstring."""
+    shape to HRSDomesticPurchaseOrder, see that model's docstring."""
 
     po_drive_folder_name = models.CharField(max_length=100)
     po_number = models.CharField(max_length=100, unique=True)
@@ -506,10 +561,10 @@ class RTPAchhadPurchaseOrder(models.Model):
         return f"{self.po_number} ({self.vendor_name})"
 
 
-class RTPAchhadPOLineItem(models.Model):
-    """Same shape as HRSPOLineItem - see that class's docstring."""
+class RTPAchhadDomesticPOLineItem(models.Model):
+    """Same shape as HRSDomesticPOLineItem - see that class's docstring."""
 
-    purchase_order = models.ForeignKey(RTPAchhadPurchaseOrder, on_delete=models.CASCADE, related_name="items")
+    purchase_order = models.ForeignKey(RTPAchhadDomesticPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
     hsn = models.CharField(max_length=20, blank=True)
@@ -597,7 +652,7 @@ class RTPAchhadMIREntry(models.Model):
         return f"MIR {self.mir_no}: {self.material_description} from {self.party_name}"
 
 
-class RTPAchhadStockLot(models.Model):
+class RTPAchhadRMLot(models.Model):
     """One row per material - NOT per (material, vendor) lot like HRS's
     Stock sheet. Achhad's own Stock file has no vendor column at all, which
     is why RTPAchhadMirStockMatch (apps/core/matching_achhad.py) can only
@@ -629,7 +684,7 @@ class RTPAchhadStockLot(models.Model):
     issued = models.DecimalField(max_digits=14, decimal_places=3, default=0)
     todays_stock = models.DecimalField(
         max_digits=14, decimal_places=3, default=0,
-        help_text="Sheet's own 'Closing' column - named todays_stock to match HRSStockLot's "
+        help_text="Sheet's own 'Closing' column - named todays_stock to match HRSRMLot's "
                    "field name, since it plays the same role for matching/display.",
     )
     value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
@@ -642,11 +697,11 @@ class RTPAchhadStockLot(models.Model):
 
     source_row_ref = models.CharField(
         max_length=20, blank=True,
-        help_text="See HRSStockLot.source_row_ref's help_text - diagnostic only, Achhad's copy.",
+        help_text="See HRSRMLot.source_row_ref's help_text - diagnostic only, Achhad's copy.",
     )
     natural_key = models.CharField(
         max_length=200, blank=True, db_index=True,
-        help_text="See HRSStockLot.natural_key's help_text. Achhad's key is weaker by necessity - "
+        help_text="See HRSRMLot.natural_key's help_text. Achhad's key is weaker by necessity - "
                    "no vendor column, so two lots of the same material are separated only by the "
                    "occurrence counter (apps/services/stock_identity.py) - the same weaker-gate "
                    "precedent matching_achhad.py already sets, still strictly better than a row number.",
@@ -654,7 +709,7 @@ class RTPAchhadStockLot(models.Model):
     last_synced_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(
         default=True,
-        help_text="See HRSStockLot.is_active's help_text - same row-shift/CASCADE reasoning, Achhad's copy.",
+        help_text="See HRSRMLot.is_active's help_text - same row-shift/CASCADE reasoning, Achhad's copy.",
     )
 
     class Meta:
@@ -673,13 +728,13 @@ class RTPAchhadStockLot(models.Model):
         return self.description
 
 
-class RTPAchhadStockSnapshot(models.Model):
-    """Same shape/purpose as HRSStockSnapshot - see that class's docstring.
+class RTPAchhadRMSnapshot(models.Model):
+    """Same shape/purpose as HRSRMSnapshot - see that class's docstring.
     Carries `rate` (Achhad's Stock sheet field name) instead of HRS's
-    `basic_rate`, matching RTPAchhadStockLot's own field naming."""
+    `basic_rate`, matching RTPAchhadRMLot's own field naming."""
 
     snapshot_date = models.DateField()
-    stock_lot = models.ForeignKey(RTPAchhadStockLot, on_delete=models.CASCADE, related_name="snapshots")
+    stock_lot = models.ForeignKey(RTPAchhadRMLot, on_delete=models.CASCADE, related_name="snapshots")
 
     opening_stock = models.DecimalField(max_digits=14, decimal_places=3)
     received = models.DecimalField(max_digits=14, decimal_places=3)
@@ -701,14 +756,62 @@ class RTPAchhadStockSnapshot(models.Model):
         return f"{self.stock_lot.description} @ {self.snapshot_date}"
 
 
+class RTPAchhadRMDailyMovement(models.Model):
+    """One real day's receipt/issue activity for one RTPAchhadRMLot, parsed
+    from the Stock file's own daily Recp./Issue matrix (2026-09-08 addition -
+    see apps/services/parsers/achhad_stock.py's module docstring for the
+    full story: this reconciles exactly against the lot's own monthly
+    Received/Issued summary, confirmed against live data, so it isn't a more
+    "correct" number - it's the same number with a real calendar date
+    attached, which the monthly summary alone can't give). Achhad-only: HRS's
+    and Vapi's own Stock files have no equivalent day-by-day matrix.
+
+    Only activity days are stored (received != 0 or issued != 0) - most
+    days for most materials have neither, and a dense one-row-per-day-per-
+    material grid would be almost entirely zeros. `apps/services/
+    stock_consumption.py`'s consumption_stats() reconstructs the implied
+    daily stock-level series from these sparse rows (see
+    apps/api/routers/_domestic_base.py's _consumption_by_lot()) rather than
+    needing a dense row per day here.
+
+    UniqueConstraint on (stock_lot, movement_date) makes re-syncing the same
+    month idempotent - a day's receipt/issue total in the live file only
+    ever grows within that month (never revised downward, per the reconciled-
+    totals check), so re-syncing simply overwrites with the latest figure."""
+
+    stock_lot = models.ForeignKey(RTPAchhadRMLot, on_delete=models.CASCADE, related_name="daily_movements")
+    movement_date = models.DateField()
+    received = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+    issued = models.DecimalField(max_digits=14, decimal_places=3, default=0)
+
+    source_row_ref = models.CharField(
+        max_length=20, blank=True,
+        help_text="Sheet row number this came from at last sync - diagnostic only, same convention as "
+                   "RTPAchhadRMLot.source_row_ref.",
+    )
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["stock_lot", "movement_date"], name="uniq_achhad_daily_movement_per_lot_per_day")
+        ]
+        indexes = [
+            models.Index(fields=["stock_lot", "movement_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.stock_lot.description} movement @ {self.movement_date}"
+
+
 class RTPAchhadPOMirMatch(models.Model):
     """Same shape as HRSPOMirMatch - see that class's docstring."""
 
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
-        WEIGHTED = "weighted", "Vendor-gated weighted match"
+        MATERIAL = "material", "Material description match"
+        WEIGHTED = "weighted", "Vendor-gated weighted match (legacy, pre-2026-09-07)"
 
-    po_line_item = models.OneToOneField(RTPAchhadPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
+    po_line_item = models.OneToOneField(RTPAchhadDomesticPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(RTPAchhadMIREntry, on_delete=models.CASCADE, related_name="po_matches")
     tier = models.CharField(max_length=20, choices=Tier.choices)
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
@@ -716,6 +819,16 @@ class RTPAchhadPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # See HRSPOMirMatch's identically-named fields for the full
+    # identification/financial-check redesign rationale (2026-09-07).
+    material_matched = models.BooleanField(default=False)
+    po_number_matched = models.BooleanField(default=False)
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
+    tax_type_mismatch = models.BooleanField(default=False)
+    taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -758,16 +871,31 @@ class RTPAchhadPOMirMatch(models.Model):
 
 class RTPAchhadMirStockMatch(models.Model):
     """No vendor gate here, unlike HRSMirStockMatch - Achhad's Stock sheet
-    carries no vendor column, so matching is on normalized material
-    description alone. Weaker confidence by construction; is_flagged still
-    uses the same qty/rate diff threshold, but a false-positive material
-    match is more likely here than for HRS and should be read that way."""
+    carries no vendor column, so identification is material-or-date only
+    (see apps/services/matching_core.py's match_mir_entry_stock() docstring
+    for the full 2026-09-08 design, extended to Achhad this pass) - weaker
+    confidence by construction than HRS's vendor-gated version; a false-
+    positive material match is more likely here and should be read that way."""
 
     mir_entry = models.ForeignKey(RTPAchhadMIREntry, on_delete=models.CASCADE, related_name="stock_matches")
-    stock_lot = models.ForeignKey(RTPAchhadStockLot, on_delete=models.CASCADE, related_name="mir_matches")
+    stock_lot = models.ForeignKey(RTPAchhadRMLot, on_delete=models.CASCADE, related_name="mir_matches")
 
-    qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    qty_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="Stock's Received vs MIR's Qty - only ever populated when Received is nonzero AND "
+                   "this candidate matched via date_matched (see match_mir_entry_stock()'s docstring).",
+    )
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    value_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="MIR's net value (config.mir_value) vs the derived Received x Rate for this lot.",
+    )
+
+    material_matched = models.BooleanField(default=False)
+    date_matched = models.BooleanField(default=False)
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -853,9 +981,9 @@ class RTPAchhadMirStockMatch(models.Model):
 #     stronger (material, vendor) gate, not Achhad's material-only gate -
 #     see apps/core/matching_vapi.py.
 
-class RTPVapiPurchaseOrder(models.Model):
+class RTPVapiDomesticPurchaseOrder(models.Model):
     """Synced from Master_RTP_VAPI_Domestic_Purchase_Data.csv - identical
-    shape to HRSPurchaseOrder, see that model's docstring."""
+    shape to HRSDomesticPurchaseOrder, see that model's docstring."""
 
     po_drive_folder_name = models.CharField(max_length=100)
     po_number = models.CharField(max_length=100, unique=True)
@@ -894,10 +1022,10 @@ class RTPVapiPurchaseOrder(models.Model):
         return f"{self.po_number} ({self.vendor_name})"
 
 
-class RTPVapiPOLineItem(models.Model):
-    """Same shape as HRSPOLineItem - see that class's docstring."""
+class RTPVapiDomesticPOLineItem(models.Model):
+    """Same shape as HRSDomesticPOLineItem - see that class's docstring."""
 
-    purchase_order = models.ForeignKey(RTPVapiPurchaseOrder, on_delete=models.CASCADE, related_name="items")
+    purchase_order = models.ForeignKey(RTPVapiDomesticPurchaseOrder, on_delete=models.CASCADE, related_name="items")
     item_id = models.CharField(max_length=50, blank=True)
     description = models.CharField(max_length=500)
     hsn = models.CharField(max_length=20, blank=True)
@@ -982,10 +1110,10 @@ class RTPVapiMIREntry(models.Model):
         return f"MIR {self.mir_no}: {self.material_description} from {self.party_name}"
 
 
-class RTPVapiStockLot(models.Model):
+class RTPVapiRMLot(models.Model):
     """One row per material (and, structurally, per vendor lot - see the
     RTP-Vapi section header comment on why this is treated as lot-shaped
-    like HRSStockLot rather than material-shaped like RTPAchhadStockLot,
+    like HRSRMLot rather than material-shaped like RTPAchhadRMLot,
     even though no duplicate Description currently appears under more than
     one Supplier Name)."""
 
@@ -993,7 +1121,7 @@ class RTPVapiStockLot(models.Model):
     plant_tag = models.CharField(
         max_length=20, blank=True,
         help_text="Stock sheet's own 'PLANT' column (e.g. 'HRS', 'RTP-1', 'RTP-2') - this single "
-                   "sheet covers several sub-plants/warehouses at once, same idea as HRSStockLot's "
+                   "sheet covers several sub-plants/warehouses at once, same idea as HRSRMLot's "
                    "own location_tag field.",
     )
     description = models.CharField(max_length=500)
@@ -1016,17 +1144,17 @@ class RTPVapiStockLot(models.Model):
 
     source_row_ref = models.CharField(
         max_length=20, blank=True,
-        help_text="See HRSStockLot.source_row_ref's help_text - diagnostic only, Vapi's copy.",
+        help_text="See HRSRMLot.source_row_ref's help_text - diagnostic only, Vapi's copy.",
     )
     natural_key = models.CharField(
         max_length=200, blank=True, db_index=True,
-        help_text="See HRSStockLot.natural_key's help_text - Vapi's copy, keyed on hsn_code/"
+        help_text="See HRSRMLot.natural_key's help_text - Vapi's copy, keyed on hsn_code/"
                    "supplier_name (apps/services/stock_identity.py).",
     )
     last_synced_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(
         default=True,
-        help_text="See HRSStockLot.is_active's help_text - same row-shift/CASCADE reasoning, Vapi's copy.",
+        help_text="See HRSRMLot.is_active's help_text - same row-shift/CASCADE reasoning, Vapi's copy.",
     )
 
     class Meta:
@@ -1046,11 +1174,11 @@ class RTPVapiStockLot(models.Model):
         return f"{self.description} ({self.supplier_name})"
 
 
-class RTPVapiStockSnapshot(models.Model):
-    """Same shape/purpose as HRSStockSnapshot - see that class's docstring."""
+class RTPVapiRMSnapshot(models.Model):
+    """Same shape/purpose as HRSRMSnapshot - see that class's docstring."""
 
     snapshot_date = models.DateField()
-    stock_lot = models.ForeignKey(RTPVapiStockLot, on_delete=models.CASCADE, related_name="snapshots")
+    stock_lot = models.ForeignKey(RTPVapiRMLot, on_delete=models.CASCADE, related_name="snapshots")
 
     opening_stock = models.DecimalField(max_digits=14, decimal_places=3)
     received = models.DecimalField(max_digits=14, decimal_places=3)
@@ -1081,9 +1209,10 @@ class RTPVapiPOMirMatch(models.Model):
 
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
-        WEIGHTED = "weighted", "Vendor-gated weighted match"
+        MATERIAL = "material", "Material description match"
+        WEIGHTED = "weighted", "Vendor-gated weighted match (legacy, pre-2026-09-07)"
 
-    po_line_item = models.OneToOneField(RTPVapiPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
+    po_line_item = models.OneToOneField(RTPVapiDomesticPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(RTPVapiMIREntry, on_delete=models.CASCADE, related_name="po_matches")
     tier = models.CharField(max_length=20, choices=Tier.choices)
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
@@ -1091,6 +1220,24 @@ class RTPVapiPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # See HRSPOMirMatch's identically-named fields for the full
+    # identification/financial-check redesign rationale (2026-09-07) - these
+    # columns exist here purely so matching_core.py's shared
+    # match_po_mir_line_item()/run_full_match() can write to this model too
+    # (it's one shared function, not a per-plant branch); Vapi's own
+    # business-logic wiring (tax_type/total_value/total_inclusive_value
+    # checks) is real and running (Vapi's PO CSV has the same columns as
+    # HRS/Achhad's), it just hasn't been separately validated against real
+    # Vapi data the way HRS/Achhad have - see matching_core.py's module
+    # docstring.
+    material_matched = models.BooleanField(default=False)
+    po_number_matched = models.BooleanField(default=False)
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
+    tax_type_mismatch = models.BooleanField(default=False)
+    taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1134,13 +1281,31 @@ class RTPVapiPOMirMatch(models.Model):
 class RTPVapiMirStockMatch(models.Model):
     """(material, vendor)-gated, like HRSMirStockMatch - see the RTP-Vapi
     section header comment for why this plant uses the stronger gate rather
-    than Achhad's material-only one."""
+    than Achhad's material-only one. Identification/financial-check
+    extension (2026-09-08, see apps/services/matching_core.py's
+    match_mir_entry_stock() docstring) applied here too - Vapi has a real
+    vendor column (Supplier Name) to anchor the date-as-identification path
+    the way HRS does, unlike Achhad which had to stay material-mandatory."""
 
     mir_entry = models.ForeignKey(RTPVapiMIREntry, on_delete=models.CASCADE, related_name="stock_matches")
-    stock_lot = models.ForeignKey(RTPVapiStockLot, on_delete=models.CASCADE, related_name="mir_matches")
+    stock_lot = models.ForeignKey(RTPVapiRMLot, on_delete=models.CASCADE, related_name="mir_matches")
 
-    qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    qty_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="Stock's REC vs MIR's Qty - only ever populated when REC is nonzero AND this "
+                   "candidate matched via date_matched (see match_mir_entry_stock()'s docstring).",
+    )
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    value_diff_pct = models.DecimalField(
+        max_digits=6, decimal_places=2, null=True, blank=True,
+        help_text="MIR's net/taxable value (config.mir_value) vs the derived REC x Basic Rate for this lot.",
+    )
+
+    material_matched = models.BooleanField(default=False)
+    date_matched = models.BooleanField(default=False)
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -1184,11 +1349,11 @@ class RTPVapiMirStockMatch(models.Model):
 class HRSImportPurchaseOrder(models.Model):
     """PO-level fields for an HRS import purchase, synced from that plant's
     Imports Purchase Data master CSV. Deliberately its own model, not a
-    subtype/extension of HRSPurchaseOrder - `tax_type`/exchange-rate/BOE-
+    subtype/extension of HRSDomesticPurchaseOrder - `tax_type`/exchange-rate/BOE-
     customs fields live on the LINE ITEM instead of here (see this section's
     header comment for why: a single PO can clear customs in multiple
     partial BOE shipments with different clearance data per item), so this
-    PO-level model is intentionally a subset of HRSPurchaseOrder's own
+    PO-level model is intentionally a subset of HRSDomesticPurchaseOrder's own
     field set, not a superset - sharing one table would mean always-null
     columns on whichever side doesn't have a given field."""
 
@@ -1292,11 +1457,21 @@ class HRSImportPOMirMatch(models.Model):
     A separate MIR<->Stock match table is NOT needed here - HRSMirStockMatch
     is already keyed on mir_entry alone, independent of whether that MIR row
     traces back to a domestic or an import PO, so the existing table already
-    covers the Stock leg for both."""
+    covers the Stock leg for both.
+
+    Identification/Financial-Check redesign (2026-09, extended to Imports for
+    HRS/Achhad only - project owner: "keep vapi out for now", see
+    matching_vapi.py's own comment): same fields/reasoning as
+    HRSPOMirMatch's identically-named columns below - see that model's
+    docstring and matching_core.py's module docstring for the full
+    algorithm. Compared against qty_as_per_boe (this is the BOE-vs-MIR qty
+    check; the separate PO-vs-BOE qty check already existed independently
+    in apps/services/import_flags.py and is unaffected by this redesign)."""
 
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
-        WEIGHTED = "weighted", "Vendor-gated weighted match"
+        MATERIAL = "material", "Material description match"
+        WEIGHTED = "weighted", "Vendor-gated weighted match (legacy, pre-2026-09 imports redesign)"
 
     po_line_item = models.OneToOneField(HRSImportPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(HRSMIREntry, on_delete=models.CASCADE, related_name="import_po_matches")
@@ -1306,6 +1481,16 @@ class HRSImportPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # See HRSPOMirMatch's identically-named fields for the full
+    # identification/financial-check redesign rationale (2026-09, imports).
+    material_matched = models.BooleanField(default=False)
+    po_number_matched = models.BooleanField(default=False)
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
+    tax_type_mismatch = models.BooleanField(default=False)
+    taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1421,11 +1606,13 @@ class RTPAchhadImportPOLineItem(models.Model):
 
 class RTPAchhadImportPOMirMatch(models.Model):
     """Same shape/reasoning as HRSImportPOMirMatch - see that model's
-    docstring."""
+    docstring, including the 2026-09 imports identification/financial-check
+    redesign extension (HRS/Achhad only, Vapi excluded for now)."""
 
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
-        WEIGHTED = "weighted", "Vendor-gated weighted match"
+        MATERIAL = "material", "Material description match"
+        WEIGHTED = "weighted", "Vendor-gated weighted match (legacy, pre-2026-09 imports redesign)"
 
     po_line_item = models.OneToOneField(RTPAchhadImportPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(RTPAchhadMIREntry, on_delete=models.CASCADE, related_name="import_po_matches")
@@ -1435,6 +1622,16 @@ class RTPAchhadImportPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # See HRSPOMirMatch's identically-named fields for the full
+    # identification/financial-check redesign rationale (2026-09, imports).
+    material_matched = models.BooleanField(default=False)
+    po_number_matched = models.BooleanField(default=False)
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
+    tax_type_mismatch = models.BooleanField(default=False)
+    taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1553,11 +1750,25 @@ class RTPVapiImportPOLineItem(models.Model):
 
 class RTPVapiImportPOMirMatch(models.Model):
     """Same shape/reasoning as HRSImportPOMirMatch - see that model's
-    docstring."""
+    docstring, including the imports identification/financial-check
+    redesign extension (2026-09, HRS/Achhad first; Vapi added the same day
+    on project owner request - "use HRS/Achhad's settings for Vapi imports
+    too"). Vapi's own MIR schema differences (no `net` column, `igst_amt`
+    instead of `igst`, etc.) are handled generically already -
+    matching_core.py's `_tax_type_mismatch()`/`_MatchConfig.mir_taxable_value`/
+    `mir_final_value` all read via `getattr()` fallbacks - so no Vapi-specific
+    field mapping was needed here beyond flipping `import_extended_fields=True`
+    in matching_vapi.py. Vapi's *domestic* PO<->MIR matching config
+    (MATERIAL_MATCH_THRESHOLD=0.2, mir_value=taxable_value) is deliberately
+    left exactly as tuned against real Vapi data - "keep the domestic in
+    reference" - since import_extended_fields only changes which columns
+    get WRITTEN, not the identification thresholds/candidate scoring, which
+    stay shared with Vapi's already-validated domestic matching."""
 
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
-        WEIGHTED = "weighted", "Vendor-gated weighted match"
+        MATERIAL = "material", "Material description match"
+        WEIGHTED = "weighted", "Vendor-gated weighted match (legacy, pre-2026-09 imports redesign)"
 
     po_line_item = models.OneToOneField(RTPVapiImportPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(RTPVapiMIREntry, on_delete=models.CASCADE, related_name="import_po_matches")
@@ -1567,6 +1778,16 @@ class RTPVapiImportPOMirMatch(models.Model):
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # See HRSPOMirMatch's identically-named fields for the full
+    # identification/financial-check redesign rationale (2026-09, imports).
+    material_matched = models.BooleanField(default=False)
+    po_number_matched = models.BooleanField(default=False)
+    qty_mismatched = models.BooleanField(default=False)
+    rate_mismatched = models.BooleanField(default=False)
+    data_mismatch = models.BooleanField(default=False)
+    tax_type_mismatch = models.BooleanField(default=False)
+    taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1692,7 +1913,7 @@ class MaterialCorrection(models.Model):
     those two corrections already use: this is a generic log table, not a
     plant-shaped data table.
 
-    `lot_id` is the target HRSStockLot/RTPAchhadStockLot/RTPVapiStockLot's
+    `lot_id` is the target HRSRMLot/RTPAchhadRMLot/RTPVapiRMLot's
     own pk - unique only combined with `plant` (each plant's Stock lot table
     has its own independent autoincrement id space, so lot_id alone can
     collide across plants)."""
@@ -1756,6 +1977,66 @@ class FlagDismissal(models.Model):
 
     def __str__(self):
         return f"{self.plant}/{self.po_number}/{self.flag_key} dismissed={self.dismissed}"
+
+
+class MaterialCategoryReference(models.Model):
+    """Canonical Category/Subcategory lookup, shared across all three plants
+    (added 2026-09-08, project owner) - fixes the Raw Material Analysis
+    dashboard showing near-one-category-per-material for HRS/Vapi. Root
+    cause (confirmed by reading the actual parsers): HRS's and Vapi's own
+    Stock files carry a free-text, per-row Category/Sub Category column that
+    real-world data fills inconsistently - grouping by that raw string
+    produces close to one bucket per material. Achhad's Stock file is
+    different (its category comes from real section-divider headers), but
+    this table applies uniformly across all three plants as one shared
+    company-wide standard, not per-plant data.
+
+    Match key is normalized MATERIAL DESCRIPTION, not SAP Item Code -
+    project owner, 2026-09-08: "sap item code is not trust worthy as it's
+    not maintain thoroughly". Uses the same normalize_material() every
+    other material-identity check in this app already uses (MIR<->Stock
+    matching), for consistency - EXACT match after normalization, not fuzzy
+    scoring, since a wrong category assignment is worse than leaving
+    something Uncategorized for a human to add to this table. HSN is stored
+    for reference/audit only, never part of the match - it isn't
+    consistently available across all three plants' Stock files (HRS's and
+    Achhad's have none at all; only Vapi's does).
+
+    Loaded/updated via `manage.py load_material_category_reference --file
+    <csv>` (apps/services/parsers/material_category_reference.py) whenever
+    the plant manager sends an updated list - not synced from a live Drive
+    file on a schedule like PO/MIR/Stock, since this data changes rarely
+    (new materials/categories only) rather than daily. Also editable
+    directly via Django Admin for one-off corrections."""
+
+    description = models.CharField(max_length=500, help_text="As given in the reference list, verbatim.")
+    normalized_description = models.CharField(
+        max_length=500, unique=True,
+        help_text="normalize_material(description) with any trailing '(item code)' suffix stripped first - "
+                   "the actual join key against every plant's own RM Lot description.",
+    )
+    category = models.CharField(max_length=200)
+    subcategory = models.CharField(
+        max_length=200, blank=True,
+        help_text="The reference list's own 'Subcategory (SAP Product Group)' column, label portion only "
+                   "(e.g. 'CARBON BLACK' from 'CARBON BLACK (RM-CB001)') - see subcategory_code for the code.",
+    )
+    subcategory_code = models.CharField(max_length=50, blank=True, help_text="e.g. 'RM-CB001' - reference/audit only.")
+    hsn_code = models.CharField(max_length=20, blank=True)
+    uom = models.CharField(max_length=50, blank=True)
+    sap_item_code = models.CharField(
+        max_length=50, blank=True,
+        help_text="Stored for reference/audit only - NOT the match key (see class docstring for why).",
+    )
+
+    source_row_ref = models.CharField(max_length=20, blank=True, help_text="Row number in the source file at last load.")
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["category"]), models.Index(fields=["normalized_description"])]
+
+    def __str__(self):
+        return f"{self.description} -> {self.category} / {self.subcategory}"
 
 
 class DataQualityFlag(models.Model):

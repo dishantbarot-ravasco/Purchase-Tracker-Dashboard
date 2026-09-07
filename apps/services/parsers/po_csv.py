@@ -2,7 +2,7 @@
 apps/services/parsers/po_csv.py — parses a plant's domestic PO master CSV
 (Master_HRS_SILVASSA_Domestic_Purchase_Data.csv / the Achhad/Vapi
 equivalents) into one record per PO (grouping the one-row-per-line-item
-CSV), ready to upsert into HRSPurchaseOrder/HRSPOLineItem or the
+CSV), ready to upsert into HRSDomesticPurchaseOrder/HRSDomesticPOLineItem or the
 per-plant model equivalent.
 
 Reused as-is for all three plants - confirmed live that HRS's, Achhad's,

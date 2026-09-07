@@ -16,11 +16,11 @@ from apps.api.routers import _domestic_base as _base
 from apps.core.models import (
     RTPVapiMIREntry,
     RTPVapiMirStockMatch,
-    RTPVapiPOLineItem,
+    RTPVapiDomesticPOLineItem,
     RTPVapiPOMirMatch,
-    RTPVapiPurchaseOrder,
-    RTPVapiStockLot,
-    RTPVapiStockSnapshot,
+    RTPVapiDomesticPurchaseOrder,
+    RTPVapiRMLot,
+    RTPVapiRMSnapshot,
     SyncRun,
 )
 from apps.services.matching_vapi import run_full_match
@@ -28,13 +28,13 @@ from apps.services.matching_vapi import run_full_match
 _CONFIG = _base._PlantConfig(
     key="vapi",
     syncrun_plant=SyncRun.Plant.RTP_VAPI,
-    po_model=RTPVapiPurchaseOrder,
-    item_model=RTPVapiPOLineItem,
+    po_model=RTPVapiDomesticPurchaseOrder,
+    item_model=RTPVapiDomesticPOLineItem,
     mir_model=RTPVapiMIREntry,
     po_mir_match_model=RTPVapiPOMirMatch,
     mir_stock_match_model=RTPVapiMirStockMatch,
-    stock_lot_model=RTPVapiStockLot,
-    stock_snapshot_model=RTPVapiStockSnapshot,
+    stock_lot_model=RTPVapiRMLot,
+    stock_snapshot_model=RTPVapiRMSnapshot,
     run_full_match=run_full_match,
     # Same category/sub_category/uom/basic_rate shape as HRS's, plus its own
     # real vendor column (supplier_name, not party_name).

@@ -9,21 +9,22 @@ to the genuinely different model classes) now lives once in
 apps/api/routers/_domestic_base.py rather than being duplicated here.
 
 Achhad is the plant with the most schema divergence from HRS/Vapi: no
-vendor column on Stock (RTPAchhadStockLot has no party_name/supplier_name
+vendor column on Stock (RTPAchhadRMLot has no party_name/supplier_name
 field at all), no sub_category/uom columns either, and a real `msl`
 (Minimum Stock Level) field the other two plants have no equivalent of -
-see _CONFIG below and RTPAchhadStockLot's own docstring in apps/core/models.py.
+see _CONFIG below and RTPAchhadRMLot's own docstring in apps/core/models.py.
 """
 
 from apps.api.routers import _domestic_base as _base
 from apps.core.models import (
     RTPAchhadMIREntry,
     RTPAchhadMirStockMatch,
-    RTPAchhadPOLineItem,
+    RTPAchhadDomesticPOLineItem,
     RTPAchhadPOMirMatch,
-    RTPAchhadPurchaseOrder,
-    RTPAchhadStockLot,
-    RTPAchhadStockSnapshot,
+    RTPAchhadDomesticPurchaseOrder,
+    RTPAchhadRMDailyMovement,
+    RTPAchhadRMLot,
+    RTPAchhadRMSnapshot,
     SyncRun,
 )
 from apps.services.matching_achhad import run_full_match
@@ -31,14 +32,18 @@ from apps.services.matching_achhad import run_full_match
 _CONFIG = _base._PlantConfig(
     key="achhad",
     syncrun_plant=SyncRun.Plant.RTP_ACHHAD,
-    po_model=RTPAchhadPurchaseOrder,
-    item_model=RTPAchhadPOLineItem,
+    po_model=RTPAchhadDomesticPurchaseOrder,
+    item_model=RTPAchhadDomesticPOLineItem,
     mir_model=RTPAchhadMIREntry,
     po_mir_match_model=RTPAchhadPOMirMatch,
     mir_stock_match_model=RTPAchhadMirStockMatch,
-    stock_lot_model=RTPAchhadStockLot,
-    stock_snapshot_model=RTPAchhadStockSnapshot,
+    stock_lot_model=RTPAchhadRMLot,
+    stock_snapshot_model=RTPAchhadRMSnapshot,
     run_full_match=run_full_match,
+    # Days-Left Engine extension (2026-09-08) - see _domestic_base.py's
+    # _daily_movement_points() docstring. None for HRS/Vapi (no equivalent
+    # daily matrix in their own Stock files).
+    daily_movement_model=RTPAchhadRMDailyMovement,
     # Genuinely differs from HRS's/Vapi's set, not a copy-paste: no
     # sub_category/uom/vendor field at all, and a real msl column neither
     # other plant has.

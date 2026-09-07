@@ -26,7 +26,12 @@ from apps.services.matching_core import (
     _closeness,
     _diff_pct,
     _diffs_and_flag,
+    _identification_pool,
+    _import_matchable,
+    _import_total_value_inr,
+    _material_matches,
     _po_number_matches,
+    _tax_type_mismatch,
     _token_overlap,
     _uom_adjust,
     _vendor_matches,
@@ -245,6 +250,82 @@ class TestPoNumberMatches:
         assert _po_number_matches("3000001081", "3000001081.0") is True
 
 
+# ── _material_matches()/_identification_pool(): the 2026-09-07 identification gate ──
+# "Vendor mandatory plus one of {material, PO number}" - vendor is already
+# satisfied by the time a candidate reaches _identification_pool() (the hard
+# gate in _candidate_mir_entries()), so these tests exercise the remaining
+# material-or-PO-number requirement directly.
+
+class _FakeCandidate:
+    def __init__(self, id, material_description, po_number_raw):
+        self.id = id
+        self.material_description = material_description
+        self.po_number_raw = po_number_raw
+
+
+class TestMaterialMatches:
+    def test_above_threshold_matches(self):
+        config = _test_config()
+        assert _material_matches(config, "Natural Rubber ISNR 20", "Natural Rubber ISNR 20") is True
+
+    def test_below_threshold_does_not_match(self):
+        config = _test_config()
+        assert _material_matches(config, "Sulphur Powder", "Zinc Oxide") is False
+
+    def test_exactly_at_threshold_matches(self):
+        # Jaccard >= threshold, not strictly > - a description scoring
+        # exactly the configured threshold must still count as identified.
+        config = _test_config(material_match_threshold=Decimal("0.5"))
+        assert _material_matches(config, "Natural Rubber", "Natural Rubber ISNR 20") is True  # 2/4 = 0.5
+
+
+class TestIdentificationPool:
+    def test_material_only_match_is_included(self):
+        """A candidate whose PO number doesn't match but whose material
+        description does clears identification on material alone."""
+        config = _test_config()
+        item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        candidates = [_FakeCandidate(1, "Sulphur Powder", "UNRELATED-PO")]
+        pool, id_flags = _identification_pool(config, candidates, item, "3000001075")
+        assert pool == candidates
+        assert id_flags[1] == (True, False)
+
+    def test_po_number_only_match_is_included(self):
+        """A candidate whose material description doesn't overlap at all but
+        whose PO number matches clears identification on PO number alone -
+        this is the real Vapi shape (material sometimes garbled, PO number
+        exact) as well as the reverse HRS shape."""
+        config = _test_config()
+        item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        candidates = [_FakeCandidate(1, "Completely Different Material", "3000001075")]
+        pool, id_flags = _identification_pool(config, candidates, item, "3000001075")
+        assert pool == candidates
+        assert id_flags[1] == (False, True)
+
+    def test_neither_matching_is_excluded(self):
+        """A candidate with no material overlap and no PO-number hit fails
+        identification even though it already passed the vendor gate -
+        this is what "PO Not Found" looks like when it's the only candidate:
+        the pool ends up empty and no match is created."""
+        config = _test_config()
+        item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        candidates = [_FakeCandidate(1, "Completely Different Material", "UNRELATED-PO")]
+        pool, id_flags = _identification_pool(config, candidates, item, "3000001075")
+        assert pool == []
+        assert id_flags == {}
+
+
+class TestTaxTypeMismatchDirect:
+    """Direct unit tests for _tax_type_mismatch() - see TestTaxTypeMismatch
+    (below) for the same behavior exercised through _diffs_and_flag()."""
+
+    def test_no_gst_recorded_on_mir_is_never_a_mismatch(self):
+        config = _test_config()
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("0"), Decimal("0")
+        assert _tax_type_mismatch("IGST", mir) is False
+
+
 def test_match_threshold_constant_unchanged():
     # A sentinel, not a real behavioral test - documents the current cutoff
     # so a silent edit to this constant shows up as a failing test instead
@@ -281,8 +362,8 @@ def _test_config(**overrides):
         mir_stock_match_model=None, stock_lot_model=None,
         match_threshold=Decimal("0.55"), flag_diff_pct=Decimal("0"),
         value_flag_epsilon=Decimal("1.00"),
-        weight_material=Decimal("0.30"), weight_qty=Decimal("0.20"),
-        weight_rate=Decimal("0.20"), weight_value=Decimal("0.30"),
+        weight_qty=Decimal("0.29"), weight_rate=Decimal("0.29"), weight_value=Decimal("0.42"),
+        material_match_threshold=Decimal("0.3"),
         mir_value=lambda mir: mir.taxable_value,
         stock_rate_field="basic_rate", stock_vendor_field="party_name",
     )
@@ -325,62 +406,90 @@ class TestUomAdjust:
 
 
 class TestDiffsAndFlagValueEpsilon:
+    """As of the 2026-09-07 identification/financial-check redesign,
+    `is_flagged` means specifically "qty or rate mismatched" - every other
+    discrepancy (value/UOM/tax-type/etc.) now folds into `data_mismatch`
+    instead. See matching_core.py's module docstring and
+    _diffs_and_flag()'s own docstring for the full rationale."""
+
     def test_value_diff_under_epsilon_is_not_flagged(self):
         # ₹0.50 absolute diff on a ₹5000 base - well under the ₹1.00
         # epsilon, even though the percentage (0.01%) is technically nonzero.
         """Fix 3.F: a value difference under the ₹1.00 absolute epsilon does
-        not flag, even though qty and rate keep exact-zero tolerance - value
-        is derived (qty x rate, plus tax-split rounding), so a rupee or two
-        of rounding isn't a real discrepancy."""
+        not flag (neither is_flagged nor data_mismatch), even though qty and
+        rate keep exact-zero tolerance - value is derived (qty x rate, plus
+        tax-split rounding), so a rupee or two of rounding isn't a real
+        discrepancy."""
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.50"))
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
         assert is_flagged is False
+        assert data_mismatch is False
         assert uom_mismatch is False
 
-    def test_value_diff_over_epsilon_is_flagged(self):
-        """A value difference exceeding the ₹1.00 absolute epsilon does flag,
-        confirming the epsilon has a real ceiling and doesn't swallow every
-        value discrepancy."""
+    def test_value_diff_over_epsilon_is_a_data_mismatch_not_is_flagged(self):
+        """A value difference exceeding the ₹1.00 absolute epsilon is a
+        `data_mismatch` now, not `is_flagged` - only qty/rate raise
+        is_flagged under the redesign, confirming the epsilon still has a
+        real ceiling and doesn't swallow every value discrepancy."""
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("4995.00"))
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
-        assert is_flagged is True
+        (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
+        assert is_flagged is False
+        assert data_mismatch is True
 
     def test_quantity_keeps_exact_zero_tolerance_regardless_of_value_epsilon(self):
         """Quantity is directly reported (not derived like value) and stays
         at exact-zero tolerance - the value epsilon must never leak into the
-        qty/rate comparison."""
+        qty/rate comparison. A qty mismatch is is_flagged=True (one of the
+        two "real errors" under the redesign)."""
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("1000"), "KG", Decimal("50"), Decimal("50000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("999"), "KG", Decimal("50"), Decimal("50000.00"))  # 1kg out of 1000kg
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
         assert is_flagged is True
+        assert qty_mismatched is True
+        assert rate_mismatched is False
 
-    def test_uom_mismatch_flags_with_material_severity_and_none_qty_rate_diff(self):
-        """Fix 2.C + 3.F together: a genuine unit-family mismatch always
-        flags as "material" severity, and qty_diff_pct/rate_diff_pct are
-        None (not a nonsense 9999.99%-style percentage)."""
+    def test_uom_mismatch_is_a_data_mismatch_with_material_severity_and_none_qty_rate_diff(self):
+        """Fix 2.C + 3.F together, updated for the 2026-09-07 redesign: a
+        genuine unit-family mismatch always flags "material" severity and
+        drives `data_mismatch` (not `is_flagged` - the redesign scopes
+        is_flagged down to qty/rate only), and qty_diff_pct/rate_diff_pct
+        are None (not a nonsense 9999.99%-style percentage)."""
         config = _test_config()
         item = _Matchable("Reclaim Rubber", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Reclaim Rubber", Decimal("100"), "NOS", Decimal("50"), Decimal("5000.00"))
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
         assert uom_mismatch is True
         assert qty_diff is None
         assert rate_diff is None
-        assert is_flagged is True
+        assert is_flagged is False
+        assert data_mismatch is True
         assert severity == "material"
 
     def test_exact_match_has_no_severity(self):
         """An exact match on every factor has no measurable discrepancy at
-        all - severity is None, not "rounding" (there's nothing to round)."""
+        all - severity is None, not "rounding" (there's nothing to round),
+        and neither is_flagged nor data_mismatch fire."""
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
         assert is_flagged is False
+        assert data_mismatch is False
         assert severity is None
 
     def test_large_discrepancy_is_material_severity(self):
@@ -389,5 +498,156 @@ class TestDiffsAndFlagValueEpsilon:
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("1000"), "KG", Decimal("50"), Decimal("50000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("700"), "KG", Decimal("50"), Decimal("35000.00"))  # 30% off
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, mir)
+        _qty_diff, _rate_diff, _value_diff, _is_flagged, _uom_mismatch, severity, *_rest = _diffs_and_flag(config, item, mir)
         assert severity == "material"
+
+
+class TestTaxTypeMismatch:
+    """New for the 2026-09-07 identification/financial-check redesign:
+    structural IGST-vs-CGST/SGST consistency, folded into `data_mismatch`."""
+
+    def test_igst_po_with_igst_mir_is_not_a_mismatch(self):
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="IGST")
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
+        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        assert tax_type_mismatch is False
+
+    def test_igst_po_with_cgst_sgst_mir_is_a_mismatch(self):
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="IGST")
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
+        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        assert tax_type_mismatch is True
+
+    def test_cgst_sgst_po_with_igst_mir_is_a_mismatch(self):
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="CGST+SGST")
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
+        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        assert tax_type_mismatch is True
+
+    def test_blank_tax_type_is_never_a_mismatch(self):
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
+        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        assert tax_type_mismatch is False
+
+
+# ── _import_total_value_inr()/_import_matchable(): Imports identification/ ──
+# financial-check redesign (2026-09, HRS/Achhad only - project owner: "keep
+# vapi out for now"). Two separate qty checks exist for imports and must not
+# be confused: PO-vs-BOE (apps/services/import_flags.py, unaffected by this
+# redesign) and BOE-vs-MIR (this module, via qty_as_per_boe - see
+# _import_matchable()'s own docstring).
+
+class _FakePo:
+    def __init__(self, total_value, item_count=1):
+        self.total_value = total_value
+        self._item_count = item_count
+
+    @property
+    def items(self):
+        return _FakeItemsManager(self._item_count)
+
+
+class _FakeItemsManager:
+    def __init__(self, count):
+        self._count = count
+
+    def count(self):
+        return self._count
+
+
+class _FakeImportLineItem:
+    def __init__(self, purchase_order, description="Zinc Oxide", qty_as_per_boe=Decimal("100"), uom="KG",
+                 net_price=Decimal("50"), net_value=Decimal("5000.00"), exchange_rate=None,
+                 total_inclusive_value=None, tax_type=""):
+        self.purchase_order = purchase_order
+        self.description = description
+        self.qty_as_per_boe = qty_as_per_boe
+        self.uom = uom
+        self.net_price = net_price
+        self.net_value = net_value
+        self.exchange_rate = exchange_rate
+        self.total_inclusive_value = total_inclusive_value
+        self.tax_type = tax_type
+
+
+class TestImportTotalValueInr:
+    def test_converts_using_exchange_rate(self):
+        """Total Value (As per PO) is foreign-currency, PO-level - must be
+        converted to INR via the specific line's own exchange rate before it
+        can be compared against MIR's Taxable Value, same reasoning
+        _import_rate_value_inr() already uses for rate/value."""
+        assert _import_total_value_inr(Decimal("100"), Decimal("93.8")) == Decimal("9380.0")
+
+    def test_falls_back_to_bare_figure_when_exchange_rate_missing(self):
+        """Real data gap (2 of 37 real Vapi rows had no exchange rate) -
+        falls back to the untouched figure rather than dropping it or
+        crashing, same tolerance _import_rate_value_inr() already has."""
+        assert _import_total_value_inr(Decimal("100"), None) == Decimal("100")
+
+    def test_none_total_value_stays_none(self):
+        """No Total Value recorded at all means nothing to convert or
+        compare - must stay None, not become 0 or crash on the multiply."""
+        assert _import_total_value_inr(None, Decimal("93.8")) is None
+
+
+class TestImportMatchable:
+    def test_extended_fields_off_keeps_original_four_field_shape(self):
+        """Vapi's config (import_extended_fields=False, the dataclass
+        default) must get back the original bare _Matchable - its match
+        model has no columns to store tax_type/total_value/
+        total_inclusive_value in, so these must stay unset rather than being
+        silently computed and then discarded."""
+        config = _test_config()
+        po = _FakePo(total_value=Decimal("1000"), item_count=1)
+        item = _FakeImportLineItem(po, exchange_rate=Decimal("90"), total_inclusive_value=Decimal("9500"), tax_type="IGST")
+        matchable = _import_matchable(config, item, is_single_item_po=True)
+        assert matchable.tax_type is None
+        assert matchable.total_value is None
+        assert matchable.total_inclusive_value is None
+
+    def test_extended_fields_on_single_item_po_converts_total_value(self):
+        """HRS/Achhad's config (import_extended_fields=True): a single-line-
+        item PO's Total Value gets converted to INR via this line's own
+        exchange rate, and total_inclusive_value/tax_type pass through
+        directly (both already line-item-level, unlike domestic - see
+        _import_matchable()'s own docstring)."""
+        config = _test_config(import_extended_fields=True)
+        po = _FakePo(total_value=Decimal("100"), item_count=1)
+        item = _FakeImportLineItem(po, exchange_rate=Decimal("93.8"), total_inclusive_value=Decimal("9500"), tax_type="IGST")
+        matchable = _import_matchable(config, item, is_single_item_po=True)
+        assert matchable.tax_type == "IGST"
+        assert matchable.total_value == Decimal("9380.0")
+        assert matchable.total_inclusive_value == Decimal("9500")
+
+    def test_extended_fields_on_multi_item_po_excludes_total_value_only(self):
+        """Multi-item-PO caveat (same as domestic's _po_matchable()): Total
+        Value is a whole-PO aggregate repeated on every row for a multi-item
+        PO, so it's excluded to avoid comparing the wrong thing - but
+        total_inclusive_value/tax_type are genuinely per-line for imports
+        (unlike domestic) and stay populated regardless of item count."""
+        config = _test_config(import_extended_fields=True)
+        po = _FakePo(total_value=Decimal("100"), item_count=3)
+        item = _FakeImportLineItem(po, exchange_rate=Decimal("93.8"), total_inclusive_value=Decimal("9500"), tax_type="IGST")
+        matchable = _import_matchable(config, item, is_single_item_po=False)
+        assert matchable.total_value is None
+        assert matchable.total_inclusive_value == Decimal("9500")
+        assert matchable.tax_type == "IGST"
+
+    def test_blank_tax_type_becomes_none_not_empty_string(self):
+        """Same normalization _po_matchable() applies (`po.tax_type or
+        None`) - an empty-string tax_type must read as "nothing to check",
+        not a real (blank) value _tax_type_mismatch() would try to parse."""
+        config = _test_config(import_extended_fields=True)
+        po = _FakePo(total_value=None, item_count=1)
+        item = _FakeImportLineItem(po, tax_type="")
+        matchable = _import_matchable(config, item, is_single_item_po=True)
+        assert matchable.tax_type is None

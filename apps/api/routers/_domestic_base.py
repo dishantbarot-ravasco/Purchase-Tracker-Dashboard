@@ -30,9 +30,10 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.response import Response
 
 from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
-from apps.core.models import DataQualityFlag, DomesticPOCorrection, FlagDismissal, MaterialCorrection
+from apps.core.models import DataQualityFlag, DomesticPOCorrection, FlagDismissal, MaterialCategoryReference, MaterialCorrection
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
+from apps.services.parsers.common import normalize_material
 from apps.services.stock_consumption import DEFAULT_WINDOW_DAYS, consumption_stats
 from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
 from apps.services.validation import is_valid_email, is_valid_gstin
@@ -78,6 +79,13 @@ class _PlantConfig:
     lot_rate_field: str  # "basic_rate" (HRS/Vapi) or "rate" (Achhad)
     lot_code_field: str  # "sap_item_code" (HRS) / "hsn_code" (Vapi) / "sap_code" (Achhad)
     lot_vendor_field: Optional[str] = None  # "party_name" (HRS) / "supplier_name" (Vapi) / None (Achhad)
+
+    # Days-Left Engine extension (2026-09-08, Achhad only): RTPAchhadRMDailyMovement's
+    # sparse (stock_lot, movement_date) -> (received, issued) rows, parsed
+    # from Achhad's own daily Recp./Issue matrix - see that model's
+    # docstring for why this is trustworthy. None for HRS/Vapi, whose Stock
+    # files have no day-by-day matrix to parse in the first place.
+    daily_movement_model: Optional[type] = None
 
 
 # ── Serialization helpers ─────────────────────────────────────────────────────
@@ -198,6 +206,24 @@ def _line_item_dict(item):
         "severity": match.severity if match else None,
         "matchedMirNo": match.mir_entry.mir_no if match else None,
         "stockMatched": bool(match and len(match.mir_entry.stock_matches.all()) > 0),
+        # Identification/Financial-Check redesign (2026-09-07, see
+        # matching_core.py's module docstring): matchFlagged (is_flagged)
+        # above now means specifically "qty or rate mismatched" - these
+        # fields expose that split plus everything routed into the new
+        # dataMismatch bucket (UOM/Net/Taxable-Value/GST-type/Final-Value)
+        # instead of blending it back into one boolean.
+        "materialMatched": bool(match and match.material_matched),
+        "poNumberMatched": bool(match and match.po_number_matched),
+        "qtyMismatched": bool(match and match.qty_mismatched),
+        "rateMismatched": bool(match and match.rate_mismatched),
+        "dataMismatch": bool(match and match.data_mismatch),
+        "taxTypeMismatch": bool(match and match.tax_type_mismatch),
+        "taxableValueDiffPct": (
+            float(match.taxable_value_diff_pct) if match and match.taxable_value_diff_pct is not None else None
+        ),
+        "finalValueDiffPct": (
+            float(match.final_value_diff_pct) if match and match.final_value_diff_pct is not None else None
+        ),
     }
 
 
@@ -241,7 +267,15 @@ def _po_dict(cfg: _PlantConfig, po):
     }
 
 
-def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None):
+def _category_reference_map() -> dict[str, MaterialCategoryReference]:
+    """One query for the whole (small, shared-across-plants) canonical
+    Category/Subcategory table - see MaterialCategoryReference's own
+    docstring (apps/core/models.py) for the full design. Called once per
+    request (make_materials()), not once per lot."""
+    return {ref.normalized_description: ref for ref in MaterialCategoryReference.objects.all()}
+
+
+def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None, category_reference=None):
     corrections = MaterialCorrection.objects.filter(plant=cfg.syncrun_plant, lot_id=lot.id)
     # Match Accuracy Programme fix 3.G: this lot's own stock-balance
     # arithmetic flag, if any (opening + received - issued vs todays_stock).
@@ -251,7 +285,7 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None):
     rate = getattr(lot, cfg.lot_rate_field)
     consumption = (consumption_by_lot or {}).get(lot.id)
     # Achhad's Stock sheet has a Minimum Stock Level column HRS/Vapi lack
-    # entirely (RTPAchhadStockLot.msl) - getattr's default None means this
+    # entirely (RTPAchhadRMLot.msl) - getattr's default None means this
     # is always None on HRS/Vapi rows without any per-plant branching, same
     # pattern as no_of_days/sub_category above. daysToMsl is 0 the moment
     # current stock is at/below msl (independent of whether a consumption
@@ -266,14 +300,25 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None):
             days_to_msl = 0.0
         elif consumption and consumption.get("avgDaily"):
             days_to_msl = remaining / consumption["avgDaily"]
+    # Canonical Category/Subcategory lookup (2026-09-08) - see
+    # MaterialCategoryReference's own docstring for why this REPLACES the
+    # lot's own raw category/sub_category for display rather than merely
+    # filling gaps: HRS's/Vapi's own Stock files carry a free-text per-row
+    # Category column real data fills inconsistently (confirmed - grouping
+    # by it produced close to one bucket per material), so a populated-but-
+    # noisy raw value is exactly as unusable for grouping as a blank one.
+    # The raw fields are untouched in the DB (still there for audit/the
+    # existing "Edit Everywhere" correction feature) - only this API
+    # response's display value changes.
+    ref = (category_reference or {}).get(normalize_material(lot.description))
+    canonical_category = ref.category if ref else "Uncategorized"
+    canonical_subcategory = ref.subcategory if ref else ""
     return {
         "lotId": lot.id,
         "materialCode": getattr(lot, cfg.lot_code_field) or str(lot.id),
         "description": lot.description,
-        "category": lot.category,
-        # Achhad's model has no sub_category/uom columns at all - getattr's
-        # default "" reproduces achhad_views.py's own hardcoded "" exactly.
-        "subCategory": getattr(lot, "sub_category", ""),
+        "category": canonical_category,
+        "subCategory": canonical_subcategory,
         "corrections": [_material_correction_dict(c) for c in corrections],
         "uom": getattr(lot, "uom", ""),
         "qty": float(lot.todays_stock),
@@ -301,6 +346,18 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None):
                 "dismissedByOverride": m.dismissed_by_override,
                 "qtyDiffPct": float(m.qty_diff_pct) if m.qty_diff_pct is not None else None,
                 "rateDiffPct": float(m.rate_diff_pct) if m.rate_diff_pct is not None else None,
+                # MIR<->Stock identification/financial-check extension
+                # (2026-09-08, HRS only for now - see matching_core.py's
+                # match_mir_entry_stock() docstring). getattr with a None
+                # default so Achhad/Vapi's rows (which don't set these,
+                # config.stock_extended_fields=False for them) still
+                # serialize cleanly instead of raising.
+                "valueDiffPct": float(m.value_diff_pct) if getattr(m, "value_diff_pct", None) is not None else None,
+                "materialMatched": getattr(m, "material_matched", None),
+                "dateMatched": getattr(m, "date_matched", None),
+                "qtyMismatched": getattr(m, "qty_mismatched", None),
+                "rateMismatched": getattr(m, "rate_mismatched", None),
+                "dataMismatch": getattr(m, "data_mismatch", None),
             }
             for m in lot.mir_matches.all()
         ],
@@ -391,12 +448,66 @@ def make_correct_field(cfg: _PlantConfig):
     return correct_field
 
 
+def _daily_movement_points(cfg: _PlantConfig, window_start) -> dict[int, list[tuple]]:
+    """Reconstructs a dense (date, todays_stock, received_cum, issued_cum)
+    series per lot from cfg.daily_movement_model's sparse activity-day rows,
+    anchored on that lot's own `opening_stock` - Days-Left Engine extension,
+    2026-09-08 (see RTPAchhadRMDailyMovement's own docstring for why this is
+    trustworthy, and stock_consumption.py's module docstring for why
+    RTP-Achhad's own `issued` column couldn't be used before this: that
+    concern was about the *monthly* summary resetting each period, not about
+    this daily-dated data underneath it). `received`/`issued` here are
+    running CUMULATIVE totals within this reconstructed window, matching
+    what consumption_stats()'s _issued_cross_check() expects (the same shape
+    a real snapshot's `received`/`issued` columns already have) - not the
+    per-day deltas the source rows themselves store.
+
+    Returns {} immediately when cfg.daily_movement_model is None (HRS/Vapi -
+    their Stock files have no day-by-day matrix to have parsed in the first
+    place). One query for every active lot's movements, not one per lot -
+    same reasoning as _consumption_by_lot()'s own snapshot query."""
+    if cfg.daily_movement_model is None:
+        return {}
+    rows = list(
+        cfg.daily_movement_model.objects
+        .filter(stock_lot__is_active=True, movement_date__gte=window_start)
+        .values_list("stock_lot_id", "movement_date", "received", "issued")
+        .order_by("stock_lot_id", "movement_date")
+    )
+    if not rows:
+        return {}
+    lot_ids = {r[0] for r in rows}
+    openings = dict(cfg.stock_lot_model.objects.filter(id__in=lot_ids).values_list("id", "opening_stock"))
+
+    points_by_lot: dict[int, list[tuple]] = {}
+    for lot_id, group in itertools.groupby(rows, key=lambda row: row[0]):
+        running_stock = openings.get(lot_id) or Decimal(0)
+        running_received = Decimal(0)
+        running_issued = Decimal(0)
+        points = []
+        for _, date, received, issued in group:
+            running_stock = running_stock + received - issued
+            running_received += received
+            running_issued += issued
+            points.append((date, running_stock, running_received, running_issued))
+        points_by_lot[lot_id] = points
+    return points_by_lot
+
+
 def _consumption_by_lot(cfg: _PlantConfig):
     """One query for every active lot's snapshot history inside the
     consumption engine's window, grouped by lot id and run through
     consumption_stats() - not one query per lot, which would be an N+1
     across however many hundred lots a plant has. See
-    apps/services/stock_consumption.py for the algorithm itself."""
+    apps/services/stock_consumption.py for the algorithm itself.
+
+    Days-Left Engine extension (2026-09-08): for plants with a
+    daily_movement_model (Achhad only today), the reconstructed daily-matrix
+    points from _daily_movement_points() are merged in per lot before
+    scoring - consumption_stats() sorts by date internally, so simple
+    concatenation is enough; an overlapping date between a real snapshot and
+    a reconstructed point just costs one wasted interval (gap=0, skipped),
+    not a correctness problem."""
     window_start = datetime.date.today() - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
     rows = (
         cfg.stock_snapshot_model.objects
@@ -404,10 +515,15 @@ def _consumption_by_lot(cfg: _PlantConfig):
         .values_list("stock_lot_id", "snapshot_date", "todays_stock", "received", "issued")
         .order_by("stock_lot_id", "snapshot_date")
     )
-    return {
-        lot_id: consumption_stats([(date, stock, received, issued) for _, date, stock, received, issued in group])
+    points_by_lot: dict[int, list[tuple]] = {
+        lot_id: [(date, stock, received, issued) for _, date, stock, received, issued in group]
         for lot_id, group in itertools.groupby(rows, key=lambda row: row[0])
     }
+
+    for lot_id, extra_points in _daily_movement_points(cfg, window_start).items():
+        points_by_lot.setdefault(lot_id, []).extend(extra_points)
+
+    return {lot_id: consumption_stats(points) for lot_id, points in points_by_lot.items()}
 
 
 def make_materials(cfg: _PlantConfig):
@@ -417,7 +533,10 @@ def make_materials(cfg: _PlantConfig):
             return Response({"error": "You are not permitted to view this plant's materials."}, status=403)
         qs = cfg.stock_lot_model.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
         consumption_by_lot = _consumption_by_lot(cfg)
-        return Response({"materials": [_lot_dict(cfg, lot, consumption_by_lot) for lot in qs]})
+        category_reference = _category_reference_map()
+        return Response({
+            "materials": [_lot_dict(cfg, lot, consumption_by_lot, category_reference) for lot in qs]
+        })
 
     return materials
 

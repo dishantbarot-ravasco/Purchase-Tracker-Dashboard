@@ -10,14 +10,14 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import HRSStockLot, MaterialCorrection, RTPAchhadStockLot, RTPVapiStockLot
+from apps.core.models import HRSRMLot, MaterialCorrection, RTPAchhadRMLot, RTPVapiRMLot
 
 
 def _make_hrs_lot(**overrides):
-    """Build a minimal real HRSStockLot for correct_material_field to edit."""
+    """Build a minimal real HRSRMLot for correct_material_field to edit."""
     defaults = dict(description="Natural Rubber", category="Rubber", sub_category="Natural", basic_rate="120.5000")
     defaults.update(overrides)
-    return HRSStockLot.objects.create(**defaults)
+    return HRSRMLot.objects.create(**defaults)
 
 
 @pytest.mark.django_db
@@ -100,14 +100,14 @@ class TestHrsCorrectMaterialField:
 
 @pytest.mark.django_db
 class TestAchhadCorrectMaterialField:
-    """Achhad's RTPAchhadStockLot has a genuinely different editable-field
+    """Achhad's RTPAchhadRMLot has a genuinely different editable-field
     set (rate/msl instead of HRS's basic_rate, no sub_category/uom/vendor at
     all - see achhad_views.py's own _MATERIAL_EDITABLE_FIELDS comment), so
     this is not just a copy-paste of the HRS test above - it exercises the
     per-plant field-name difference directly."""
 
     def setup_method(self):
-        self.lot = RTPAchhadStockLot.objects.create(description="Carbon Black", category="Chemicals", rate="88.25")
+        self.lot = RTPAchhadRMLot.objects.create(description="Carbon Black", category="Chemicals", rate="88.25")
         self.url = f"/api/achhad/materials/{self.lot.id}/fields"
 
     def test_editor_can_correct_rate_field(self):
@@ -180,13 +180,13 @@ class TestAchhadCorrectMaterialField:
 
 @pytest.mark.django_db
 class TestVapiCorrectMaterialField:
-    """Vapi's RTPVapiStockLot has the same category/sub_category/uom/
+    """Vapi's RTPVapiRMLot has the same category/sub_category/uom/
     basic_rate shape as HRS's, plus its own real vendor column
     (supplier_name, not party_name) - see vapi_views.py's
     _MATERIAL_EDITABLE_FIELDS comment."""
 
     def setup_method(self):
-        self.lot = RTPVapiStockLot.objects.create(
+        self.lot = RTPVapiRMLot.objects.create(
             description="Natural Rubber", category="Rubber", sub_category="Natural",
             basic_rate="120.5000", supplier_name="Vendor B",
         )

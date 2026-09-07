@@ -1,7 +1,7 @@
 """
 apps/core/management/commands/sync_achhad_po_csv.py — syncs
 Master_RTP_Achhad_Domestic_Purchase_Data.csv from Drive into
-RTPAchhadPurchaseOrder / RTPAchhadPOLineItem.
+RTPAchhadDomesticPurchaseOrder / RTPAchhadDomesticPOLineItem.
 
 Same shape as sync_po_csv.py for HRS - see that file for the general design
 (whole-order hash for change detection, delete-and-rebuild line items,
@@ -9,7 +9,7 @@ Same shape as sync_po_csv.py for HRS - see that file for the general design
 file title comes from settings.ACHHAD_PO_CSV_TITLE (still read from the same
 shared settings.PURCHASE_TRACKER_DB_FOLDER_ID as HRS/Vapi - all three
 plants' PO master CSVs live in one common folder), and the target models are
-RTPAchhadPurchaseOrder/RTPAchhadPOLineItem plus SyncRun.Plant.RTP_ACHHAD.
+RTPAchhadDomesticPurchaseOrder/RTPAchhadDomesticPOLineItem plus SyncRun.Plant.RTP_ACHHAD.
 
 Usage:
     python manage.py sync_achhad_po_csv
@@ -23,7 +23,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DataQualityFlag, RTPAchhadPOLineItem, RTPAchhadPurchaseOrder, SyncRun
+from apps.core.models import DataQualityFlag, RTPAchhadDomesticPOLineItem, RTPAchhadDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
@@ -49,10 +49,10 @@ def _po_hash(order) -> str:
 
 class Command(BaseCommand):
     """Sync the RTP-Achhad PO master CSV from Drive (or --file) into
-    RTPAchhadPurchaseOrder/RTPAchhadPOLineItem. See sync_po_csv.py's Command
+    RTPAchhadDomesticPurchaseOrder/RTPAchhadDomesticPOLineItem. See sync_po_csv.py's Command
     docstring for the idempotency design (unchanged from HRS)."""
 
-    help = "Sync the RTP-Achhad Purchase Order master CSV from Drive into RTPAchhadPurchaseOrder/RTPAchhadPOLineItem."
+    help = "Sync the RTP-Achhad Purchase Order master CSV from Drive into RTPAchhadDomesticPurchaseOrder/RTPAchhadDomesticPOLineItem."
 
     def add_arguments(self, parser):
         parser.add_argument("--file", help="Parse a local CSV file instead of fetching from Drive.")
@@ -116,11 +116,11 @@ class Command(BaseCommand):
     def _upsert_order(self, parsed) -> bool:
         """See sync_po_csv.py's _upsert_order - same hash-and-skip logic."""
         row_hash = _po_hash(parsed)
-        existing = RTPAchhadPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
+        existing = RTPAchhadDomesticPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
         if existing and existing.synced_from_row_hash == row_hash:
             return False
 
-        order, _ = RTPAchhadPurchaseOrder.objects.update_or_create(
+        order, _ = RTPAchhadDomesticPurchaseOrder.objects.update_or_create(
             po_number=parsed.po_number,
             defaults=dict(
                 po_drive_folder_name=parsed.po_drive_folder_name,
@@ -145,8 +145,8 @@ class Command(BaseCommand):
             ),
         )
         order.items.all().delete()
-        RTPAchhadPOLineItem.objects.bulk_create([
-            RTPAchhadPOLineItem(
+        RTPAchhadDomesticPOLineItem.objects.bulk_create([
+            RTPAchhadDomesticPOLineItem(
                 purchase_order=order,
                 item_id=item.item_id,
                 description=item.description,
@@ -166,6 +166,6 @@ class Command(BaseCommand):
         Accuracy Programme fix 3.G, same check, this plant's model."""
         results = {
             item.id: check_po_line_item(item.qty, item.net_price, item.net_value)
-            for item in RTPAchhadPOLineItem.objects.all()
+            for item in RTPAchhadDomesticPOLineItem.objects.all()
         }
         sync_data_quality_flags(SyncRun.Plant.RTP_ACHHAD, DataQualityFlag.SourceType.PO_LINE_ITEM, results)

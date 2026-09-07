@@ -11,7 +11,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import HRSMIREntry, HRSMirStockMatch, HRSPOLineItem, HRSPOMirMatch, HRSPurchaseOrder, HRSStockLot
+from apps.core.models import HRSMIREntry, HRSMirStockMatch, HRSDomesticPOLineItem, HRSPOMirMatch, HRSDomesticPurchaseOrder, HRSRMLot
 
 LIST_URL = "/api/purchase-orders"
 
@@ -27,8 +27,8 @@ class TestStockMatchedField:
         HRSPOMirMatch linking the line item to the MIR entry - the common
         setup every test in this class starts from before deciding whether a
         Stock lot/match should also exist."""
-        po = HRSPurchaseOrder.objects.create(po_drive_folder_name=po_number, po_number=po_number, vendor_name="Vendor A")
-        item = HRSPOLineItem.objects.create(purchase_order=po, item_id="1", description="Widget", qty="10", net_price="2")
+        po = HRSDomesticPurchaseOrder.objects.create(po_drive_folder_name=po_number, po_number=po_number, vendor_name="Vendor A")
+        item = HRSDomesticPOLineItem.objects.create(purchase_order=po, item_id="1", description="Widget", qty="10", net_price="2")
         mir = HRSMIREntry.objects.create(mir_no=mir_no, party_name="Vendor A", material_description="Widget", source_row_ref=mir_no)
         HRSPOMirMatch.objects.create(po_line_item=item, mir_entry=mir, tier="weighted", match_score="0.9")
         return po, item, mir
@@ -49,7 +49,7 @@ class TestStockMatchedField:
         line item's stockMatched flips to True - the full Ordered ->
         Inwarded -> Stocked chain the 3rd stepper step depends on."""
         po, item, mir = self._po_with_item("2000000002", "R2")
-        lot = HRSStockLot.objects.create(description="Widget", party_name="Vendor A", source_row_ref="S2")
+        lot = HRSRMLot.objects.create(description="Widget", party_name="Vendor A", source_row_ref="S2")
         HRSMirStockMatch.objects.create(mir_entry=mir, stock_lot=lot)
 
         response = self.client.get(LIST_URL)
@@ -60,8 +60,8 @@ class TestStockMatchedField:
         """A line item with no PO<->MIR match at all can never be
         stock-matched - matched=False implies stockMatched=False, it isn't
         possible to skip straight to "Stocked"."""
-        po = HRSPurchaseOrder.objects.create(po_drive_folder_name="2000000003", po_number="2000000003", vendor_name="Vendor A")
-        HRSPOLineItem.objects.create(purchase_order=po, item_id="1", description="Unmatched Thing", qty="1", net_price="1")
+        po = HRSDomesticPurchaseOrder.objects.create(po_drive_folder_name="2000000003", po_number="2000000003", vendor_name="Vendor A")
+        HRSDomesticPOLineItem.objects.create(purchase_order=po, item_id="1", description="Unmatched Thing", qty="1", net_price="1")
 
         response = self.client.get(LIST_URL)
         found = next(p for p in response.json()["purchaseOrders"] if p["poNumber"] == "2000000003")

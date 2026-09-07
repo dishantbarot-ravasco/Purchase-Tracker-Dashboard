@@ -4,7 +4,7 @@ PO <-> MIR and MIR <-> Stock reconciliation for RTP-Achhad.
 Thin per-plant wrapper - see matching.py's module docstring for the shared
 pattern and apps/services/matching_core.py for the actual algorithm. What's
 genuinely different about Achhad: its Stock sheet has no vendor column at
-all (confirmed - see RTPAchhadStockLot's docstring), so MIR<->Stock matching
+all (confirmed - see RTPAchhadRMLot's docstring), so MIR<->Stock matching
 here gates on normalized material description alone, not (material,
 vendor) - a materially weaker guarantee than HRS's/Vapi's matcher, and its
 Stock lot's rate field is named `rate`, not `basic_rate`.
@@ -17,9 +17,9 @@ from apps.core.models import (
     RTPAchhadImportPOMirMatch,
     RTPAchhadMIREntry,
     RTPAchhadMirStockMatch,
-    RTPAchhadPOLineItem,
+    RTPAchhadDomesticPOLineItem,
     RTPAchhadPOMirMatch,
-    RTPAchhadStockLot,
+    RTPAchhadRMLot,
 )
 from apps.services import matching_core
 from apps.services.matching_core import _MatchConfig
@@ -34,29 +34,49 @@ FLAG_DIFF_PCT = Decimal("0")
 # plants.
 VALUE_FLAG_EPSILON = Decimal("1.00")
 
-_WEIGHT_MATERIAL = Decimal("0.30")
-_WEIGHT_QTY = Decimal("0.20")
-_WEIGHT_RATE = Decimal("0.20")
-_WEIGHT_VALUE = Decimal("0.30")
+# See matching.py's own comment on these same three constants - identical
+# reasoning and values, kept per-plant per matching_core.py's convention.
+_WEIGHT_QTY = Decimal("0.29")
+_WEIGHT_RATE = Decimal("0.29")
+_WEIGHT_VALUE = Decimal("0.42")
+MATERIAL_MATCH_THRESHOLD = Decimal("0.3")
 
 MATCH_CONFIG = _MatchConfig(
-    po_item_model=RTPAchhadPOLineItem,
+    po_item_model=RTPAchhadDomesticPOLineItem,
     import_item_model=RTPAchhadImportPOLineItem,
     mir_model=RTPAchhadMIREntry,
     po_mir_match_model=RTPAchhadPOMirMatch,
     import_po_mir_match_model=RTPAchhadImportPOMirMatch,
     mir_stock_match_model=RTPAchhadMirStockMatch,
-    stock_lot_model=RTPAchhadStockLot,
+    stock_lot_model=RTPAchhadRMLot,
     match_threshold=MATCH_THRESHOLD,
     flag_diff_pct=FLAG_DIFF_PCT,
     value_flag_epsilon=VALUE_FLAG_EPSILON,
-    weight_material=_WEIGHT_MATERIAL,
     weight_qty=_WEIGHT_QTY,
     weight_rate=_WEIGHT_RATE,
     weight_value=_WEIGHT_VALUE,
-    mir_value=lambda mir: mir.taxable_value or mir.net,
+    material_match_threshold=MATERIAL_MATCH_THRESHOLD,
+    # See matching.py's own comment - PO Net Value <-> MIR's Net column now,
+    # not the previous `taxable_value or net` comparator.
+    mir_value=lambda mir: mir.net,
     stock_rate_field="rate",
     stock_vendor_field=None,
+    # Imports identification/financial-check redesign (2026-09, project
+    # owner: same treatment as domestic for HRS/Achhad, Vapi excluded for
+    # now) - see matching_core.py's _MatchConfig docstring.
+    import_extended_fields=True,
+    # MIR<->Stock identification/financial-check extension (2026-09-08,
+    # project owner: replicate HRS's Raw Material treatment for Achhad too).
+    # config.stock_vendor_field is already None for Achhad (no vendor column
+    # on its Stock sheet - see RTPAchhadRMLot's docstring), so
+    # match_mir_entry_stock() already skips the vendor gate entirely here.
+    # Material stays the sole, mandatory identification factor for every
+    # plant (date is never an alternative - see match_mir_entry_stock()'s
+    # docstring for why that was tried and reverted), so this flag only
+    # adds the Qty/Value data-mismatch checks on top of the existing
+    # material-only gate, same weaker-confidence characteristic Achhad's
+    # MIR<->Stock matching already had before this extension.
+    stock_extended_fields=True,
 )
 
 

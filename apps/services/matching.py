@@ -21,9 +21,9 @@ from apps.core.models import (
     HRSImportPOMirMatch,
     HRSMIREntry,
     HRSMirStockMatch,
-    HRSPOLineItem,
+    HRSDomesticPOLineItem,
     HRSPOMirMatch,
-    HRSStockLot,
+    HRSRMLot,
 )
 from apps.services import matching_core
 from apps.services.matching_core import _MatchConfig
@@ -47,33 +47,57 @@ FLAG_DIFF_PCT = Decimal("0")
 # representational, not a discrepancy.
 VALUE_FLAG_EPSILON = Decimal("1.00")
 
-_WEIGHT_MATERIAL = Decimal("0.30")
-_WEIGHT_QTY = Decimal("0.20")
-_WEIGHT_RATE = Decimal("0.20")
-_WEIGHT_VALUE = Decimal("0.30")
+# Identification/Financial-Check redesign (2026-09-07): material is a
+# boolean identification gate now (see MATERIAL_MATCH_THRESHOLD/_MatchConfig
+# below), not a scored factor - these three are the financial-closeness
+# tie-breaker weights only. Ratio kept at qty:rate:value = 2:2:3 (the same
+# relative weight the old 4-factor score used), renormalized to sum to 1
+# now that material's 0.30 share is gone.
+_WEIGHT_QTY = Decimal("0.29")
+_WEIGHT_RATE = Decimal("0.29")
+_WEIGHT_VALUE = Decimal("0.42")
+MATERIAL_MATCH_THRESHOLD = Decimal("0.3")
 
 MATCH_CONFIG = _MatchConfig(
-    po_item_model=HRSPOLineItem,
+    po_item_model=HRSDomesticPOLineItem,
     import_item_model=HRSImportPOLineItem,
     mir_model=HRSMIREntry,
     po_mir_match_model=HRSPOMirMatch,
     import_po_mir_match_model=HRSImportPOMirMatch,
     mir_stock_match_model=HRSMirStockMatch,
-    stock_lot_model=HRSStockLot,
+    stock_lot_model=HRSRMLot,
     match_threshold=MATCH_THRESHOLD,
     flag_diff_pct=FLAG_DIFF_PCT,
     value_flag_epsilon=VALUE_FLAG_EPSILON,
-    weight_material=_WEIGHT_MATERIAL,
     weight_qty=_WEIGHT_QTY,
     weight_rate=_WEIGHT_RATE,
     weight_value=_WEIGHT_VALUE,
-    # PO's net_value is pre-tax; MIR's taxable_value is the pre-tax
-    # equivalent on that side (invoice_final_value/total_amount are
-    # post-GST/TCS and would make an exact qty+rate match look like an ~18%
-    # "discrepancy" purely from tax). Falls back to `net` when blank.
-    mir_value=lambda mir: mir.taxable_value or mir.net,
+    material_match_threshold=MATERIAL_MATCH_THRESHOLD,
+    # PO's Net Value <-> MIR's own Net column - both pre-discount (project
+    # owner's explicit mapping, 2026-09-07). This replaces the previous
+    # `mir.taxable_value or mir.net` comparator, which compared PO's
+    # pre-discount Net Value against MIR's post-discount Taxable Value -
+    # usually indistinguishable in practice (MIR's discount columns are
+    # almost always blank/zero on real data) but not the same field.
+    # Taxable Value is now its own separate data-mismatch-only comparison
+    # (mir_taxable_value's default, against PO's "Total Value") rather than
+    # standing in for Net.
+    mir_value=lambda mir: mir.net,
     stock_rate_field="basic_rate",
     stock_vendor_field="party_name",
+    # Imports identification/financial-check redesign (2026-09, project
+    # owner: same treatment as domestic for HRS/Achhad, Vapi excluded for
+    # now - see matching_core.py's _MatchConfig docstring and
+    # matching_vapi.py's own comment on why Vapi stays False).
+    import_extended_fields=True,
+    # MIR<->Stock identification/financial-check extension (2026-09-08) -
+    # see matching_core.py's match_mir_entry_stock() docstring for the full
+    # design (material stays the sole, mandatory identification factor;
+    # Qty/Value are only ever compared when the candidate ALSO matched via
+    # Rec. DT., not for every material-matched candidate - date alone was
+    # tried and reverted as an identification path, real cross-vendor same-
+    # day-delivery false positives confirmed against live HRS/Vapi data).
+    stock_extended_fields=True,
 )
 
 

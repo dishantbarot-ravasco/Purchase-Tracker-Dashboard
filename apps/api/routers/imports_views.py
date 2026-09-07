@@ -137,6 +137,26 @@ def _mir_match_dict(item):
         # prefetch cache, not a new query per line item - same pattern as
         # hrs_views.py's/achhad_views.py's/vapi_views.py's own _line_item_dict().
         "stockMatched": len(match.mir_entry.stock_matches.all()) > 0,
+        # Identification/Financial-Check redesign (2026-09, imports - HRS/
+        # Achhad only for now, see HRSImportPOMirMatch's docstring). Read via
+        # getattr() with a default rather than a direct attribute access -
+        # this router is shared across all 3 plants and RTPVapiImportPOMirMatch
+        # has none of these columns at all (project owner: "keep vapi out for
+        # now"), so a Vapi match just reports these as never-set/false instead
+        # of raising AttributeError. Same key names/shapes as
+        # _domestic_base.py's _line_item_dict() for frontend consistency.
+        "materialMatched": bool(getattr(match, "material_matched", False)),
+        "poNumberMatched": bool(getattr(match, "po_number_matched", False)),
+        "qtyMismatched": bool(getattr(match, "qty_mismatched", False)),
+        "rateMismatched": bool(getattr(match, "rate_mismatched", False)),
+        "dataMismatch": bool(getattr(match, "data_mismatch", False)),
+        "taxTypeMismatch": bool(getattr(match, "tax_type_mismatch", False)),
+        "taxableValueDiffPct": (
+            float(match.taxable_value_diff_pct) if getattr(match, "taxable_value_diff_pct", None) is not None else None
+        ),
+        "finalValueDiffPct": (
+            float(match.final_value_diff_pct) if getattr(match, "final_value_diff_pct", None) is not None else None
+        ),
     }
 
 

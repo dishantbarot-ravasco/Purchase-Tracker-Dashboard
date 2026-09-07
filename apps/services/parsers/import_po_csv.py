@@ -14,13 +14,24 @@ session - no trailing-space quirks here, unlike the domestic CSV's "HSN "/
 "Currency "):
 PO Drive Folder Name, PO Number, PO Created Date, Vendor Name,
 Vendor Address, Vendor GSTIN, Vendor Email, Vendor Code, Billing Address,
-ShipTo, Item Id, PO Number | Item Id, Material Description, HSN,
+ShipTo, Item Id, Material Description, HSN,
 QTY (As Per PO), QTY (As Per BOE), UOM, Delivery Date, Payment Terms,
 IncoTerms, Currency (As Per PO), Net Price, Net Value,
 Total Value (As per PO), Tax Type, Currency (After Taxes), Exchange Rate,
 Total Inclusive Value (Final Bill Paid to get shipment from Port), REMARKS,
 BOE Number, Bill Of Lading Number, Laden on Board Date, Country of Origin,
-License Type, License Number
+License Type, License Number, PO Number | Item Id
+
+**"PO Number | Item Id" moved to the last column (2026-09), matching the
+domestic PO CSV's own convention (po_csv.py's EXPECTED_HEADER already has it
+last) - the live Drive CSVs for all 3 plants were moved to match. This
+column's cell values are never actually read into any field (there's no
+`row["PO Number | Item Id"]` access anywhere below, and no model column
+backs it) - EXPECTED_HEADER only uses it for the strict header-equality
+check (HeaderMismatch), so moving it is purely a position change, not a
+data-shape one. If the live Drive CSV and this list ever disagree on
+position, every plant's imports sync breaks immediately with HeaderMismatch
+- keep them in lockstep.
 
 Reconciliation note: `qty_as_per_boe` (Bill of Entry quantity - what
 customs recorded as actually clearing/arriving) is the quantity compared
@@ -42,12 +53,12 @@ from apps.services.parsers.common import to_date, to_decimal, to_str
 EXPECTED_HEADER = [
     "PO Drive Folder Name", "PO Number", "PO Created Date", "Vendor Name", "Vendor Address",
     "Vendor GSTIN", "Vendor Email", "Vendor Code", "Billing Address", "ShipTo", "Item Id",
-    "PO Number | Item Id", "Material Description", "HSN", "QTY (As Per PO)", "QTY (As Per BOE)",
+    "Material Description", "HSN", "QTY (As Per PO)", "QTY (As Per BOE)",
     "UOM", "Delivery Date", "Payment Terms", "IncoTerms", "Currency (As Per PO)", "Net Price",
     "Net Value", "Total Value (As per PO)", "Tax Type", "Currency (After Taxes)", "Exchange Rate",
     "Total Inclusive Value (Final Bill Paid to get shipment from Port)", "REMARKS", "BOE Number",
     "Bill Of Lading Number", "Laden on Board Date", "Country of Origin", "License Type",
-    "License Number",
+    "License Number", "PO Number | Item Id",
 ]
 
 

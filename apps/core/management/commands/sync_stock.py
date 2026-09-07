@@ -1,22 +1,22 @@
 """
 apps/core/management/commands/sync_stock.py — syncs HRS RAW MATERIAL
-STOCK.xlsx ('Stock' sheet) from Drive into HRSStockLot, keyed by
+STOCK.xlsx ('Stock' sheet) from Drive into HRSRMLot, keyed by
 natural_key (a stable business identity - material code/description +
 vendor, see apps/services/stock_identity.py), and captures today's
-HRSStockSnapshot for every lot synced - this is the daily-history mechanism
+HRSRMSnapshot for every lot synced - this is the daily-history mechanism
 that replaces Drive's dated whole-file copies.
 
 **Snapshot Pipeline Rebuild, Phase A.6 (see CLAUDE.md): natural_key replaced
 source_row_ref (the openpyxl row index) as the upsert/deactivation key.** A
 row number is not an identity - inserting one row mid-sheet shifted every
 row below it, silently re-labeling an existing lot as a different material
-on the next sync while its HRSStockSnapshot history stayed attached by FK,
+on the next sync while its HRSRMSnapshot history stayed attached by FK,
 splicing two materials' histories together. source_row_ref is still parsed
 and stored (see ParsedStockLot) for diagnostics, just no longer the key. A
 lot whose natural_key no longer appears in the freshly parsed file is
-deactivated (is_active=False), not deleted, so its HRSStockSnapshot history
+deactivated (is_active=False), not deleted, so its HRSRMSnapshot history
 survives (stock_lot's FK is on_delete=CASCADE) and it stops appearing as a
-matching candidate - see HRSStockLot.is_active's help_text.
+matching candidate - see HRSRMLot.is_active's help_text.
 
 Change detection reuses sync_utils.unchanged() (same quantized-Decimal
 reasoning as sync_mir.py). The snapshot itself is a separate update_or_create
@@ -38,7 +38,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DataQualityFlag, HRSStockLot, HRSStockSnapshot, SyncRun
+from apps.core.models import DataQualityFlag, HRSRMLot, HRSRMSnapshot, SyncRun
 from apps.services.arithmetic_checks import check_stock_lot
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.stock import HeaderMismatch, parse_stock_xlsx
@@ -54,8 +54,8 @@ _SNAPSHOT_FIELDS = ["opening_stock", "received", "issued", "todays_stock", "basi
 
 
 class Command(BaseCommand):
-    """Sync the HRS Stock xlsx from Drive (or --file) into HRSStockLot,
-    capture today's HRSStockSnapshot for every synced lot (unless
+    """Sync the HRS Stock xlsx from Drive (or --file) into HRSRMLot,
+    capture today's HRSRMSnapshot for every synced lot (unless
     --no-snapshot), and record the outcome as a SyncRun row.
 
     Idempotent: lots unchanged per sync_utils.unchanged() are skipped for
@@ -63,7 +63,7 @@ class Command(BaseCommand):
     on (stock_lot, date) so it's always safe to re-run, snapshot or not.
     """
 
-    help = "Sync the HRS Stock xlsx from Drive into HRSStockLot and capture today's snapshot."
+    help = "Sync the HRS Stock xlsx from Drive into HRSRMLot and capture today's snapshot."
 
     def add_arguments(self, parser):
         parser.add_argument("--file", help="Parse a local xlsx file instead of fetching from Drive.")
@@ -102,7 +102,7 @@ class Command(BaseCommand):
                     if not options["no_snapshot"]:
                         self._upsert_snapshot(lot, today)
                 deactivated = (
-                    HRSStockLot.objects.filter(is_active=True)
+                    HRSRMLot.objects.filter(is_active=True)
                     .exclude(natural_key__in=seen_keys)
                     .update(is_active=False)
                 )
@@ -155,26 +155,26 @@ class Command(BaseCommand):
         file_id = find_file_id_by_title(settings.HRS_STOCK_FILE_TITLE, parent_id=settings.HRS_MIR_STOCK_FOLDER_ID)
         return download_file_bytes(file_id)
 
-    def _upsert_lot(self, parsed, natural_key: str) -> tuple[HRSStockLot, bool]:
+    def _upsert_lot(self, parsed, natural_key: str) -> tuple[HRSRMLot, bool]:
         """Upsert one parsed stock lot by natural_key (see stock_identity.py);
         returns (lot, False) with a no-op when the lot is unchanged and
         still active. source_row_ref rides along in `defaults` - kept for
         diagnostics, no longer the lookup key."""
-        existing = HRSStockLot.objects.filter(natural_key=natural_key).first()
-        if existing and existing.is_active and unchanged(HRSStockLot, existing, parsed, _FIELDS):
+        existing = HRSRMLot.objects.filter(natural_key=natural_key).first()
+        if existing and existing.is_active and unchanged(HRSRMLot, existing, parsed, _FIELDS):
             return existing, False
 
-        lot, _ = HRSStockLot.objects.update_or_create(
+        lot, _ = HRSRMLot.objects.update_or_create(
             natural_key=natural_key,
             defaults={f: getattr(parsed, f) for f in _FIELDS}
             | {"source_row_ref": parsed.source_row_ref, "last_synced_at": timezone.now(), "is_active": True},
         )
         return lot, True
 
-    def _upsert_snapshot(self, lot: HRSStockLot, snapshot_date) -> None:
+    def _upsert_snapshot(self, lot: HRSRMLot, snapshot_date) -> None:
         """Record/overwrite today's snapshot for this lot - keyed on
         (stock_lot, snapshot_date), so a same-day re-run just overwrites."""
-        HRSStockSnapshot.objects.update_or_create(
+        HRSRMSnapshot.objects.update_or_create(
             stock_lot=lot,
             snapshot_date=snapshot_date,
             defaults={f: getattr(lot, f) for f in _SNAPSHOT_FIELDS},
@@ -190,6 +190,6 @@ class Command(BaseCommand):
         genuine broken-formula case, not a tolerance artifact."""
         results = {
             lot.id: check_stock_lot(lot.opening_stock, lot.received, lot.issued, lot.todays_stock)
-            for lot in HRSStockLot.objects.filter(is_active=True)
+            for lot in HRSRMLot.objects.filter(is_active=True)
         }
         sync_data_quality_flags(SyncRun.Plant.HRS, DataQualityFlag.SourceType.STOCK_LOT, results)

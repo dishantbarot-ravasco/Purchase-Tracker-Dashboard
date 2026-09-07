@@ -1,7 +1,7 @@
 """
 apps/services/stock_identity.py — stable, sheet-row-independent identity for
 a stock lot, replacing `source_row_ref` (the openpyxl row index) as the
-upsert key for HRSStockLot/RTPAchhadStockLot/RTPVapiStockLot.
+upsert key for HRSRMLot/RTPAchhadRMLot/RTPVapiRMLot.
 
 A row number is not an identity: inserting one row mid-sheet shifts every
 row below it, so the next sync re-labels an existing lot as whatever

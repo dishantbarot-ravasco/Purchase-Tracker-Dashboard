@@ -11,7 +11,7 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import DomesticPOCorrection, RTPAchhadPOLineItem, RTPAchhadPurchaseOrder
+from apps.core.models import DomesticPOCorrection, RTPAchhadDomesticPOLineItem, RTPAchhadDomesticPurchaseOrder
 
 
 def _make_po(po_number="3000001511", **overrides):
@@ -23,13 +23,13 @@ def _make_po(po_number="3000001511", **overrides):
         currency="INR",
     )
     defaults.update(overrides)
-    return RTPAchhadPurchaseOrder.objects.create(**defaults)
+    return RTPAchhadDomesticPurchaseOrder.objects.create(**defaults)
 
 
 def _make_item(po, item_id="1", **overrides):
     defaults = dict(purchase_order=po, item_id=item_id, description="Widget", qty="100", net_price="1.5")
     defaults.update(overrides)
-    return RTPAchhadPOLineItem.objects.create(**defaults)
+    return RTPAchhadDomesticPOLineItem.objects.create(**defaults)
 
 
 @pytest.mark.django_db

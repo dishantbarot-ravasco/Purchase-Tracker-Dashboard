@@ -10,31 +10,55 @@ different per plant is injected via _MatchConfig: which model classes to
 query, and how to read a MIR entry's pre-tax value / a stock lot's rate and
 vendor fields (Vapi has no MIR `net` fallback; Achhad's stock lot has no
 vendor field at all and uses `rate` not `basic_rate`). Everything else -
-scoring weights, thresholds, the tier-1/tier-2 algorithm, exclusive MIR
-claiming - is one implementation, not three.
+scoring weights, thresholds, the identification/financial-check algorithm,
+exclusive MIR claiming - is one implementation, not three.
 
 Vendor is always a hard gate, never scored - two records for different
 vendors are never candidates for each other, no matter how well material/
 amount line up.
 
-PO <-> MIR, per line item:
-  Tier 1 - PO_NUMBER: mir.po_number_raw resolves to this exact PO (see
-    _po_number_matches). A PO-number hit NARROWS the candidate pool to every
-    MIR row sharing that PO number - it does not select a winner outright.
-    The same weighted scoring loop (Tier 2's algorithm) then runs over that
-    narrowed pool, with a +0.25 score bonus (capped at 1) rather than a
-    hardcoded 1.0000, and MATCH_THRESHOLD still applies - a PO-number hit
-    against a completely unrelated material still fails to match. (Match
-    Accuracy Programme doc 03, fix 2.A - the previous version used
-    next(...) to take the *first* PO-number hit unconditionally, which
-    collapsed every line item on a multi-line PO onto one MIR row.)
-  Tier 2 - WEIGHTED, scored against every vendor-gated MIR candidate:
-    material description token overlap  30%
-    qty closeness                       20%
-    rate closeness                      20%
-    total/final value closeness         30%
-  The best-scoring candidate above MATCH_THRESHOLD wins; below that, the
-  line item is left unmatched rather than forced onto a poor candidate.
+**Identification/Financial-Check redesign (2026-09-07, project owner spec)**
+supersedes the old Tier-1/Tier-2 blended-score design. PO<->MIR matching is
+now two separate, differently-purposed passes instead of one blended score:
+
+  IDENTIFICATION - decides which MIR row IS this PO line item's row, gated
+  (not scored) on top of the vendor hard gate:
+    Vendor        MANDATORY (the existing hard gate, unchanged)
+    Material      token-overlap >= config.material_match_threshold
+    PO Number     _po_number_matches() exact/substring hit
+  A candidate must pass vendor AND at least one of {material, PO number} -
+  "any 2 of these 3" per the spec, with vendor pinned mandatory rather than
+  a free member of the 2-of-3 (project owner, 2026-09-07: "Vendor mandatory
+  plus one of the other two" - a plain 2-of-3 with no mandatory field would
+  let material+PO-number win with no vendor match at all, reopening the
+  exact cross-vendor false-positive risk vendor-as-hard-gate exists to
+  close). See _identification_pool().
+
+  Once a line item has one or more identification-passing candidates, the
+  best one is picked by financial closeness (qty/rate/net-value weighted
+  score, _score()) - this is a tie-breaker among already-identified
+  candidates, NOT a threshold that can reject an identified candidate
+  outright. An identification-passing candidate is always accepted; there
+  is no "identified but still below threshold, so unmatched" outcome
+  anymore. match_threshold/MATCH_THRESHOLD stays as a per-plant constant
+  (still asserted by tests, still exposed to the frontend as a confidence
+  signal) but no longer gates whether a match is created.
+
+  FINANCIAL CHECK - once identification has picked a row, every relevant
+  field is compared, but only Qty and Rate produce a hard "Mismatched"
+  error (`qty_mismatched`/`rate_mismatched`, zero-tolerance per
+  config.flag_diff_pct, same policy as before). Every other financial
+  field - UOM family, Net vs MIR's Net, Taxable Value (only meaningful
+  against a single-line-item PO - see match_po_mir_line_item()'s own note
+  on why), GST type structural consistency (IGST vs CGST+SGST,
+  _tax_type_mismatch()), and Final/Invoice value - folds into one
+  `data_mismatch` boolean instead of being blended into is_flagged/severity
+  the way it used to be. `is_flagged` now means specifically "a qty or rate
+  mismatch exists" - the two "real errors" the spec calls out - not "any
+  discrepancy at all"; `data_mismatch` is the everything-else bucket.
+  Absence of any identification-passing candidate at all is this system's
+  "PO Not Found" outcome - still represented as no match row (see
+  match_po_mir_line_item()'s docstring), not a stored enum value.
 
 Exclusive MIR claiming (fix 2.B): confirmed against real data (31-39% of
 current matches shared a MIR row across multiple line items, traced back to
@@ -42,11 +66,12 @@ the old tier-1 next() bug and to cross-PO Tier-2 collisions - not legitimate
 partial receipts; no schema field or source-data pattern supports one MIR
 row genuinely satisfying more than one PO line item) that a MIR row should
 be claimed by at most one line item per run_full_match() pass. run_full_match()
-scores every (line item, MIR) pair above threshold across every domestic AND
-import line item at once (they share one MIR table), sorts every pair by
-score descending, then assigns greedily - a MIR row already claimed by a
-higher-scoring pair is skipped, so a line item can fall through to its own
-next-best candidate rather than losing its match entirely.
+considers every (line item, MIR) pair that passes identification across every
+domestic AND import line item at once (they share one MIR table), sorts every
+pair by financial score descending, then assigns greedily - a MIR row already
+claimed by a higher-scoring pair is skipped, so a line item can fall through
+to its own next-best identified candidate rather than losing its match
+entirely.
 match_po_mir_line_item()/match_import_po_mir_line_item() remain as simple,
 single-item entry points (used by tests and any future single-item caller)
 that pick the best candidate in isolation, with no knowledge of other line
@@ -69,16 +94,15 @@ from django.utils import timezone
 from apps.services.parsers.common import normalize_material, normalize_uom, normalize_vendor, tokenize
 
 TIER_PO_NUMBER = "po_number"
-TIER_WEIGHTED = "weighted"
+# TIER_MATERIAL replaces the old TIER_WEIGHTED label (2026-09-07 redesign -
+# see module docstring): identification no longer runs a single blended
+# score, so "tier" now just records which identification factor fired for
+# the winning candidate - PO number, or material description alone.
+TIER_MATERIAL = "material"
 
 # *_diff_pct columns are DecimalField(max_digits=6, decimal_places=2) - see
 # CLAUDE.md's "*_diff_pct columns need a clamp" note.
 _MAX_DIFF_PCT = Decimal("9999.99")
-
-# Tier-1's score bonus once a PO-number hit narrows the pool (fix 2.A) -
-# never a hardcoded 1.0000, but still a real advantage over an unnarrowed
-# weighted match, capped so it can't push a score above the valid 0..1 range.
-_TIER1_SCORE_BONUS = Decimal("0.25")
 
 
 @dataclass(frozen=True)
@@ -103,20 +127,61 @@ class _MatchConfig:
     # way any nonzero qty/rate diff is under the zero-tolerance policy.
     # Applied as an ABSOLUTE currency difference, not a percentage - a small
     # percentage of a huge value can still be many rupees, and a huge
-    # percentage of a tiny value can still be under a rupee.
+    # percentage of a tiny value can still be under a rupee. Reused as the
+    # same epsilon for the Taxable-Value and Final-Value data-mismatch
+    # checks below, not just the primary net-value one.
     value_flag_epsilon: Decimal
-    weight_material: Decimal
     weight_qty: Decimal
     weight_rate: Decimal
     weight_value: Decimal
 
-    # MIR entry -> its pre-tax value for value-closeness scoring. HRS/Achhad
-    # fall back to `net` when `taxable_value` is blank; Vapi has no `net`
-    # field to fall back to at all.
-    mir_value: Callable[[object], object]
+    # Identification redesign (2026-09-07): material description is no
+    # longer a scored factor, it's a boolean identification gate - token
+    # overlap at/above this threshold counts as "material matches" for the
+    # vendor-mandatory-plus-one-of-{material,PO number} rule. See
+    # _identification_pool().
+    material_match_threshold: Decimal = Decimal("0.3")
 
-    stock_rate_field: str  # "basic_rate" (HRS/Vapi) or "rate" (Achhad)
+    # MIR entry -> its value for the primary net-value financial-check/
+    # scoring comparison. HRS/Achhad compare against MIR's own `Net` column
+    # (the project owner's explicit PO-Net-Value <-> MIR-Net mapping,
+    # 2026-09-07 - both are pre-discount); Vapi has no `net` field at all and
+    # stays on `taxable_value` (unchanged - see matching_vapi.py).
+    mir_value: Callable[[object], object] = lambda mir: getattr(mir, "net", None)
+
+    # Data-mismatch-only comparisons (2026-09-07 spec: "Total Value" -> MIR's
+    # Taxable Value, "Total Inclusive Value" -> MIR's Final/Invoice value).
+    # Both default to reading the obvious MIR column so HRS/Achhad need no
+    # extra config; a plant with a differently-named final-value column can
+    # override mir_final_value.
+    mir_taxable_value: Callable[[object], object] = lambda mir: getattr(mir, "taxable_value", None)
+    mir_final_value: Callable[[object], object] = (
+        lambda mir: getattr(mir, "invoice_final_value", None) or getattr(mir, "total_amount", None)
+    )
+
+    stock_rate_field: str = ""  # "basic_rate" (HRS/Vapi) or "rate" (Achhad)
     stock_vendor_field: Optional[str] = None  # "party_name"/"supplier_name", or None (Achhad has no vendor column)
+
+    # Imports identification/financial-check redesign (2026-09, HRS/Achhad
+    # only - see matching_vapi.py's own comment on why Vapi stays out for
+    # now): when True, import line items get the same tax_type/total_value/
+    # total_inclusive_value data-mismatch treatment domestic line items
+    # already have (_import_matchable()), and match_import_po_mir_line_item()/
+    # run_full_match() write the extended identification/data-mismatch
+    # columns to config.import_po_mir_match_model. False (the default, and
+    # Vapi's setting) keeps the original 4-field _Matchable shape and the
+    # original short defaults dict - required, since Vapi's own
+    # RTPVapiImportPOMirMatch model has no columns to hold the extra fields.
+    import_extended_fields: bool = False
+
+    # MIR<->Stock identification/financial-check extension (2026-09-08, HRS
+    # only for now - see match_mir_entry_stock()'s own docstring for the
+    # full design and why it can't just reuse the PO<->MIR shape verbatim).
+    # False (the default, and Achhad's/Vapi's setting) keeps the original
+    # material-mandatory-vendor-gated behavior and the original 2-field
+    # defaults dict - required, since RTPAchhadMirStockMatch/
+    # RTPVapiMirStockMatch have no columns for the extra fields.
+    stock_extended_fields: bool = False
 
 
 # ── Internal scoring/gating helpers ─────────────────────────────────────────
@@ -229,24 +294,52 @@ def _candidate_mir_entries(config: _MatchConfig, vendor_name: str) -> list:
     return [c for c in candidates if _vendor_matches(normalize_vendor(c.party_name), vendor)]
 
 
-def _tier1_pool(candidates: list, po_number: str) -> tuple[list, str]:
-    """Fix 2.A: a PO-number hit narrows the candidate pool, it doesn't pick
-    a winner. Returns (pool, tier) - the narrowed pool tagged PO_NUMBER if
-    any hit exists, otherwise the full candidate set tagged WEIGHTED."""
-    tier1 = [c for c in candidates if _po_number_matches(po_number, c.po_number_raw)]
-    return (tier1, TIER_PO_NUMBER) if tier1 else (candidates, TIER_WEIGHTED)
+def _material_matches(config: _MatchConfig, description: str, mir_description: str) -> bool:
+    """Identification's material factor: token overlap at/above
+    config.material_match_threshold counts as a match - a boolean gate now,
+    not a scored factor (see module docstring's 2026-09-07 redesign)."""
+    return _token_overlap(description, mir_description) >= config.material_match_threshold
+
+
+def _identification_pool(config: _MatchConfig, candidates: list, item: "_Matchable", po_number: str) -> tuple[list, dict]:
+    """Vendor is already satisfied by `candidates` (the hard gate ran in
+    _candidate_mir_entries). Filters to candidates where at least one of
+    {material, PO number} also matches - "vendor mandatory plus one of the
+    other two" (project owner, 2026-09-07), not a plain unweighted 2-of-3
+    (which would let material+PO-number win with no vendor match at all).
+    Returns (pool, id_flags_by_mir_id) - id_flags_by_mir_id lets callers
+    record which identification field(s) actually fired for the winning
+    candidate (material_matched/po_number_matched), for transparency on the
+    stored match row."""
+    pool = []
+    id_flags: dict[int, tuple[bool, bool]] = {}
+    for c in candidates:
+        material_matched = _material_matches(config, item.description, c.material_description)
+        po_number_matched = _po_number_matches(po_number, c.po_number_raw)
+        if material_matched or po_number_matched:
+            pool.append(c)
+            id_flags[c.id] = (material_matched, po_number_matched)
+    return pool, id_flags
 
 
 class _Matchable(NamedTuple):
     """One side's worth of fields the scoring loop needs, for either a
     domestic PO line item or an import line item (with its rate/value
-    already currency-converted - see _import_rate_value_inr())."""
+    already currency-converted - see _import_rate_value_inr()). `value` is
+    the PO's pre-discount Net Value (compared against MIR's own Net column
+    per config.mir_value - see _MatchConfig's docstring). `tax_type`/
+    `total_value`/`total_inclusive_value` feed the data-mismatch-only checks
+    (2026-09-07 spec) and are None when not evaluated - import line items
+    and any plant not yet wired for this (Vapi) simply never set them."""
 
     description: str
     qty: Decimal | None
     uom: str
     rate: Decimal | None
     value: Decimal | None
+    tax_type: str | None = None
+    total_value: Decimal | None = None
+    total_inclusive_value: Decimal | None = None
 
 
 def _uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b):
@@ -281,15 +374,17 @@ def _uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b):
 
 
 def _score_components(config: _MatchConfig, item: _Matchable, mir) -> tuple[list[tuple[Decimal, Decimal | None]], bool]:
-    """Returns [(weight, score_or_None), ...] for the four scoring factors.
-    A None score means that factor's data was missing on at least one side
-    (fix 2.D) - excluded entirely from the weighted average rather than
-    counted as a 0, so a sparse MIR row (blank rate, blank taxable value)
+    """Returns [(weight, score_or_None), ...] for the three financial-
+    closeness factors used to pick the best candidate among an
+    identification-passing pool (material is no longer one of these - see
+    module docstring's 2026-09-07 redesign, it's a boolean identification
+    gate now). A None score means that factor's data was missing on at
+    least one side (fix 2.D) - excluded entirely from the weighted average
+    rather than counted as a 0, so a sparse MIR row (blank rate, blank net)
     isn't punished as though it were a bad match. A uom_mismatch (fix 2.C)
     is different from missing data - qty/rate are real values that just
     can't be compared, so they're scored an explicit 0 (still counted, still
     a real signal), not excluded."""
-    material_score = _token_overlap(item.description, mir.material_description)
     qty_a, qty_b, rate_a, rate_b, uom_mismatch = _uom_adjust(item.qty, item.uom, mir.qty, mir.uom, item.rate, mir.rate)
     if uom_mismatch:
         qty_score, rate_score = Decimal("0"), Decimal("0")
@@ -298,7 +393,6 @@ def _score_components(config: _MatchConfig, item: _Matchable, mir) -> tuple[list
         rate_score = _closeness(rate_a, rate_b)
     value_score = _closeness(item.value, config.mir_value(mir))
     components = [
-        (config.weight_material, material_score),
         (config.weight_qty, qty_score),
         (config.weight_rate, rate_score),
         (config.weight_value, value_score),
@@ -306,43 +400,48 @@ def _score_components(config: _MatchConfig, item: _Matchable, mir) -> tuple[list
     return components, uom_mismatch
 
 
-def _score(config: _MatchConfig, item: _Matchable, mir, tier: str) -> tuple[Decimal, Decimal, bool]:
-    """Returns (score, field_coverage, uom_mismatch). field_coverage (fix
-    2.D) is the summed weight of factors actually present (0..1) - callers
-    store it so the interface can distinguish a confident match from one
-    resting on thin evidence, and so report_match_accuracy can split
-    accuracy by coverage band."""
+def _score(config: _MatchConfig, item: _Matchable, mir) -> tuple[Decimal, Decimal, bool]:
+    """Returns (score, field_coverage, uom_mismatch) - purely a financial-
+    closeness tie-breaker among candidates that already passed
+    identification (see module docstring). field_coverage (fix 2.D) is the
+    summed weight of factors actually present (0..1) - callers store it so
+    the interface can distinguish a confident match from one resting on
+    thin evidence."""
     components, uom_mismatch = _score_components(config, item, mir)
     present = [(w, s) for w, s in components if s is not None]
     coverage = sum((w for w, _ in present), Decimal("0"))
     if coverage == 0:
         return Decimal("0"), Decimal("0"), uom_mismatch
     score = sum((w * s for w, s in present), Decimal("0")) / coverage
-    if tier == TIER_PO_NUMBER:
-        score = min(Decimal("1"), score + _TIER1_SCORE_BONUS)
     return score, coverage, uom_mismatch
 
 
-def _scored_pairs_above_threshold(config: _MatchConfig, pool: list, tier: str, item: _Matchable):
-    """Yields (mir_entry, score, tier, field_coverage) for every candidate in
-    `pool` whose score clears MATCH_THRESHOLD - used by run_full_match() to
-    build the global pool of above-threshold pairs that fix 2.B's
-    exclusive-claim pass sorts and assigns from."""
+def _scored_pairs_above_threshold(config: _MatchConfig, pool: list, item: _Matchable):
+    """Yields (mir_entry, score, field_coverage) for every candidate in
+    `pool` - `pool` is already identification-filtered (see
+    _identification_pool()), so every entry here is a legitimate candidate;
+    financial score is used only for ranking/tie-breaking and for
+    run_full_match()'s exclusive-claim sort, not as an accept/reject
+    threshold (see module docstring's 2026-09-07 redesign - an
+    identification-passing candidate is never rejected for a low financial
+    score)."""
     for mir in pool:
-        score, coverage, _uom_mismatch = _score(config, item, mir, tier)
-        if score >= config.match_threshold:
-            yield mir, score, tier, coverage
+        score, coverage, _uom_mismatch = _score(config, item, mir)
+        yield mir, score, coverage
 
 
-def _best_candidate(config: _MatchConfig, pool: list, tier: str, item: _Matchable):
-    """Returns (best_entry, best_score, best_tier, best_coverage) - the best-
-    scoring candidate in `pool`, or (None, 0, None, 0) if the pool is empty."""
-    best_entry, best_score, best_tier, best_coverage = None, Decimal("0"), None, Decimal("0")
+def _best_candidate(config: _MatchConfig, pool: list, item: _Matchable):
+    """Returns (best_entry, best_score, best_coverage) - the best-scoring
+    (by financial closeness) candidate in `pool`, or (None, 0, 0) if the
+    pool is empty. `pool` is already identification-filtered, so the first
+    candidate is always accepted as a floor even at score 0 - there is no
+    threshold to fail here, only ranking among already-identified rows."""
+    best_entry, best_score, best_coverage = None, Decimal("-1"), Decimal("0")
     for mir in pool:
-        score, coverage, _uom_mismatch = _score(config, item, mir, tier)
+        score, coverage, _uom_mismatch = _score(config, item, mir)
         if score > best_score:
-            best_entry, best_score, best_tier, best_coverage = mir, score, tier, coverage
-    return best_entry, best_score, best_tier, best_coverage
+            best_entry, best_score, best_coverage = mir, score, coverage
+    return best_entry, best_score, best_coverage
 
 
 def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | None]:
@@ -372,6 +471,21 @@ def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | 
     return rate_inr, value_inr
 
 
+def _import_total_value_inr(total_value, exchange_rate):
+    """Converts an import PO's 'Total Value (As per PO)' figure - foreign-
+    currency, PO-level, same single-line-item-PO-only caveat as domestic's
+    own Total Value (see _po_matchable()'s docstring) - to INR using this
+    specific line item's own exchange rate, same reasoning
+    _import_rate_value_inr() already uses for rate/value. Falls back to the
+    bare figure when exchange_rate is missing (2 of 37 real Vapi rows had
+    none - the same real gap _import_rate_value_inr() already tolerates)."""
+    if total_value is None:
+        return None
+    if exchange_rate is None:
+        return total_value
+    return total_value * exchange_rate
+
+
 _SEVERITY_MATERIAL_PCT = Decimal("20")  # matches frontend/js/flags.js's rowTintClass() "severe" cutoff
 _SEVERITY_MINOR_PCT = Decimal("5")  # matches rowTintClass()'s "moderate" cutoff
 
@@ -395,20 +509,65 @@ def _severity(uom_mismatch: bool, qty_diff, rate_diff, value_diff) -> str | None
     return "rounding"
 
 
+def _tax_type_mismatch(tax_type: str | None, mir) -> bool:
+    """Structural GST-type check (2026-09-07 spec): if the PO says IGST, MIR
+    should show IGST > 0 and CGST/SGST == 0, and vice versa for CGST+SGST -
+    the two are mutually exclusive on a real invoice (an interstate purchase
+    is never split IGST *and* CGST/SGST). Returns False (never a mismatch)
+    when either side has nothing to check against - `tax_type` blank (not
+    every plant/PO has this parsed yet) or MIR showing zero GST on all three
+    columns (nothing recorded to compare) - this is a diagnostic signal for
+    `data_mismatch`, not a hard gate, so it never blocks a match."""
+    if not tax_type:
+        return False
+    normalized = tax_type.strip().upper()
+    # HRS/Achhad's MIR column is `igst`; Vapi's is `igst_amt` (see
+    # RTPVapiMIREntry) - read whichever exists rather than adding a new
+    # per-plant config field for one differently-named column.
+    igst = getattr(mir, "igst", None) or getattr(mir, "igst_amt", None) or Decimal("0")
+    cgst = mir.cgst_amt or Decimal("0")
+    sgst = mir.sgst_amt or Decimal("0")
+    if igst == 0 and cgst == 0 and sgst == 0:
+        return False
+    has_igst_word = "IGST" in normalized
+    has_cgst_sgst_word = "CGST" in normalized or "SGST" in normalized
+    if has_igst_word and not has_cgst_sgst_word:
+        return not (igst > 0 and cgst == 0 and sgst == 0)
+    if has_cgst_sgst_word:
+        return not (igst == 0 and (cgst > 0 or sgst > 0))
+    return False  # tax_type text doesn't recognizably say either - don't guess
+
+
 def _diffs_and_flag(config: _MatchConfig, item: _Matchable, mir):
     """Returns (qty_diff_pct, rate_diff_pct, value_diff_pct, is_flagged,
-    uom_mismatch, severity).
+    uom_mismatch, severity, qty_mismatched, rate_mismatched, data_mismatch,
+    tax_type_mismatch, taxable_value_diff_pct, final_value_diff_pct).
+
+    Identification/Financial-Check redesign (2026-09-07, see module
+    docstring): only Qty and Rate produce a hard error now
+    (qty_mismatched/rate_mismatched, still zero-tolerance per
+    config.flag_diff_pct) - `is_flagged` means exactly "qty or rate
+    mismatched", nothing else. Every other financial-check field - UOM
+    family, Net-value (item.value vs config.mir_value), Taxable Value
+    (item.total_value vs config.mir_taxable_value - only set by the caller
+    for a single-line-item PO, since a multi-item PO's own "Total Value"
+    column is a whole-PO aggregate repeated on every row, not a per-line
+    figure, and comparing it against one MIR line's Taxable Value would be
+    comparing the wrong things), GST-type structural consistency
+    (_tax_type_mismatch), and Final/Invoice Value (item.total_inclusive_value
+    vs config.mir_final_value, same single-line-item caveat) - all fold into
+    one `data_mismatch` boolean instead.
 
     Fix 2.C: under a uom_mismatch, qty/rate diffs are None (not a nonsense
-    percentage) and uom_mismatch itself drives is_flagged instead - a
-    mass-vs-count pair is a real, distinct problem, not "qty happens to
-    differ by 9999.99%".
+    percentage) - it drives data_mismatch instead (a mass-vs-count pair is a
+    real, distinct problem, but the 2026-09-07 spec scopes it out of the
+    two "real errors").
 
-    Fix 3.F: qty/rate stay at zero-tolerance (config.flag_diff_pct) per the
-    locked policy; value only flags when the ABSOLUTE currency difference
-    exceeds config.value_flag_epsilon, since value is derived (qty x rate,
-    plus tax-split rounding) and a rupee or two of rounding isn't a real
-    discrepancy the way any nonzero qty/rate diff is."""
+    Fix 3.F: every value-shaped comparison (Net/Taxable/Final) flags only
+    when the ABSOLUTE currency difference exceeds config.value_flag_epsilon,
+    since each is derived (qty x rate, plus tax-split rounding) and a rupee
+    or two of rounding isn't a real discrepancy the way any nonzero qty/rate
+    diff is."""
     qty_a, qty_b, rate_a, rate_b, uom_mismatch = _uom_adjust(item.qty, item.uom, mir.qty, mir.uom, item.rate, mir.rate)
     if uom_mismatch:
         qty_diff, rate_diff = None, None
@@ -416,45 +575,126 @@ def _diffs_and_flag(config: _MatchConfig, item: _Matchable, mir):
         qty_diff = _diff_pct(qty_a, qty_b)
         rate_diff = _diff_pct(rate_a, rate_b)
 
+    def _value_flagged(a, b):
+        return a is not None and b is not None and abs(a - b) > config.value_flag_epsilon
+
     mir_value = config.mir_value(mir)
     value_diff = _diff_pct(item.value, mir_value)
-    value_flagged = (
-        item.value is not None and mir_value is not None
-        and abs(item.value - mir_value) > config.value_flag_epsilon
-    )
+    value_flagged = _value_flagged(item.value, mir_value)
 
-    qty_flagged = qty_diff is not None and qty_diff > config.flag_diff_pct
-    rate_flagged = rate_diff is not None and rate_diff > config.flag_diff_pct
-    is_flagged = uom_mismatch or qty_flagged or rate_flagged or value_flagged
+    taxable_value_diff = None
+    taxable_value_flagged = False
+    if item.total_value is not None:
+        mir_taxable = config.mir_taxable_value(mir)
+        taxable_value_diff = _diff_pct(item.total_value, mir_taxable)
+        taxable_value_flagged = _value_flagged(item.total_value, mir_taxable)
+
+    final_value_diff = None
+    final_value_flagged = False
+    if item.total_inclusive_value is not None:
+        mir_final = config.mir_final_value(mir)
+        final_value_diff = _diff_pct(item.total_inclusive_value, mir_final)
+        final_value_flagged = _value_flagged(item.total_inclusive_value, mir_final)
+
+    tax_type_flagged = _tax_type_mismatch(item.tax_type, mir)
+
+    qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct
+    rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
+    is_flagged = qty_mismatched or rate_mismatched
+    data_mismatch = uom_mismatch or value_flagged or taxable_value_flagged or final_value_flagged or tax_type_flagged
     severity = _severity(uom_mismatch, qty_diff, rate_diff, value_diff)
-    return qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity
+    return (
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+        qty_mismatched, rate_mismatched, data_mismatch, tax_type_flagged,
+        taxable_value_diff, final_value_diff,
+    )
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
 # Every function below writes to the DB (upsert-or-delete a match row) and is
 # safe to call repeatedly.
 
+def _po_matchable(po_line_item, is_single_item_po: bool) -> _Matchable:
+    """Builds a domestic line item's _Matchable, including the
+    identification/financial-check redesign's tax_type/total_value/
+    total_inclusive_value fields (2026-09-07). total_value/
+    total_inclusive_value are only set for a single-line-item PO - the PO
+    CSV's "Total Value"/"Total Inclusive Value" columns are a whole-PO
+    aggregate repeated on every row (confirmed against real multi-item POs),
+    not a genuine per-line figure, so comparing them against one MIR line's
+    Taxable/Final Value would compare the wrong things for a multi-item PO."""
+    po = po_line_item.purchase_order
+    return _Matchable(
+        po_line_item.description, po_line_item.qty, po_line_item.uom, po_line_item.net_price, po_line_item.net_value,
+        tax_type=po.tax_type or None,
+        total_value=po.total_value if is_single_item_po else None,
+        total_inclusive_value=po.total_inclusive_value if is_single_item_po else None,
+    )
+
+
+def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po: bool) -> _Matchable:
+    """Builds an import line item's _Matchable. Only plants opted into the
+    imports identification/financial-check redesign (config.
+    import_extended_fields - HRS/Achhad, see _MatchConfig's docstring) get
+    tax_type/total_value/total_inclusive_value populated; every other plant
+    (Vapi) keeps the original 4-field shape, since its import match model
+    has no columns to store the extra fields in yet.
+
+    tax_type/total_inclusive_value live on the import LINE ITEM already
+    (unlike domestic, where they're PO-level) - total_inclusive_value in
+    particular is already a genuine per-line INR figure (the CSV's own
+    'Total Inclusive Value (Final Bill Paid...)' column), so unlike
+    domestic's total_inclusive_value it needs neither the single-line-item-
+    PO caveat nor a currency conversion. total_value ('Total Value (As per
+    PO)') is still PO-level and in the PO's own foreign currency, so it
+    keeps both: only set for a single-line-item PO (same reasoning as
+    _po_matchable()), and converted to INR via this line's own exchange
+    rate (_import_total_value_inr()) since imports - unlike domestic - are
+    priced in the PO's own currency, not INR."""
+    po = import_line_item.purchase_order
+    rate_inr, value_inr = _import_rate_value_inr(import_line_item)
+    if not config.import_extended_fields:
+        return _Matchable(import_line_item.description, import_line_item.qty_as_per_boe, import_line_item.uom, rate_inr, value_inr)
+    total_value_inr = (
+        _import_total_value_inr(po.total_value, import_line_item.exchange_rate) if is_single_item_po else None
+    )
+    return _Matchable(
+        import_line_item.description, import_line_item.qty_as_per_boe, import_line_item.uom, rate_inr, value_inr,
+        tax_type=import_line_item.tax_type or None,
+        total_value=total_value_inr,
+        total_inclusive_value=import_line_item.total_inclusive_value,
+    )
+
+
 def match_po_mir_line_item(config: _MatchConfig, po_line_item):
     """Finds the best MIR match for one domestic PO line item, in isolation
     (no knowledge of other line items' claims - see module docstring), and
-    upserts config.po_mir_match_model, or deletes any existing match if
-    nothing clears the threshold. Returns the resulting match (or None)."""
+    upserts config.po_mir_match_model, or deletes any existing match if no
+    candidate passes identification ("PO Not Found" - see module docstring).
+    Returns the resulting match (or None)."""
     po = po_line_item.purchase_order
-    item = _Matchable(po_line_item.description, po_line_item.qty, po_line_item.uom, po_line_item.net_price, po_line_item.net_value)
+    is_single_item_po = po.items.count() == 1
+    item = _po_matchable(po_line_item, is_single_item_po)
     candidates = _candidate_mir_entries(config, po.vendor_name)
-    pool, tier = _tier1_pool(candidates, po.po_number)
-    best_entry, best_score, best_tier, coverage = _best_candidate(config, pool, tier, item)
+    pool, id_flags = _identification_pool(config, candidates, item, po.po_number)
+    best_entry, best_score, coverage = _best_candidate(config, pool, item)
 
-    if best_entry is None or best_score < config.match_threshold:
+    if best_entry is None:
         config.po_mir_match_model.objects.filter(po_line_item=po_line_item).delete()
         return None
 
-    qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, best_entry)
+    material_matched, po_number_matched = id_flags[best_entry.id]
+    tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+    (
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+        qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+        taxable_value_diff, final_value_diff,
+    ) = _diffs_and_flag(config, item, best_entry)
     match, _ = config.po_mir_match_model.objects.update_or_create(
         po_line_item=po_line_item,
         defaults=dict(
             mir_entry=best_entry,
-            tier=best_tier,
+            tier=tier,
             match_score=best_score.quantize(Decimal("0.0001")),
             qty_diff_pct=qty_diff,
             rate_diff_pct=rate_diff,
@@ -463,6 +703,14 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             uom_mismatch=uom_mismatch,
             field_coverage=coverage.quantize(Decimal("0.01")),
             severity=severity,
+            material_matched=material_matched,
+            po_number_matched=po_number_matched,
+            qty_mismatched=qty_mismatched,
+            rate_mismatched=rate_mismatched,
+            data_mismatch=data_mismatch,
+            tax_type_mismatch=tax_type_mismatch,
+            taxable_value_diff_pct=taxable_value_diff,
+            final_value_diff_pct=final_value_diff,
         ),
     )
     return match
@@ -470,48 +718,145 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
 
 def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
     """Same shape as match_po_mir_line_item() - the only real differences
-    are the qty field (qty_as_per_boe, not qty_as_per_po), the currency
-    conversion _import_rate_value_inr() does before scoring, and the match
-    model class. Matches against the same MIR table domestic matching uses -
-    MIR is a shared Drive file across domestic and import purchases."""
-    po = import_line_item.purchase_order
-    rate_inr, value_inr = _import_rate_value_inr(import_line_item)
-    item = _Matchable(import_line_item.description, import_line_item.qty_as_per_boe, import_line_item.uom, rate_inr, value_inr)
-    candidates = _candidate_mir_entries(config, po.vendor_name)
-    pool, tier = _tier1_pool(candidates, po.po_number)
-    best_entry, best_score, best_tier, coverage = _best_candidate(config, pool, tier, item)
+    are the qty field (qty_as_per_boe, not qty_as_per_po - see this
+    function's own module docstring on the two separate import qty checks:
+    PO-vs-BOE is a different, already-existing check in
+    apps/services/import_flags.py, unaffected by this function; this one
+    is BOE-vs-MIR), the currency conversion _import_matchable()/
+    _import_rate_value_inr() do before scoring, and the match model class.
+    Matches against the same MIR table domestic matching uses - MIR is a
+    shared Drive file across domestic and import purchases.
 
-    if best_entry is None or best_score < config.match_threshold:
+    Only plants with config.import_extended_fields=True (HRS/Achhad) get the
+    same tax_type/total_value/total_inclusive_value data-mismatch treatment
+    domestic line items already have, and only those plants' defaults dict
+    below gets the extended identification/data-mismatch columns written -
+    Vapi (import_extended_fields=False, see matching_vapi.py) keeps the
+    original 4-field _Matchable shape and the original short defaults dict
+    unchanged, since RTPVapiImportPOMirMatch has no columns for the rest."""
+    po = import_line_item.purchase_order
+    is_single_item_po = po.items.count() == 1
+    item = _import_matchable(config, import_line_item, is_single_item_po)
+    candidates = _candidate_mir_entries(config, po.vendor_name)
+    pool, id_flags = _identification_pool(config, candidates, item, po.po_number)
+    best_entry, best_score, coverage = _best_candidate(config, pool, item)
+
+    if best_entry is None:
         config.import_po_mir_match_model.objects.filter(po_line_item=import_line_item).delete()
         return None
 
-    qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, item, best_entry)
+    material_matched, po_number_matched = id_flags[best_entry.id]
+    tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+    (
+        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+        qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+        taxable_value_diff, final_value_diff,
+    ) = _diffs_and_flag(config, item, best_entry)
+    defaults = dict(
+        mir_entry=best_entry,
+        tier=tier,
+        match_score=best_score.quantize(Decimal("0.0001")),
+        qty_diff_pct=qty_diff,
+        rate_diff_pct=rate_diff,
+        value_diff_pct=value_diff,
+        is_flagged=is_flagged,
+        uom_mismatch=uom_mismatch,
+        field_coverage=coverage.quantize(Decimal("0.01")),
+        severity=severity,
+    )
+    if config.import_extended_fields:
+        defaults.update(dict(
+            material_matched=material_matched,
+            po_number_matched=po_number_matched,
+            qty_mismatched=qty_mismatched,
+            rate_mismatched=rate_mismatched,
+            data_mismatch=data_mismatch,
+            tax_type_mismatch=tax_type_mismatch,
+            taxable_value_diff_pct=taxable_value_diff,
+            final_value_diff_pct=final_value_diff,
+        ))
     match, _ = config.import_po_mir_match_model.objects.update_or_create(
         po_line_item=import_line_item,
-        defaults=dict(
-            mir_entry=best_entry,
-            tier=best_tier,
-            match_score=best_score.quantize(Decimal("0.0001")),
-            qty_diff_pct=qty_diff,
-            rate_diff_pct=rate_diff,
-            value_diff_pct=value_diff,
-            is_flagged=is_flagged,
-            uom_mismatch=uom_mismatch,
-            field_coverage=coverage.quantize(Decimal("0.01")),
-            severity=severity,
-        ),
+        defaults=defaults,
     )
     return match
 
 
 def match_mir_entry_stock(config: _MatchConfig, mir_entry):
-    """Finds every Stock lot that (material[, vendor])-matches one MIR entry
-    and upserts config.mir_stock_match_model for each - a many-to-many
+    """Finds every Stock lot that identifies against one MIR entry and
+    upserts config.mir_stock_match_model for each - a many-to-many
     relationship on purpose (the same material/vendor is received into stock
     across multiple lots over time), unaffected by fix 2.B's PO<->MIR
     exclusivity. Vendor gating is skipped entirely when
     config.stock_vendor_field is None (Achhad's Stock sheet has no vendor
-    column - see module docstring)."""
+    column - see module docstring).
+
+    Identification/Financial-Check extension (2026-09-08, HRS/Achhad/Vapi -
+    config.stock_extended_fields gates this, see this function's own
+    per-plant callers): unlike PO<->MIR, date is NEVER an alternative
+    identification path here - Material description (normalized exact
+    match, same comparison as before this extension existed) stays the
+    sole, mandatory identification factor for every plant, vendor-gated
+    when config.stock_vendor_field is set (HRS/Vapi) or not (Achhad).
+
+    An earlier version of this function let Rec. DT. (exact date match
+    against MIR's own Date) stand in for material as an identification
+    path when a vendor gate was present, mirroring PO<->MIR's "vendor
+    mandatory plus one of the other two" shape. Confirmed unsound against
+    real data from ALL THREE plants this session, not just the vendor-less
+    Achhad case it was first caught on: a single vendor commonly delivers
+    several genuinely different materials on the same day (one truck, one
+    invoice, multiple line items) - e.g. real HRS pairs 'China Clay Powder'
+    <-> 'VULKACIT MBTS' and 'NBR 3345' <-> 'NBR 2675' (different grades
+    cross-matched), and real Vapi pairs '8MPA RECLAIM RUBBER' <-> 'GREASE
+    EP 1' - both wrongly matched purely because vendor+date coincided,
+    despite having nothing to do with each other. Vendor anchoring alone
+    does not fix this; only material does. Reverted before this ever
+    shipped as the general rule - date_matched is still computed and still
+    gates the Qty/Value checks below (requiring BOTH material_matched AND
+    date_matched, not date alone), it just never admits a candidate into
+    the identification pool by itself, for any plant.
+
+    Basic Rate is a hard "Mismatched" error (rate_mismatched, zero
+    tolerance, same policy as PO<->MIR) - but, like Qty and Value, ONLY when
+    date_matched also fired alongside material_matched. Confirmed against
+    real data this session why this gating matters for rate specifically,
+    not just qty/value: MIR is a full delivery LOG (one row per historical
+    delivery, every date it ever happened), while Stock is a current-
+    snapshot table (one row per material, whose Rec. DT. reflects only the
+    MOST RECENT receipt) - matching on material alone (as identification
+    requires) pairs an MIR row against a Stock row that may represent a
+    receipt months apart from the one that MIR row actually recorded.
+    Real HRS example: MIR shows Sulphur Powder at Rs.105.50 (delivered
+    2026-05-29), Stock's current lot shows Rs.128.00 (last received
+    2026-08-13, 76 days later) - a 21% "rate mismatch" that's ordinary
+    commodity price drift over 2.5 months, not a data error. Measured
+    directly: ~97-98% of rate_mismatched pairs (both HRS and Achhad) had
+    date_matched=False, averaging an 85-93 day gap between the two dates
+    being compared (max 227-241 days) - confirming most of what
+    zero-tolerance rate flagging was catching was this artifact, not real
+    discrepancies. Restricting rate_diff_pct/rate_mismatched to the
+    date_matched case only compares a rate against the one Stock snapshot
+    we can actually confirm is the same delivery event that MIR row
+    recorded.
+
+    Qty (Stock's REC vs MIR's Qty) is a genuinely different shape from
+    PO<->MIR's qty check, not just copied over: REC reads 0 for ~90% of
+    real HRS lots (confirmed against the live file this session) - a
+    running-total artifact, not a real "nothing received" signal - so it's
+    only compared when REC is nonzero AT ALL, on top of the same
+    date_matched requirement rate now shares.
+
+    Value is not Stock's own `value` column - confirmed against the live
+    file this session that column is `Basic Rate x Today's Stock` (the
+    lot's current running BALANCE value), not the value of any one receipt,
+    so comparing it against one MIR line's Net Value would compare
+    unrelated numbers (this produced a ~99% false data_mismatch rate in an
+    earlier version of this function, caught before shipping). Instead,
+    under the exact same date_matched-and-REC-nonzero condition qty uses,
+    Value here means the DERIVED value of that specific receipt (REC x
+    Basic Rate) compared against MIR's own net-value (config.mir_value) -
+    the one figure that's actually comparable to a single MIR line."""
     mir_material = normalize_material(mir_entry.material_description)
     mir_vendor = normalize_vendor(mir_entry.party_name) if config.stock_vendor_field else None
     if not mir_material or (config.stock_vendor_field and not mir_vendor):
@@ -520,26 +865,81 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry):
     lots = config.stock_lot_model.objects.filter(is_active=True).exclude(description="")
     if config.stock_vendor_field:
         lots = lots.exclude(**{config.stock_vendor_field: ""})
-    candidates = []
+
+    candidates = []  # (lot, material_matched, date_matched)
     for lot in lots:
-        if normalize_material(lot.description) != mir_material:
-            continue
         if config.stock_vendor_field and not _vendor_matches(normalize_vendor(getattr(lot, config.stock_vendor_field)), mir_vendor):
             continue
-        candidates.append(lot)
+        material_matched = normalize_material(lot.description) == mir_material
+        if not material_matched:
+            # Material is the sole, mandatory identification factor for
+            # every plant - see this function's own docstring for why date
+            # is never allowed to substitute for it here, unlike PO<->MIR.
+            continue
+        date_matched = (
+            config.stock_extended_fields
+            and mir_entry.mir_date is not None
+            and lot.received_date is not None
+            and mir_entry.mir_date == lot.received_date
+        )
+        candidates.append((lot, material_matched, date_matched))
 
     matches = []
     matched_lot_ids = set()
-    for lot in candidates:
-        # A lot's own "received" running-total field reads 0 for nearly
-        # every real lot (it evidently clears once allocated) - qty is
-        # deliberately not compared here for any plant, only rate.
-        rate_diff = _diff_pct(mir_entry.rate, getattr(lot, config.stock_rate_field))
-        is_flagged = rate_diff is not None and rate_diff > config.flag_diff_pct
+    for lot, material_matched, date_matched in candidates:
+        if config.stock_extended_fields:
+            rate_diff = None
+            rate_mismatched = False
+            qty_diff = None
+            qty_mismatched = False
+            value_diff = None
+            value_flagged = False
+            if material_matched and date_matched:
+                # Rate is only meaningful against the ONE Stock snapshot we
+                # can confirm represents the same delivery MIR recorded -
+                # see this function's own docstring for why comparing it
+                # against every material-matched lot (regardless of date)
+                # mostly measured commodity price drift over months, not
+                # real discrepancies.
+                rate_diff = _diff_pct(mir_entry.rate, getattr(lot, config.stock_rate_field))
+                rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
+
+                if lot.received:
+                    qty_diff = _diff_pct(mir_entry.qty, lot.received)
+                    qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct
+
+                    lot_rate = getattr(lot, config.stock_rate_field)
+                    received_value = lot.received * lot_rate if lot_rate is not None else None
+                    mir_value = config.mir_value(mir_entry)
+                    value_diff = _diff_pct(mir_value, received_value)
+                    value_flagged = (
+                        mir_value is not None and received_value is not None
+                        and abs(mir_value - received_value) > config.value_flag_epsilon
+                    )
+            defaults = dict(
+                qty_diff_pct=qty_diff,
+                rate_diff_pct=rate_diff,
+                value_diff_pct=value_diff,
+                is_flagged=qty_mismatched or rate_mismatched,
+                material_matched=material_matched,
+                date_matched=date_matched,
+                qty_mismatched=qty_mismatched,
+                rate_mismatched=rate_mismatched,
+                data_mismatch=value_flagged,
+            )
+        else:
+            # Unchanged pre-extension shape (no plant left uses this branch
+            # today, kept for a hypothetical future plant that hasn't been
+            # extended yet) - qty was never comparable, rate had no
+            # date-confirmation requirement at all.
+            rate_diff = _diff_pct(mir_entry.rate, getattr(lot, config.stock_rate_field))
+            rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
+            defaults = dict(qty_diff_pct=None, rate_diff_pct=rate_diff, is_flagged=rate_mismatched)
+
         match, _ = config.mir_stock_match_model.objects.update_or_create(
             mir_entry=mir_entry,
             stock_lot=lot,
-            defaults=dict(qty_diff_pct=None, rate_diff_pct=rate_diff, is_flagged=is_flagged),
+            defaults=defaults,
         )
         matches.append(match)
         matched_lot_ids.add(lot.id)
@@ -569,35 +969,52 @@ def run_full_match(config: _MatchConfig) -> dict:
     po_items = list(config.po_item_model.objects.select_related("purchase_order").all())
     import_items = list(config.import_item_model.objects.select_related("purchase_order").all())
 
+    # Item counts per PO, computed from the already-fetched po_items list
+    # rather than one .count() query per line item - feeds _po_matchable()'s
+    # single-line-item-PO check (see that function's docstring for why it
+    # matters) with no N+1 query cost.
+    item_counts: dict[int, int] = {}
+    for item in po_items:
+        item_counts[item.purchase_order_id] = item_counts.get(item.purchase_order_id, 0) + 1
+
+    # Same reasoning, for import items - feeds _import_matchable()'s own
+    # single-line-item-PO check (only relevant when config.
+    # import_extended_fields is True; harmless, unused work otherwise).
+    import_item_counts: dict[int, int] = {}
+    for item in import_items:
+        import_item_counts[item.purchase_order_id] = import_item_counts.get(item.purchase_order_id, 0) + 1
+
     items_by_key: dict[tuple[str, int], _Matchable] = {}
-    pairs = []  # (score, "po"|"import", item_key, mir_entry, tier, coverage)
+    id_flags_by_key: dict[tuple[str, int, int], tuple[bool, bool]] = {}  # (kind, item_id, mir_id) -> (material_matched, po_number_matched)
+    pairs = []  # (score, "po"|"import", item_key, mir_entry, coverage)
     for item in po_items:
         po = item.purchase_order
-        matchable = _Matchable(item.description, item.qty, item.uom, item.net_price, item.net_value)
+        matchable = _po_matchable(item, item_counts[item.purchase_order_id] == 1)
         items_by_key[("po", item.id)] = matchable
         candidates = _candidate_mir_entries(config, po.vendor_name)
-        pool, tier = _tier1_pool(candidates, po.po_number)
-        for mir, score, mir_tier, coverage in _scored_pairs_above_threshold(config, pool, tier, matchable):
-            pairs.append((score, "po", item.id, mir, mir_tier, coverage))
+        pool, id_flags = _identification_pool(config, candidates, matchable, po.po_number)
+        for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
+            id_flags_by_key[("po", item.id, mir.id)] = id_flags[mir.id]
+            pairs.append((score, "po", item.id, mir, coverage))
 
     for item in import_items:
         po = item.purchase_order
-        rate_inr, value_inr = _import_rate_value_inr(item)
-        matchable = _Matchable(item.description, item.qty_as_per_boe, item.uom, rate_inr, value_inr)
+        matchable = _import_matchable(config, item, import_item_counts[item.purchase_order_id] == 1)
         items_by_key[("import", item.id)] = matchable
         candidates = _candidate_mir_entries(config, po.vendor_name)
-        pool, tier = _tier1_pool(candidates, po.po_number)
-        for mir, score, mir_tier, coverage in _scored_pairs_above_threshold(config, pool, tier, matchable):
-            pairs.append((score, "import", item.id, mir, mir_tier, coverage))
+        pool, id_flags = _identification_pool(config, candidates, matchable, po.po_number)
+        for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
+            id_flags_by_key[("import", item.id, mir.id)] = id_flags[mir.id]
+            pairs.append((score, "import", item.id, mir, coverage))
 
     pairs.sort(key=lambda p: p[0], reverse=True)
     claimed_mir_ids: set[int] = set()
-    assigned: dict[tuple[str, int], tuple] = {}  # (kind, item.id) -> (mir, score, tier, coverage)
-    for score, kind, item_id, mir, tier, coverage in pairs:
+    assigned: dict[tuple[str, int], tuple] = {}  # (kind, item.id) -> (mir, score, coverage)
+    for score, kind, item_id, mir, coverage in pairs:
         key = (kind, item_id)
         if key in assigned or mir.id in claimed_mir_ids:
             continue
-        assigned[key] = (mir, score, tier, coverage)
+        assigned[key] = (mir, score, coverage)
         claimed_mir_ids.add(mir.id)
 
     po_matched = 0
@@ -606,9 +1023,15 @@ def run_full_match(config: _MatchConfig) -> dict:
         if result is None:
             config.po_mir_match_model.objects.filter(po_line_item=item).delete()
             continue
-        mir, score, tier, coverage = result
+        mir, score, coverage = result
         matchable = items_by_key[("po", item.id)]
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, matchable, mir)
+        material_matched, po_number_matched = id_flags_by_key[("po", item.id, mir.id)]
+        tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+        (
+            qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+            qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+            taxable_value_diff, final_value_diff,
+        ) = _diffs_and_flag(config, matchable, mir)
         config.po_mir_match_model.objects.update_or_create(
             po_line_item=item,
             defaults=dict(
@@ -622,6 +1045,14 @@ def run_full_match(config: _MatchConfig) -> dict:
                 uom_mismatch=uom_mismatch,
                 field_coverage=coverage.quantize(Decimal("0.01")),
                 severity=severity,
+                material_matched=material_matched,
+                po_number_matched=po_number_matched,
+                qty_mismatched=qty_mismatched,
+                rate_mismatched=rate_mismatched,
+                data_mismatch=data_mismatch,
+                tax_type_mismatch=tax_type_mismatch,
+                taxable_value_diff_pct=taxable_value_diff,
+                final_value_diff_pct=final_value_diff,
             ),
         )
         po_matched += 1
@@ -632,23 +1063,41 @@ def run_full_match(config: _MatchConfig) -> dict:
         if result is None:
             config.import_po_mir_match_model.objects.filter(po_line_item=item).delete()
             continue
-        mir, score, tier, coverage = result
+        mir, score, coverage = result
         matchable = items_by_key[("import", item.id)]
-        qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity = _diffs_and_flag(config, matchable, mir)
+        material_matched, po_number_matched = id_flags_by_key[("import", item.id, mir.id)]
+        tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+        (
+            qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+            qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+            taxable_value_diff, final_value_diff,
+        ) = _diffs_and_flag(config, matchable, mir)
+        defaults = dict(
+            mir_entry=mir,
+            tier=tier,
+            match_score=score.quantize(Decimal("0.0001")),
+            qty_diff_pct=qty_diff,
+            rate_diff_pct=rate_diff,
+            value_diff_pct=value_diff,
+            is_flagged=is_flagged,
+            uom_mismatch=uom_mismatch,
+            field_coverage=coverage.quantize(Decimal("0.01")),
+            severity=severity,
+        )
+        if config.import_extended_fields:
+            defaults.update(dict(
+                material_matched=material_matched,
+                po_number_matched=po_number_matched,
+                qty_mismatched=qty_mismatched,
+                rate_mismatched=rate_mismatched,
+                data_mismatch=data_mismatch,
+                tax_type_mismatch=tax_type_mismatch,
+                taxable_value_diff_pct=taxable_value_diff,
+                final_value_diff_pct=final_value_diff,
+            ))
         config.import_po_mir_match_model.objects.update_or_create(
             po_line_item=item,
-            defaults=dict(
-                mir_entry=mir,
-                tier=tier,
-                match_score=score.quantize(Decimal("0.0001")),
-                qty_diff_pct=qty_diff,
-                rate_diff_pct=rate_diff,
-                value_diff_pct=value_diff,
-                is_flagged=is_flagged,
-                uom_mismatch=uom_mismatch,
-                field_coverage=coverage.quantize(Decimal("0.01")),
-                severity=severity,
-            ),
+            defaults=defaults,
         )
         import_po_matched += 1
 
