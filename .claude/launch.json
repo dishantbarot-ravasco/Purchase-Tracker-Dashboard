@@ -4,7 +4,7 @@
     {
       "name": "purchase-tracker-dev",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "python", "manage.py", "runserver", "--settings=config.settings_dev_sqlite", "0.0.0.0:8000"],
+      "runtimeArgs": ["run", "python", "manage.py", "runserver", "0.0.0.0:8000"],
       "port": 8000
     }
   ]

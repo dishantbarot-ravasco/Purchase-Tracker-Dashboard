@@ -227,21 +227,51 @@ def _line_item_dict(item):
     }
 
 
-def _po_dict(cfg: _PlantConfig, po):
+def _group_by(objects, attr):
+    """One query's results, grouped into a dict of lists keyed by `attr` -
+    the batching primitive _po_dict/_lot_dict use to avoid a per-row query,
+    same reasoning as _consumption_by_lot()'s own docstring."""
+    grouped: dict = {}
+    for obj in objects:
+        grouped.setdefault(getattr(obj, attr), []).append(obj)
+    return grouped
+
+
+def _po_dict(cfg: _PlantConfig, po, corrections_by_po=None, flag_dismissals_by_po=None,
+             item_flags_by_item=None, mir_flags_by_mir_entry=None):
     items = list(po.items.all())
-    corrections = DomesticPOCorrection.objects.filter(plant=cfg.syncrun_plant, po_number=po.po_number)
-    flag_dismissals = FlagDismissal.objects.filter(plant=cfg.syncrun_plant, po_number=po.po_number)
+    # N+1 fix (see CLAUDE.md): make_purchase_orders() batches these four
+    # queries once for the whole queryset and passes per-PO/per-item maps in,
+    # rather than this function querying per PO. The `is None` fallback (one
+    # query per call) only exists for a caller outside that batched path -
+    # there isn't one today, but it keeps this function safe to call
+    # standalone (e.g. from a future detail endpoint or a test) without
+    # silently returning empty corrections/flags.
+    if corrections_by_po is not None:
+        corrections = corrections_by_po.get(po.po_number, [])
+    else:
+        corrections = DomesticPOCorrection.objects.filter(plant=cfg.syncrun_plant, po_number=po.po_number)
+    if flag_dismissals_by_po is not None:
+        flag_dismissals = flag_dismissals_by_po.get(po.po_number, [])
+    else:
+        flag_dismissals = FlagDismissal.objects.filter(plant=cfg.syncrun_plant, po_number=po.po_number)
     # Match Accuracy Programme fix 3.G: this PO's own line items' arithmetic
     # flags, plus any flag on the MIR entry a line item matched to (a real
     # MIR data-quality issue is still relevant here even though MIR has no
     # detail view of its own to attach it to directly).
-    item_ids = [i.id for i in items]
-    mir_entry_ids = [i.mir_match.mir_entry_id for i in items if getattr(i, "mir_match", None)]
-    data_quality_flags = list(DataQualityFlag.objects.filter(
-        plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.PO_LINE_ITEM, source_id__in=item_ids,
-    )) + list(DataQualityFlag.objects.filter(
-        plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.MIR_ENTRY, source_id__in=mir_entry_ids,
-    ))
+    if item_flags_by_item is not None and mir_flags_by_mir_entry is not None:
+        data_quality_flags = [f for i in items for f in item_flags_by_item.get(i.id, [])] + [
+            f for i in items if getattr(i, "mir_match", None)
+            for f in mir_flags_by_mir_entry.get(i.mir_match.mir_entry_id, [])
+        ]
+    else:
+        item_ids = [i.id for i in items]
+        mir_entry_ids = [i.mir_match.mir_entry_id for i in items if getattr(i, "mir_match", None)]
+        data_quality_flags = list(DataQualityFlag.objects.filter(
+            plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.PO_LINE_ITEM, source_id__in=item_ids,
+        )) + list(DataQualityFlag.objects.filter(
+            plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.MIR_ENTRY, source_id__in=mir_entry_ids,
+        ))
     return {
         "poNumber": po.po_number,
         "vendorName": po.vendor_name,
@@ -275,13 +305,24 @@ def _category_reference_map() -> dict[str, MaterialCategoryReference]:
     return {ref.normalized_description: ref for ref in MaterialCategoryReference.objects.all()}
 
 
-def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None, category_reference=None):
-    corrections = MaterialCorrection.objects.filter(plant=cfg.syncrun_plant, lot_id=lot.id)
+def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None, category_reference=None,
+              corrections_by_lot=None, flags_by_lot=None):
+    # N+1 fix (see CLAUDE.md): make_materials() batches these two queries
+    # once for the whole queryset and passes per-lot maps in, same reasoning
+    # as _po_dict's own corrections_by_po/flag_dismissals_by_po above. The
+    # `is None` fallback keeps this function safe to call standalone.
+    if corrections_by_lot is not None:
+        corrections = corrections_by_lot.get(lot.id, [])
+    else:
+        corrections = MaterialCorrection.objects.filter(plant=cfg.syncrun_plant, lot_id=lot.id)
     # Match Accuracy Programme fix 3.G: this lot's own stock-balance
     # arithmetic flag, if any (opening + received - issued vs todays_stock).
-    data_quality_flags = DataQualityFlag.objects.filter(
-        plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.STOCK_LOT, source_id=lot.id,
-    )
+    if flags_by_lot is not None:
+        data_quality_flags = flags_by_lot.get(lot.id, [])
+    else:
+        data_quality_flags = DataQualityFlag.objects.filter(
+            plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.STOCK_LOT, source_id=lot.id,
+        )
     rate = getattr(lot, cfg.lot_rate_field)
     consumption = (consumption_by_lot or {}).get(lot.id)
     # Achhad's Stock sheet has a Minimum Stock Level column HRS/Vapi lack
@@ -383,7 +424,39 @@ def make_purchase_orders(cfg: _PlantConfig):
         qs = cfg.po_model.objects.prefetch_related(
             "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
         )
-        return Response({"purchaseOrders": [_po_dict(cfg, po) for po in qs]})
+        pos = list(qs)
+
+        # Batch every PO's corrections/flag-dismissals/data-quality-flags in
+        # 4 queries total instead of ~4 per PO (N+1 fix - see CLAUDE.md's
+        # "Domestic router de-duplication" section).
+        corrections_by_po = _group_by(
+            DomesticPOCorrection.objects.filter(plant=cfg.syncrun_plant), "po_number",
+        )
+        flag_dismissals_by_po = _group_by(
+            FlagDismissal.objects.filter(plant=cfg.syncrun_plant), "po_number",
+        )
+        all_items = [i for po in pos for i in po.items.all()]
+        item_ids = [i.id for i in all_items]
+        mir_entry_ids = [i.mir_match.mir_entry_id for i in all_items if getattr(i, "mir_match", None)]
+        item_flags_by_item = _group_by(
+            DataQualityFlag.objects.filter(
+                plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.PO_LINE_ITEM, source_id__in=item_ids,
+            ),
+            "source_id",
+        )
+        mir_flags_by_mir_entry = _group_by(
+            DataQualityFlag.objects.filter(
+                plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.MIR_ENTRY, source_id__in=mir_entry_ids,
+            ),
+            "source_id",
+        )
+
+        return Response({
+            "purchaseOrders": [
+                _po_dict(cfg, po, corrections_by_po, flag_dismissals_by_po, item_flags_by_item, mir_flags_by_mir_entry)
+                for po in pos
+            ]
+        })
 
     return purchase_orders
 
@@ -532,10 +605,29 @@ def make_materials(cfg: _PlantConfig):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's materials."}, status=403)
         qs = cfg.stock_lot_model.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
+        lots = list(qs)
         consumption_by_lot = _consumption_by_lot(cfg)
         category_reference = _category_reference_map()
+
+        # Batch every lot's corrections/data-quality-flags in 2 queries total
+        # instead of ~2 per lot (N+1 fix - see CLAUDE.md's "Domestic router
+        # de-duplication" section).
+        lot_ids = [lot.id for lot in lots]
+        corrections_by_lot = _group_by(
+            MaterialCorrection.objects.filter(plant=cfg.syncrun_plant, lot_id__in=lot_ids), "lot_id",
+        )
+        flags_by_lot = _group_by(
+            DataQualityFlag.objects.filter(
+                plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.STOCK_LOT, source_id__in=lot_ids,
+            ),
+            "source_id",
+        )
+
         return Response({
-            "materials": [_lot_dict(cfg, lot, consumption_by_lot, category_reference) for lot in qs]
+            "materials": [
+                _lot_dict(cfg, lot, consumption_by_lot, category_reference, corrections_by_lot, flags_by_lot)
+                for lot in lots
+            ]
         })
 
     return materials
