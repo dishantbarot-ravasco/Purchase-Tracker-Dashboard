@@ -148,6 +148,134 @@ document.addEventListener('click', (e) => {
   btn.setAttribute('aria-label', label);
 });
 
+// ── Self-service "Change Password" ──────────────────────────────────────
+// Every role can change their own password, OTP-gated the same way a new-
+// device login is (project owner, 2026-09-07: "add the change password for
+// all the users and add the otp to it for verification like we do for 1st
+// time devices" - see apps/api/routers/password_views.py). Lives here, not
+// admin-page.js, since the trigger is the user-menu dropdown (auth.js's
+// renderUserBadge()) shared by every protected page - most of which have no
+// #modalBackdrop/#modalBody element at all (that's index.html-only), so
+// this builds and tears down its own overlay element instead of reusing
+// that dashboard-only modal. Reuses admin.html's .uf-* modal classes
+// (brand.css, loaded on every protected page) for the same look as the Add
+// User modal, and the document-level .pw-toggle delegation above for the
+// show/hide-password eyes.
+function changePasswordModalHtml() {
+  return '<div class="uf-overlay open" id="cpwOverlay">' +
+    '<div class="uf-modal">' +
+      '<div class="uf-modal-head"><h3>Change Password</h3><button type="button" id="cpwClose">&times;</button></div>' +
+      '<div class="uf-body">' +
+        '<div id="cpwErr" class="uf-err"></div>' +
+        '<div id="cpwStep1">' +
+          '<div class="uf-row">' +
+            '<label class="uf-label">New Password</label>' +
+            '<div class="uf-input-wrap">' +
+              '<input id="cpwNew" type="password" class="uf-input" placeholder="Min. 10 characters" autocomplete="new-password">' +
+              '<button type="button" class="pw-toggle" data-pw-target="cpwNew" aria-label="Show password" title="Show password">&#128065;</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="uf-row">' +
+            '<label class="uf-label">Confirm New Password</label>' +
+            '<div class="uf-input-wrap">' +
+              '<input id="cpwConfirm" type="password" class="uf-input" placeholder="Re-enter password" autocomplete="new-password">' +
+              '<button type="button" class="pw-toggle" data-pw-target="cpwConfirm" aria-label="Show password" title="Show password">&#128065;</button>' +
+            '</div>' +
+          '</div>' +
+          '<p class="uf-hint">We’ll email a 6-digit verification code to your own address to confirm this change.</p>' +
+        '</div>' +
+        '<div id="cpwStep2" hidden>' +
+          '<p class="uf-hint" style="margin-top:0;">Enter the 6-digit code sent to your email. It expires in 10 minutes.</p>' +
+          '<div class="uf-row">' +
+            '<label class="uf-label">Verification Code</label>' +
+            '<input id="cpwOtp" type="text" inputmode="numeric" maxlength="6" class="uf-input" placeholder="123456">' +
+          '</div>' +
+          '<p class="uf-hint"><span class="row-link" id="cpwResend">Resend code</span></p>' +
+        '</div>' +
+        '<div id="cpwSuccess" hidden style="text-align:center;padding:8px 0;color:var(--green);font-weight:600;">Password changed successfully.</div>' +
+      '</div>' +
+      '<div class="uf-foot" id="cpwFoot">' +
+        '<button type="button" class="btn" id="cpwCancel">Cancel</button>' +
+        '<button type="button" class="btn btn-primary" id="cpwSubmit">Send Verification Code</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function openChangePasswordModal() {
+  if (document.getElementById('cpwOverlay')) return; // already open - one at a time
+  const wrap = document.createElement('div');
+  wrap.innerHTML = changePasswordModalHtml();
+  document.body.appendChild(wrap.firstElementChild);
+
+  let step = 1;
+  const errEl = document.getElementById('cpwErr');
+  const submitBtn = document.getElementById('cpwSubmit');
+  const showErr = (msg) => { errEl.textContent = msg; errEl.classList.add('show'); };
+  const clearErr = () => { errEl.classList.remove('show'); errEl.textContent = ''; };
+  const closeModal = () => { const el = document.getElementById('cpwOverlay'); if (el) el.remove(); };
+
+  document.getElementById('cpwClose').onclick = closeModal;
+  document.getElementById('cpwCancel').onclick = closeModal;
+  document.getElementById('cpwOverlay').addEventListener('click', (e) => {
+    if (e.target.id === 'cpwOverlay') closeModal();
+  });
+
+  async function sendCode() {
+    clearErr();
+    const pw = document.getElementById('cpwNew').value;
+    const confirmPw = document.getElementById('cpwConfirm').value;
+    if (pw.length < 10) return showErr('Password must be at least 10 characters.');
+    if (pw !== confirmPw) return showErr('Passwords do not match.');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Sending…';
+    try {
+      const res = await fetch('/api/auth/change-password/request', { method: 'POST', credentials: 'same-origin' });
+      if (res.status === 401) { window.location.href = '/login.html'; return; }
+      if (!res.ok) throw new Error('Could not send the verification code. Please try again.');
+      step = 2;
+      document.getElementById('cpwStep1').hidden = true;
+      document.getElementById('cpwStep2').hidden = false;
+      submitBtn.textContent = 'Confirm Change';
+      document.getElementById('cpwOtp').focus();
+    } catch (e) {
+      showErr(e.message || 'Something went wrong. Please try again.');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  }
+
+  async function confirmChange() {
+    clearErr();
+    const otp = document.getElementById('cpwOtp').value.trim();
+    const pw = document.getElementById('cpwNew').value;
+    if (!otp) return showErr('Enter the verification code.');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Confirming…';
+    try {
+      const res = await fetch('/api/auth/change-password/confirm', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ otp: otp, newPassword: pw }),
+      });
+      if (res.status === 401) { window.location.href = '/login.html'; return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'Invalid or expired code.');
+      document.getElementById('cpwStep2').hidden = true;
+      document.getElementById('cpwSuccess').hidden = false;
+      document.getElementById('cpwFoot').hidden = true;
+      setTimeout(closeModal, 2000);
+    } catch (e) {
+      showErr(e.message);
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Confirm Change';
+      return;
+    }
+  }
+
+  submitBtn.onclick = () => { if (step === 1) sendCode(); else confirmChange(); };
+  document.getElementById('cpwResend').onclick = (e) => { e.preventDefault(); clearErr(); sendCode(); };
+}
+
 // ── Formatting helpers ──────────────────────────────────────────────────
 /** Escapes a value for safe interpolation into innerHTML. */
 function escapeHtml(s) {
@@ -309,6 +437,63 @@ function animateCountUp(el, target, opts) {
     else el.textContent = formatter(target);
   }
   requestAnimationFrame(tick);
+}
+
+// KPIs are real, computed client-side from all 3 plants' live PO data -
+// fetched in parallel here rather than reusing js/main.js's per-plant
+// cache (home.html/admin.html - the two callers - never load main.js,
+// they're lightweight pages, not the full dashboard). A fetch failure for
+// one plant must not blank the whole row - each plant's data is optional,
+// the KPIs sum whatever loaded successfully and this is disclosed via
+// console.error, never silently treated as "0 POs for that plant". Shared
+// by home.html's own Overview section (home-page.js) and the Admin Panel's
+// Overview tab (admin-page.js) - both render the identical #kpiTotalPos/
+// #kpiSuppliers/#kpiThisMonth/#kpiThisWeek/#kpiRow markup for this to
+// target, moved here 2026-09-07 rather than kept as a home-page.js-only
+// function once a second page needed the exact same numbers.
+async function loadKpis() {
+  const results = await Promise.all(PLANT_KEYS.map(async key => {
+    try {
+      const data = await apiForPlant(key, '/purchase-orders');
+      return data.purchaseOrders || [];
+    } catch (e) {
+      console.error('loadKpis: failed to load purchase orders for ' + key + ':', e);
+      return null; // distinct from [] - "failed to load", not "zero POs"
+    }
+  }));
+
+  const loaded = results.filter(r => r !== null);
+  const allPos = loaded.flat();
+
+  animateCountUp(document.getElementById('kpiTotalPos'), allPos.length);
+
+  const suppliers = new Set();
+  allPos.forEach(po => { if (po.vendorName && po.vendorName.trim()) suppliers.add(po.vendorName.trim().toLowerCase()); });
+  animateCountUp(document.getElementById('kpiSuppliers'), suppliers.size);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayISO = today.toISOString().slice(0, 10);
+  const monthPrefix = todayISO.slice(0, 7);
+  const weekCutoff = new Date(today);
+  weekCutoff.setDate(weekCutoff.getDate() - 6);
+  const weekCutoffISO = weekCutoff.toISOString().slice(0, 10);
+
+  const thisMonthCount = allPos.filter(po => po.createdDate && po.createdDate.startsWith(monthPrefix)).length;
+  const thisWeekCount = allPos.filter(po => po.createdDate && po.createdDate >= weekCutoffISO && po.createdDate <= todayISO).length;
+
+  animateCountUp(document.getElementById('kpiThisMonth'), thisMonthCount);
+  document.getElementById('kpiThisMonthSub').textContent = today.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  animateCountUp(document.getElementById('kpiThisWeek'), thisWeekCount);
+
+  if (loaded.length < PLANT_KEYS.length) {
+    const row = document.getElementById('kpiRow');
+    const note = document.createElement('div');
+    note.className = 'stat-sub';
+    note.style.cssText = 'grid-column:1/-1;color:var(--red);margin-top:-8px;';
+    note.textContent = 'Note: ' + (PLANT_KEYS.length - loaded.length) + ' plant(s) failed to load - these totals are undercounted. Refresh to retry.';
+    row.parentNode.insertBefore(note, row.nextSibling);
+  }
 }
 
 // Finds every '.kpi-card .val[data-count-target]' rendered by po-list.js's/

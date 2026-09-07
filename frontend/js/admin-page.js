@@ -1,9 +1,27 @@
 // admin.html's page-bootstrap script - extracted from an inline <script> so
 // script-src can drop 'unsafe-inline' (see config/security_headers.py).
-// Content unchanged from the inline version - a straight extraction, not a
-// rewrite.
+//
+// Redesigned 2026-09-07 to match the TDS Automation App's own Admin Panel
+// layout (sidebar nav: Overview / Users / Sync Status / System Info) -
+// project owner: "Design the admin panel like this one we did for tds as
+// per our requirements and data." TDS's own Overview concepts don't map
+// onto this app's data as literally created/owned records (a TDS document
+// is authored by a user; a Purchase Tracker PO is synced from a CSV, nobody
+// "creates" one here) - adapted instead of copied verbatim. See
+// apps/api/routers/admin_overview_views.py's module docstring for exactly
+// what replaces each TDS concept ("Top Creators" -> "Top Correctors" on
+// inline field corrections, "Top Customers" -> "Top Vendors" by PO count,
+// "Recent Activity" -> recent corrections). The KPI row (Total PO's/
+// Suppliers/This Month/This Week) reuses home.html's own loadKpis()
+// (moved to shared.js 2026-09-07 for exactly this reuse) rather than a
+// second near-duplicate aggregation.
+//
+// User management itself (create/edit/activate/deactivate) is unchanged
+// from before this redesign - only which tab it lives under, and a new
+// per-card stats row, changed.
 let USERS = [];
 let editingUserId = null;
+let CURRENT_ADMIN_TAB = 'overview';
 
 (async function () {
   const user = await requireAuth();
@@ -18,6 +36,8 @@ let editingUserId = null;
     return;
   }
   document.getElementById('mainContent').style.display = '';
+  document.getElementById('sysinfoEmail').textContent = user.email;
+  document.getElementById('sysinfoRole').textContent = user.role;
 
   document.getElementById('addUserBtn').onclick = () => openForm(null);
   document.getElementById('uf-close').onclick = closeForm;
@@ -25,8 +45,21 @@ let editingUserId = null;
   document.getElementById('uf-submit').onclick = submitForm;
   document.getElementById('uf-role').onchange = updatePlantsRowVisibility;
 
-  await Promise.all([loadSyncCards(), loadUsers()]);
+  document.querySelectorAll('[data-admin-tab]').forEach(btn => btn.onclick = () => switchAdminTab(btn.dataset.adminTab));
+  renderSystemInfoPlants();
+
+  await Promise.all([loadSyncCards(), loadUsers(), loadOverviewData(), loadKpis()]);
 })();
+
+// ── Sidebar tab switching ────────────────────────────────────────
+function switchAdminTab(tab) {
+  if (tab === CURRENT_ADMIN_TAB) return;
+  CURRENT_ADMIN_TAB = tab;
+  document.querySelectorAll('[data-admin-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.adminTab === tab));
+  ['overview', 'users', 'sync', 'system'].forEach(key => {
+    document.getElementById('adminTab' + key.charAt(0).toUpperCase() + key.slice(1)).hidden = key !== tab;
+  });
+}
 
 // ── Sync status cards ────────────────────────────────────────────
 async function loadSyncCards() {
@@ -69,6 +102,85 @@ async function loadSyncCards() {
   }).join('');
 }
 
+// ── Overview: top correctors / top vendors / recent activity ────
+async function loadOverviewData() {
+  try {
+    const res = await fetch('/api/auth/admin-overview', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderBarList('topCorrectorsList', data.topCorrectors, c => c.fullName, c => c.count);
+    renderBarList('topVendorsList', data.topVendors, v => v.vendor, v => v.count);
+    renderRecentActivity(data.recentActivity || []);
+  } catch (e) {
+    console.error('admin: failed to load overview data:', e);
+    document.getElementById('topCorrectorsList').innerHTML = '<div class="no-data-note">Couldn\'t load right now.</div>';
+    document.getElementById('topVendorsList').innerHTML = '<div class="no-data-note">Couldn\'t load right now.</div>';
+    document.getElementById('recentActivityArea').innerHTML = '<div class="no-data-note">Couldn\'t load right now.</div>';
+  }
+}
+
+// Shared renderer for both "Top Correctors" and "Top Vendors" - same
+// label/bar/count row shape, only which fields feed it differ.
+function renderBarList(elId, rows, labelFn, countFn) {
+  const el = document.getElementById(elId);
+  if (!rows || !rows.length) {
+    el.innerHTML = '<div class="no-data-note">No data yet.</div>';
+    return;
+  }
+  const max = Math.max(...rows.map(countFn));
+  el.innerHTML = rows.map(row => {
+    const count = countFn(row);
+    const pct = max > 0 ? Math.max(4, Math.round((count / max) * 100)) : 0;
+    return '<div class="bar-list-row">' +
+      '<div class="bar-list-label" title="' + escapeHtml(labelFn(row)) + '">' + escapeHtml(labelFn(row)) + '</div>' +
+      '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;"></div></div>' +
+      '<div class="bar-count">' + count + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+const _ACTIVITY_TYPE_LABELS = { domestic: 'Domestic PO', import: 'Import PO', material: 'Material' };
+function renderRecentActivity(rows) {
+  const el = document.getElementById('recentActivityArea');
+  if (!rows.length) {
+    el.innerHTML = '<div class="no-data-note">No corrections recorded yet.</div>';
+    return;
+  }
+  el.innerHTML = '<div class="table-wrap"><table class="admin-activity-table"><thead><tr>' +
+    '<th>Type</th><th>Plant</th><th>Target</th><th>Field</th><th>Change</th><th>By</th><th>When</th>' +
+    '</tr></thead><tbody>' +
+    rows.map(r => '<tr>' +
+      '<td><span class="activity-type-pill ' + escapeHtml(r.type) + '">' + escapeHtml(_ACTIVITY_TYPE_LABELS[r.type] || r.type) + '</span></td>' +
+      '<td>' + escapeHtml(r.plantLabel) + '</td>' +
+      '<td>' + escapeHtml(r.target) + '</td>' +
+      '<td>' + escapeHtml(r.fieldName) + '</td>' +
+      '<td>' + escapeHtml(r.oldValue || 'blank') + ' &rarr; ' + escapeHtml(r.newValue || 'blank') + '</td>' +
+      '<td>' + escapeHtml(r.correctedByName) + '</td>' +
+      '<td>' + escapeHtml(formatDateIN(r.correctedAt ? r.correctedAt.slice(0, 10) : null)) + '</td>' +
+    '</tr>').join('') +
+    '</tbody></table></div>';
+}
+
+// ── System Info ───────────────────────────────────────────────────
+// Plants Covered - moved here from home.html (2026-09-07, project owner:
+// "remove this from homepage and restructure") - this admin-only tab is a
+// more fitting home for static plant/data-source reference info than the
+// landing page every role sees.
+const _SYSINFO_PLANTS = [
+  { label: 'HRS, Silvassa' },
+  { label: 'RTP-Achhad' },
+  { label: 'RTP-Vapi' },
+];
+function renderSystemInfoPlants() {
+  const el = document.getElementById('sysinfoPlants');
+  const icon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V11l6 4v-4l6 4V7l6 4v10H3Z"/><line x1="7" y1="21" x2="7" y2="17"/><line x1="12" y1="21" x2="12" y2="17"/><line x1="17" y1="21" x2="17" y2="17"/></svg>';
+  el.innerHTML = _SYSINFO_PLANTS.map(p =>
+    '<div class="sysinfo-plant-card"><div class="sysinfo-plant-icon">' + icon + '</div>' +
+      '<div><div class="sysinfo-plant-name">' + escapeHtml(p.label) + '</div>' +
+      '<div class="sysinfo-plant-value">PO &middot; MIR &middot; RM</div></div></div>'
+  ).join('');
+}
+
 // ── Users: list/render ──────────────────────────────────────────
 async function loadUsers() {
   const el = document.getElementById('usersArea');
@@ -86,6 +198,7 @@ async function loadUsers() {
 
 function renderUsers() {
   const el = document.getElementById('usersArea');
+  updateUserCounts();
   if (!USERS.length) {
     el.innerHTML = '<div class="search-empty">' + emptyStateHtml('No users found.') + '</div>';
     return;
@@ -103,6 +216,10 @@ function renderUsers() {
         '<span class="status-pill ' + (u.isActive ? 'active' : 'inactive') + '">' + (u.isActive ? 'Active' : 'Inactive') + '</span>' +
         '<span class="plants-pill">' + escapeHtml(plantsLabel(u.plants)) + '</span></div>' +
       '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
+      '<div class="user-card-stats">' +
+        '<div><div class="user-card-stat-val">' + (u.correctionsCount || 0) + '</div><div class="user-card-stat-label">Corrections Made</div></div>' +
+        '<div><div class="user-card-stat-val" style="font-size:13px;">' + escapeHtml(u.lastLoginAt ? formatDateIN(u.lastLoginAt.slice(0, 10)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
+      '</div>' +
       '<div class="user-card-foot">' +
         '<span style="font-size:11px;color:var(--text-muted);">Since ' + escapeHtml(formatDateIN(u.createdAt ? u.createdAt.slice(0, 10) : null)) + '</span>' +
         '<div class="user-card-actions">' +
@@ -115,6 +232,13 @@ function renderUsers() {
 
   el.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openForm(USERS.find(u => u.userId === Number(btn.dataset.edit))));
   el.querySelectorAll('[data-toggle]').forEach(btn => btn.onclick = () => toggleActive(Number(btn.dataset.toggle)));
+}
+
+function updateUserCounts() {
+  document.getElementById('sidebarUserCount').textContent = String(USERS.length);
+  document.getElementById('sidebarRoleLine').textContent = 'Admin - full access';
+  document.getElementById('sysinfoUserCount').textContent = String(USERS.length);
+  document.getElementById('sysinfoActiveCount').textContent = String(USERS.filter(u => u.isActive).length);
 }
 
 function plantsLabel(plants) {
@@ -178,7 +302,7 @@ function openForm(user) {
     : 'Password <span style="color:var(--red)">*</span>';
   document.getElementById('uf-pw-hint').textContent = edit
     ? 'Only fill this in to reset the password - leave it blank to leave the current password untouched.'
-    : "Share this password with the user directly - there's no in-app \"change my own password\" flow yet, only an admin-driven reset here.";
+    : 'Share this password with the user directly, or ask them to use "Change Password" from their own account menu afterwards.';
   document.getElementById('uf-active-row').style.display = edit ? 'block' : 'none';
   if (edit) document.getElementById('uf-active').value = String(user.isActive);
   // Trusted Devices: only meaningful for an existing account (a new

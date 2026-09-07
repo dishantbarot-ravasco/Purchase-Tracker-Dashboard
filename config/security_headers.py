@@ -39,7 +39,9 @@ CSP notes:
     pervasively - date inputs, status colors, layout tweaks) into CSS
     classes, a much larger refactor than the script-src work above. Real,
     honest trade-off, not an oversight - tracked as future work, not
-    silently accepted forever.
+    silently accepted forever. See CLAUDE.md's "Known gaps" section for the
+    full scope estimate (105+ style="..." sites, 22 .style.* assignments) and
+    the verification standard required before dropping it.
   - cdn.jsdelivr.net is explicitly allowed on script-src: frontend/index.html
     loads Chart.js from there (no vendored/bundled copy, consistent with the
     no-build-step approach above). Without this, the browser silently drops

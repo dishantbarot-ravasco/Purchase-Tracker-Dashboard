@@ -110,7 +110,7 @@ def _hash_password(plain: str) -> str:
     return bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
-def _user_out(u: PTUser) -> dict:
+def _user_out(u: PTUser, corrections_by_email=None) -> dict:
     return {
         "userId": u.user_id,
         "email": u.email,
@@ -121,6 +121,11 @@ def _user_out(u: PTUser) -> dict:
         "isActive": u.is_active,
         "createdAt": u.created_at.isoformat() if u.created_at else None,
         "lastLoginAt": u.last_login_at.isoformat() if u.last_login_at else None,
+        # The Admin Panel's redesigned Users cards (2026-09-07) show this
+        # alongside Last Login - the closest real analogue this app has to
+        # TDS's own per-user "TDS Made" card stat. 0 for a brand-new/never-
+        # corrected account, not omitted, so the card always has a number.
+        "correctionsCount": (corrections_by_email or {}).get(u.email, 0),
     }
 
 
@@ -130,8 +135,11 @@ def _user_out(u: PTUser) -> dict:
 @permission_classes([IsAdmin])
 def list_users(request):
     """GET /api/auth/users - the Admin Panel's user list. Admin only."""
+    from apps.api.routers.admin_overview_views import correction_counts_by_email
+
     users = PTUser.objects.order_by("email")
-    return Response({"users": [_user_out(u) for u in users]})
+    corrections_by_email = correction_counts_by_email()
+    return Response({"users": [_user_out(u, corrections_by_email) for u in users]})
 
 
 @api_view(["POST"])

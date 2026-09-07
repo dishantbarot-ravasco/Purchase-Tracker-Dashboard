@@ -1288,6 +1288,20 @@ had no MIR-derived fields at all; the three previously-`disabled: true` "Awaitin
 
 ## Known gaps (confirm still true before treating as blocking)
 
+- **`style-src 'unsafe-inline'` in `config/security_headers.py`'s CSP — still not dropped** (see
+  that file's own "CSP notes" docstring). A pre-Render-deploy readiness review (2026-09-07) flagged
+  this again; explicitly deferred rather than fixed in that pass, on the project owner's own
+  decision, because dropping it means moving all 105+ `style="..."` attributes (14 HTML/JS files)
+  and 22 `.style.<property>` assignments (8 JS files, confirmed by grep that session) into CSS
+  classes/data-attributes — real refactor risk across every page, and this environment has no
+  browser/Node tooling to visually verify the result afterward (see
+  `pt_dashboard_no_browser_tooling` memory). Low-priority at 6-user internal-tool scale. **If this
+  is picked up later: do it with a real browser open to click through every page (dashboard, admin,
+  materials, login, search) afterward** — same verification standard the 2026-09-05 script-src
+  removal already held itself to (see "Security hardening pass" above), don't skip it just because
+  the script-src removal turned out to need no nonce/hash machinery — style-src's inline values are
+  dynamic (computed per-row/per-status), unlike the static inline `<script>` blocks that pass
+  removed, so this is a strictly bigger job.
 - ~~**Import PO parsing for RTP-Vapi's own BOE/customs-shaped CSV**~~ — **built**, 2026-09-04, see
   roadmap item 3 above. All three plants' Import CSVs are parsed and live now.
 - **Licenses (Advance Authorisation tracking)** — deferred to v2, see the roadmap section above.

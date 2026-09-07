@@ -99,6 +99,16 @@ services:
       - key: GOOGLE_OAUTH_REDIRECT_URI
         value: https://purchase-tracker-dashboard.onrender.com/api/auth/google/callback/
 
+      # ── SafeCube (Sinay) Container Tracking API - powers the Import
+      #    Purchases page's BL-number "Track" links (apps/services/
+      #    bl_tracking.py). Web-service only - qcluster never calls it.
+      #    Blank is safe (feature reports "not configured" instead of
+      #    breaking), but a real key already lives in local .env, so set
+      #    the real value here too or the feature silently stops working
+      #    once deployed. ──────────────────────────────────────────────────
+      - key: SAFECUBE_API_KEY
+        sync: false
+
   # Runs the Drive sync/match pipelines queued by apps/services/sync_trigger.py
   # (django-q2's ORM broker - queued tasks are rows in the shared Postgres DB
   # above, not a separate broker). This is a real second OS process, wholly

@@ -15,7 +15,7 @@ from django.urls import include, path
 
 from apps.api import views
 from apps.api.auth_views import PTLoginView, PTTokenRefreshView, PTTokenVerifyView, whoami
-from apps.api.routers import achhad_views, hrs_views, imports_views, review_views, vapi_views
+from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, password_views, review_views, vapi_views
 
 urlpatterns = [
     path("health", views.health, name="health"),
@@ -31,6 +31,11 @@ urlpatterns = [
     path("", include("apps.api.routers.google_oauth_urls")),
     # In-app user management (Admin Panel) - list/create/update
     path("", include("apps.api.routers.users_urls")),
+    # Self-service "Change Password", OTP-gated like new-device login
+    path("auth/change-password/request", password_views.request_password_change, name="change-password-request"),
+    path("auth/change-password/confirm", password_views.confirm_password_change, name="change-password-confirm"),
+    # Admin Panel Overview tab - top correctors/vendors + recent activity
+    path("auth/admin-overview", admin_overview_views.admin_overview, name="admin-overview"),
 
     path("purchase-orders", hrs_views.purchase_orders, name="hrs-purchase-orders"),
     path("purchase-orders/<str:po_number>/fields", hrs_views.correct_field, name="hrs-correct-field"),

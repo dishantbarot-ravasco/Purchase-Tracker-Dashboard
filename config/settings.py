@@ -23,7 +23,7 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key-change-in-production")
-DEBUG = os.environ.get("DJANGO_DEBUG", "true").lower() == "true"
+DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
 
 # No django-cors-headers app/middleware anywhere in this file, deliberately:
@@ -308,6 +308,9 @@ REST_FRAMEWORK = {
         # SyncTriggerThrottle/AdminWriteThrottle.
         "sync_trigger": "10/minute",
         "admin_write": "30/minute",
+        # Self-service "Change Password" (apps/api/routers/password_views.py)
+        # - requesting a fresh code, same cadence as login's own throttle.
+        "password_change_request": "5/minute",
     },
 }
 

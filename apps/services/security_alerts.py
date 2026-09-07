@@ -146,10 +146,12 @@ def notify_admins_sync_failure(plant_key: str, cmd_name: str, detail: str = "") 
     someone to go looking. Deliberately lightweight/best-effort like every
     other function here - if this alert itself fails to send, the sync
     failure it's reporting on has already been recorded elsewhere
-    regardless (SyncRun + logs), so nothing is lost."""
-    admin_emails = _admin_emails()
-    if not admin_emails:
-        return
+    regardless (SyncRun + logs), so nothing is lost.
+
+    Deliberately NOT sent to every admin (unlike this module's other
+    alerts) - restricted to a single fixed recipient per an explicit
+    request, 2026-09-07."""
+    admin_emails = ["dishant.barot@ravasco.com"]
 
     now = timezone.now().strftime("%Y-%m-%d %H:%M UTC")
     subject = f"[Purchase Tracker Admin Alert] Sync Failure: {plant_key} / {cmd_name}"

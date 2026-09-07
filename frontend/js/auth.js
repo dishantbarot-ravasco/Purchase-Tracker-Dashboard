@@ -103,6 +103,7 @@ function renderUserBadge(container) {
       '</div>' +
       '<span class="user-chevron">&#9662;</span>' +
       '<div class="user-dropdown" id="userDropdown" hidden>' +
+        '<button type="button" id="changePasswordBtn" class="user-dropdown-item">Change Password</button>' +
         '<button type="button" id="logoutBtn" class="user-dropdown-item">Logout</button>' +
       '</div>' +
     '</div>';
@@ -115,6 +116,11 @@ function renderUserBadge(container) {
   });
   document.addEventListener('click', () => { dropdown.hidden = true; });
   document.getElementById('logoutBtn').onclick = logout;
+  // openChangePasswordModal() lives in shared.js (loaded right after this
+  // file on every protected page) - see that function's own header comment
+  // for why it builds its own overlay rather than reusing index.html's
+  // dashboard-only #modalBackdrop.
+  document.getElementById('changePasswordBtn').onclick = () => openChangePasswordModal();
 }
 
 // ── Shared nav tabs ─────────────────────────────────────────────────────
