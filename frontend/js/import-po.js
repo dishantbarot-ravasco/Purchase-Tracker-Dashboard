@@ -83,7 +83,7 @@ function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
 function blNumberCellHtml(po, emptyText) {
   if (!po.billOfLadingNumber) return emptyText;
   return escapeHtml(po.billOfLadingNumber) +
-    ' <span class="row-link" data-track-bl="' + escapeHtml(po.billOfLadingNumber) + '" style="font-size:11px;">Track</span>';
+    ' <span class="row-link fs-11" data-track-bl="' + escapeHtml(po.billOfLadingNumber) + '">Track</span>';
 }
 
 function applyImportColFilters(recs) {
@@ -301,7 +301,7 @@ function renderImportPoList(el) {
       '<div class="filter-group">' +
         '<label>Date filter (Created on)</label>' +
         '<input type="date" id="importFromDate" value="' + (state.importFrom || '') + '">' +
-        '<span style="color:var(--gray);font-size:12px;">to</span>' +
+        '<span class="sep-gray">to</span>' +
         '<input type="date" id="importToDate" value="' + (state.importTo || '') + '">' +
       '</div>' +
       '<button class="primary" id="importApplyFilter">Apply</button>' +
@@ -316,21 +316,21 @@ function renderImportPoList(el) {
       '<div class="filter-row">' +
         '<div class="filter-group">' +
           '<label>Filter by Category</label>' +
-          '<select id="importCategoryFilterSelect" style="min-width:200px;">' +
+          '<select id="importCategoryFilterSelect" class="select-w200">' +
             '<option value="">All Categories (' + dateRangeCount + ')</option>' +
             categoryOptionsHtml +
           '</select>' +
         '</div>' +
         '<div class="filter-group">' +
           '<label>Filter by Sub Category</label>' +
-          '<select id="importSubCategoryFilterSelect" style="min-width:260px;">' +
+          '<select id="importSubCategoryFilterSelect" class="select-w260">' +
             '<option value="">All Sub Categories (' + subCategoryBaseCount + ')</option>' +
             subCategoryOptionsHtml +
           '</select>' +
         '</div>' +
         '<div class="filter-group">' +
           '<label>Filter by Flags</label>' +
-          '<select id="importFlagsFilterSelect" style="min-width:240px;">' +
+          '<select id="importFlagsFilterSelect" class="select-w240">' +
             '<option value="">All Flags</option>' +
             flagsOptionsHtml +
           '</select>' +
@@ -346,9 +346,9 @@ function renderImportPoList(el) {
           (stageChartData.length ? '<div class="chart-box"><canvas id="importStageChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
         '</div>' +
       '</div>' : '') +
-    '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Import Purchase Orders (Latest first)</div>' +
+    '<div class="list-toggle-row"><div class="section-title m-0">Import Purchase Orders (Latest first)</div>' +
       (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
-      '<div style="display:flex;align-items:center;gap:10px;">' +
+      '<div class="flex-row-gap10">' +
         (activeFilterCount ? '<span class="clear-list-filters" id="importClearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
         (totalForList > 5 ? '<button class="view-all-btn" id="importToggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
       '</div>' +
@@ -662,25 +662,27 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
         edit('Total Value (as per PO, in ' + (po.currency || 'PO currency') + ')', po.totalValue, 'total_value', null, 'number') +
       '</div>' +
     '</div>' +
-    '<div class="field-block full-width" style="margin-top:14px;"><h4>Remarks</h4>' + edit('Remarks', po.remarks, 'remarks') + '</div>';
+    '<div class="field-block full-width mt-14"><h4>Remarks</h4>' + edit('Remarks', po.remarks, 'remarks') + '</div>';
 
   const itemsHtml = (po.items || []).length
     ? '<table class="items-table"><thead><tr><th>Item Id</th><th>Description</th><th>HSN</th><th>Qty (As Per PO)</th><th>Qty (As Per BOE)</th><th>Variance</th><th>Net Price</th><th>Net Value</th><th>MIR Match</th><th>Material Analysis</th></tr></thead><tbody>' +
         po.items.map(it => {
           const variance = it.qtyDiscrepancyPct != null ? it.qtyDiscrepancyPct.toFixed(1) + '%' : '-';
-          const color = it.qtyDiscrepancy ? (it.qtyDiscrepancyPct >= 0 ? 'var(--green)' : 'var(--red)') : 'inherit';
+          // Only 3 possible states, not an arbitrary color - a fixed CSS
+          // class per state instead of a dynamic style="..." attribute.
+          const varianceCls = it.qtyDiscrepancy ? (it.qtyDiscrepancyPct >= 0 ? 'variance-up' : 'variance-down') : '';
           return '<tr><td>' + escapeHtml(it.itemId || '-') + '</td><td>' + escapeHtml(it.description || '') + '</td><td>' + escapeHtml(it.hsn || '-') +
             '</td><td>' + (it.qtyAsPerPo != null ? it.qtyAsPerPo : '-') + ' ' + escapeHtml(it.uom || '') +
             '</td><td>' + (it.qtyAsPerBoe != null ? it.qtyAsPerBoe : '-') + ' ' + escapeHtml(it.uom || '') +
-            '</td><td style="color:' + color + ';font-weight:700;">' + variance + '</td>' +
+            '</td><td class="fw-700 ' + varianceCls + '">' + variance + '</td>' +
             '<td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') + '</td><td>' + (it.netValue != null ? formatInr(it.netValue) : '-') + '</td>' +
             '<td>' + importMatchStatusHtml(it, plantKey) + '</td>' +
-            '<td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span style="color:var(--slate-soft);">Not tracked in Stock</span>') + '</td></tr>';
+            '<td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in Stock</span>') + '</td></tr>';
         }).join('') + '</tbody></table>'
-    : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
-  const itemsTabHtml = '<div class="section-title" style="margin-top:0;">Material / Product Details</div>' + itemsHtml;
+    : '<div class="fs-12-5 text-slate-soft">No line items recorded.</div>';
+  const itemsTabHtml = '<div class="section-title mt-0">Material / Product Details</div>' + itemsHtml;
 
-  const shipmentTabHtml = '<div style="margin:0 0 16px;">' + shipmentStepperHtml(po) + '</div>' +
+  const shipmentTabHtml = '<div class="mb-block-16">' + shipmentStepperHtml(po) + '</div>' +
     (po.items || []).map(it =>
       '<div class="field-grid">' +
         '<div class="field-block"><h4>Shipment and Customs' + (it.itemId ? ' - Item ' + escapeHtml(it.itemId) : '') + '</h4>' +
@@ -708,17 +710,17 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const flagsTabHtml =
     criticalCats.map(c => poFlagHtml(c, po, plantKey, true)).join('') +
     ((po.dataQualityFlags || []).length
-      ? '<div class="no-data-note" style="margin:8px 0 12px;">' + FLAG_DESCRIPTIONS_NOTE + '</div>' +
+      ? '<div class="no-data-note note-block">' + FLAG_DESCRIPTIONS_NOTE + '</div>' +
         po.dataQualityFlags.map(f => importFlagHtml(f, po, plantKey)).join('')
-      : (criticalCats.length ? '' : '<div style="text-align:center;color:var(--slate-soft);padding:20px;">No data quality flags on this PO.</div>'));
+      : (criticalCats.length ? '' : '<div class="empty-note">No data quality flags on this PO.</div>'));
   const correctionsHtml = (po.corrections || []).length
-    ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +
+    ? '<div class="section-title mt-18">Correction History</div>' +
       po.corrections.map(c =>
-        '<div class="field-block" style="margin-bottom:8px;">' +
-          '<div style="font-size:12.5px;"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
+        '<div class="field-block mb-8">' +
+          '<div class="fs-12-5"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
           escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
-          (c.reason ? '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--slate);">"' + escapeHtml(c.reason) + '"</div>' : '') +
-          '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">' + escapeHtml(c.correctedBy || 'unknown') +
+          (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
+          '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
         '</div>'
       ).join('')

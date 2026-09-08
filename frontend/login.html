@@ -25,122 +25,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sign In - Purchase Tracker</title>
   <link rel="stylesheet" href="css/brand.css">
-  <style>
-    body { display: flex; flex-direction: column; min-height: 100vh; }
-
-    .login-bg { flex: 1; display: grid; grid-template-columns: 1fr 1fr; min-height: 100vh; }
-    @media (max-width: 760px) {
-      .login-bg { grid-template-columns: 1fr; }
-      .login-hero { display: none; }
-    }
-
-    /* ── Left hero panel ── */
-    .login-hero {
-      background: var(--navy-solid);
-      background-image:
-        radial-gradient(ellipse 80% 60% at 20% 40%, rgba(193,127,10,.18) 0%, transparent 55%),
-        radial-gradient(ellipse 60% 40% at 80% 80%, rgba(193,127,10,.08) 0%, transparent 50%);
-      display: flex; flex-direction: column; align-items: flex-start; justify-content: space-between;
-      padding: 48px 52px; position: relative; overflow: hidden;
-    }
-    .hero-logo-badge { display: inline-block; background: #fff; border-radius: 8px; padding: 10px 14px; box-shadow: 0 2px 12px rgba(0,0,0,.25); }
-    .hero-logo-img { height: 44px; width: auto; object-fit: contain; display: block; }
-    .hero-body h2 { font-family: var(--font-head); font-size: 32px; font-weight: 900; color: #fff; line-height: 1.2; letter-spacing: -.01em; }
-    .hero-body h2 span { color: var(--gold-light); }
-    .hero-body p { font-size: 13px; color: rgba(255,255,255,.55); margin-top: 14px; line-height: 1.65; max-width: 340px; }
-    .hero-pillars { display: flex; flex-direction: column; gap: 10px; margin-top: 32px; }
-    .hero-pillar { display: flex; align-items: center; gap: 12px; font-size: 12px; color: rgba(255,255,255,.7); }
-    .hero-pillar-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gold); flex-shrink: 0; }
-    .hero-foot-text { font-size: 12px; color: rgba(255,255,255,.3); letter-spacing: .08em; text-transform: uppercase; }
-
-    /* ── Right login panel ── */
-    .login-right { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 32px; background: var(--bg-page); }
-    .login-panel { width: 100%; max-width: 400px; }
-
-    .login-brand { text-align: center; margin-bottom: 36px; }
-    .login-brand-logo { height: 48px; width: auto; object-fit: contain; display: block; margin: 0 auto 14px; }
-    .login-brand h1 { font-family: var(--font-head); font-size: 20px; font-weight: 900; color: var(--navy); letter-spacing: .04em; }
-    .login-brand p { font-size: 11px; color: var(--text-muted); letter-spacing: .06em; text-transform: uppercase; margin-top: 4px; }
-
-    .login-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-lg); }
-    .login-card-header { padding: 22px 28px 18px; border-bottom: 1px solid var(--border); background: var(--navy-solid); }
-    .login-card-header h2 { font-family: var(--font-head); font-size: 16px; font-weight: 800; letter-spacing: .04em; color: #fff; }
-    .login-card-header p { font-size: 11px; color: rgba(255,255,255,.5); margin-top: 4px; }
-    .login-card-body { padding: 28px; }
-    .login-card-body .form-group { margin-bottom: 18px; }
-
-    .login-input-wrap { position: relative; }
-    .login-input-wrap .form-control { padding-left: 42px; }
-    .input-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); font-size: 15px; pointer-events: none; opacity: .45; }
-    /* Show/hide password toggle - a plain eye/eye-off glyph button on the
-       right side of any password field, mirroring the left-side .input-icon
-       already used for email/password (that one's decorative/non-interactive;
-       this one is a real button). Password fields default to type="password"
-       in markup - toggling only ever flips that one attribute, nothing else
-       about the field (name/autocomplete/validation) changes. */
-    .login-input-wrap .pw-toggle { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 15px; opacity: .45; background: none; border: none; padding: 4px; line-height: 1; color: inherit; }
-    .login-input-wrap .pw-toggle:hover { opacity: .8; }
-    .login-input-wrap .pw-toggle.active { opacity: .9; color: var(--gold); }
-    .login-input-wrap.has-toggle .form-control { padding-right: 38px; }
-
-    .login-options { display: flex; align-items: center; margin-bottom: 18px; }
-    .form-check { display: flex; align-items: center; gap: 9px; cursor: pointer; }
-    .form-check-input { width: 16px; height: 16px; accent-color: var(--gold-light); cursor: pointer; flex-shrink: 0; }
-    .form-check-label { font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none; }
-
-    .login-btn {
-      width: 100%; padding: 14px; background: var(--navy-solid); border: none; border-radius: var(--radius);
-      font-family: var(--font-head); font-size: 12px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase;
-      color: #fff; cursor: pointer; transition: all .2s;
-    }
-    .login-btn:hover { background: var(--navy-mid); }
-    .login-btn:disabled { opacity: .5; cursor: not-allowed; }
-
-    .login-error {
-      display: none; align-items: flex-start; gap: 10px; padding: 12px 14px;
-      background: var(--red-pale); border: 1px solid var(--red-border);
-      border-radius: var(--radius); font-size: 12px; color: var(--red); margin-top: 16px;
-    }
-    .login-error.show { display: flex; }
-
-    .login-footer { text-align: center; padding: 18px 20px; font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--bg-section); }
-    .iso-ribbon {
-      display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
-      border: 1px solid var(--green-border); background: var(--green-pale);
-      border-radius: 20px; font-size: 11px; font-weight: 700; letter-spacing: .1em; color: var(--green); margin-bottom: 8px;
-    }
-    .secure-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-light); margin-top: 4px; }
-    .secure-badge::before { content: '🔒'; font-size: 11px; }
-
-    .otp-icon { font-size: 36px; margin-bottom: 12px; }
-    .otp-hint { margin: 0 0 16px; font-size: 13px; color: var(--text-muted); line-height: 1.5; text-align: center; }
-    #otpCode { font-size: 24px; letter-spacing: .35em; text-align: center; font-weight: 700; }
-    .login-back { display: inline-block; margin-top: 14px; font-size: 12px; color: var(--gold-text); cursor: pointer; text-decoration: underline; }
-
-    .login-divider { display: flex; align-items: center; gap: 12px; margin: 18px 0; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-    .login-divider::before, .login-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
-    .google-btn {
-      display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; padding: 11px 16px;
-      border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); cursor: pointer;
-      font-size: 13px; font-weight: 600; color: var(--text); text-decoration: none;
-      transition: border-color .15s, box-shadow .15s;
-    }
-    .google-btn:hover { border-color: var(--gold); box-shadow: 0 2px 8px rgba(193,127,10,.15); }
-
-    /* Standalone theme toggle - this page doesn't load js/auth.js (no
-       session yet to gate), so it gets its own small inline copy of the
-       toggle button/logic rather than initThemeToggle()'s topnav-relative
-       version, which assumes a '.nav-user' element this page doesn't have. */
-    .theme-toggle-btn {
-      position: fixed; top: 20px; right: 24px; z-index: 50;
-      display: flex; align-items: center; justify-content: center;
-      width: 38px; height: 38px;
-      background: var(--bg-card); border: 1px solid var(--border); border-radius: 50%;
-      font-size: 16px; cursor: pointer; box-shadow: var(--shadow-sm);
-      transition: background .15s, border-color .15s, transform .15s;
-    }
-    .theme-toggle-btn:hover { background: var(--gold-dim); border-color: var(--gold-border); transform: rotate(12deg); }
-  </style>
+  <link rel="stylesheet" href="css/login-page.css">
 </head>
 <body class="login-body">
 
@@ -229,12 +114,12 @@
 
             <!-- ── Step 2: Device Verification (new device) ──
                  Starts hidden - js/login.js's showOtpStep()/showPasswordStep()
-                 toggle these two forms' inline display style directly (not a
-                 [hidden] attribute) after a password-step submit returns
+                 toggle both forms' `hidden` attribute (via the .hidden IDL
+                 property) after a password-step submit returns
                  status:'device_verify', or on the Google OAuth redirect's
                  own ?step=device_verify. -->
-            <form id="otpStep" style="display:none;">
-              <div style="text-align:center;margin-bottom:24px;">
+            <form id="otpStep" hidden>
+              <div class="otp-intro">
                 <div class="otp-icon">&#128231;</div>
                 <p class="otp-hint">Enter the 6-digit code sent to your email.<br>It expires in 10 minutes.</p>
               </div>
@@ -245,7 +130,7 @@
               </div>
 
               <button type="submit" class="login-btn" id="verifyBtn">Verify &amp; Sign In</button>
-              <div style="text-align:center;">
+              <div class="text-center">
                 <span class="login-back" id="resendCode">Resend code</span>
                 &nbsp;&middot;&nbsp;
                 <span class="login-back" id="backToLogin">&larr; Back to sign in</span>

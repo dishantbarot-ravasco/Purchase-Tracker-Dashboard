@@ -101,7 +101,7 @@ function renderResults(f) {
 
   const resultsEl = document.getElementById('resultsArea');
   const warnHtml = failedPlants.length
-    ? '<div class="search-empty" style="color:var(--red);padding:10px 0;">Note: ' + failedPlants.map(k => escapeHtml(PLANTS[k].label)).join(', ') +
+    ? '<div class="search-empty text-red pad-y10">Note: ' + failedPlants.map(k => escapeHtml(PLANTS[k].label)).join(', ') +
       ' failed to load - results from ' + (failedPlants.length > 1 ? 'those plants are' : 'that plant is') + ' missing. Refresh and try again.</div>'
     : '';
 
@@ -121,7 +121,7 @@ function renderResults(f) {
   }
 
   resultsEl.innerHTML = warnHtml +
-    '<div class="search-empty" style="padding:0 0 12px;text-align:left;font-size:12.5px;">' + matches.length + ' result' + (matches.length > 1 ? 's' : '') + ' for ' + criteria + '</div>' +
+    '<div class="search-empty pad-b12 text-left fs-12-5">' + matches.length + ' result' + (matches.length > 1 ? 's' : '') + ' for ' + criteria + '</div>' +
     '<div class="search-results">' + matches.map((m, i) => {
       const po = m.po;
       const matchedCount = (po.items || []).filter(it => it.matched).length;
@@ -161,9 +161,9 @@ function showDetail(match) {
           '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
           '</td><td><span class="status-pill ' + (it.matched ? 'matched">Matched' : 'unmatched">Not yet matched') + '</span></td></tr>').join('') +
       '</tbody></table>'
-    : '<div style="font-size:12.5px;color:var(--text-muted);">No line items recorded.</div>';
+    : '<div class="fs-12-5 text-muted">No line items recorded.</div>';
   const remarksHtml = po.remarks
-    ? '<div class="detail-block" style="margin-top:16px;"><h4>Remarks</h4><div class="line">' + escapeHtml(po.remarks) + '</div></div>'
+    ? '<div class="detail-block mt-16"><h4>Remarks</h4><div class="line">' + escapeHtml(po.remarks) + '</div></div>'
     : '';
 
   document.getElementById('detailArea').innerHTML =
@@ -182,10 +182,10 @@ function showDetail(match) {
           '<div class="line">Incoterms: ' + escapeHtml(po.incoterms || '-') + '</div>' +
         '</div>' +
       '</div>' +
-      '<h4 style="font-family:var(--font-head);font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px;">Items</h4>' +
+      '<h4 class="detail-h4-label">Items</h4>' +
       itemsHtml +
       remarksHtml +
-      '<div style="margin-top:20px;"><a href="/" class="btn btn-navy">Open Full Dashboard &rarr;</a></div>' +
+      '<div class="mt-20"><a href="/" class="btn btn-navy">Open Full Dashboard &rarr;</a></div>' +
     '</div>';
   document.getElementById('detailCloseBtn').onclick = () => { document.getElementById('detailArea').innerHTML = ''; };
   document.getElementById('detailArea').scrollIntoView({ behavior: 'smooth', block: 'start' });

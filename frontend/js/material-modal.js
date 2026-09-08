@@ -100,7 +100,7 @@ async function openMaterialModal(compositeKey) {
         (vendors.length ? vendors.map(v => '<span class="vendor-pill">' + escapeHtml(v) + '</span>').join('') : '<div class="line">Not available</div>') +
       '</div>' +
     '</div>' +
-    '<div class="field-block full-width" style="margin-top:14px;"><h4>At a Glance</h4>' + atAGlanceHtml + '</div>';
+    '<div class="field-block full-width mt-14"><h4>At a Glance</h4>' + atAGlanceHtml + '</div>';
 
   // Category/Rate are also editable per-row here, one row per sibling lot
   // across all 3 plants (unlike the Overview tab's Category/Sub Category
@@ -120,7 +120,7 @@ async function openMaterialModal(compositeKey) {
           '<td>' + editableCell(l._plantKey, 'Rate (' + l._plantLabel + ')', l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
           '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
           '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>').join('') +
-        '<tr style="font-weight:700;"><td>Total</td><td></td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
+        '<tr class="fw-700"><td>Total</td><td></td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
       '</tbody></table></div>'
     : '<div class="no-data-note">No stock found for this material at any plant.</div>';
 
@@ -169,10 +169,10 @@ async function openMaterialModal(compositeKey) {
     }
   });
   const materialCritFlagsHtml = Array.from(materialCritPos.entries()).map(([label, poSet]) =>
-    '<div class="field-block" style="margin-bottom:8px;">' +
+    '<div class="field-block mb-8">' +
       flagIconHtml(categoryColor(label), 'row-flag-icon') +
       ' <span class="lg-label critical">CRITICAL</span> <b>' + escapeHtml(label) + '</b>' +
-      '<div style="margin-top:4px;font-size:11.5px;color:var(--slate-soft);">Affects: ' + escapeHtml(Array.from(poSet).join(', ')) + ' - open that PO\'s own detail view to dismiss.</div>' +
+      '<div class="mt-4 fs-11-5 text-slate-soft">Affects: ' + escapeHtml(Array.from(poSet).join(', ')) + ' - open that PO\'s own detail view to dismiss.</div>' +
     '</div>'
   ).join('');
   // Match Accuracy Programme fix 3.G: each sibling lot's own stock-balance
@@ -191,15 +191,15 @@ async function openMaterialModal(compositeKey) {
 
   const materialFlagsListHtml = totalFlagCount
     ? materialCritFlagsHtml + flaggedMatches.map(materialFlagHtml).join('') + dataQualityFlagsHtml.join('')
-    : '<div style="text-align:center;color:var(--slate-soft);padding:14px;">No discrepancy or MIR&harr;Stock match flags for this material.</div>';
+    : '<div class="empty-note-sm">No discrepancy or MIR&harr;Stock match flags for this material.</div>';
   const materialCorrectionsHtml = allMaterialCorrections.length
-    ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +
+    ? '<div class="section-title mt-18">Correction History</div>' +
       allMaterialCorrections.map(c =>
-        '<div class="field-block" style="margin-bottom:8px;">' +
-          '<div style="font-size:12.5px;"><b>' + escapeHtml(c._plantLabel) + ' &middot; ' + escapeHtml(c.fieldName) + ':</b> ' +
+        '<div class="field-block mb-8">' +
+          '<div class="fs-12-5"><b>' + escapeHtml(c._plantLabel) + ' &middot; ' + escapeHtml(c.fieldName) + ':</b> ' +
           escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
-          (c.reason ? '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--slate);">"' + escapeHtml(c.reason) + '"</div>' : '') +
-          '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">' + escapeHtml(c.correctedBy || 'unknown') +
+          (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
+          '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
         '</div>'
       ).join('')
@@ -221,7 +221,7 @@ async function openMaterialModal(compositeKey) {
 
   const priceTrendHtml =
     '<div class="chart-box" id="matPriceTrendBox"><div class="no-data-note">Loading&hellip;</div></div>' +
-    '<div class="no-data-note" style="margin-top:8px;">Moving averages are a trailing calendar-day average of actual PO prices (21/50/100 days back from each PO date) - since POs happen irregularly rather than daily, this smooths the line without inventing prices on days with no PO.</div>';
+    '<div class="no-data-note mt-8">Moving averages are a trailing calendar-day average of actual PO prices (21/50/100 days back from each PO date) - since POs happen irregularly rather than daily, this smooths the line without inventing prices on days with no PO.</div>';
 
   body.innerHTML =
     '<div class="modal-head"><div><h2>' + escapeHtml(anchor.description || anchor.materialCode) + '</h2>' +

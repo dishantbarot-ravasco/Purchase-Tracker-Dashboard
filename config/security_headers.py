@@ -33,15 +33,37 @@ CSP notes:
     it will be silently blocked by this CSP with no visible error other
     than a browser console CSP violation message - extract it to an
     external file instead, following the same pattern.
-  - 'unsafe-inline' is still on style-src - this one was NOT addressed in
-    the 2026-09-05 pass. Dropping it would require moving every dynamically-
-    rendered inline style="..." attribute across frontend/js/*.js (used
-    pervasively - date inputs, status colors, layout tweaks) into CSS
-    classes, a much larger refactor than the script-src work above. Real,
-    honest trade-off, not an oversight - tracked as future work, not
-    silently accepted forever. See CLAUDE.md's "Known gaps" section for the
-    full scope estimate (105+ style="..." sites, 22 .style.* assignments) and
-    the verification standard required before dropping it.
+  - 'unsafe-inline' was removed from style-src too (2026-09-08). Confirmed
+    empirically first (against a real browser, before writing any fix) that
+    CSP's style-src blocks a literal style="..." HTML attribute (whether
+    written directly in markup or inserted via innerHTML) AND a page's own
+    inline <style> block (every one of frontend/{admin,home,login,review,
+    search-po}.html had one, in the <head> - each extracted verbatim to its
+    own external css/<page>-page.css file, same pattern as the earlier
+    script-src work) - it does NOT restrict setting an element's .style
+    property from JS afterwards (el.style.color = ..., including
+    el.style.cssText = ...), so that stayed untouched. Every literal
+    style="..." site across frontend/*.html and frontend/js/*.js was
+    replaced with one of the utility classes in
+    brand.css's "Utility classes" comment (margins/colors/font-sizes/flex
+    layouts that were always fixed values, not actually dynamic); the
+    handful of genuinely per-row/per-value dynamic sites (an avatar/legend
+    color, a bar-fill width, a chart panel's height) render a data-*
+    attribute instead and get their real style applied by a small JS pass
+    right after the innerHTML assignment (shared.js's applyDynamicStyles(),
+    or a self-contained equivalent in admin-page.js's renderBarList()) -
+    see that function's own comment for why this is safe under the new CSP
+    when a literal style="..." attribute isn't. Every display:none/[hidden]
+    toggle that used to be a literal inline style is now the real `hidden`
+    HTML attribute + the .hidden IDL property in JS (brand.css's blanket
+    [hidden]{display:none!important} rule - added this same pass - makes
+    that reliable even against a class that sets its own display, the exact
+    failure mode CLAUDE.md's "Edit Everywhere" section already documents
+    for .edit-actions[hidden]). Verified in a real browser (Browser pane)
+    against every page (dashboard, home, admin, login, search-po) with the
+    flag actually removed, not just by code inspection - zero console CSP
+    violations, zero regressions in manual click-through (login/OTP, PO/
+    import/material modals, admin user create/edit, search).
   - cdn.jsdelivr.net is explicitly allowed on script-src: frontend/index.html
     loads Chart.js from there (no vendored/bundled copy, consistent with the
     no-build-step approach above). Without this, the browser silently drops
@@ -97,7 +119,7 @@ class SecurityHeadersMiddleware:
         docstring's "CSP notes" for why each directive/origin is here)."""
         directives = [
             "default-src 'self'",
-            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+            "style-src 'self' https://fonts.googleapis.com",
             "font-src 'self' https://fonts.gstatic.com",
             "img-src 'self' data: blob:",
             "script-src 'self' https://cdn.jsdelivr.net",

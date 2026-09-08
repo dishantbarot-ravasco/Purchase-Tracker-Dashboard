@@ -69,10 +69,10 @@ async function openPoModal(compositeKey) {
           '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
           '</td><td>' + escapeHtml(formatDateIN(it.deliveryDate)) + '</td><td>' +
           matchStatusHtml(it, plantKey) +
-          '</td><td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span style="color:var(--slate-soft);">Not tracked in Stock</span>') +
+          '</td><td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in Stock</span>') +
           '</td></tr>';
         }).join('') + '</tbody></table>'
-    : '<div style="font-size:12.5px;color:var(--slate-soft);">No line items recorded.</div>';
+    : '<div class="fs-12-5 text-slate-soft">No line items recorded.</div>';
 
   const currencyOptions = distinctFieldValues(PURCHASE_ORDERS_BY_PLANT[plantKey] || [], p => p.currency);
   const incotermsOptions = distinctFieldValues(PURCHASE_ORDERS_BY_PLANT[plantKey] || [], p => p.incoterms);
@@ -107,12 +107,12 @@ async function openPoModal(compositeKey) {
         edit('Total Inclusive Value', po.totalInclTax, 'total_inclusive_value', null, 'number') +
       '</div>' +
     '</div>' +
-    '<div class="field-block full-width" style="margin-top:14px;"><h4>Remarks</h4>' +
+    '<div class="field-block full-width mt-14"><h4>Remarks</h4>' +
       edit('Remarks', po.remarks, 'remarks') + '</div>';
 
   const itemStockHtml =
-    '<div style="margin:0 0 16px;">' + miniStepperHtml(po) + '</div>' +
-    '<div class="section-title" style="margin-top:0;">Material / Product Details</div>' + itemsHtml;
+    '<div class="mb-block-16">' + miniStepperHtml(po) + '</div>' +
+    '<div class="section-title mt-0">Material / Product Details</div>' + itemsHtml;
 
   // Match Accuracy Programme fix 3.G: arithmetic-mismatch flags
   // (dataQualityFlagHtml, flags.js) alongside the existing remarks-derived
@@ -121,15 +121,15 @@ async function openPoModal(compositeKey) {
   const arithmeticFlagsHtml = (po.dataQualityFlags || []).map(dataQualityFlagHtml).join('');
   const catsHtml = (po._categories || []).length || arithmeticFlagsHtml
     ? po._categories.map(c => poFlagHtml(c, po, plantKey)).join('') + arithmeticFlagsHtml
-    : '<div style="text-align:center;color:var(--slate-soft);padding:14px;">No data quality flags on this PO.</div>';
+    : '<div class="empty-note-sm">No data quality flags on this PO.</div>';
   const correctionsHtml = (po.corrections || []).length
-    ? '<div class="section-title" style="margin-top:18px;">Correction History</div>' +
+    ? '<div class="section-title mt-18">Correction History</div>' +
       po.corrections.map(c =>
-        '<div class="field-block" style="margin-bottom:8px;">' +
-          '<div style="font-size:12.5px;"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
+        '<div class="field-block mb-8">' +
+          '<div class="fs-12-5"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
           escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
-          (c.reason ? '<div style="margin-top:4px;font-size:12px;font-style:italic;color:var(--slate);">"' + escapeHtml(c.reason) + '"</div>' : '') +
-          '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">' + escapeHtml(c.correctedBy || 'unknown') +
+          (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
+          '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
         '</div>'
       ).join('')

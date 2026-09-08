@@ -244,7 +244,7 @@ function renderPoList(el) {
       '<div class="filter-group">' +
         '<label>Date filter (Created on)</label>' +
         '<input type="date" id="fromDate" value="' + (state.from || '') + '">' +
-        '<span style="color:var(--gray);font-size:12px;">to</span>' +
+        '<span class="sep-gray">to</span>' +
         '<input type="date" id="toDate" value="' + (state.to || '') + '">' +
       '</div>' +
       '<button class="primary" id="applyFilter">Apply</button>' +
@@ -266,21 +266,21 @@ function renderPoList(el) {
       '<div class="filter-row">' +
         '<div class="filter-group">' +
           '<label>Filter by Category</label>' +
-          '<select id="categoryFilterSelect" style="min-width:200px;">' +
+          '<select id="categoryFilterSelect" class="select-w200">' +
             '<option value="">All Categories (' + dateRangeCount + ')</option>' +
             categoryOptionsHtml +
           '</select>' +
         '</div>' +
         '<div class="filter-group">' +
           '<label>Filter by Sub Category</label>' +
-          '<select id="subCategoryFilterSelect" style="min-width:240px;">' +
+          '<select id="subCategoryFilterSelect" class="select-w240">' +
             '<option value="">All Sub Categories (' + subCategoryBaseCount + ')</option>' +
             subCategoryOptionsHtml +
           '</select>' +
         '</div>' +
         '<div class="filter-group">' +
           '<label>Filter by Flags</label>' +
-          '<select id="flagsFilterSelect" style="min-width:220px;">' +
+          '<select id="flagsFilterSelect" class="select-w220">' +
             '<option value="">All Flags</option>' +
             flagsOptionsHtml +
           '</select>' +
@@ -296,9 +296,9 @@ function renderPoList(el) {
           (statusChartData.length ? '<div class="chart-box"><canvas id="poStatusChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
         '</div>' +
       '</div>' : '') +
-    '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Purchase Orders (Latest first)</div>' +
+    '<div class="list-toggle-row"><div class="section-title m-0">Purchase Orders (Latest first)</div>' +
       (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
-      '<div style="display:flex;align-items:center;gap:10px;">' +
+      '<div class="flex-row-gap10">' +
         (activeFilterCount ? '<span class="clear-list-filters" id="clearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
         (totalForList > 5 ? '<button class="view-all-btn" id="toggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
       '</div>' +
@@ -369,6 +369,7 @@ function renderPoList(el) {
         }).join('') + '</div>';
     })();
 
+  applyDynamicStyles(el); // legend dots (categoryColor()) - see shared.js's own comment
   wireKpiCountUps();
 
   document.querySelectorAll('[data-kpi]').forEach(c => c.onclick = () => {

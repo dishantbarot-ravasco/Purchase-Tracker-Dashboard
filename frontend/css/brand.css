@@ -544,3 +544,100 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   --shadow-md:     0 8px 24px rgba(0,0,0,.4), 0 4px 8px rgba(0,0,0,.3);
   --shadow-lg:     0 16px 48px rgba(0,0,0,.45), 0 8px 16px rgba(0,0,0,.3);
 }
+
+/* ── Utility classes - CSP style-src hardening (2026-09-08) ──────────────
+   Every inline style="..." attribute across frontend/*.html and
+   frontend/js/*.js was replaced with one of these (or, for a genuinely
+   dynamic value - an avatar/legend color, a bar width, a chart height -
+   with a data-* attribute plus a small JS pass that sets the element's
+   .style property directly after render). This is what let style-src drop
+   'unsafe-inline' in config/security_headers.py. Setting an individual
+   style property from JS (el.style.x = ...) is NOT restricted by CSP -
+   only a literal style="..." HTML attribute is (confirmed empirically
+   against a real browser before this pass) - so a truly dynamic value
+   stays dynamic via JS, it just can never be written into the HTML string
+   itself. This is a fixed, closed set matching real call sites - don't
+   turn it into a general-purpose utility framework; add a new class only
+   when a new real call site needs one. Loaded on every page (brand.css,
+   unlike style.css which only index.html loads) since these are used by
+   JS files shared across every page (shared.js, auth.js) as well as
+   page-specific ones (admin-page.js, home-page.js, login.js, etc.). */
+[hidden] { display: none !important; }
+
+.is-hidden { display: none; }
+.text-center { text-align: center; }
+.text-left { text-align: left; }
+.italic { font-style: italic; }
+.strike { text-decoration: line-through; }
+.dimmed { opacity: .6; }
+.fw-700 { font-weight: 700; }
+.cursor-pointer { cursor: pointer; }
+.cpw-success { text-align: center; padding: 8px 0; color: var(--green); font-weight: 600; }
+.fw-400 { font-weight: 400; }
+
+.m-0 { margin: 0; }
+.mt-0 { margin-top: 0; }
+.mt-4 { margin-top: 4px; }
+.mt-6 { margin-top: 6px; }
+.mt-8 { margin-top: 8px; }
+.mt-12 { margin-top: 12px; }
+.mt-14 { margin-top: 14px; }
+.mt-16 { margin-top: 16px; }
+.mt-18 { margin-top: 18px; }
+.mt-20 { margin-top: 20px; }
+.mb-4 { margin-bottom: 4px; }
+.mb-8 { margin-bottom: 8px; }
+.mb-10 { margin-bottom: 10px; }
+.mb-20 { margin-bottom: 20px; }
+.my-4 { margin: 4px 0; }
+.mb-block-16 { margin: 0 0 16px; }
+.stat-sub-tight { margin: -10px 0 18px; }
+.note-block { margin: 8px 0 12px; }
+.otp-intro { text-align: center; margin-bottom: 24px; }
+.home-page-wrap { padding-top: 36px; }
+.avatar-role-admin { background: var(--gold-light); }
+.avatar-role-editor { background: var(--blue); }
+.avatar-role-viewer { background: var(--navy-mid); }
+
+.text-red { color: var(--red); }
+.text-muted { color: var(--text-muted); }
+.text-gray { color: var(--gray); }
+.text-slate-soft { color: var(--slate-soft); }
+.text-slate { color: var(--slate); }
+.text-green { color: var(--green); }
+.variance-up { color: var(--green); }
+.variance-down { color: var(--red); }
+.req-mark { color: var(--red); }
+
+.fs-11 { font-size: 11px; }
+.fs-11-5 { font-size: 11.5px; }
+.fs-12 { font-size: 12px; }
+.fs-12-5 { font-size: 12.5px; }
+.fs-13 { font-size: 13px; }
+
+.sep-muted { color: var(--text-muted); font-size: 12px; }
+.sep-gray { color: var(--gray); font-size: 12px; }
+
+.flex-row-gap10 { display: flex; align-items: center; gap: 10px; }
+.flex-between-wrap6 { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 6px; }
+
+.pad-y10 { padding: 10px 0; }
+.pad-14 { padding: 14px; }
+.pad-b12 { padding: 0 0 12px; }
+.empty-note { text-align: center; color: var(--slate-soft); padding: 20px; }
+.empty-note-sm { text-align: center; color: var(--slate-soft); padding: 14px; }
+
+.select-w200 { min-width: 200px; }
+.select-w220 { min-width: 220px; }
+.select-w240 { min-width: 240px; }
+.select-w260 { min-width: 260px; }
+
+.tracking-pre {
+  white-space: pre-wrap; word-break: break-word; font-size: 11.5px;
+  background: var(--panel-alt, #f6f7f9); padding: 10px; border-radius: 8px;
+  max-height: 320px; overflow: auto;
+}
+.detail-h4-label {
+  font-family: var(--font-head); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-muted); margin-bottom: 4px;
+}

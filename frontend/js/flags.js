@@ -265,10 +265,10 @@ function poFlagHtml(c, po, plantKey, isImport) {
   const link = canEditField(plantKey)
     ? ' <span class="dismiss-link" data-match-type="' + (isImport ? 'import-po-flag' : 'po-flag') + '" data-plant="' + plantKey + '" data-po-number="' + escapeHtml(po.poNumber) + '" data-flag-key="' + escapeHtml(c.label) + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
     : '';
-  return '<div class="field-block" style="margin-bottom:8px;' + (dismissed ? 'opacity:.6;' : '') + '">' +
+  return '<div class="field-block mb-8' + (dismissed ? ' dimmed' : '') + '">' +
     flagIconHtml(categoryColor(c.label), 'row-flag-icon') +
     ' <span class="lg-label ' + c.severity + '">' + (c.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span> ' +
-    '<b' + (dismissed ? ' style="text-decoration:line-through;"' : '') + '>' + escapeHtml(c.label) + '</b>' + dismissTag + link +
+    '<b' + (dismissed ? ' class="strike"' : '') + '>' + escapeHtml(c.label) + '</b>' + dismissTag + link +
   '</div>';
 }
 
@@ -306,11 +306,11 @@ function importFlagHtml(f, po, plantKey) {
   const link = canEditField(plantKey)
     ? ' <span class="dismiss-link" data-match-type="import-po-flag" data-plant="' + plantKey + '" data-po-number="' + escapeHtml(po.poNumber) + '" data-flag-key="' + escapeHtml(flagKey) + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
     : '';
-  return '<div class="field-block" style="margin-bottom:10px;' + (dismissed ? 'opacity:.6;' : '') + '">' +
+  return '<div class="field-block mb-10' + (dismissed ? ' dimmed' : '') + '">' +
     '<span class="status-pill status-overdue">' + escapeHtml(f.code) + '</span>' + dismissTag + link +
-    '<div style="margin-top:8px;font-size:13px;' + (dismissed ? 'text-decoration:line-through;' : '') + '">' + escapeHtml(f.message) + '</div>' +
-    '<div style="margin-top:6px;font-size:11px;color:var(--slate-soft);">Fields: ' + escapeHtml((f.fields || []).join(', ')) + '</div>' +
-    (f.item_id ? '<div style="margin-top:4px;font-size:11px;color:var(--slate-soft);">Item: ' + escapeHtml(f.item_id) + '</div>' : '') +
+    '<div class="mt-8 fs-13' + (dismissed ? ' strike' : '') + '">' + escapeHtml(f.message) + '</div>' +
+    '<div class="mt-6 fs-11 text-slate-soft">Fields: ' + escapeHtml((f.fields || []).join(', ')) + '</div>' +
+    (f.item_id ? '<div class="mt-4 fs-11 text-slate-soft">Item: ' + escapeHtml(f.item_id) + '</div>' : '') +
   '</div>';
 }
 
@@ -331,10 +331,10 @@ function materialFlagHtml(m) {
   const link = canEditField(m._plantKey)
     ? ' <span class="dismiss-link" data-match-id="' + m.matchId + '" data-match-type="mir-stock" data-plant="' + m._plantKey + '" data-dismiss="' + (dismissed ? 'false' : 'true') + '">' + (dismissed ? 'reinstate' : 'dismiss') + '</span>'
     : '';
-  return '<div class="field-block" style="margin-bottom:8px;' + (dismissed ? 'opacity:.6;' : '') + '">' +
+  return '<div class="field-block mb-8' + (dismissed ? ' dimmed' : '') + '">' +
     flagIconHtml(KPI_FLAG_COLORS.critical, 'row-flag-icon') +
     ' <span class="lg-label critical">CRITICAL</span> ' +
-    '<b' + (dismissed ? ' style="text-decoration:line-through;"' : '') + '>' + escapeHtml(m._plantLabel) + ' &middot; MIR&harr;Stock Mismatch</b>: ' +
+    '<b' + (dismissed ? ' class="strike"' : '') + '>' + escapeHtml(m._plantLabel) + ' &middot; MIR&harr;Stock Mismatch</b>: ' +
     escapeHtml(parts.join(', ') || 'flagged') + dismissTag + link +
   '</div>';
 }
@@ -353,7 +353,7 @@ const DATA_QUALITY_CHECK_LABELS = {
 function dataQualityFlagHtml(f) {
   const label = DATA_QUALITY_CHECK_LABELS[f.checkName] || f.checkName;
   const plantPrefix = f._plantLabel ? escapeHtml(f._plantLabel) + ' &middot; ' : '';
-  return '<div class="field-block" style="margin-bottom:8px;">' +
+  return '<div class="field-block mb-8">' +
     flagIconHtml(KPI_FLAG_COLORS.critical, 'row-flag-icon') +
     ' <span class="lg-label critical">DATA QUALITY</span> ' +
     '<b>' + plantPrefix + escapeHtml(label) + '</b>: expected ' + formatInr(f.expected) + ', sheet says ' + formatInr(f.actual) +
@@ -424,7 +424,14 @@ const DEFAULT_CATEGORY_COLOR = '#7c3aed'; // 'Other data quality issue' + any un
 function categoryColor(label) { return CATEGORY_COLORS[label] || DEFAULT_CATEGORY_COLOR; }
 
 function renderLegendHtml() {
-  const rows = DISCREPANCY_LEGEND.map(d => '<li class="legend-item"><span class="lg-dot" style="background:' + categoryColor(d.label) + '"></span><span class="lg-label ' + d.severity + '">' + (d.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span><b>' + escapeHtml(d.label) + '</b>: ' + escapeHtml(d.meaning) + '</li>').join('');
+  // categoryColor() returns an arbitrary per-category hex, not a fixed
+  // small enum a CSS class could cover - kept as a data-attribute here and
+  // applied via JS after render (see wireLegendDotColors(), called once the
+  // caller inserts this HTML) rather than a literal style="..." attribute,
+  // since that's blocked once style-src drops 'unsafe-inline' (setting the
+  // property via JS afterwards is not - see brand.css's "Utility classes"
+  // comment for why).
+  const rows = DISCREPANCY_LEGEND.map(d => '<li class="legend-item"><span class="lg-dot" data-dot-color="' + categoryColor(d.label) + '"></span><span class="lg-label ' + d.severity + '">' + (d.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span><b>' + escapeHtml(d.label) + '</b>: ' + escapeHtml(d.meaning) + '</li>').join('');
   const infoCount = DISCREPANCY_LEGEND.length - 2;
   return '<div class="legend-box" id="legendBox"' + (state.legendOpen ? '' : ' hidden') + '>' +
     '<h4>What each flag means (' + DISCREPANCY_LEGEND.length + ' categories total: 2 critical, ' + infoCount + ' informational)</h4>' +

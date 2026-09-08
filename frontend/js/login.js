@@ -93,16 +93,16 @@ function clearError() {
 }
 /** Swaps the card into the OTP-entry step (new-device verification). */
 function showOtpStep() {
-  passwordStep.style.display = 'none';
-  otpStep.style.display = '';
+  passwordStep.hidden = true;
+  otpStep.hidden = false;
   document.getElementById('cardTitle').textContent = 'Verify your device';
   document.getElementById('cardSub').textContent = 'Enter the code we emailed you';
   document.getElementById('otpCode').focus();
 }
 /** Swaps the card back to the password step (e.g. "back to login" link). */
 function showPasswordStep() {
-  otpStep.style.display = 'none';
-  passwordStep.style.display = '';
+  otpStep.hidden = true;
+  passwordStep.hidden = false;
   document.getElementById('cardTitle').textContent = 'Sign In';
   document.getElementById('cardSub').textContent = 'Use your company account credentials';
   document.getElementById('otpCode').value = '';

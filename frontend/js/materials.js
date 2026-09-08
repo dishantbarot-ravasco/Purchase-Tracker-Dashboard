@@ -484,21 +484,21 @@ function renderMaterialsView() {
     '<div class="filter-row">' +
       '<div class="filter-group">' +
         '<label>Filter by Category</label>' +
-        '<select id="matCatSelect" style="min-width:220px;">' +
+        '<select id="matCatSelect" class="select-w220">' +
           '<option value="">All categories (' + all.length + ')</option>' +
           catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
         '</select>' +
       '</div>' +
       '<div class="filter-group">' +
         '<label>Filter by Sub Category</label>' +
-        '<select id="matSubCatSelect" style="min-width:220px;">' +
+        '<select id="matSubCatSelect" class="select-w220">' +
           '<option value="">All sub-categories (' + inSelectedCategory.length + ')</option>' +
           subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
         '</select>' +
       '</div>' +
       '<div class="filter-group">' +
         '<label>Filter by Flags</label>' +
-        '<select id="matFlagsSelect" style="min-width:200px;">' +
+        '<select id="matFlagsSelect" class="select-w200">' +
           '<option value="">All flags</option>' +
           '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch (' + qtyDiscMats.length + ')</option>' +
           '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch (' + rateDiscMats.length + ')</option>' +
@@ -509,7 +509,7 @@ function renderMaterialsView() {
       ((state.matCategoryFilter || state.matSubCategoryFilter || state.matStatusFilter) ? '<button id="matClearCategoryFilter">Clear</button>' : '') +
     '</div>' +
     renderMaterialsChart(filtered) +
-    '<div class="list-toggle-row"><div class="section-title" style="margin:0;">Materials by Stock Quantity - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
+    '<div class="list-toggle-row"><div class="section-title m-0">Materials by Stock Quantity - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
       (listRecs.some(m => { const e = linkageByKey.get(normalizeMaterial(m.description)); return e && (e.qtyFlag || e.rateFlag); }) ? rowTintLegendHtml() : '') +
       (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all ' + sorted.length + ' materials') + '</button>' : '') +
     '</div>' +
@@ -563,6 +563,7 @@ function renderMaterialsView() {
         }).join('') + '</div>';
     })();
 
+  applyDynamicStyles(el); // chart-box height, legend dots - see shared.js's own comment; must run before wireMaterialsChart() reads the container's height
   wireKpiCountUps();
 
   document.querySelectorAll('[data-matkpi]').forEach(c => c.onclick = () => {
@@ -652,7 +653,7 @@ function renderMaterialsChart(materials) {
   }).join('<span class="crumb-sep">&rsaquo;</span>');
 
   if (!bars.length) {
-    return '<div class="chart-panel" style="margin-bottom:20px;"><h4>Inventory Value by Category</h4>' +
+    return '<div class="chart-panel mb-20"><h4>Inventory Value by Category</h4>' +
       '<div class="chart-breadcrumb">' + crumbHtml + '</div>' +
       '<div class="no-data-note">No materials in this ' + (state.matChartLevel === 'category' ? 'view' : state.matChartLevel) + ' to chart.</div></div>';
   }
@@ -667,10 +668,10 @@ function renderMaterialsChart(materials) {
   // legible tradeoff for a panel that stays roughly the same size as every
   // other chart on this dashboard, not a case-by-case judgment call.
   const chartHeight = Math.min(300, Math.max(220, bars.length * 22));
-  return '<div class="chart-panel" style="margin-bottom:20px;"><h4>Inventory Value by Category' + (state.matChartLevel !== 'category' ? ' &rsaquo; Subcategory' : '') + (state.matChartLevel === 'material' ? ' &rsaquo; Material' : '') + '</h4>' +
+  return '<div class="chart-panel mb-20"><h4>Inventory Value by Category' + (state.matChartLevel !== 'category' ? ' &rsaquo; Subcategory' : '') + (state.matChartLevel === 'material' ? ' &rsaquo; Material' : '') + '</h4>' +
     '<div class="chart-breadcrumb">' + crumbHtml + '</div>' +
-    '<div class="chart-box" style="height:' + chartHeight + 'px;"><canvas id="matDrillChart"></canvas></div>' +
-    (state.matChartLevel !== 'material' ? '<div class="no-data-note" style="margin-top:8px;">Click a bar to drill down.</div>' : '') +
+    '<div class="chart-box" data-height-px="' + chartHeight + '"><canvas id="matDrillChart"></canvas></div>' +
+    (state.matChartLevel !== 'material' ? '<div class="no-data-note mt-8">Click a bar to drill down.</div>' : '') +
   '</div>';
 }
 function wireMaterialsChart(materials) {

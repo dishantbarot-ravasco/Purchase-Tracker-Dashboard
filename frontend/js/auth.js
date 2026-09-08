@@ -66,10 +66,10 @@ async function logout() {
 // Circle-avatar user menu (initials + role-colored background, stacked
 // name/role, click-to-open dropdown with Logout) - same visual pattern as
 // the TDS Automation App's own top nav. Avatar color is keyed off role
-// (admin=gold, editor=blue, viewer=navy) so it reads consistently with the
-// role-pill colors used elsewhere (e.g. admin.html's user table) rather
-// than an arbitrary per-user color.
-const ROLE_AVATAR_COLOR = { admin: 'var(--gold-light)', editor: 'var(--blue)', viewer: 'var(--navy-mid)' };
+// (admin=gold, editor=blue, viewer=navy) via the .avatar-role-* classes in
+// brand.css, so it reads consistently with the role-pill colors used
+// elsewhere (e.g. admin.html's user table) rather than an arbitrary
+// per-user color.
 
 /** Derives 1-2 uppercase initials from the user's full name (first+last
  * initial), or their first two characters if no name is set, falling back
@@ -93,10 +93,9 @@ function userInitials(user) {
 function renderUserBadge(container) {
   if (!container || !CURRENT_USER) return;
   const label = CURRENT_USER.fullName || CURRENT_USER.email;
-  const color = ROLE_AVATAR_COLOR[CURRENT_USER.role] || 'var(--navy-mid)';
   container.innerHTML =
     '<div class="user-menu" id="userMenuWrap">' +
-      '<div class="user-avatar-circle" style="background:' + color + '">' + escapeHtmlAuth(userInitials(CURRENT_USER)) + '</div>' +
+      '<div class="user-avatar-circle avatar-role-' + escapeHtmlAuth(CURRENT_USER.role) + '">' + escapeHtmlAuth(userInitials(CURRENT_USER)) + '</div>' +
       '<div class="user-info">' +
         '<div class="user-name">' + escapeHtmlAuth(label) + '</div>' +
         '<div class="user-role">' + escapeHtmlAuth(CURRENT_USER.role) + '</div>' +

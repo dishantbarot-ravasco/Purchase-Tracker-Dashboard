@@ -185,14 +185,14 @@ function changePasswordModalHtml() {
           '<p class="uf-hint">We’ll email a 6-digit verification code to your own address to confirm this change.</p>' +
         '</div>' +
         '<div id="cpwStep2" hidden>' +
-          '<p class="uf-hint" style="margin-top:0;">Enter the 6-digit code sent to your email. It expires in 10 minutes.</p>' +
+          '<p class="uf-hint mt-0">Enter the 6-digit code sent to your email. It expires in 10 minutes.</p>' +
           '<div class="uf-row">' +
             '<label class="uf-label">Verification Code</label>' +
             '<input id="cpwOtp" type="text" inputmode="numeric" maxlength="6" class="uf-input" placeholder="123456">' +
           '</div>' +
           '<p class="uf-hint"><span class="row-link" id="cpwResend">Resend code</span></p>' +
         '</div>' +
-        '<div id="cpwSuccess" hidden style="text-align:center;padding:8px 0;color:var(--green);font-weight:600;">Password changed successfully.</div>' +
+        '<div id="cpwSuccess" hidden class="cpw-success">Password changed successfully.</div>' +
       '</div>' +
       '<div class="uf-foot" id="cpwFoot">' +
         '<button type="button" class="btn" id="cpwCancel">Cancel</button>' +
@@ -306,6 +306,34 @@ function formatDateIN(iso) {
   if (!iso) return '-';
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   return m ? (m[3] + '/' + m[2] + '/' + m[1]) : iso;
+}
+
+// Applies the handful of genuinely per-row/per-value dynamic styles (an
+// arbitrary category color, a bar's fill width, a chart panel's height)
+// that a render...Html() function can't bake into its returned string as a
+// literal style="..." attribute, since that's blocked once style-src drops
+// 'unsafe-inline' in config/security_headers.py (setting the element's
+// .style property afterwards, from JS, is NOT restricted the same way -
+// confirmed against a real browser before that CSP change was made; see
+// brand.css's "Utility classes" comment for the full reasoning). Call this
+// once, synchronously, right after assigning innerHTML for any container
+// that might contain one of these data-* markers - it consumes
+// (removes) each attribute it applies so a stale value can't linger if the
+// same element is ever reused across a re-render.
+function applyDynamicStyles(root) {
+  root.querySelectorAll('[data-dot-color], [data-bg-color]').forEach(el => {
+    el.style.background = el.dataset.dotColor || el.dataset.bgColor;
+    el.removeAttribute('data-dot-color');
+    el.removeAttribute('data-bg-color');
+  });
+  root.querySelectorAll('[data-text-color]').forEach(el => {
+    el.style.color = el.dataset.textColor;
+    el.removeAttribute('data-text-color');
+  });
+  root.querySelectorAll('[data-height-px]').forEach(el => {
+    el.style.height = el.dataset.heightPx + 'px';
+    el.removeAttribute('data-height-px');
+  });
 }
 
 // ── Keyboard activation for div-based "buttons"/tabs ─────────────────────
@@ -654,8 +682,8 @@ function blTrackingResultHtml(blNumber, data) {
       blTrackingFieldHtml('Notes', warnings.length ? warnings.join(', ') : null) +
     '</div>' +
     locationsHtml + vesselsHtml +
-    '<details style="margin-top:12px;"><summary style="cursor:pointer;font-size:12.5px;color:var(--slate-soft);">Full tracking data</summary>' +
-      '<pre style="white-space:pre-wrap;word-break:break-word;font-size:11.5px;background:var(--panel-alt,#f6f7f9);padding:10px;border-radius:8px;max-height:320px;overflow:auto;">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>' +
+    '<details class="mt-12"><summary class="cursor-pointer fs-12-5 text-slate-soft">Full tracking data</summary>' +
+      '<pre class="tracking-pre">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>' +
     '</details>'
   );
 }
@@ -666,7 +694,7 @@ async function trackBlNumber(blNumber) {
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
   body.innerHTML =
     '<div class="modal-head"><div><h2>Track Shipment</h2><div class="modal-meta">' + escapeHtml(blNumber) + '</div></div></div>' +
-    '<div id="blTrackingBody" style="margin-top:16px;">Looking up live shipment status&hellip;</div>';
+    '<div id="blTrackingBody" class="mt-16">Looking up live shipment status&hellip;</div>';
   backdrop.classList.add('open');
   try {
     const data = await apiImports('/track-bl?bl=' + encodeURIComponent(blNumber));
@@ -727,7 +755,7 @@ function materialAnalysisLinkHtml(description, vendorName, currentPlantKey) {
         ? escapeHtml(plantLabel) + ' stock: ' + thisPlantQty.toLocaleString('en-IN') + ' ' + escapeHtml(uom)
         : escapeHtml(plantLabel) + ' stock: Not stocked at this plant')
     : '';
-  return '<div class="line" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">' +
+  return '<div class="line flex-between-wrap6">' +
     '<span>' + stockLine + (stockLine ? ' &middot; ' : '') + 'All plants total: ' + allQty.toLocaleString('en-IN') + ' ' + escapeHtml(uom) + '</span>' +
     '<span class="row-link" data-material-link="' + escapeHtml(anchor.plantKey + '::' + anchor.lot.lotId) + '">View full material analysis &rarr;</span>' +
   '</div>';
@@ -844,7 +872,7 @@ function overrideBoxHtml(hintText) {
     '<div class="ov-selected-field" id="ovSelectedField" hidden></div>' +
     '<div class="row" id="ovValueRow"></div>' +
     '<textarea id="ovReason" placeholder="Why is this wrong / what did you verify it against? (optional)"></textarea>' +
-    '<div class="row" style="margin-top:8px;"><button id="ovSubmit" disabled>Save Correction</button></div>' +
+    '<div class="row mt-8"><button id="ovSubmit" disabled>Save Correction</button></div>' +
     '<div id="ovStatus"></div>' +
     // Unlike the original artifact this UX is ported from (which queued a
     // request in a Drive folder for a human to apply to the master CSV by

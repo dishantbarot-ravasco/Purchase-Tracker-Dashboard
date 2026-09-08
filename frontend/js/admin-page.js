@@ -32,10 +32,10 @@ let CURRENT_ADMIN_TAB = 'overview';
 
   document.getElementById('loadingOverlay').style.display = 'none';
   if (user.role !== 'admin') {
-    document.getElementById('deniedContent').style.display = '';
+    document.getElementById('deniedContent').hidden = false;
     return;
   }
-  document.getElementById('mainContent').style.display = '';
+  document.getElementById('mainContent').hidden = false;
   document.getElementById('sysinfoEmail').textContent = user.email;
   document.getElementById('sysinfoRole').textContent = user.role;
 
@@ -133,10 +133,18 @@ function renderBarList(elId, rows, labelFn, countFn) {
     const pct = max > 0 ? Math.max(4, Math.round((count / max) * 100)) : 0;
     return '<div class="bar-list-row">' +
       '<div class="bar-list-label" title="' + escapeHtml(labelFn(row)) + '">' + escapeHtml(labelFn(row)) + '</div>' +
-      '<div class="bar-track"><div class="bar-fill" style="width:' + pct + '%;"></div></div>' +
+      '<div class="bar-track"><div class="bar-fill" data-pct="' + pct + '"></div></div>' +
       '<div class="bar-count">' + count + '</div>' +
     '</div>';
   }).join('');
+  // width is a continuous, per-row value - can't be a fixed CSS class the
+  // way the avatar's role color below can, and a literal style="width:...%"
+  // attribute is blocked once style-src drops 'unsafe-inline' (setting the
+  // property via JS afterwards, like this, is NOT restricted the same way -
+  // see brand.css's "Utility classes" comment for why).
+  el.querySelectorAll('.bar-fill[data-pct]').forEach(bar => {
+    bar.style.width = bar.dataset.pct + '%';
+  });
 }
 
 const _ACTIVITY_TYPE_LABELS = { domestic: 'Domestic PO', import: 'Import PO', material: 'Material' };
@@ -204,11 +212,10 @@ function renderUsers() {
     return;
   }
   el.innerHTML = '<div class="users-grid">' + USERS.map(u => {
-    const color = { admin: 'var(--gold-light)', editor: 'var(--blue)', viewer: 'var(--navy-mid)' }[u.role] || 'var(--navy-mid)';
     const initials = userInitials(u);
     return '<div class="user-card' + (u.isActive ? '' : ' inactive') + '">' +
       '<div class="user-card-head">' +
-        '<div class="user-card-avatar" style="background:' + color + '">' + escapeHtml(initials) + '</div>' +
+        '<div class="user-card-avatar avatar-role-' + escapeHtml(u.role) + '">' + escapeHtml(initials) + '</div>' +
         '<div><div class="user-card-name">' + escapeHtml(u.fullName || u.email) + '</div>' +
         '<div class="user-card-email">' + escapeHtml(u.email) + '</div></div>' +
       '</div>' +
@@ -218,10 +225,10 @@ function renderUsers() {
       '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
       '<div class="user-card-stats">' +
         '<div><div class="user-card-stat-val">' + (u.correctionsCount || 0) + '</div><div class="user-card-stat-label">Corrections Made</div></div>' +
-        '<div><div class="user-card-stat-val" style="font-size:13px;">' + escapeHtml(u.lastLoginAt ? formatDateIN(u.lastLoginAt.slice(0, 10)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
+        '<div><div class="user-card-stat-val fs-13">' + escapeHtml(u.lastLoginAt ? formatDateIN(u.lastLoginAt.slice(0, 10)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
       '</div>' +
       '<div class="user-card-foot">' +
-        '<span style="font-size:11px;color:var(--text-muted);">Since ' + escapeHtml(formatDateIN(u.createdAt ? u.createdAt.slice(0, 10) : null)) + '</span>' +
+        '<span class="fs-11 text-muted">Since ' + escapeHtml(formatDateIN(u.createdAt ? u.createdAt.slice(0, 10) : null)) + '</span>' +
         '<div class="user-card-actions">' +
           '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
           '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>' +
@@ -298,18 +305,18 @@ function openForm(user) {
   // in-app reset) - just optional there: label/hint/required-asterisk
   // swap to make "blank = leave unchanged" obvious.
   document.getElementById('uf-pw-label').innerHTML = edit
-    ? 'New Password <span style="color:var(--text-muted);font-weight:400;">(leave blank to keep current)</span>'
-    : 'Password <span style="color:var(--red)">*</span>';
+    ? 'New Password <span class="text-muted fw-400">(leave blank to keep current)</span>'
+    : 'Password <span class="req-mark">*</span>';
   document.getElementById('uf-pw-hint').textContent = edit
     ? 'Only fill this in to reset the password - leave it blank to leave the current password untouched.'
     : 'Share this password with the user directly, or ask them to use "Change Password" from their own account menu afterwards.';
-  document.getElementById('uf-active-row').style.display = edit ? 'block' : 'none';
+  document.getElementById('uf-active-row').hidden = !edit;
   if (edit) document.getElementById('uf-active').value = String(user.isActive);
   // Trusted Devices: only meaningful for an existing account (a new
   // user has no devices yet) - fetched fresh on every open rather than
   // cached, since another admin session or the user's own next login
   // could have added/changed devices since this modal last opened.
-  document.getElementById('uf-devices-row').style.display = edit ? 'block' : 'none';
+  document.getElementById('uf-devices-row').hidden = !edit;
   if (edit) loadDevices(user.userId);
   document.getElementById('uf-err').classList.remove('show');
   document.getElementById('uf-overlay').classList.add('open');
@@ -319,7 +326,7 @@ function openForm(user) {
 // ── Users: trusted devices (Edit User modal only) ───────────────
 async function loadDevices(userId) {
   const el = document.getElementById('uf-devices-list');
-  el.innerHTML = '<p class="uf-hint" style="margin:4px 0;">Loading&hellip;</p>';
+  el.innerHTML = '<p class="uf-hint my-4">Loading&hellip;</p>';
   try {
     const res = await fetch('/api/auth/users/' + userId + '/devices', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -327,7 +334,7 @@ async function loadDevices(userId) {
     renderDevices(userId, data.devices || []);
   } catch (e) {
     console.error('admin: failed to load devices for user ' + userId + ':', e);
-    el.innerHTML = '<p class="uf-hint" style="margin:4px 0;color:var(--red);">Couldn\'t load trusted devices right now.</p>';
+    el.innerHTML = '<p class="uf-hint my-4 text-red">Couldn\'t load trusted devices right now.</p>';
   }
 }
 
@@ -339,7 +346,7 @@ function renderDevices(userId, devices) {
   // openMaterialModal() use for their own request-token guards).
   if (!editingUserId || editingUserId !== userId) return;
   if (!devices.length) {
-    el.innerHTML = '<p class="uf-hint" style="margin:4px 0;">No trusted devices - this account still verifies by email code on every sign-in.</p>';
+    el.innerHTML = '<p class="uf-hint my-4">No trusted devices - this account still verifies by email code on every sign-in.</p>';
     return;
   }
   el.innerHTML = devices.map(d => {

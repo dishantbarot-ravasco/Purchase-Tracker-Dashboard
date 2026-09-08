@@ -11,12 +11,12 @@
   renderNavTabs(document.getElementById('navTabs'), 'home');
   renderUserBadge(document.getElementById('navUser'));
   initThemeToggle();
-  if (user.role === 'admin') document.getElementById('adminCard').style.display = '';
+  if (user.role === 'admin') document.getElementById('adminCard').hidden = false;
 
   await loadKpis();
 
   document.getElementById('loadingOverlay').style.display = 'none';
-  document.getElementById('mainContent').style.display = '';
+  document.getElementById('mainContent').hidden = false;
 })();
 
 // loadKpis() moved to shared.js (2026-09-07) so the Admin Panel's Overview
