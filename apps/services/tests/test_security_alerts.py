@@ -42,9 +42,15 @@ class TestLoginBurstDetection:
 
 @pytest.mark.django_db
 class TestSyncFailureAlert:
+    """Deliberately NOT sent to every admin (unlike this module's other
+    alerts) - restricted to a single fixed recipient
+    (dishant.barot@ravasco.com) per an explicit request, 2026-09-07. See
+    notify_admins_sync_failure's own docstring."""
+
+    FIXED_RECIPIENT = "dishant.barot@ravasco.com"
+
     def setup_method(self):
         mail.outbox.clear()
-        self.admin = make_user(email="admin-sync@ravasco.com", role="admin")
 
     def test_sends_an_alert_with_plant_and_command_detail(self):
         notify_admins_sync_failure("hrs", "sync_mir", detail="Drive file not found")
@@ -53,12 +59,10 @@ class TestSyncFailureAlert:
         assert "hrs" in alerts[0].subject
         assert "sync_mir" in alerts[0].subject
         assert "Drive file not found" in alerts[0].body
-        assert self.admin.email in alerts[0].to
+        assert self.FIXED_RECIPIENT in alerts[0].to
 
     def test_no_admins_means_no_error(self):
-        """Confirms this is genuinely best-effort - an account roster with
-        zero active admins (shouldn't normally happen, but not this
-        function's job to enforce that) must not raise."""
-        self.admin.is_active = False
-        self.admin.save()
+        """Confirms this is genuinely best-effort - even with zero active
+        admins in the roster (the fixed recipient isn't looked up from the
+        DB at all) this must not raise."""
         notify_admins_sync_failure("vapi", "sync_stock")  # must not raise
