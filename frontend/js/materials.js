@@ -233,6 +233,19 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       // (value = qty x rate, so a qty mismatch alone would otherwise
       // double-count as a second, unrelated-looking rate/value problem).
       if (l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) catMap.set('Rate Mismatch in MIR', { label: 'Rate Mismatch in MIR', severity: 'critical' });
+      // 2026-09-08 (Data Quality Flags clarity pass, extended to Raw
+      // Material Analysis) - same previously-computed-but-discarded
+      // match-quality signals Domestic's/Import's own category lists now
+      // surface, checked against this material's own linked line item
+      // (`l.item`), same per-item scoping as the qty/rate checks just
+      // above - never misattributed from a different line item on the same
+      // multi-item PO.
+      if (!l.item.matched) catMap.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
+      if (l.item.taxTypeMismatch) catMap.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
+      if (l.item.netValueMismatched) catMap.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
+      if (l.item.taxableValueMismatched) catMap.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+      if (l.item.finalValueMismatched) catMap.set('Final Amount Mismatch in MIR', { label: 'Final Amount Mismatch in MIR', severity: 'info' });
+      if (l.item.uomMismatch) catMap.set('UOM Mismatch in MIR', { label: 'UOM Mismatch in MIR', severity: 'info' });
       if (l.po.remarks) { const c = categorizeFlag(l.po.remarks); catMap.set(c.label, c); }
     });
     const categories = Array.from(catMap.values());
@@ -356,8 +369,22 @@ function renderMaterialsView() {
   const qtyOrderedOpen = linkage.reduce((s, l) => s + l.openLinks.reduce((s2, x) => s2 + (x.item.qty || 0), 0), 0);
   const qtyDiscMats = linkage.filter(l => l.qtyFlag);
   const rateDiscMats = linkage.filter(l => l.rateFlag);
-  const flaggedMats = linkage.filter(l => l.hasInfoFlag);
+  // Redefined 2026-09-08 (Data Quality Flags clarity pass, same day as
+  // Domestic's/Import's own redefinition) from "info severity only" to "any
+  // category at all" - see computeMaterialPoLinkage()'s own comment for the
+  // full category list this now covers.
+  const flaggedMats = linkage.filter(l => l.categories.length > 0);
   const lowStockMats = filtered.filter(isMaterialLowStock);
+  // Per-category breakdown for "Filter by Flags" (added 2026-09-08, same
+  // pattern as Domestic's/Import's own flagCategoryCounts) - excludes the 2
+  // labels that already have their own dedicated dropdown option
+  // (Quantity/Rate Mismatch in MIR) so they don't appear twice.
+  const DEDICATED_FLAG_LABELS = ['Quantity Mismatch in MIR', 'Rate Mismatch in MIR'];
+  const flagCategoryCounts = {};
+  linkage.forEach(l => l.categories.forEach(c => {
+    if (DEDICATED_FLAG_LABELS.includes(c.label)) return;
+    flagCategoryCounts[c.label] = (flagCategoryCounts[c.label] || 0) + 1;
+  }));
 
   // Same visual language as Purchase Orders' KPI row (renderPoList()) -
   // colored left border + flag icon for discrepancy/quality cards, plain
@@ -374,7 +401,7 @@ function renderMaterialsView() {
     { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', raw: qtyDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: a linked PO line item\'s quantity differs from its matched MIR entry.' },
     { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', raw: rateDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: a linked PO line item\'s rate differs from its matched MIR entry.' },
     { key: 'lowstock', cls: 'critical', label: 'Low Stock (Reorder Soon)', raw: lowStockMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Under 15 days of cover at the current consumption rate, or already at/below Achhad\'s minimum stock level.' },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', raw: flaggedMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.quality, tip: 'Paperwork/process notes on a linked PO\'s remarks - not a money or quantity problem.' },
+    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', raw: flaggedMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on a linked PO line item for this material - quantity/rate mismatch, PO not found in MIR, tax type/net/taxable/final value mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
   ];
   const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.matStatusFilter === c.key ? 'active' : '') + '" data-matkpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.matStatusFilter === c.key) + '">' +
     (c.flag ? flagIconHtml(c.flag) : '') +
@@ -390,6 +417,12 @@ function renderMaterialsView() {
   else if (state.matStatusFilter === 'ratedisc') tableRecs = rateDiscMats.map(l => l.material);
   else if (state.matStatusFilter === 'lowstock') tableRecs = lowStockMats;
   else if (state.matStatusFilter === 'flags') tableRecs = flaggedMats.map(l => l.material);
+  // Per-category filter (added 2026-09-08) - 'cat:<label>' namespacing, same
+  // convention/reasoning as Domestic's/Import's own list views.
+  else if (typeof state.matStatusFilter === 'string' && state.matStatusFilter.startsWith('cat:')) {
+    const wantedLabel = state.matStatusFilter.slice(4);
+    tableRecs = linkage.filter(l => l.categories.some(c => c.label === wantedLabel)).map(l => l.material);
+  }
   tableRecs = applyMatColFilters(tableRecs);
   // "Materials by Stock Quantity" - sorted by stock qty descending, not
   // value (per the reference design).
@@ -507,6 +540,11 @@ function renderMaterialsView() {
           '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch (' + rateDiscMats.length + ')</option>' +
           '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock (' + lowStockMats.length + ')</option>' +
           '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flaggedMats.length + ')</option>' +
+          Object.keys(flagCategoryCounts).sort().map(function (label) {
+            const value = 'cat:' + label;
+            const selected = state.matStatusFilter === value ? ' selected' : '';
+            return '<option value="' + value + '"' + selected + '>' + label + ' (' + flagCategoryCounts[label] + ')</option>';
+          }).join('') +
         '</select>' +
       '</div>' +
       ((state.matCategoryFilter || state.matSubCategoryFilter || state.matStatusFilter) ? '<button id="matClearCategoryFilter">Clear</button>' : '') +

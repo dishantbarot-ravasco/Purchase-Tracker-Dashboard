@@ -224,6 +224,13 @@ def _line_item_dict(item):
         "finalValueDiffPct": (
             float(match.final_value_diff_pct) if match and match.final_value_diff_pct is not None else None
         ),
+        # Added 2026-09-08 (Data Quality Flags clarity pass) - the specific,
+        # already-epsilon-gated booleans dataMismatch used to blend together
+        # with no way to tell which one fired. See flags.js's
+        # computePoFlags() for the Data Quality Flag categories these drive.
+        "netValueMismatched": bool(match and match.net_value_mismatched),
+        "taxableValueMismatched": bool(match and match.taxable_value_mismatched),
+        "finalValueMismatched": bool(match and match.final_value_mismatched),
     }
 
 

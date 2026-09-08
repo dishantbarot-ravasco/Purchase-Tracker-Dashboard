@@ -283,9 +283,21 @@ function poFlagHtml(c, po, plantKey, isImport) {
 // own category list independent of which list view opened it.
 function importCriticalFlagsFor(po) {
   const cats = [];
+  const items = po.items || [];
   if (po.qtyDiscrepancy) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical' });
-  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
-  if ((po.items || []).some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
+  if (items.some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
+  if (items.some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
+  // 2026-09-08 (extended to Imports, same day as Domestic's own version) -
+  // see computePoFlags()'s own comment for what these 6 fields are and why
+  // they were previously discarded. `!i.mirMatch` (no mir_match payload at
+  // all - imports_views.py's _mir_match_dict() returns null below
+  // MATCH_THRESHOLD) is the import equivalent of Domestic's `!it.matched`.
+  if (items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
+  if (items.some(i => i.mirMatch && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.finalValueMismatched)) cats.push({ label: 'Final Amount Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.uomMismatch)) cats.push({ label: 'UOM Mismatch in MIR', severity: 'info' });
   return cats;
 }
 
@@ -378,6 +390,12 @@ function categorizeFlag(text) {
 const DISCREPANCY_LEGEND = [
   { label: 'Quantity Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received quantity (from the matched MIR entry) does not exactly match the PO’s ordered quantity - any difference at all counts, there is no tolerance (e.g. 999kg received against a 1000kg order still flags). Can mean a short shipment, an over shipment, or a receipt logged against the wrong PO.' },
   { label: 'Rate Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received rate (from the matched MIR entry) does not exactly match the PO’s rate - any difference at all counts, there is no tolerance. Can mean a price change was not reflected on the PO or a billing error. Value is deliberately not compared here - it is qty x rate, so a quantity mismatch alone would otherwise double-count as a second, unrelated-looking problem.' },
+  { label: 'PO Not Found in MIR', severity: 'critical', meaning: 'No MIR entry could be matched to this line item at all (no exact PO-number match, and nothing scored high enough on the weighted match) - the PO may not have been received yet, or the receipt was logged in a way this matcher could not link back to it.' },
+  { label: 'Tax Type Mismatch in MIR', severity: 'info', meaning: 'The tax structure used (e.g. IGST vs CGST+SGST) is not consistent between the PO and the matched MIR entry.' },
+  { label: 'Net Value Mismatch in MIR', severity: 'info', meaning: 'The pre-tax net value on the matched MIR entry differs from the PO’s net value by more than a small rounding allowance.' },
+  { label: 'Taxable Value Mismatch in MIR', severity: 'info', meaning: 'The taxable value on the matched MIR entry differs from the PO’s taxable value by more than a small rounding allowance.' },
+  { label: 'Final Amount Mismatch in MIR', severity: 'info', meaning: 'The final (post-tax) amount on the matched MIR entry differs from the PO’s final amount by more than a small rounding allowance.' },
+  { label: 'UOM Mismatch in MIR', severity: 'info', meaning: 'The matched MIR entry records quantity in a different unit family than the PO (for example mass vs count) - the two are not directly comparable without conversion.' },
   { label: 'Misfiled: wrong plant or company', severity: 'info', meaning: 'The PO document was found filed under the wrong plant or company folder in Drive.' },
   { label: 'Duplicate file or PO', severity: 'info', meaning: 'The same PO appears to have been saved or extracted more than once.' },
   { label: 'Revision or superseded PO conflict', severity: 'info', meaning: 'A later revision of the PO exists, or PO numbering suggests it replaced an earlier one, and both versions are present.' },
@@ -408,6 +426,12 @@ const DISCREPANCY_LEGEND = [
 const CATEGORY_COLORS = {
   'Quantity Mismatch in MIR': '#dc2626',
   'Rate Mismatch in MIR': '#dc2626',
+  'PO Not Found in MIR': '#dc2626',
+  'Tax Type Mismatch in MIR': '#d97706',
+  'Net Value Mismatch in MIR': '#d97706',
+  'Taxable Value Mismatch in MIR': '#d97706',
+  'Final Amount Mismatch in MIR': '#d97706',
+  'UOM Mismatch in MIR': '#64748b',
   'Tax calculation or labeling mismatch': '#d97706',
   'Vendor GSTIN anomaly': '#d97706',
   'Misfiled: wrong plant or company': '#6366f1',
@@ -432,9 +456,10 @@ function renderLegendHtml() {
   // property via JS afterwards is not - see brand.css's "Utility classes"
   // comment for why).
   const rows = DISCREPANCY_LEGEND.map(d => '<li class="legend-item"><span class="lg-dot" data-dot-color="' + categoryColor(d.label) + '"></span><span class="lg-label ' + d.severity + '">' + (d.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span><b>' + escapeHtml(d.label) + '</b>: ' + escapeHtml(d.meaning) + '</li>').join('');
-  const infoCount = DISCREPANCY_LEGEND.length - 2;
+  const criticalCount = DISCREPANCY_LEGEND.filter(d => d.severity === 'critical').length;
+  const infoCount = DISCREPANCY_LEGEND.length - criticalCount;
   return '<div class="legend-box" id="legendBox"' + (state.legendOpen ? '' : ' hidden') + '>' +
-    '<h4>What each flag means (' + DISCREPANCY_LEGEND.length + ' categories total: 2 critical, ' + infoCount + ' informational)</h4>' +
+    '<h4>What each flag means (' + DISCREPANCY_LEGEND.length + ' categories total: ' + criticalCount + ' critical, ' + infoCount + ' informational)</h4>' +
     '<div class="legend-sub">Critical flags are computed directly from PO versus actual goods receipt data and need action first. Informational flags come from data quality notes recorded when each PO was extracted, and are process or paperwork issues rather than money or quantity problems.</div>' +
     '<ul class="legend-list">' + rows + '</ul>' +
   '</div>';
@@ -480,6 +505,20 @@ function computePoFlags(po) {
   const cats = new Map();
   if (po._qtyFlag) cats.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
   if (po._rateFlag) cats.set('Rate Mismatch in MIR', { label: 'Rate Mismatch in MIR', severity: 'critical' });
+  // 2026-09-08: previously-computed-but-discarded match-quality signals
+  // (matching_core.py's _diffs_and_flag() always computed these, but only
+  // qty/rate ever surfaced anywhere - see CLAUDE.md's "Identification/
+  // Financial-Check redesign") are now their own Data Quality Flag
+  // categories instead of being invisible. "PO Not Found in MIR" reads
+  // straight off `matched` (no MIR entry crossed MATCH_THRESHOLD for this
+  // line item at all) rather than any match-row field, since there's no
+  // match row to read from in that case.
+  if (items.some(it => !it.matched)) cats.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
+  if (items.some(it => it.taxTypeMismatch)) cats.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.netValueMismatched)) cats.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.taxableValueMismatched)) cats.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.finalValueMismatched)) cats.set('Final Amount Mismatch in MIR', { label: 'Final Amount Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.uomMismatch)) cats.set('UOM Mismatch in MIR', { label: 'UOM Mismatch in MIR', severity: 'info' });
   if (po.remarks) { const c = categorizeFlag(po.remarks); cats.set(c.label, c); }
   po._categories = Array.from(cats.values());
   po._hasInfoFlag = po._categories.some(c => c.severity === 'info');

@@ -26,12 +26,16 @@ function shipmentStepperHtml(po) {
     '<div class="mini-stepper-labels">Placed / Shipped / Cleared</div></div>';
 }
 
-// Same idea as renderPoList()'s rowFlags(), but reading dataQualityFlags
-// (apps/services/import_flags.py's F1-F7) instead of the domestic
-// remarks-regex categorization - one purple icon per flag code present.
+// Same as renderPoList()'s rowFlags() (Domestic) - one color-coded icon per
+// category in po._categories (importCategoriesFor(), set once per render in
+// renderImportPoList()), not just the F1-F7 codes. Previously read
+// po.dataQualityFlags directly instead, which meant the qty/rate/PO-not-
+// found/tax-type/value-mismatch categories had no row-level icon at all,
+// only a KPI-card count - fixed 2026-09-08 alongside extending Data Quality
+// Flags to cover those categories here in the first place.
 function importRowFlags(po) {
-  return (po.dataQualityFlags || []).map(f =>
-    ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(f.code + ': ' + f.message) + '">' + flagIconHtml(KPI_FLAG_COLORS.quality, 'row-flag-icon') + '</span>'
+  return (po._categories || []).map(c =>
+    ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
   ).join('');
 }
 
@@ -65,6 +69,20 @@ function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
   if (po.qtyDiscrepancy) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical', key: 'qtydisc' });
   if (poQtyDiscMir(po)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical', key: 'qtydiscmir' });
   if (poRateDiscMir(po)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical', key: 'ratedisc' });
+  // 2026-09-08 (Data Quality Flags clarity pass, extended to Imports) - same
+  // previously-computed-but-discarded match-quality signals Domestic's own
+  // computePoFlags() now surfaces (flags.js), read from each item's nested
+  // mirMatch object instead of Domestic's flat fields (imports_views.py's
+  // _mir_match_dict() shape - see that function's own comment). No `key` set
+  // on these (unlike the 3 above) - they only ever appear as `cat:<label>`
+  // dropdown options, not a dedicated fixed shortcut.
+  const items = po.items || [];
+  if (items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
+  if (items.some(i => i.mirMatch && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.finalValueMismatched)) cats.push({ label: 'Final Amount Mismatch in MIR', severity: 'info' });
+  if (items.some(i => i.mirMatch && i.mirMatch.uomMismatch)) cats.push({ label: 'UOM Mismatch in MIR', severity: 'info' });
   const seenCodes = new Set();
   (po.dataQualityFlags || []).forEach(f => {
     if (seenCodes.has(f.code)) return;
@@ -177,7 +195,12 @@ function renderImportPoList(el) {
     overdue: filtered.filter(p => p.deliveryDateStatus === 'Overdue').length,
     onOrder: filtered.filter(p => p.deliveryDateStatus === 'On Order').length,
     unknownDate: filtered.filter(p => p.deliveryDateStatus === 'Unknown').length,
-    flags: filtered.filter(p => p.dataQualityFlags && p.dataQualityFlags.length).length,
+    // Redefined 2026-09-08 (Data Quality Flags clarity pass, same day as
+    // Domestic's own renderPoList()) from "has an F1-F7 code" to "any
+    // category at all" - qty/rate/PO-not-found/tax-type/net-taxable-final
+    // value/UOM mismatches plus the existing F1-F7 codes. See
+    // importCategoriesFor()'s own comment for the full category list.
+    flags: filtered.filter(po => po._categories.length > 0).length,
     placed: filtered.filter(p => p.shipmentStage === 'Placed').length,
     shipped: filtered.filter(p => p.shipmentStage === 'Shipped (BL)').length,
     cleared: filtered.filter(p => p.shipmentStage === 'Cleared (BOE)').length,
@@ -187,6 +210,17 @@ function renderImportPoList(el) {
   // 'critical') before Category/Sub Category were repurposed for material
   // data - same fold-in as Domestic's own renderPoList().
   const criticalCount = filtered.filter(po => po._qtyFlag || po._rateFlag).length;
+  // Per-category breakdown for "Filter by Flags" (added 2026-09-08, same
+  // pattern as Domestic's own flagCategoryCounts in po-list.js) - excludes
+  // the 3 categories that already have their own dedicated dropdown option
+  // (qtydisc/qtydiscmir/ratedisc, identified by importCategoriesFor()'s own
+  // `key`) so they don't appear twice.
+  const DEDICATED_FLAG_KEYS = ['qtydisc', 'qtydiscmir', 'ratedisc'];
+  const flagCategoryCounts = {};
+  filtered.forEach(po => po._categories.forEach(c => {
+    if (DEDICATED_FLAG_KEYS.includes(c.key)) return;
+    flagCategoryCounts[c.label] = (flagCategoryCounts[c.label] || 0) + 1;
+  }));
 
   // Same card shape/order philosophy as Domestic's cardDef (file/comment
   // above renderPoList()'s own cardDef): overall total, then the MIR-backed
@@ -206,7 +240,7 @@ function renderImportPoList(el) {
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully received.' },
     { key: 'onorder', cls: 'pending', label: 'Pending Deliveries / On Order', val: counts.onOrder, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched.' },
     { key: 'unknowndate', cls: 'unknown', label: 'Delivery Date Unknown', val: counts.unknownDate, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: counts.flags, flag: KPI_FLAG_COLORS.quality, tip: 'BOE/customs paperwork issues detected on this PO (see flag codes F1-F7).' },
+    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: counts.flags, flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on this import PO - quantity/rate mismatch (PO vs BOE or BOE vs MIR), PO not found in MIR, tax type/net/taxable/final value mismatch, UOM mismatch, or a BOE/customs paperwork flag (F1-F7). Use "Filter by Flags" below to narrow to one specific issue.' },
     { key: 'placed', cls: 'pending', label: 'Awaiting Bill of Lading', val: counts.placed, flag: KPI_FLAG_COLORS.pending, tip: 'PO placed - shipment not yet on a Bill of Lading.' },
     { key: 'shipped', cls: 'partial', label: 'In Transit', val: counts.shipped, flag: KPI_FLAG_COLORS.partial, tip: 'Bill of Lading issued - not yet cleared through customs.' },
     { key: 'cleared', cls: 'received', label: 'Customs Cleared (BOE)', val: counts.cleared, flag: KPI_FLAG_COLORS.received, tip: 'Bill of Entry filed - shipment has cleared customs.' },
@@ -230,7 +264,13 @@ function renderImportPoList(el) {
   else if (sf === 'overdue') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Overdue');
   else if (sf === 'onorder') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'On Order');
   else if (sf === 'unknowndate') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Unknown');
-  else if (sf === 'flags') tableRecs = filtered.filter(p => p.dataQualityFlags && p.dataQualityFlags.length);
+  else if (sf === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
+  // Per-category filter (added 2026-09-08) - 'cat:<label>' namespacing, same
+  // convention/reasoning as Domestic's own po-list.js.
+  else if (typeof sf === 'string' && sf.startsWith('cat:')) {
+    const wantedLabel = sf.slice(4);
+    tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
+  }
   else if (sf === 'placed') tableRecs = filtered.filter(p => p.shipmentStage === 'Placed');
   else if (sf === 'shipped') tableRecs = filtered.filter(p => p.shipmentStage === 'Shipped (BL)');
   else if (sf === 'cleared') tableRecs = filtered.filter(p => p.shipmentStage === 'Cleared (BOE)');
@@ -275,12 +315,18 @@ function renderImportPoList(el) {
     .sort((a, b) => b[1] - a[1])
     .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.importSubCategoryFilter === label ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + n + ')</option>')
     .join('');
+  const flagCategoryOptionsHtml = Object.keys(flagCategoryCounts).sort().map(function (label) {
+    const value = 'cat:' + label;
+    const selected = state.importStatusFilter === value ? ' selected' : '';
+    return '<option value="' + value + '"' + selected + '>' + label + ' (' + flagCategoryCounts[label] + ')</option>';
+  }).join('');
   const flagsOptionsHtml =
     '<option value="qtydisc"' + (state.importStatusFilter === 'qtydisc' ? ' selected' : '') + '>Qty Mismatch - PO vs BOE (' + counts.qtyDisc + ')</option>' +
     '<option value="qtydiscmir"' + (state.importStatusFilter === 'qtydiscmir' ? ' selected' : '') + '>Qty Mismatch in MIR - BOE vs MIR (' + counts.qtyDiscMir + ')</option>' +
     '<option value="ratedisc"' + (state.importStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch in MIR (' + counts.rateDiscMir + ')</option>' +
     '<option value="critical"' + (state.importStatusFilter === 'critical' ? ' selected' : '') + '>Critical Issues (' + criticalCount + ')</option>' +
-    '<option value="flags"' + (state.importStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + counts.flags + ')</option>';
+    '<option value="flags"' + (state.importStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + counts.flags + ')</option>' +
+    flagCategoryOptionsHtml;
 
   // No Value column filter here - min/max value narrowing was removed
   // (project owner, 2026-09-04), same as Domestic's own table.
@@ -335,7 +381,7 @@ function renderImportPoList(el) {
             flagsOptionsHtml +
           '</select>' +
         '</div>' +
-        ((state.importCategoryFilter || state.importSubCategoryFilter || ['qtydisc', 'qtydiscmir', 'ratedisc', 'critical', 'flags'].includes(state.importStatusFilter)) ? '<button id="importClearCategoryFilter">Clear</button>' : '') +
+        ((state.importCategoryFilter || state.importSubCategoryFilter || ['qtydisc', 'qtydiscmir', 'ratedisc', 'critical', 'flags'].includes(state.importStatusFilter) || (typeof state.importStatusFilter === 'string' && state.importStatusFilter.startsWith('cat:'))) ? '<button id="importClearCategoryFilter">Clear</button>' : '') +
       '</div>' : '') +
     ((stageChartData.length || months.length) ?
       '<div class="chart-row">' +
@@ -435,7 +481,7 @@ function renderImportPoList(el) {
   const importClearCategoryBtn = document.getElementById('importClearCategoryFilter');
   if (importClearCategoryBtn) importClearCategoryBtn.onclick = () => {
     state.importCategoryFilter = null; state.importSubCategoryFilter = null;
-    if (['qtydisc', 'qtydiscmir', 'ratedisc', 'critical', 'flags'].includes(state.importStatusFilter)) state.importStatusFilter = null;
+    if (['qtydisc', 'qtydiscmir', 'ratedisc', 'critical', 'flags'].includes(state.importStatusFilter) || (typeof state.importStatusFilter === 'string' && state.importStatusFilter.startsWith('cat:'))) state.importStatusFilter = null;
     state.importTablePage = 1; renderImportPoList(el);
   };
 

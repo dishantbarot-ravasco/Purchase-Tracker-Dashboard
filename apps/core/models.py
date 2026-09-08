@@ -411,6 +411,17 @@ class HRSPOMirMatch(models.Model):
         help_text="PO's Total Inclusive Value vs MIR's Final/Invoice Value - same single-line-item "
                    "caveat as taxable_value_diff_pct.",
     )
+    # Added 2026-09-08 (Data Quality Flags clarity pass): these three were
+    # already being computed in matching_core.py's _diffs_and_flag() (as
+    # value_flagged/taxable_value_flagged/final_value_flagged) and folded
+    # into the single data_mismatch boolean above, discarding which
+    # specific check actually fired. Kept individually now so the frontend
+    # can show "Taxable Value Mismatch" vs "Final Amount Mismatch" as their
+    # own distinct, filterable Data Quality Flag categories instead of one
+    # opaque bucket - see flags.js's computePoFlags().
+    net_value_mismatched = models.BooleanField(default=False)
+    taxable_value_mismatched = models.BooleanField(default=False)
+    final_value_mismatched = models.BooleanField(default=False)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -829,6 +840,17 @@ class RTPAchhadPOMirMatch(models.Model):
     tax_type_mismatch = models.BooleanField(default=False)
     taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Added 2026-09-08 (Data Quality Flags clarity pass): these three were
+    # already being computed in matching_core.py's _diffs_and_flag() (as
+    # value_flagged/taxable_value_flagged/final_value_flagged) and folded
+    # into the single data_mismatch boolean above, discarding which
+    # specific check actually fired. Kept individually now so the frontend
+    # can show "Taxable Value Mismatch" vs "Final Amount Mismatch" as their
+    # own distinct, filterable Data Quality Flag categories instead of one
+    # opaque bucket - see flags.js's computePoFlags().
+    net_value_mismatched = models.BooleanField(default=False)
+    taxable_value_mismatched = models.BooleanField(default=False)
+    final_value_mismatched = models.BooleanField(default=False)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1238,6 +1260,17 @@ class RTPVapiPOMirMatch(models.Model):
     tax_type_mismatch = models.BooleanField(default=False)
     taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Added 2026-09-08 (Data Quality Flags clarity pass): these three were
+    # already being computed in matching_core.py's _diffs_and_flag() (as
+    # value_flagged/taxable_value_flagged/final_value_flagged) and folded
+    # into the single data_mismatch boolean above, discarding which
+    # specific check actually fired. Kept individually now so the frontend
+    # can show "Taxable Value Mismatch" vs "Final Amount Mismatch" as their
+    # own distinct, filterable Data Quality Flag categories instead of one
+    # opaque bucket - see flags.js's computePoFlags().
+    net_value_mismatched = models.BooleanField(default=False)
+    taxable_value_mismatched = models.BooleanField(default=False)
+    final_value_mismatched = models.BooleanField(default=False)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1491,6 +1524,17 @@ class HRSImportPOMirMatch(models.Model):
     tax_type_mismatch = models.BooleanField(default=False)
     taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Added 2026-09-08 (Data Quality Flags clarity pass): these three were
+    # already being computed in matching_core.py's _diffs_and_flag() (as
+    # value_flagged/taxable_value_flagged/final_value_flagged) and folded
+    # into the single data_mismatch boolean above, discarding which
+    # specific check actually fired. Kept individually now so the frontend
+    # can show "Taxable Value Mismatch" vs "Final Amount Mismatch" as their
+    # own distinct, filterable Data Quality Flag categories instead of one
+    # opaque bucket - see flags.js's computePoFlags().
+    net_value_mismatched = models.BooleanField(default=False)
+    taxable_value_mismatched = models.BooleanField(default=False)
+    final_value_mismatched = models.BooleanField(default=False)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1632,6 +1676,17 @@ class RTPAchhadImportPOMirMatch(models.Model):
     tax_type_mismatch = models.BooleanField(default=False)
     taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Added 2026-09-08 (Data Quality Flags clarity pass): these three were
+    # already being computed in matching_core.py's _diffs_and_flag() (as
+    # value_flagged/taxable_value_flagged/final_value_flagged) and folded
+    # into the single data_mismatch boolean above, discarding which
+    # specific check actually fired. Kept individually now so the frontend
+    # can show "Taxable Value Mismatch" vs "Final Amount Mismatch" as their
+    # own distinct, filterable Data Quality Flag categories instead of one
+    # opaque bucket - see flags.js's computePoFlags().
+    net_value_mismatched = models.BooleanField(default=False)
+    taxable_value_mismatched = models.BooleanField(default=False)
+    final_value_mismatched = models.BooleanField(default=False)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different
@@ -1788,6 +1843,17 @@ class RTPVapiImportPOMirMatch(models.Model):
     tax_type_mismatch = models.BooleanField(default=False)
     taxable_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     final_value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Added 2026-09-08 (Data Quality Flags clarity pass): these three were
+    # already being computed in matching_core.py's _diffs_and_flag() (as
+    # value_flagged/taxable_value_flagged/final_value_flagged) and folded
+    # into the single data_mismatch boolean above, discarding which
+    # specific check actually fired. Kept individually now so the frontend
+    # can show "Taxable Value Mismatch" vs "Final Amount Mismatch" as their
+    # own distinct, filterable Data Quality Flag categories instead of one
+    # opaque bucket - see flags.js's computePoFlags().
+    net_value_mismatched = models.BooleanField(default=False)
+    taxable_value_mismatched = models.BooleanField(default=False)
+    final_value_mismatched = models.BooleanField(default=False)
 
     # Match Accuracy Programme fixes 2.C/2.D (apps/services/matching_core.py):
     # uom_mismatch is True when qty/rate's units belong to different

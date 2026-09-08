@@ -157,23 +157,32 @@ async function openMaterialModal(compositeKey) {
   // flag with its own dismiss control already on that PO's own
   // Flags & Corrections tab (poFlagHtml, po-modal.js); this box just needs
   // to stop hiding that it exists.
-  const materialCritPos = new Map(); // label -> Set of "PO (plant)" strings
+  // label -> { severity, poSet: Set of "PO (plant)" strings }. Extended
+  // 2026-09-08 (Data Quality Flags clarity pass, same day as Domestic's/
+  // Import's own extension) beyond the original qty/rate-only pair - see
+  // computeMaterialPoLinkage()'s own comment (materials.js) for the full
+  // list and why each is scoped to `l.item`, not the parent PO.
+  const materialCritPos = new Map();
+  const addMaterialFlag = (label, severity, l) => {
+    if (!materialCritPos.has(label)) materialCritPos.set(label, { severity, poSet: new Set() });
+    materialCritPos.get(label).poSet.add(l.po.poNumber + ' (' + l.plantLabel + ')');
+  };
   linked.forEach(l => {
-    if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) {
-      if (!materialCritPos.has('Quantity Mismatch in MIR')) materialCritPos.set('Quantity Mismatch in MIR', new Set());
-      materialCritPos.get('Quantity Mismatch in MIR').add(l.po.poNumber + ' (' + l.plantLabel + ')');
-    }
+    if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) addMaterialFlag('Quantity Mismatch in MIR', 'critical', l);
     // Rate only, not value - see flags.js's computePoFlags() for why.
-    if (l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) {
-      if (!materialCritPos.has('Rate Mismatch in MIR')) materialCritPos.set('Rate Mismatch in MIR', new Set());
-      materialCritPos.get('Rate Mismatch in MIR').add(l.po.poNumber + ' (' + l.plantLabel + ')');
-    }
+    if (l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) addMaterialFlag('Rate Mismatch in MIR', 'critical', l);
+    if (!l.item.matched) addMaterialFlag('PO Not Found in MIR', 'critical', l);
+    if (l.item.taxTypeMismatch) addMaterialFlag('Tax Type Mismatch in MIR', 'info', l);
+    if (l.item.netValueMismatched) addMaterialFlag('Net Value Mismatch in MIR', 'info', l);
+    if (l.item.taxableValueMismatched) addMaterialFlag('Taxable Value Mismatch in MIR', 'info', l);
+    if (l.item.finalValueMismatched) addMaterialFlag('Final Amount Mismatch in MIR', 'info', l);
+    if (l.item.uomMismatch) addMaterialFlag('UOM Mismatch in MIR', 'info', l);
   });
-  const materialCritFlagsHtml = Array.from(materialCritPos.entries()).map(([label, poSet]) =>
+  const materialCritFlagsHtml = Array.from(materialCritPos.entries()).map(([label, entry]) =>
     '<div class="field-block mb-8">' +
       flagIconHtml(categoryColor(label), 'row-flag-icon') +
-      ' <span class="lg-label critical">CRITICAL</span> <b>' + escapeHtml(label) + '</b>' +
-      '<div class="mt-4 fs-11-5 text-slate-soft">Affects: ' + escapeHtml(Array.from(poSet).join(', ')) + ' - open that PO\'s own detail view to dismiss.</div>' +
+      ' <span class="lg-label ' + entry.severity + '">' + (entry.severity === 'critical' ? 'CRITICAL' : 'INFO') + '</span> <b>' + escapeHtml(label) + '</b>' +
+      '<div class="mt-4 fs-11-5 text-slate-soft">Affects: ' + escapeHtml(Array.from(entry.poSet).join(', ')) + ' - open that PO\'s own detail view to dismiss.</div>' +
     '</div>'
   ).join('');
   // Match Accuracy Programme fix 3.G: each sibling lot's own stock-balance

@@ -81,12 +81,35 @@ function renderPoList(el) {
   const total = filtered.length;
   const qtyDiscCount = filtered.filter(po => po._qtyFlag).length;
   const rateDiscCount = filtered.filter(po => po._rateFlag).length;
-  const flagsCount = filtered.filter(po => po._hasInfoFlag).length;
+  // "Data Quality Flags" used to mean "informational severity only"
+  // (po._hasInfoFlag) - narrower than the name promised, and confusingly
+  // disjoint from Quantity/Rate Mismatches (a PO could show 0 Data Quality
+  // Flags while still having a completely invisible-to-this-KPI PO-Not-
+  // Found/tax-type/taxable-value/final-amount problem). Redefined
+  // 2026-09-08 (project owner: "add all the errors... under one KPI") to
+  // mean ANY flag at all - every category in po._categories, critical and
+  // info alike (Quantity/Rate/PO-Not-Found/Tax Type/Net-Taxable-Final Value/
+  // UOM mismatches, plus the existing remarks-based info categories). See
+  // flags.js's computePoFlags() for the full category list this now covers,
+  // and flagCategoryCounts below for the per-category breakdown the
+  // "Filter by Flags" dropdown now exposes instead of one opaque bucket.
+  const flagsCount = filtered.filter(po => po._categories.length > 0).length;
   // "Critical Issues" in "Filter by Flags" below - the combined qty-OR-rate
   // count, filling in for what "Filter by Category" used to mean before
   // Category/Sub Category were repurposed for material data (2026-09-08) -
   // see that comment above for the full story.
   const criticalCount = filtered.filter(po => po._qtyFlag || po._rateFlag).length;
+  // Per-category breakdown across every PO in the current date range/plant
+  // selection - same aggregation pattern as categoryCounts/subCategoryCounts
+  // above, just keyed on flag category label instead of material category.
+  // Lets "Filter by Flags" list every actual issue type present (with its
+  // own count) instead of the old fixed 4-option list, so a reviewer can
+  // jump straight to e.g. "Taxable Value Mismatch in MIR (3)" instead of
+  // opening every flagged PO to find out which ones have that problem.
+  const flagCategoryCounts = {};
+  filtered.forEach(po => po._categories.forEach(c => {
+    flagCategoryCounts[c.label] = (flagCategoryCounts[c.label] || 0) + 1;
+  }));
 
   // Order requested by the project owner (2026-09-04): Total -> Material
   // Inwarded -> Partial Delivered -> the two "critical" (money/quantity)
@@ -108,7 +131,7 @@ function renderPoList(el) {
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully matched to MIR.' },
     { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched to MIR.' },
     { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality, tip: 'Paperwork/process notes detected in the PO\'s remarks - not a money or quantity problem.' },
+    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on this PO - quantity/rate mismatch, PO not found in MIR, tax type/taxable value/final amount mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
   ];
   const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.statusFilter === c.key ? 'active' : '') + '" data-kpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.statusFilter === c.key) + '">' +
     (c.flag ? flagIconHtml(c.flag) : '') +
@@ -118,7 +141,15 @@ function renderPoList(el) {
   if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
   else if (state.statusFilter === 'ratedisc') tableRecs = filtered.filter(po => po._rateFlag);
   else if (state.statusFilter === 'critical') tableRecs = filtered.filter(po => po._qtyFlag || po._rateFlag);
-  else if (state.statusFilter === 'flags') tableRecs = filtered.filter(po => po._hasInfoFlag);
+  else if (state.statusFilter === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
+  // "Filter by Flags" per-category options (added 2026-09-08) are namespaced
+  // 'cat:<label>' rather than the bare label, so they can never collide with
+  // a real STATUS_LABELS key (received/partial/pending/overdue/unknown) in
+  // the catch-all branch below.
+  else if (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:')) {
+    const wantedLabel = state.statusFilter.slice(4);
+    tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
+  }
   else if (state.statusFilter && state.statusFilter !== 'total') tableRecs = filtered.filter(po => po._status === state.statusFilter);
   // Table-only filters (never touch the KPI counts/charts above, which stay
   // scoped to `filtered` = the from/to date range + category filter only) -
@@ -211,11 +242,17 @@ function renderPoList(el) {
   // a second, differently-labeled option for the identical underlying set.
   // "Critical Issues" is new here: the qty-OR-rate combined count that
   // "Filter by Category" used to expose as one of its two severity buckets.
+  const flagCategoryOptionsHtml = Object.keys(flagCategoryCounts).sort().map(function (label) {
+    const value = 'cat:' + label;
+    const selected = state.statusFilter === value ? ' selected' : '';
+    return '<option value="' + value + '"' + selected + '>' + label + ' (' + flagCategoryCounts[label] + ')</option>';
+  }).join('');
   const flagsOptionsHtml =
     '<option value="qtydisc"' + (state.statusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch (' + qtyDiscCount + ')</option>' +
     '<option value="ratedisc"' + (state.statusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch (' + rateDiscCount + ')</option>' +
     '<option value="critical"' + (state.statusFilter === 'critical' ? ' selected' : '') + '>Critical Issues (' + criticalCount + ')</option>' +
-    '<option value="flags"' + (state.statusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flagsCount + ')</option>';
+    '<option value="flags"' + (state.statusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flagsCount + ')</option>' +
+    flagCategoryOptionsHtml;
   // Per-column header filter content - "as per their data": text (contains)
   // for PO Number/Vendor, date-range for Created On (bound directly to the
   // same state.from/state.to the top filter-row uses, not a duplicate
@@ -285,7 +322,7 @@ function renderPoList(el) {
             flagsOptionsHtml +
           '</select>' +
         '</div>' +
-        ((state.categoryFilter || state.subCategoryFilter || ['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter)) ? '<button id="clearCategoryFilter">Clear</button>' : '') +
+        ((state.categoryFilter || state.subCategoryFilter || ['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter) || (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:'))) ? '<button id="clearCategoryFilter">Clear</button>' : '') +
       '</div>' : '') +
     ((statusChartData.length || months.length) ?
       '<div class="chart-row">' +
@@ -406,7 +443,7 @@ function renderPoList(el) {
   const clearCategoryBtn = document.getElementById('clearCategoryFilter');
   if (clearCategoryBtn) clearCategoryBtn.onclick = () => {
     state.categoryFilter = null; state.subCategoryFilter = null;
-    if (['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter)) state.statusFilter = null;
+    if (['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter) || (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:'))) state.statusFilter = null;
     state.tablePage = 1; renderPoList(el);
   };
 

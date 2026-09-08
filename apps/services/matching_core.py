@@ -541,7 +541,18 @@ def _tax_type_mismatch(tax_type: str | None, mir) -> bool:
 def _diffs_and_flag(config: _MatchConfig, item: _Matchable, mir):
     """Returns (qty_diff_pct, rate_diff_pct, value_diff_pct, is_flagged,
     uom_mismatch, severity, qty_mismatched, rate_mismatched, data_mismatch,
-    tax_type_mismatch, taxable_value_diff_pct, final_value_diff_pct).
+    tax_type_mismatch, taxable_value_diff_pct, final_value_diff_pct,
+    net_value_mismatched, taxable_value_mismatched, final_value_mismatched).
+
+    The last three (added 2026-09-08, Data Quality Flags clarity pass) were
+    already being computed here the whole time as value_flagged/
+    taxable_value_flagged/final_value_flagged - they just got folded into
+    the single data_mismatch bucket and discarded instead of being kept
+    around for the caller to store individually. Surfacing them lets the
+    frontend show *which* specific check failed (net value vs taxable value
+    vs final/invoice value) instead of one opaque "data mismatch" flag -
+    see flags.js's computePoFlags() for where these land as their own
+    filterable Data Quality Flag categories.
 
     Identification/Financial-Check redesign (2026-09-07, see module
     docstring): only Qty and Rate produce a hard error now
@@ -607,6 +618,7 @@ def _diffs_and_flag(config: _MatchConfig, item: _Matchable, mir):
         qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_flagged,
         taxable_value_diff, final_value_diff,
+        value_flagged, taxable_value_flagged, final_value_flagged,
     )
 
 
@@ -689,6 +701,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
         qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
+        net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
     ) = _diffs_and_flag(config, item, best_entry)
     match, _ = config.po_mir_match_model.objects.update_or_create(
         po_line_item=po_line_item,
@@ -711,6 +724,9 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             tax_type_mismatch=tax_type_mismatch,
             taxable_value_diff_pct=taxable_value_diff,
             final_value_diff_pct=final_value_diff,
+            net_value_mismatched=net_value_mismatched,
+            taxable_value_mismatched=taxable_value_mismatched,
+            final_value_mismatched=final_value_mismatched,
         ),
     )
     return match
@@ -751,6 +767,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
+        net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
     ) = _diffs_and_flag(config, item, best_entry)
     defaults = dict(
         mir_entry=best_entry,
@@ -774,6 +791,9 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
             tax_type_mismatch=tax_type_mismatch,
             taxable_value_diff_pct=taxable_value_diff,
             final_value_diff_pct=final_value_diff,
+            net_value_mismatched=net_value_mismatched,
+            taxable_value_mismatched=taxable_value_mismatched,
+            final_value_mismatched=final_value_mismatched,
         ))
     match, _ = config.import_po_mir_match_model.objects.update_or_create(
         po_line_item=import_line_item,
@@ -1031,6 +1051,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
+            net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
         ) = _diffs_and_flag(config, matchable, mir)
         config.po_mir_match_model.objects.update_or_create(
             po_line_item=item,
@@ -1053,6 +1074,9 @@ def run_full_match(config: _MatchConfig) -> dict:
                 tax_type_mismatch=tax_type_mismatch,
                 taxable_value_diff_pct=taxable_value_diff,
                 final_value_diff_pct=final_value_diff,
+                net_value_mismatched=net_value_mismatched,
+                taxable_value_mismatched=taxable_value_mismatched,
+                final_value_mismatched=final_value_mismatched,
             ),
         )
         po_matched += 1
@@ -1071,6 +1095,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
+            net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
         ) = _diffs_and_flag(config, matchable, mir)
         defaults = dict(
             mir_entry=mir,
@@ -1094,6 +1119,9 @@ def run_full_match(config: _MatchConfig) -> dict:
                 tax_type_mismatch=tax_type_mismatch,
                 taxable_value_diff_pct=taxable_value_diff,
                 final_value_diff_pct=final_value_diff,
+                net_value_mismatched=net_value_mismatched,
+                taxable_value_mismatched=taxable_value_mismatched,
+                final_value_mismatched=final_value_mismatched,
             ))
         config.import_po_mir_match_model.objects.update_or_create(
             po_line_item=item,

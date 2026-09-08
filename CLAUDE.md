@@ -981,6 +981,60 @@ Discrepancy KPI cards, which reuse the same constant via `computeMaterialPoLinka
 into their wording (a "0" would read oddly as "by more than 0 percent") — they state "no
 tolerance" directly instead, so re-word them too if the policy ever changes back to a nonzero cutoff.
 
+**Superseded (2026-09-08): Data Quality Flags now cover every computed match-quality signal, not
+just qty/rate/remarks.** `apps/services/matching_core.py`'s `_diffs_and_flag()` had always computed
+`taxable_value_flagged`/`final_value_flagged` (and the model layer already had
+`tax_type_mismatch`/`uom_mismatch`) alongside `net_value_mismatched` — but before this pass, only
+qty/rate ever reached the frontend as a visible category; the rest were computed and stored, then
+silently discarded. The project owner asked for this directly: *"add all the error like on make it
+clear like PO not found, tax rate, taxable value, final amount mismatch all the errors under one KPI
+data quality flag and then in filter categorize them based on the issue."* `flags.js`'s
+`computePoFlags()` now also sets 6 more categories per PO (all derived from the PO's own line items,
+same as Quantity/Rate Mismatch already were): **PO Not Found in MIR** (critical — `!it.matched`, no
+MIR entry crossed `MATCH_THRESHOLD` at all), **Tax Type Mismatch in MIR** (`it.taxTypeMismatch`),
+**Net Value Mismatch in MIR** (`it.netValueMismatched`), **Taxable Value Mismatch in MIR**
+(`it.taxableValueMismatched`), **Final Amount Mismatch in MIR** (`it.finalValueMismatched`), **UOM
+Mismatch in MIR** (`it.uomMismatch`) — all added to `DISCREPANCY_LEGEND`/`CATEGORY_COLORS` too, so
+the legend panel and row-flag icon colors stay in sync with the same category list. New backend
+columns (migration `0040`): `net_value_mismatched`/`taxable_value_mismatched`/
+`final_value_mismatched` on all 6 `*POMirMatch`/`*ImportPOMirMatch` models, surfaced by
+`_domestic_base.py`'s/`imports_views.py`'s `_line_item_dict()`. The "Data Quality Flags" KPI card
+(`po-list.js`) already meant "any category at all" (redefined the same day, see that file's own
+comment at the `flagsCount` definition) — it just had far fewer categories feeding it before this.
+**"Filter by Flags" no longer has a fixed 4-option list** — `po-list.js` now also appends one
+`<option value="cat:<label>">` per category actually present in the current date range/plant
+selection (built from `flagCategoryCounts`, a per-label tally over `po._categories`), so a reviewer
+can jump straight to e.g. "Taxable Value Mismatch in MIR (3)" instead of opening every flagged PO to
+find out which ones have that problem. **Extended the same day to Import Purchases and Raw Material Analysis**, per the project owner's
+direct follow-up request. Each view already had its own per-item/per-link category computation
+(mirroring Domestic's, not sharing code with it — same duplication precedent as the rest of this
+app's per-plant/per-view logic) — extended in place rather than unified into one shared function:
+- **Import Purchases** (`import-po.js`'s `importCategoriesFor()`, `flags.js`'s
+  `importCriticalFlagsFor()` for the PO detail modal) — reads the same 6 fields off each item's
+  nested `mirMatch` object (`imports_views.py`'s `_mir_match_dict()`, which already exposed them —
+  see the note above). "PO Not Found in MIR" here means `!i.mirMatch` (no match payload at all,
+  same as Domestic's `!it.matched`). `counts.flags`/`flagsOptionsHtml` gained the same "any
+  category" redefinition and `cat:<label>` options as Domestic (excluding the 3 labels —
+  `qtydisc`/`qtydiscmir`/`ratedisc` — that already have a dedicated dropdown option, tracked via
+  each category's own `key`). **`importRowFlags()` was also fixed to read `po._categories`
+  instead of only `po.dataQualityFlags`** — previously the qty/rate/PO-not-found/value-mismatch
+  categories had no per-row flag icon at all, only a KPI-card count; this brought it to the same
+  per-category, per-color icon Domestic's `rowFlags()` already had.
+- **Raw Material Analysis** (`materials.js`'s `computeMaterialPoLinkage()`, `material-modal.js`'s
+  `materialCritPos`) — reads the same 6 fields off `l.item` (the material's fuzzy-linked PO line
+  item, from `linkedPoItemsForMaterial()`), same per-item scoping the existing qty/rate checks
+  already used (never misattributed from a different line item on the same multi-item PO).
+  `flaggedMats`/the "Data Quality Flags" KPI redefined the same "any category" way, with
+  `cat:<label>` options added to `matFlagsSelect` (excluding the 2 dedicated Quantity/Rate Mismatch
+  labels). The material modal's Flags & Corrections tab (`materialCritPos`, previously a bare
+  label→PO-set map with every entry hardcoded "CRITICAL") now also carries each entry's real
+  severity, rendering "INFO" for the 5 new info-severity categories.
+- **Note on "PO Not Found in MIR" density**: unlike Domestic, where a PO only exists once its own
+  line items are placed, both Import's and Materials' linked-item universe includes every
+  still-open (not-yet-received) PO by construction — so this category will naturally fire for
+  most on-order materials/import POs, same as it does for Domestic's own on-order POs. This is the
+  expected, consistent behavior, not a bug to suppress.
+
 **The regex categorization is intentionally imprecise, same as the original.** E.g. a remark
 mentioning "no Item ID/Vendor Code printed" (an old-format-PO-template note) matches the "Vendor
 code scheme inconsistency" rule via a bare `/vendor code/i` test, even though that's not quite the

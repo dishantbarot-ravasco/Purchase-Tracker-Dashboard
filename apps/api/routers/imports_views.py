@@ -159,6 +159,11 @@ def _mir_match_dict(item):
         "finalValueDiffPct": (
             float(match.final_value_diff_pct) if getattr(match, "final_value_diff_pct", None) is not None else None
         ),
+        # Added 2026-09-08 (Data Quality Flags clarity pass) - see
+        # _domestic_base.py's _line_item_dict() for the same fields.
+        "netValueMismatched": bool(getattr(match, "net_value_mismatched", False)),
+        "taxableValueMismatched": bool(getattr(match, "taxable_value_mismatched", False)),
+        "finalValueMismatched": bool(getattr(match, "final_value_mismatched", False)),
     }
 
 

@@ -425,7 +425,7 @@ class TestDiffsAndFlagValueEpsilon:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.50"))
         (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
          qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
-         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
+         taxable_value_diff, final_value_diff, *_new_fields) = _diffs_and_flag(config, item, mir)
         assert is_flagged is False
         assert data_mismatch is False
         assert uom_mismatch is False
@@ -440,9 +440,50 @@ class TestDiffsAndFlagValueEpsilon:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("4995.00"))
         (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
          qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
-         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
+         taxable_value_diff, final_value_diff,
+         net_value_mismatched, taxable_value_mismatched, final_value_mismatched) = _diffs_and_flag(config, item, mir)
         assert is_flagged is False
         assert data_mismatch is True
+        # Added 2026-09-08: net_value_mismatched is the specific signal that
+        # rolled into data_mismatch here - confirming it's actually True
+        # (not just that the combined bucket fired) is the whole point of
+        # having a separate field at all.
+        assert net_value_mismatched is True
+        assert taxable_value_mismatched is False
+        assert final_value_mismatched is False
+
+    def test_taxable_value_mismatch_is_flagged_individually(self):
+        """taxable_value_mismatched (added 2026-09-08) is only set for a
+        single-line-item PO (total_value is otherwise a whole-PO aggregate,
+        see _po_matchable()'s docstring) and only when the gap exceeds the
+        value epsilon - same rule as net value, just a different pair of
+        figures (PO's own Total Value vs MIR's Taxable Value)."""
+        config = _test_config()
+        item = _Matchable(
+            "Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"),
+            total_value=Decimal("5100.00"),
+        )
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched) = _diffs_and_flag(config, item, mir)
+        assert taxable_value_mismatched is True
+        assert net_value_mismatched is False
+        assert final_value_mismatched is False
+
+    def test_final_value_mismatch_is_flagged_individually(self):
+        """final_value_mismatched (added 2026-09-08) - PO's Total Inclusive
+        Value vs MIR's Final/Invoice Value, same single-line-item and
+        epsilon rules as taxable_value_mismatched."""
+        config = _test_config()
+        item = _Matchable(
+            "Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"),
+            total_inclusive_value=Decimal("5900.00"),
+        )
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir.invoice_final_value = Decimal("5850.00")
+        (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched) = _diffs_and_flag(config, item, mir)
+        assert final_value_mismatched is True
+        assert net_value_mismatched is False
+        assert taxable_value_mismatched is False
 
     def test_quantity_keeps_exact_zero_tolerance_regardless_of_value_epsilon(self):
         """Quantity is directly reported (not derived like value) and stays
@@ -454,7 +495,7 @@ class TestDiffsAndFlagValueEpsilon:
         mir = _FakeMir("Zinc Oxide", Decimal("999"), "KG", Decimal("50"), Decimal("50000.00"))  # 1kg out of 1000kg
         (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
          qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
-         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
+         taxable_value_diff, final_value_diff, *_new_fields) = _diffs_and_flag(config, item, mir)
         assert is_flagged is True
         assert qty_mismatched is True
         assert rate_mismatched is False
@@ -470,7 +511,7 @@ class TestDiffsAndFlagValueEpsilon:
         mir = _FakeMir("Reclaim Rubber", Decimal("100"), "NOS", Decimal("50"), Decimal("5000.00"))
         (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
          qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
-         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
+         taxable_value_diff, final_value_diff, *_new_fields) = _diffs_and_flag(config, item, mir)
         assert uom_mismatch is True
         assert qty_diff is None
         assert rate_diff is None
@@ -487,7 +528,7 @@ class TestDiffsAndFlagValueEpsilon:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
          qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
-         taxable_value_diff, final_value_diff) = _diffs_and_flag(config, item, mir)
+         taxable_value_diff, final_value_diff, *_new_fields) = _diffs_and_flag(config, item, mir)
         assert is_flagged is False
         assert data_mismatch is False
         assert severity is None
@@ -511,7 +552,7 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="IGST")
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
-        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is False
 
     def test_igst_po_with_cgst_sgst_mir_is_a_mismatch(self):
@@ -519,7 +560,7 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="IGST")
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
-        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is True
 
     def test_cgst_sgst_po_with_igst_mir_is_a_mismatch(self):
@@ -527,7 +568,7 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="CGST+SGST")
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
-        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is True
 
     def test_blank_tax_type_is_never_a_mismatch(self):
@@ -535,7 +576,7 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
-        *_rest, tax_type_mismatch, _taxable, _final = _diffs_and_flag(config, item, mir)
+        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is False
 
 
