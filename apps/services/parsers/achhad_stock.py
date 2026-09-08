@@ -168,7 +168,13 @@ def parse_achhad_stock_xlsx(file_bytes: bytes) -> list[ParsedAchhadStockLot]:
     per material row, skipping category-divider and totals-footer rows.
     Raises HeaderMismatch immediately if the workbook has no sheets or any
     checked header cell doesn't match what this parser was built against."""
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    # read_only=True - see parsers/stock.py's own comment on this same line
+    # for why (a real production OOM on Render, caused by default-mode
+    # loading pivot table caches this app never reads). Safe here for the
+    # same reason: every access below (including the day-matrix scan) is a
+    # single-cell reference or ws.max_row/max_column, never a range slice or
+    # write.
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     if not wb.sheetnames:
         raise HeaderMismatch("Workbook has no sheets.")
     ws = wb[wb.sheetnames[0]]  # tab is renamed every month (e.g. 'Aug 26-27') - see module docstring

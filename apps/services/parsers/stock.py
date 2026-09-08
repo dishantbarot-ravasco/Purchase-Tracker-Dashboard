@@ -90,7 +90,17 @@ def parse_stock_xlsx(file_bytes: bytes) -> list[ParsedStockLot]:
     """Reads the 'Stock' sheet and returns one ParsedStockLot per lot row.
     Raises HeaderMismatch immediately if the sheet name or any checked
     header cell doesn't match what this parser was built against."""
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    # read_only=True (added 2026-09-08, real production OOM found on Render's
+    # Starter-tier worker - 512MB): default mode loads the ENTIRE workbook
+    # object graph into memory, including pivot table caches this app never
+    # reads at all (confirmed via openpyxl's own "invalid dependency
+    # definitions" warnings on every pivotCacheDefinition part of the real
+    # file) - read_only mode streams instead, and explicitly skips pivot
+    # tables/charts/styles it doesn't need. Safe here: every access below is
+    # a single-cell reference (ws['A5'] or ws.cell(row=, column=)) or
+    # ws.max_row/max_column, all of which read_only worksheets support -
+    # never a range slice or a write, which read_only mode doesn't support.
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
     ws = wb[SHEET_NAME]

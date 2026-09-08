@@ -142,7 +142,12 @@ def parse_mir_xlsx(file_bytes: bytes) -> list[ParsedMirEntry]:
     row. Raises HeaderMismatch immediately if the sheet name or any header
     cell doesn't match what this parser was built against, rather than
     silently reading misaligned columns."""
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+    # read_only=True - see parsers/stock.py's own comment on this same line
+    # for why (a real production OOM on Render, caused by default-mode
+    # loading pivot table caches this app never reads). Safe here for the
+    # same reason: every access below is a single-cell reference or
+    # ws.max_row, never a range slice or write.
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
     ws = wb[SHEET_NAME]
