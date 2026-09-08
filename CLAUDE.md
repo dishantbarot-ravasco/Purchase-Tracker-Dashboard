@@ -405,7 +405,12 @@ pass closed every item that was actually fixable in code:
   `AUTH_USER_MODEL` note earlier in this file), so a superuser account is an undocumented,
   unaudited path into `/admin/` that bypasses `PTAuditLog` for `PTUser` edits.
 - **Dependabot** (`.github/dependabot.yml`) — continuous CVE monitoring for pip + GitHub Actions
-  dependencies, on top of (not instead of) CI's own point-in-time `pip-audit` step.
+  dependencies, on top of (not instead of) CI's own point-in-time `pip-audit` step. **7-day
+  cooldown (added 2026-09-08, project owner: "open source library will be updated only after 7
+  days of any new version")** — `cooldown.default-days: 7` on both ecosystems, so Dependabot won't
+  propose a version bump until it's been out a week, giving the upstream community a window to
+  catch an immediately-broken or malicious release first. A real CVE fix still lands within that
+  same week, just not same-day.
 - **Read-endpoint plant scoping** — see the "Role differentiation..." bullet just above this
   section; this was the one item this pass touched that could plausibly change real user-visible
   behavior, so it's documented there in full rather than duplicated here.

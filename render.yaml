@@ -38,13 +38,29 @@ services:
     region: oregon
     branch: main
     healthCheckPath: /
+    # --python 3.12 on every `uv` invocation below: this repo's own
+    # .python-version pins 3.14 (deliberately - see that file's own comment/
+    # CLAUDE.md's ".env gotchas" section for why local dev stays on whatever
+    # a developer's machine has, same reasoning the Dockerfile's own
+    # python:3.12-slim base already documents). Render's native (non-Docker)
+    # build only ever installs the PYTHON_VERSION above and has managed
+    # Python downloads disabled - left to its own defaults, `uv` honors
+    # .python-version and fails outright ("No interpreter found for Python
+    # 3.14 ... Python downloads are set to 'never'") since 3.14 was never
+    # installed and can't be fetched. The explicit --python flag overrides
+    # that file for this build only, without touching it (or anyone's local
+    # dev environment) - pyproject.toml's own `requires-python = ">=3.12"` is
+    # satisfied. Minor-version only ("3.12", not "3.12.8") deliberately -
+    # matches whatever patch PYTHON_VERSION below actually installs without
+    # needing the two to stay in exact lockstep if Render's own image ever
+    # bumps the patch version on its own.
     buildCommand: >-
       pip install uv &&
-      uv sync --frozen &&
-      uv run python manage.py collectstatic --noinput &&
-      uv run python manage.py migrate --noinput &&
-      uv run python manage.py ensure_schedules &&
-      uv run python manage.py createcachetable
+      uv sync --frozen --python 3.12 &&
+      uv run --python 3.12 python manage.py collectstatic --noinput &&
+      uv run --python 3.12 python manage.py migrate --noinput &&
+      uv run --python 3.12 python manage.py ensure_schedules &&
+      uv run --python 3.12 python manage.py createcachetable
     startCommand: uv run gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2
     envVars:
       - key: PYTHON_VERSION
@@ -152,8 +168,12 @@ services:
     plan: starter
     region: oregon
     branch: main
-    buildCommand: pip install uv && uv sync --frozen
-    startCommand: uv run python manage.py qcluster
+    # --python 3.12 - see the web service's own buildCommand comment above
+    # for why (this repo's .python-version pins 3.14, deliberately left
+    # untouched; Render's native build only has the PYTHON_VERSION below
+    # installed).
+    buildCommand: pip install uv && uv sync --frozen --python 3.12
+    startCommand: uv run --python 3.12 python manage.py qcluster
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.8"

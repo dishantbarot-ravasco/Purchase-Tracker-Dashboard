@@ -4,6 +4,14 @@
 # already-merged pin sits undetected until the next push otherwise.
 # Dependabot checks on its own schedule regardless of push activity and
 # opens a PR when a pinned dependency has a known advisory.
+# cooldown/default-days (added 2026-09-08, project owner request: "open
+# source library will be updated only after 7 days of any new version") -
+# Dependabot won't open a PR for a newly-released version until it's been
+# out for 7 days, giving the upstream project's own community a window to
+# catch/report an immediately-broken or malicious release before this repo
+# ever proposes pulling it in. Applies to every version bump Dependabot
+# would otherwise open a PR for, regardless of semver level (major/minor/
+# patch) - a real CVE fix still lands within the week, just not same-day.
 version: 2
 updates:
   - package-ecosystem: "pip"
@@ -11,7 +19,11 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 7
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
