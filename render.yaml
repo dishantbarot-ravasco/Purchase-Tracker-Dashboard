@@ -12,35 +12,6 @@
 # etc.) is filled in directly from .env.example so a fresh deploy needs the
 # fewest possible manual steps.
 
-# Shared between the web service AND the qcluster worker - see the group's
-# own note below for why this one specific value cannot be independently
-# generated per service the way DJANGO_SECRET_KEY's other sibling secrets
-# (JWT_SIGNING_KEY) safely can.
-envVarGroups:
-  - name: purchase-tracker-shared
-    envVars:
-      # A REAL BUG, found from a live deploy (2026-09-08): DJANGO_SECRET_KEY
-      # used to be `generateValue: true` independently in BOTH services'
-      # own envVars list below - two different random values. That looks
-      # harmless (the web service's own comment on JWT_SIGNING_KEY reasoned
-      # "qcluster never verifies a JWT or session cookie signed by the web
-      # service" and assumed the same logic covered SECRET_KEY too) but
-      # django-q2's ORM broker signs every queued task with
-      # `settings.SECRET_KEY` (django_q/conf.py) BEFORE writing it to the
-      # shared Postgres queue - the web service enqueues a sync task signed
-      # with its own key, then qcluster tries to verify it with a
-      # *different* key and fails with `django.core.signing.BadSignature`
-      # on every single task, forever (confirmed against the actual qcluster
-      # log: "Failed to push task to queue" / "Signature ... does not
-      # match", repeating). The two processes share one broker (rows in the
-      # DB), so they MUST share the same signing key - this Environment
-      # Group (Render's mechanism for exactly this "same secret, multiple
-      # services" case) generates it once and both services below pull it
-      # in via their own `envVarGroups:` reference, instead of each
-      # generating an independent value.
-      - key: DJANGO_SECRET_KEY
-        generateValue: true
-
 databases:
   - name: purchase-tracker-db
     databaseName: purchase_tracker
@@ -97,16 +68,32 @@ services:
     # log: build succeeded (buildCommand was already fixed), then this
     # startCommand crash-looped on "No interpreter found for Python 3.14".
     startCommand: uv run --python 3.12 gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2
-    # Pulls in DJANGO_SECRET_KEY (see that group's own comment above databases:
-    # for why this one specifically must be shared, not independently
-    # generated, with the qcluster worker below).
-    envVarGroups:
-      - purchase-tracker-shared
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.8"
 
       # ── Django core ──────────────────────────────────────────────────────
+      # Generated ONCE here - the qcluster worker below does NOT generate
+      # its own copy; it references this exact value via `fromService`
+      # instead (see that block's own comment for why this one specific
+      # value, unlike JWT_SIGNING_KEY, cannot be independently generated per
+      # service). A real bug, found from a live deploy (2026-09-08):
+      # DJANGO_SECRET_KEY used to be `generateValue: true` independently in
+      # BOTH services - two different random values. django-q2's ORM broker
+      # signs every queued task with `settings.SECRET_KEY`
+      # (django_q/conf.py) before writing it to the shared Postgres queue -
+      # the web service enqueues a sync task signed with its own key, then
+      # qcluster tries to verify it with a *different* key and fails with
+      # `django.core.signing.BadSignature` on every single task, forever
+      # (confirmed against the actual qcluster log: "Failed to push task to
+      # queue" / "Signature ... does not match", repeating). An earlier fix
+      # attempt used a top-level `envVarGroups:` block with `generateValue`
+      # inside it - Render's Blueprint sync rejected that combination
+      # outright ("problems syncing with your Blueprint file"), so this
+      # uses `fromService` instead, which is Render's documented mechanism
+      # for one service to read a specific value straight off another.
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_ALLOWED_HOSTS
@@ -212,16 +199,20 @@ services:
     # installed).
     buildCommand: pip install uv && uv sync --frozen --python 3.12
     startCommand: uv run --python 3.12 python manage.py qcluster
-    # Pulls in the SAME DJANGO_SECRET_KEY as the web service (see the
-    # envVarGroups block above databases: for why this one specifically must
-    # be shared - django-q2's ORM broker signs every queued task with it,
-    # and the web service enqueues while this worker dequeues, from the same
-    # shared Postgres-backed queue).
-    envVarGroups:
-      - purchase-tracker-shared
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.8"
+      # Reads the WEB service's own generated DJANGO_SECRET_KEY directly,
+      # rather than generating an independent value here - see that key's
+      # own comment on the web service above for the full reasoning
+      # (django-q2's ORM broker signs every queued task with this value;
+      # the web service enqueues, this worker dequeues, from the same
+      # shared Postgres-backed queue, so both MUST agree on the same key).
+      - key: DJANGO_SECRET_KEY
+        fromService:
+          type: web
+          name: purchase-tracker-dashboard
+          envVarKey: DJANGO_SECRET_KEY
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_ALLOWED_HOSTS
