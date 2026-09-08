@@ -104,7 +104,7 @@ function renderPoList(el) {
     { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has a matched MIR entry - the material has been received.' },
     { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items on this PO have a matched MIR entry yet.' },
     { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags.' },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate / Value Mismatches', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate/value mismatch in MIR: rate or pre-tax value differs between the PO and its matched MIR entry - zero tolerance.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: rate differs between the PO and its matched MIR entry - zero tolerance. Value is not compared here - see the Data Quality legend for why.' },
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully matched to MIR.' },
     { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched to MIR.' },
     { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
@@ -213,7 +213,7 @@ function renderPoList(el) {
   // "Filter by Category" used to expose as one of its two severity buckets.
   const flagsOptionsHtml =
     '<option value="qtydisc"' + (state.statusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch (' + qtyDiscCount + ')</option>' +
-    '<option value="ratedisc"' + (state.statusFilter === 'ratedisc' ? ' selected' : '') + '>Rate / Value Mismatch (' + rateDiscCount + ')</option>' +
+    '<option value="ratedisc"' + (state.statusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch (' + rateDiscCount + ')</option>' +
     '<option value="critical"' + (state.statusFilter === 'critical' ? ' selected' : '') + '>Critical Issues (' + criticalCount + ')</option>' +
     '<option value="flags"' + (state.statusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flagsCount + ')</option>';
   // Per-column header filter content - "as per their data": text (contains)

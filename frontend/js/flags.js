@@ -377,7 +377,7 @@ function categorizeFlag(text) {
 // is technically correct but reads oddly; "any difference" is clearer).
 const DISCREPANCY_LEGEND = [
   { label: 'Quantity Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received quantity (from the matched MIR entry) does not exactly match the PO’s ordered quantity - any difference at all counts, there is no tolerance (e.g. 999kg received against a 1000kg order still flags). Can mean a short shipment, an over shipment, or a receipt logged against the wrong PO.' },
-  { label: 'Rate / Value Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received rate or value (from the matched MIR entry) does not exactly match the PO’s rate or value - any difference at all counts, there is no tolerance. Can mean a price change was not reflected on the PO, a tax calculation difference, or a billing error.' },
+  { label: 'Rate Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received rate (from the matched MIR entry) does not exactly match the PO’s rate - any difference at all counts, there is no tolerance. Can mean a price change was not reflected on the PO or a billing error. Value is deliberately not compared here - it is qty x rate, so a quantity mismatch alone would otherwise double-count as a second, unrelated-looking problem.' },
   { label: 'Misfiled: wrong plant or company', severity: 'info', meaning: 'The PO document was found filed under the wrong plant or company folder in Drive.' },
   { label: 'Duplicate file or PO', severity: 'info', meaning: 'The same PO appears to have been saved or extracted more than once.' },
   { label: 'Revision or superseded PO conflict', severity: 'info', meaning: 'A later revision of the PO exists, or PO numbering suggests it replaced an earlier one, and both versions are present.' },
@@ -407,7 +407,7 @@ const DISCREPANCY_LEGEND = [
 // falls back to DEFAULT_CATEGORY_COLOR.
 const CATEGORY_COLORS = {
   'Quantity Mismatch in MIR': '#dc2626',
-  'Rate / Value Mismatch in MIR': '#dc2626',
+  'Rate Mismatch in MIR': '#dc2626',
   'Tax calculation or labeling mismatch': '#d97706',
   'Vendor GSTIN anomaly': '#d97706',
   'Misfiled: wrong plant or company': '#6366f1',
@@ -460,7 +460,14 @@ function computePoDeliveryDate(po) {
 function computePoFlags(po) {
   const items = po.items || [];
   po._qtyFlag = items.some(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT);
-  po._rateFlag = items.some(it => (it.rateDiffPct != null && it.rateDiffPct > FLAG_PCT) || (it.valueDiffPct != null && it.valueDiffPct > FLAG_PCT));
+  // Rate mismatch only - NOT value. Value = qty x rate, so a qty mismatch
+  // alone already drags value along with it; counting that as a second,
+  // independent "rate/value" problem double-counted the same underlying
+  // partial-delivery event under two different KPI cards (confirmed
+  // 2026-09-08: of 119 POs this used to flag, 114 were already flagged by
+  // qty alone - only 5 had a genuine standalone rate issue). Project owner
+  // decision, 2026-09-08: drop value from this determination entirely.
+  po._rateFlag = items.some(it => it.rateDiffPct != null && it.rateDiffPct > FLAG_PCT);
   // Largest single diff percentage across every line item (qty/rate/value
   // alike) - drives rowTintClass()'s severity-scaled row background in the
   // "View all" table/top-5 preview, so a reviewer's eye is pulled toward the
@@ -472,7 +479,7 @@ function computePoFlags(po) {
   po._maxDiffPct = allDiffs.length ? Math.max(...allDiffs) : 0;
   const cats = new Map();
   if (po._qtyFlag) cats.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
-  if (po._rateFlag) cats.set('Rate / Value Mismatch in MIR', { label: 'Rate / Value Mismatch in MIR', severity: 'critical' });
+  if (po._rateFlag) cats.set('Rate Mismatch in MIR', { label: 'Rate Mismatch in MIR', severity: 'critical' });
   if (po.remarks) { const c = categorizeFlag(po.remarks); cats.set(c.label, c); }
   po._categories = Array.from(cats.values());
   po._hasInfoFlag = po._categories.some(c => c.severity === 'info');

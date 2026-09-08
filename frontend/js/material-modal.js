@@ -153,8 +153,8 @@ async function openMaterialModal(compositeKey) {
   // checked against `l.item`'s own diff%, not a PO's blanket _qtyFlag/
   // _rateFlag, so a discrepancy on a different line item in a multi-item PO
   // is never misattributed to this material. Not individually dismissable
-  // here - the underlying flag is a real per-PO Quantity/Rate-Value
-  // Discrepancy flag with its own dismiss control already on that PO's own
+  // here - the underlying flag is a real per-PO Quantity/Rate Discrepancy
+  // flag with its own dismiss control already on that PO's own
   // Flags & Corrections tab (poFlagHtml, po-modal.js); this box just needs
   // to stop hiding that it exists.
   const materialCritPos = new Map(); // label -> Set of "PO (plant)" strings
@@ -163,9 +163,10 @@ async function openMaterialModal(compositeKey) {
       if (!materialCritPos.has('Quantity Mismatch in MIR')) materialCritPos.set('Quantity Mismatch in MIR', new Set());
       materialCritPos.get('Quantity Mismatch in MIR').add(l.po.poNumber + ' (' + l.plantLabel + ')');
     }
-    if ((l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) || (l.item.valueDiffPct != null && l.item.valueDiffPct > FLAG_PCT)) {
-      if (!materialCritPos.has('Rate / Value Mismatch in MIR')) materialCritPos.set('Rate / Value Mismatch in MIR', new Set());
-      materialCritPos.get('Rate / Value Mismatch in MIR').add(l.po.poNumber + ' (' + l.plantLabel + ')');
+    // Rate only, not value - see flags.js's computePoFlags() for why.
+    if (l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) {
+      if (!materialCritPos.has('Rate Mismatch in MIR')) materialCritPos.set('Rate Mismatch in MIR', new Set());
+      materialCritPos.get('Rate Mismatch in MIR').add(l.po.poNumber + ' (' + l.plantLabel + ')');
     }
   });
   const materialCritFlagsHtml = Array.from(materialCritPos.entries()).map(([label, poSet]) =>

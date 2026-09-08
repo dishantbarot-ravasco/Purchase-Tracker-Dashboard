@@ -229,7 +229,10 @@ function computeMaterialPoLinkage(materials, plantKeys) {
     const catMap = new Map();
     links.forEach(l => {
       if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) catMap.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
-      if ((l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) || (l.item.valueDiffPct != null && l.item.valueDiffPct > FLAG_PCT)) catMap.set('Rate / Value Mismatch in MIR', { label: 'Rate / Value Mismatch in MIR', severity: 'critical' });
+      // Rate only, not value - see flags.js's computePoFlags() for why
+      // (value = qty x rate, so a qty mismatch alone would otherwise
+      // double-count as a second, unrelated-looking rate/value problem).
+      if (l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) catMap.set('Rate Mismatch in MIR', { label: 'Rate Mismatch in MIR', severity: 'critical' });
       if (l.po.remarks) { const c = categorizeFlag(l.po.remarks); catMap.set(c.label, c); }
     });
     const categories = Array.from(catMap.values());
@@ -242,7 +245,7 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       openLinks,
       categories,
       qtyFlag: categories.some(c => c.label === 'Quantity Mismatch in MIR'),
-      rateFlag: categories.some(c => c.label === 'Rate / Value Mismatch in MIR'),
+      rateFlag: categories.some(c => c.label === 'Rate Mismatch in MIR'),
       hasInfoFlag: categories.some(c => c.severity === 'info'),
       maxDiffPct: allDiffs.length ? Math.max(...allDiffs) : 0,
     };
