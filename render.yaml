@@ -109,13 +109,17 @@ services:
       - key: SAFECUBE_API_KEY
         sync: false
 
-      # ── Daily consumption-report cron trigger - a free external scheduler
-      #    (cron-job.org) hits POST/GET /api/internal/send-daily-report once
-      #    a day (20:00 IST) with this value as ?secret=... or an
-      #    X-Report-Secret header. generateValue gives every deploy a real,
-      #    non-empty secret with no manual step - copy the generated value
-      #    from Dashboard -> service -> Environment into the cron-job.org job
-      #    config once, after the first deploy. ─────────────────────────────
+      # ── Report cron triggers - a free external scheduler (cron-job.org)
+      #    hits three separate endpoints with this value as ?secret=... or
+      #    an X-Report-Secret header, one cron-job.org job per endpoint:
+      #      POST /api/internal/send-daily-report     - once a day, e.g. 20:30 IST
+      #      POST /api/internal/send-monthly-report    - once a month, 1st, e.g. 10:00 IST
+      #      POST /api/internal/send-mismatch-report   - whatever cadence you want, e.g. 10:30 IST daily
+      #    generateValue gives every deploy a real, non-empty secret with no
+      #    manual step - copy the generated value from Dashboard -> service
+      #    -> Environment into each cron-job.org job config once, after the
+      #    first deploy. See CLAUDE.md's "Outgoing email inventory" for what
+      #    each report actually contains/who it goes to. ────────────────────
       - key: REPORT_CRON_SECRET
         generateValue: true
 

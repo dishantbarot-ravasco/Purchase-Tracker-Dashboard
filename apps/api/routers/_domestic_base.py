@@ -18,14 +18,17 @@ themselves - both are supplied per-plant via `_PlantConfig`, not branched on
 inline here.
 """
 
+import csv
 import datetime
 import decimal
+import io
 import itertools
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Optional
 
 from django.db import transaction
+from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
@@ -815,6 +818,82 @@ def make_stock_snapshots_for_date(cfg: _PlantConfig):
         })
 
     return stock_snapshots_for_date
+
+
+def make_export_stock_snapshots(cfg: _PlantConfig):
+    """Data Export (2026-09-08, project owner request) - the full daily RM
+    stock snapshot history as a downloadable CSV, optionally narrowed by
+    `from`/`to` (both optional; omitting both exports everything captured so
+    far). This is the ONE dataset the project owner specifically asked for
+    here, not Purchase Orders/Import Purchases: the source Stock xlsx files
+    only ever hold today's position (each sync overwrites the prior day's
+    numbers in Postgres via update_or_create - see sync_utils.py), so the
+    daily-snapshot table (`*RMSnapshot`, captured once a day - see CLAUDE.md's
+    "Snapshot Pipeline Rebuild") is the ONLY place this day-by-day history
+    exists at all; it cannot be reconstructed from the spreadsheets
+    afterwards. CSV, not Excel - project owner asked for whichever is
+    cheaper/faster, and building a .xlsx would mean pulling in openpyxl for
+    no real benefit over a plain CSV any spreadsheet program opens directly.
+    IsEditor + user_can_access_plant-gated (not a plain read like the rest of
+    this file's GET endpoints) - project owner asked for Editor/Admin only,
+    even though every other read endpoint here is IsAuthenticated-any-role.
+    Reuses the exact same getattr(cfg.lot_*_field) pattern
+    stock_snapshots_for_date() above already uses for the same per-plant
+    schema differences (Achhad has no vendor/uom/sub_category field at all)."""
+
+    @api_view(["GET"])
+    @permission_classes([IsEditor])
+    def export_stock_snapshots(request):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to export this plant's stock snapshots."}, status=403)
+
+        from_param = request.query_params.get("from")
+        to_param = request.query_params.get("to")
+        try:
+            from_date = datetime.date.fromisoformat(from_param) if from_param else None
+            to_date = datetime.date.fromisoformat(to_param) if to_param else None
+        except ValueError:
+            return Response({"error": "`from`/`to` must be YYYY-MM-DD dates."}, status=400)
+
+        qs = cfg.stock_snapshot_model.objects.select_related("stock_lot").order_by("snapshot_date", "stock_lot_id")
+        if from_date:
+            qs = qs.filter(snapshot_date__gte=from_date)
+        if to_date:
+            qs = qs.filter(snapshot_date__lte=to_date)
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "Plant", "Snapshot Date", "Material Description", "Material Code", "Category",
+            "Sub Category", "Vendor", "UOM", "Opening Stock", "Received", "Issued",
+            "Today's Stock", "Rate", "Value", "Lot Currently Active",
+        ])
+        for snap in qs.iterator(chunk_size=2000):
+            lot = snap.stock_lot
+            writer.writerow([
+                cfg.key.upper(),
+                snap.snapshot_date.isoformat(),
+                lot.description,
+                getattr(lot, cfg.lot_code_field, "") or "",
+                getattr(lot, "category", "") or "",
+                getattr(lot, "sub_category", "") or "",
+                (getattr(lot, cfg.lot_vendor_field, "") or "") if cfg.lot_vendor_field else "",
+                getattr(lot, "uom", "") or "",
+                snap.opening_stock, snap.received, snap.issued, snap.todays_stock,
+                getattr(snap, cfg.lot_rate_field, None),
+                snap.value,
+                lot.is_active,
+            ])
+
+        filename = f"{cfg.key}_rm_stock_snapshots"
+        if from_date or to_date:
+            filename += f"_{from_date.isoformat() if from_date else 'start'}_to_{to_date.isoformat() if to_date else 'latest'}"
+        filename += ".csv"
+        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    return export_stock_snapshots
 
 
 def make_sync_status(cfg: _PlantConfig):

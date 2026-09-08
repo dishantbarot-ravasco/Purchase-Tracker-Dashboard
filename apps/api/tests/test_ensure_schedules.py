@@ -1,6 +1,6 @@
 """
 Test for apps/core/management/commands/ensure_schedules.py - Snapshot
-Pipeline Rebuild, Phase B.2 (see CLAUDE.md). Placed under apps/api/tests/
+Pipeline Rebuild, Phase B (see CLAUDE.md). Placed under apps/api/tests/
 (real Postgres via pytest-django, same as test_prune_revoked_tokens.py)
 since django_q.models.Schedule is a real DB-backed model, not
 dependency-free pure logic.
@@ -23,8 +23,8 @@ class TestEnsureSchedules:
         assert schedules.count() == 1
         schedule = schedules.get()
         assert schedule.func == "apps.services.sync_trigger.run_daily_sync_all_plants"
-        assert schedule.schedule_type == Schedule.MINUTES
-        assert schedule.minutes == 180
+        assert schedule.schedule_type == Schedule.CRON
+        assert schedule.cron == "0 9-20 * * *"
         assert schedule.next_run is not None
         assert "created" in out.getvalue()
 
@@ -60,14 +60,16 @@ class TestEnsureSchedules:
         assert schedule.func == "apps.services.sync_trigger.run_daily_sync_all_plants"
         assert schedule.next_run == original_next_run
 
-    def test_migrates_an_existing_daily_row_to_every_3_hours(self):
-        """Simulates an environment that already has the old DAILY schedule
-        row from before the 2026-09-07 interval change - the row must be
-        corrected in place (same name), not duplicated."""
+    def test_migrates_an_existing_daily_row_to_the_cron_schedule(self):
+        """Simulates an environment that already has an old schedule row
+        (DAILY, from before the 2026-09-07 interval change, or MINUTES=180
+        from that change itself) - the row must be corrected in place (same
+        name), not duplicated."""
         Schedule.objects.create(
             name="daily-sync-all-plants",
             func="apps.services.sync_trigger.run_daily_sync_all_plants",
-            schedule_type=Schedule.DAILY,
+            schedule_type=Schedule.MINUTES,
+            minutes=180,
         )
 
         call_command("ensure_schedules")
@@ -75,5 +77,6 @@ class TestEnsureSchedules:
         schedules = Schedule.objects.filter(name="daily-sync-all-plants")
         assert schedules.count() == 1
         schedule = schedules.get()
-        assert schedule.schedule_type == Schedule.MINUTES
-        assert schedule.minutes == 180
+        assert schedule.schedule_type == Schedule.CRON
+        assert schedule.cron == "0 9-20 * * *"
+        assert schedule.minutes is None

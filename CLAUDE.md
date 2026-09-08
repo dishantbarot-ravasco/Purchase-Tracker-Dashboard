@@ -908,6 +908,182 @@ snapshots of it, not either of those columns.
   existing Status filter (`matStatusFilter`, KPI card + both `<select>`s) fires on `daysLeft < 15`
   or any contributing lot's `daysToMsl === 0`.
 
+## Data Export (added 2026-09-08)
+
+An "Export Data" button next to "Refresh Data" (dashboard's `.sync-bar`, `main.js`) opens a small
+panel (`frontend/js/export-panel.js`) to download the full daily RM stock snapshot history as a
+CSV, optionally narrowed to a date range. **Deliberately scoped to ONLY this one dataset** - the
+project owner asked for it specifically, not Purchase Orders/Import Purchases: those are already
+fully present in their own source CSVs, but the Stock xlsx files only ever hold *today's* position
+(each sync overwrites the prior day's numbers via `update_or_create` - see `sync_utils.py`), so the
+`*RMSnapshot` table (captured once daily, see "Snapshot Pipeline Rebuild" below) is the ONLY place
+this day-by-day history exists at all - it can't be reconstructed from the spreadsheets afterwards.
+
+- **Backend**: `apps/api/routers/_domestic_base.py`'s `make_export_stock_snapshots()` - one shared
+  implementation, same per-plant `_PlantConfig` pattern as every other view in that file. Builds a
+  plain CSV (Python's `csv` module + `io.StringIO`, not a library like `openpyxl`) and returns it as
+  a Django `HttpResponse` with `Content-Disposition: attachment` - **CSV, not Excel**, per the
+  project owner's own "whichever is less compute and faster" - a `.xlsx` would need a whole library
+  for no real benefit over a plain CSV any spreadsheet program already opens directly. Columns:
+  Plant, Snapshot Date, Material Description, Material Code, Category, Sub Category, Vendor, UOM,
+  Opening Stock, Received, Issued, Today's Stock, Rate, Value, Lot Currently Active - reads the
+  same `cfg.lot_code_field`/`lot_vendor_field`/`lot_rate_field` getattr pattern
+  `stock_snapshots_for_date()` (just above it in that file) already uses for the same per-plant
+  schema differences (Achhad has no vendor/uom/sub_category column at all). `from`/`to` query
+  params are both optional; omitting both exports everything captured so far. **`IsEditor` +
+  `user_can_access_plant()`-gated, unlike every other GET endpoint in this file (plain
+  `IsAuthenticated`-any-role)** - the project owner explicitly asked for Editor/Admin only here,
+  a deliberate exception to this file's own read-endpoint convention, not an oversight. Wired per
+  plant: `GET /api/stock-snapshots/export`, `/api/achhad/stock-snapshots/export`,
+  `/api/vapi/stock-snapshots/export`. Regression tests: `apps/api/tests/test_stock_snapshots_api.py`'s
+  `TestExportStockSnapshots`.
+- **Frontend**: `export-panel.js`'s `openExportPanel()` reuses the shared `#modalBackdrop`/
+  `#modalBody` the PO/Material detail modals already use (same close-button/backdrop-click wiring,
+  no new CSS) rather than a bespoke panel. The "Export Data" button itself is only rendered when
+  `PLANT_KEYS.some(canEditField)` is true (same role+plant check the backend enforces
+  independently - see `shared.js`'s `canEditField()`), and each plant's own row inside the panel is
+  gated the same way, individually, since a plant-scoped editor may have export access to some
+  plants but not others. **Download is a plain `window.open()` to the endpoint URL, not a
+  `fetch()`+blob dance** - this app's browser auth is httpOnly-cookie-based (see "Auth & security
+  architecture"), so the cookie rides along on a normal same-origin navigation with no extra JS
+  needed; the backend's `Content-Disposition` header does the rest. Opened in a new tab rather than
+  the current one so a same-tab navigation failure (e.g. a stale session) can't blow away the whole
+  SPA - it would just show a JSON error in that new tab instead, closable on its own.
+- **Not built (out of scope for this pass)**: exporting Purchase Orders/Import Purchases/current
+  Stock (as opposed to snapshot *history*) - the project owner's own request named RM snapshot data
+  specifically, for the reason above; extending Export to other datasets is a deliberate follow-up
+  if asked for, not assumed here.
+
+## Outgoing email inventory
+
+Every email this app sends goes through one of three builders: `apps/services/email_service.py`'s
+`render_email()` (plain-paragraph layout, shared by 7 of the 10 emails below), `apps/services/
+consumption_report.py`'s own table-shaped builder (the daily/monthly reports, 8-9), or `apps/
+services/plant_mismatch_report.py`'s own similar table-shaped builder (10). **Emails 1-9 end with
+"This is a system generated email. Please do not reply." in both the HTML and plain-text body,
+and none use an em dash anywhere in body content** (confirmed/fixed 2026-09-08 - `render_email()`
+always appended this footer already, but `consumption_report.py`'s own plain-text body was missing
+it, and its HTML header used `&mdash;` plus a bare `—` placeholder for a missing rate/days-left
+value - both fixed to match this app's plain `" - "`/`"N/A"` convention used everywhere else).
+**Email 10 deliberately has NO such footer** - see its own entry below for why.
+
+1. **Login OTP** (`device_service.py: send_device_otp()`) - to the signing-in user, on a new/
+   untrusted device.
+2. **New device signed in** (`device_service.py: send_new_device_notification()`) - to that same
+   user, right after they verify.
+3. **New device login admin alert** (`device_service.py: notify_admins_new_device_login()`) - to
+   every other active admin.
+4. **Password change OTP** (`password_service.py: send_password_change_otp()`) - to the user
+   requesting a self-service password change.
+5. **Account locked admin alert** (`security_alerts.py: notify_admins_account_locked()`) - to every
+   other active admin, once, at the moment 5 consecutive bad passwords actually lock the account.
+6. **Unusual login activity admin alert** (`security_alerts.py:
+   record_failed_login_and_maybe_alert()`) - to every active admin, when ≥15 failed logins across
+   any accounts land within a 5-minute window (suppressed to at most once per 30 min).
+7. **Sync failure admin alert** (`security_alerts.py: notify_admins_sync_failure()`) - hardcoded to
+   `dishant.barot@ravasco.com` only (explicit request, not every admin, unlike 3/5/6/8).
+8. **Daily Raw Material Consumption Report** (`consumption_report.py: send_daily_consumption_reports()`,
+   ×3 - one per plant) - to every active admin, once daily (e.g. 20:30 IST - the exact time is
+   whatever the external cron-job.org job is configured for, not hardcoded here), triggered by an
+   external free scheduler (cron-job.org) hitting `POST /api/internal/send-daily-report` (shared-secret
+   auth, `REPORT_CRON_SECRET` - see `reports_views.py`). One of the two (with #9) that are a real
+   HTML table (Material / Issued Today / Latest Rate / Days Left), not plain paragraphs. **Grouped
+   by category (added 2026-09-08, project owner: "divide the material by category, add a category
+   pane in the table")** - `build_plant_report()` reads the same `category` field every `*RMLot`
+   model already has (no new data needed), and `_render_report_email()` renders one shaded heading
+   row per category (HTML) / one heading line (plain text) before that category's own materials,
+   in both cases ordered by whichever category contains that plant's single biggest mover for the
+   day (materials within a category keep the existing issued-qty-descending order). A blank
+   category buckets as **"Uncategorized"** rather than an empty-titled group or being dropped -
+   real on some rows (e.g. Achhad's own `category` is itself a backfilled section-divider label,
+   not a guaranteed-present column - see `RTPAchhadRMLot`'s docstring).
+9. **Monthly Raw Material Consumption Report** (`consumption_report.py:
+   send_monthly_consumption_reports()`, ×3 - one per plant, added 2026-09-08, project owner: "can
+   we create a monthly consumption email too... via all the data for that month in the same
+   category wise mail like we do for daily") - to every active admin, once on the 1st of each
+   month, triggered by the same external scheduler hitting `POST /api/internal/send-monthly-report`
+   (same `REPORT_CRON_SECRET` scheme, a separate endpoint rather than a mode flag since the two run
+   on genuinely different schedules - see `reports_views.py`). Same category-grouped shape as #8
+   (both now share `_render_consumption_rows()`/`_render_consumption_email()` - factored out so the
+   two reports' grouping/formatting can't drift apart), just summed over a whole calendar month
+   instead of one day; column header reads "Issued This Month" instead of "Issued Today". Defaults
+   to the most recently **completed** month (today's month minus one) - the natural target for a
+   report meant to fire on the 1st, summarizing the month that just ended; `year`/`month` query
+   params override this for a manual re-send. `daysLeft`/confidence stay a present-tense estimate
+   (as of right now), not tied to the summarized month, same meaning as in the daily report.
+   **Summing, not reading the live period-to-date column, for the primary figure** - `HRS`/`Vapi`
+   sum `*RMSnapshot.issued` across every snapshot dated within the target month (already a genuine
+   per-day figure - see the module docstring - so summing it is exactly as trustworthy as the daily
+   report's own single-day read); `Achhad` sums `RTPAchhadRMDailyMovement.issued` across the month
+   (the same dated, reconciliation-confirmed source the daily report trusts), deliberately NOT the
+   live `issued` column directly - reading that for an already-closed month would be flatly wrong
+   the moment the period rolls over and the sheet resets it for the new month, not just imprecise.
+   Achhad's `isEstimate` fallback (same "(est.)" marker as the daily report) exists here too, but is
+   **only ever allowed when the requested month is the CURRENT, still-open one** - never for a
+   closed past month, since the live column would no longer represent it at all by then. If Achhad
+   genuinely has zero `RTPAchhadRMDailyMovement` rows for an already-closed month (the day-matrix
+   gap turning out to be a lasting habit rather than a same-day timing quirk, per #8's own note),
+   that material is silently excluded from the monthly report rather than estimated - a real,
+   visible gap is more honest than a number that can't be trusted. Regression tests:
+   `apps/services/tests/test_consumption_report.py`'s `TestBuildPlantMonthlyReportHRS`/
+   `TestBuildPlantMonthlyReportAchhad`/`TestSendMonthlyConsumptionReports`,
+   `apps/api/tests/test_reports_views.py`'s `TestTriggerMonthlyReport`.
+10. **Plant Data Correction Report** (`plant_mismatch_report.py: send_plant_mismatch_reports()`, ×3 -
+    one per plant, added 2026-09-08, project owner request: "I need to send them emails individually
+    as per their plants based on mismatch or data entry errors... PO number... qty mismatch in MIR
+    or RM whichever applicable... rate mismatch... kindly correct them") - unlike every other email
+    here, this one goes to a **fixed, real individual per plant, not the internal admin list**:
+    `avijit.ghosh@ravasco.com` (HRS), `anil.khatri@ravasco.com` (RTP-Achhad),
+    `mahendra.patil@ravasco.com` (RTP-Vapi) - see `plant_mismatch_report.py`'s own `_PLANT_HEADS`.
+    None of the three is necessarily a `PTUser` account; the recipient list is a fixed dict, not
+    derived from the database. **Every active admin is CC'd** (project owner, same day: "in all the
+    emails except that sync, keep all the admins either in cc or direct mail" - "that sync" being
+    #7 above, which stays a single fixed recipient per its own earlier explicit request; this is the
+    only other email in this app that doesn't already reach every admin as its primary recipient, so
+    it CCs them instead). Lists that plant's own currently-flagged (not dismissed)
+    `qty_mismatched`/`rate_mismatched` rows from both `*POMirMatch` (PO Number, Material) and
+    `*MirStockMatch` (Material) - the exact same booleans the dashboard's Data Quality Flags already
+    read, not a re-derived definition. **"Whichever applicable"**: a row only shows a percentage for
+    the mismatch that's actually true on it (`-` for the other), never a stale or zero-looking figure
+    for something that wasn't flagged. **Deliberately has NO "system generated / do not reply"
+    footer** (explicit instruction, same day: "remove that system footer from this emails") - unlike
+    every other email in this app, this one is meant to prompt a real reply/action (correcting a
+    source document), so telling the recipient not to reply would defeat the point; ends with a plain
+    "Regards," signature instead, same as `render_email()`'s own closing but without that one line.
+    A plant with nothing currently flagged is skipped entirely (no email to the plant head or admins)
+    rather than a routine "all clear" ping. Triggered via `POST /api/internal/send-mismatch-report`
+    (same shared-secret scheme as #8/#9) - no built-in cadence; set whatever interval you want on the
+    external scheduler. **Correcting the source and re-syncing does reach the DB and the dashboard
+    automatically** - the next successful `sync_*`/`match_*` run (auto every 3 hours, or manually
+    triggered) re-parses the corrected PO CSV/MIR/Stock file and re-runs that plant's matching
+    engine, which recomputes `qty_diff_pct`/`rate_diff_pct`/`is_flagged` in place; the dashboard reads
+    this live from the API on every load with no cache to invalidate, so a corrected mismatch simply
+    stops appearing (and no longer triggers this email) once its next sync completes - no separate
+    manual step. Regression tests: `apps/services/tests/test_plant_mismatch_report.py`,
+    `apps/api/tests/test_reports_views.py`'s `TestTriggerMismatchReport`.
+
+**Achhad's "Issued Today" fallback (added 2026-09-08, project owner request) - a real gap found
+by checking a live exported `RAVASCO ACHHAD RM STOCK FILE.xlsx` directly, not assumed.** The report
+prefers a genuinely-dated source per plant (see `consumption_report.py`'s own module docstring for
+why HRS/Vapi's snapshot `issued` is already trustworthy per-day but Achhad's own `issued` column is
+a period-to-date summary that resets each period) - `RTPAchhadRMDailyMovement`, parsed from the
+Stock file's own daily Recp./Issue matrix. Confirmed directly against a real file the project owner
+supplied: that day-matrix can sit **completely blank** for the current day at export time (every
+recp/issue cell `None`, not even zero) while the lot's own period-to-date `Issued` column already
+has real nonzero values - meaning the plant simply hadn't filled in today's day-matrix column yet.
+Before this fix, that meant the report silently said "No material was issued today" even when real
+activity was visible elsewhere in the same file. Now, `_todays_issued_rows()` falls back to a lot's
+own live `issued` column ONLY when that lot has no `RTPAchhadRMDailyMovement` row for today at all
+(a lot that does have one keeps using it - the fallback never overrides a real dated entry), and
+every such row is flagged `isEstimate=True` and rendered with a `(est.)` suffix plus an explanatory
+footnote (only shown on a plant report that actually has ≥1 estimate row) - **explicitly presented
+as a rough period-to-date indicator, not a confirmed same-day figure**, since that unreliability is
+real and was never fixed, only deliberately surfaced as an accepted trade-off instead of silence.
+If Achhad's day-matrix entry lag turns out to be a permanent habit rather than a same-day timing
+quirk, most days going forward will show `(est.)` rows - that's expected under this design, not a
+sign something is broken. Regression tests: `apps/services/tests/test_consumption_report.py`'s
+`TestBuildPlantReportAchhad`/`TestSendDailyConsumptionReports`.
+
 ## Artifact-parity decisions (dashboard redesign)
 
 The dashboard's nav structure and PO-list KPI row were rebuilt to match the original "Purchase
@@ -1363,11 +1539,20 @@ had no MIR-derived fields at all; the three previously-`disabled: true` "Awaitin
   `apps/core/models.py`.
 - ~~**No scheduling**~~ — **built, 2026-09-05 (Snapshot Pipeline Rebuild, Phase B)**. Admin-triggered
   `sync-trigger` endpoints still exist unchanged, but every plant's sync+match pipeline now also
-  runs on its own once a day: `apps/services/sync_trigger.py`'s `run_daily_sync_all_plants()`,
-  scheduled as a real `django_q.models.Schedule` row by `manage.py ensure_schedules` (idempotent,
-  wired into `render.yaml`'s `buildCommand` and `docker-entrypoint.sh`, see that command's own
-  module docstring). Per-plant skip (not queue-behind) if a manual refresh is already mid-flight for
-  that plant.
+  runs on its own: `apps/services/sync_trigger.py`'s `run_daily_sync_all_plants()`, scheduled as a
+  real `django_q.models.Schedule` row by `manage.py ensure_schedules` (idempotent, wired into
+  `render.yaml`'s `buildCommand` and `docker-entrypoint.sh`, see that command's own module
+  docstring). Per-plant skip (not queue-behind) if a manual refresh is already mid-flight for that
+  plant. **Cadence changed twice since**: once daily → every 3 hours around the clock (2026-09-07)
+  → **9:00 AM through 8:00 PM IST, once an hour, 12 runs/day (2026-09-08, project owner: "I want the
+  first sync to happen at 9:00 am daily and thereafter every hour and last sync at 8:00 pm")** -
+  `Schedule.CRON` with `cron="0 9-20 * * *"`, requiring the `croniter` package (added as a real
+  dependency this pass - pure-Python, no native build step). Same idempotent-drift-correction
+  command, same row (`name="daily-sync-all-plants"`, kept stale on purpose - see the command's own
+  module docstring for why renaming it would risk a duplicate schedule row). `next_run` is
+  deliberately never reset on a cadence change either (same policy as the earlier daily→3-hourly
+  migration) - the very next fire after a cadence change may land at a stale timestamp left over
+  from the previous cadence, then self-corrects to the new cron boundaries from that point on.
 - ~~**Daily `*StockSnapshot` capture is a side effect of `sync_stock`/`sync_achhad_stock`/
   `sync_vapi_stock` only**~~ — **built, 2026-09-05, same pass as directly above** (this was always
   tied to the scheduling gap, exactly as this bullet predicted). A day where qcluster was down still

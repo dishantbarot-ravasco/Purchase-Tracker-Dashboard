@@ -19,10 +19,12 @@ from apps.api.routers import achhad_views, admin_overview_views, hrs_views, impo
 
 urlpatterns = [
     path("health", views.health, name="health"),
-    # Hit once a day (20:00 IST) by an external free scheduler (cron-job.org)
+    # Hit once a day (e.g. 20:30 IST) by an external free scheduler (cron-job.org)
     # - see reports_views.py's own module docstring for the shared-secret
     # auth scheme (no login session/JWT possible for that caller).
     path("internal/send-daily-report", reports_views.trigger_daily_report, name="trigger-daily-report"),
+    path("internal/send-monthly-report", reports_views.trigger_monthly_report, name="trigger-monthly-report"),
+    path("internal/send-mismatch-report", reports_views.trigger_mismatch_report, name="trigger-mismatch-report"),
 
     # ── Authentication ────────────────────────────────────────────────────
     path("auth/login", PTLoginView.as_view(), name="auth-login"),
@@ -50,6 +52,11 @@ urlpatterns = [
     # stock position on one date, not just one lot's trend.
     path("stock-snapshots/dates", hrs_views.stock_snapshot_dates, name="hrs-stock-snapshot-dates"),
     path("stock-snapshots", hrs_views.stock_snapshots_for_date, name="hrs-stock-snapshots"),
+    # Data Export (2026-09-08) - full daily RM stock snapshot history as a
+    # downloadable CSV, IsEditor-gated (see make_export_stock_snapshots()'s
+    # own docstring for why this endpoint is narrower than every other GET
+    # here).
+    path("stock-snapshots/export", hrs_views.export_stock_snapshots, name="hrs-export-stock-snapshots"),
     path("sync-status", hrs_views.sync_status, name="hrs-sync-status"),
     # Admin-only - triggers a real Drive sync in the background, see
     # apps/services/sync_trigger.py. Added 2026-09-04 alongside
@@ -77,6 +84,7 @@ urlpatterns = [
     path("achhad/materials/<int:lot_id>/stock-trend", achhad_views.stock_trend, name="achhad-stock-trend"),
     path("achhad/stock-snapshots/dates", achhad_views.stock_snapshot_dates, name="achhad-stock-snapshot-dates"),
     path("achhad/stock-snapshots", achhad_views.stock_snapshots_for_date, name="achhad-stock-snapshots"),
+    path("achhad/stock-snapshots/export", achhad_views.export_stock_snapshots, name="achhad-export-stock-snapshots"),
     path("achhad/sync-status", achhad_views.sync_status, name="achhad-sync-status"),
     path("achhad/sync-trigger", achhad_views.sync_trigger, name="achhad-sync-trigger"),
     path("achhad/matches/po-mir/<int:match_id>/dismiss", achhad_views.dismiss_po_mir_match, name="achhad-dismiss-po-mir"),
@@ -89,6 +97,7 @@ urlpatterns = [
     path("vapi/materials/<int:lot_id>/stock-trend", vapi_views.stock_trend, name="vapi-stock-trend"),
     path("vapi/stock-snapshots/dates", vapi_views.stock_snapshot_dates, name="vapi-stock-snapshot-dates"),
     path("vapi/stock-snapshots", vapi_views.stock_snapshots_for_date, name="vapi-stock-snapshots"),
+    path("vapi/stock-snapshots/export", vapi_views.export_stock_snapshots, name="vapi-export-stock-snapshots"),
     path("vapi/sync-status", vapi_views.sync_status, name="vapi-sync-status"),
     path("vapi/sync-trigger", vapi_views.sync_trigger, name="vapi-sync-trigger"),
     path("vapi/matches/po-mir/<int:match_id>/dismiss", vapi_views.dismiss_po_mir_match, name="vapi-dismiss-po-mir"),

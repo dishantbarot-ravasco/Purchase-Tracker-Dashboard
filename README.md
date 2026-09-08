@@ -5,8 +5,8 @@ Register), and Raw Material Stock for Ravasco's plants. Built to replace the
 Claude Artifact prototype of the same name, which re-fetches and re-parses
 every Drive file live on every page load with no persistence - this app
 syncs into Postgres instead, so it works for every viewer without depending
-on their own Drive session. Syncing is currently a manual management-command
-run, not yet on an automatic schedule - see "Status" below.
+on their own Drive session. Syncing runs on its own schedule (9 AM-8 PM IST,
+hourly) as well as manually via the admin panel - see "Status" below.
 
 **HRS, RTP-Achhad, and RTP-Vapi are all built.** Each plant's MIR/Stock files
 were inspected directly before writing any code for it, and each turned out
@@ -34,8 +34,12 @@ force-fit into a shared shape.
 - **Google Drive/Sheets access via a service account**, not a user OAuth
   session, since sync jobs need to run without a human/Claude session in
   the loop. Share the relevant Drive folders/files with the service
-  account's email. Scheduling (Render Cron Job or similar) isn't set up
-  yet - commands currently only run when invoked manually.
+  account's email. **Scheduling is built** - every plant's sync+match
+  pipeline runs on its own via a `django_q.models.Schedule` row (9 AM-8 PM
+  IST, hourly - `manage.py ensure_schedules`), on top of the still-available
+  manual/admin-triggered runs. See CLAUDE.md's "Outgoing email inventory"
+  for the 3 report emails that run on their own schedule too (an external
+  free scheduler, since Render's free plan has no built-in cron).
 - **Three independent sync sources per plant**, one management command each:
   - HRS: `sync_po_csv`, `sync_mir`, `sync_stock`, then `match_hrs`
   - RTP-Achhad: `sync_achhad_po_csv`, `sync_achhad_mir`, `sync_achhad_stock`,
@@ -134,6 +138,21 @@ create_pt_user` or Django Admin for now - see "Local setup" below).~~
   to use the panel.
 - Scheduling and Licenses (Advance Authorisation tracking) are still genuinely not built - both
   remain correct as written above.
+
+**Superseded (2026-09-08): scheduling is now built, and several new features have shipped since
+the corrections above** - see CLAUDE.md for full detail on each, this is a summary pointer only:
+- **Sync scheduling**: every plant's sync+match pipeline runs on its own via a
+  `django_q.models.Schedule` row (`Schedule.CRON`, 9 AM-8 PM IST hourly - `manage.py
+  ensure_schedules`), not manual-only anymore. Licenses remain the one genuinely unbuilt roadmap
+  item.
+- **Data Export**: an "Export Data" button (dashboard, next to "Refresh Data", Editor/Admin only)
+  downloads the full daily RM stock snapshot history as CSV, optionally date-filtered - the one
+  place that history exists at all, since the source Stock files only ever hold today's position.
+- **Three new scheduled emails**, each triggered by an external free scheduler hitting its own
+  shared-secret-protected endpoint: a Daily and a Monthly Raw Material Consumption report (grouped
+  by category, one email per plant, to every admin), and a Plant Data Correction report (PO<->MIR
+  and MIR<->Stock quantity/rate mismatches, sent individually to each plant's own head, CC'ing
+  every admin).
 
 Every
 API endpoint now requires authentication (device-aware 2FA login, see

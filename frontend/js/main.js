@@ -254,7 +254,23 @@ async function init() {
   root.innerHTML =
     '<div class="sync-bar">' +
       '<div class="who" id="syncBadges"></div>' +
-      '<button type="button" id="refreshDataBtn" class="refresh-btn">Refresh Data</button>' +
+      // Both buttons share one wrapper so .sync-bar's own
+      // justify-content:space-between (built for exactly 2 children - .who
+      // and the button) treats them as a single right-hand group instead of
+      // spacing 3 children evenly across the row, which stranded "Export
+      // Data" in the middle when it was a sibling of .who/Refresh Data
+      // directly (reported by the project owner from a live screenshot).
+      '<div class="sync-bar-actions">' +
+        // Export Data (2026-09-08) - only shown when the signed-in user can
+        // actually export at least one plant (Editor/Admin - see
+        // export-panel.js's own header comment for why this is narrower than
+        // "Refresh Data", which every role sees). Reuses canEditField() rather
+        // than a bare role check so an editor scoped to zero plants (an
+        // unusual but possible PTUser.plants config) doesn't see a button that
+        // would just open to an all-disabled plant list.
+        (PLANT_KEYS.some(canEditField) ? '<button type="button" id="exportDataBtn" class="refresh-btn">Export Data</button>' : '') +
+        '<button type="button" id="refreshDataBtn" class="refresh-btn">Refresh Data</button>' +
+      '</div>' +
     '</div>' +
     '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>Matches shown here are computed automatically (exact PO-number match, or a weighted score on vendor/material/qty/rate/value - see the confidence badge on each line item). They are not guaranteed correct, especially anything below "high" confidence or carrying a qty/rate flag. <strong>Manually verify before treating a match as ground truth for reconciliation decisions.</strong></div>' +
     '</div>' +
@@ -273,6 +289,9 @@ async function init() {
   // properly". The /sync-trigger endpoint is IsAdmin-only server-side (see
   // apps/api/permissions.py), so non-admins keep the old re-read-only
   // behavior here rather than risk a surprise 403.
+  const exportBtn = document.getElementById('exportDataBtn');
+  if (exportBtn) exportBtn.onclick = () => openExportPanel();
+
   const refreshBtn = document.getElementById('refreshDataBtn');
   refreshBtn.title = user.role === 'admin'
     ? 'Triggers a real Google Drive sync for the selected plant(s), then reloads once it finishes - can take a few minutes.'

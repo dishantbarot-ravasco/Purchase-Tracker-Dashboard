@@ -6,9 +6,15 @@ apps/api/routers/_domestic_base.py as make_stock_snapshot_dates()/
 make_stock_snapshots_for_date(). Real Postgres (`@pytest.mark.django_db`),
 no mocking - same convention as test_stock_matched_field.py/
 test_read_endpoint_plant_scoping.py.
+
+Also covers GET /api/stock-snapshots/export (Data Export, 2026-09-08,
+make_export_stock_snapshots()) - the downloadable CSV of full daily RM
+snapshot history.
 """
 
+import csv
 import datetime
+import io
 
 import pytest
 from rest_framework.test import APIClient
@@ -18,6 +24,7 @@ from apps.core.models import HRSRMLot, HRSRMSnapshot
 
 DATES_URL = "/api/stock-snapshots/dates"
 SNAPSHOTS_URL = "/api/stock-snapshots"
+EXPORT_URL = "/api/stock-snapshots/export"
 
 
 def _make_lot(**kwargs):
@@ -110,3 +117,57 @@ class TestStockSnapshotsPlantScoping:
         client.force_authenticate(user=make_user(email="e2@ravasco.com", role="editor", plants=["hrs"]))
 
         assert client.get(DATES_URL).status_code == 200
+
+
+@pytest.mark.django_db
+class TestExportStockSnapshots:
+    def setup_method(self):
+        self.lot = _make_lot()
+        HRSRMSnapshot.objects.create(
+            stock_lot=self.lot, snapshot_date="2026-09-01",
+            opening_stock=10, received=0, issued=1, todays_stock=9, basic_rate="105.5", value="949.5",
+        )
+        HRSRMSnapshot.objects.create(
+            stock_lot=self.lot, snapshot_date="2026-09-02",
+            opening_stock=9, received=0, issued=1, todays_stock=8, basic_rate="105.5", value="844.0",
+        )
+
+    def _rows(self, response):
+        return list(csv.reader(io.StringIO(response.content.decode("utf-8"))))
+
+    def test_viewer_is_forbidden(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="v3@ravasco.com", role="viewer"))
+        assert client.get(EXPORT_URL).status_code == 403
+
+    def test_editor_can_export_full_history(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e3@ravasco.com", role="editor"))
+        response = client.get(EXPORT_URL)
+        assert response.status_code == 200
+        assert response["Content-Type"] == "text/csv"
+        assert "attachment" in response["Content-Disposition"]
+        rows = self._rows(response)
+        assert rows[0][:3] == ["Plant", "Snapshot Date", "Material Description"]
+        assert len(rows) == 3  # header + 2 snapshot rows
+        assert rows[1][1] == "2026-09-01"
+        assert rows[2][1] == "2026-09-02"
+
+    def test_admin_can_narrow_by_date_range(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="a3@ravasco.com", role="admin"))
+        response = client.get(EXPORT_URL, {"from": "2026-09-02", "to": "2026-09-02"})
+        assert response.status_code == 200
+        rows = self._rows(response)
+        assert len(rows) == 2  # header + the one 2026-09-02 row
+        assert rows[1][1] == "2026-09-02"
+
+    def test_malformed_date_returns_400(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e4@ravasco.com", role="editor"))
+        assert client.get(EXPORT_URL, {"from": "not-a-date"}).status_code == 400
+
+    def test_plant_scoped_editor_forbidden_for_another_plant(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e5@ravasco.com", role="editor", plants=["achhad"]))
+        assert client.get(EXPORT_URL).status_code == 403

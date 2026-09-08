@@ -20,6 +20,7 @@ dependencies = [
     "google-auth-oauthlib>=1.4.1",
     "requests>=2.34.2",
     "django-q2>=1.11.1",
+    "croniter>=6.2.4",
 ]
 
 [dependency-groups]

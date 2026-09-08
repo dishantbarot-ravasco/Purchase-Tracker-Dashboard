@@ -133,8 +133,14 @@ match Render's actual runtime rather than this repo's own `.python-version` (`3.
   - a `RevokedRefreshToken` table plus a per-account `token_version` claim checked on every request,
     not just `SIMPLE_JWT`'s rotate/blacklist settings alone (that alone doesn't work against this
     app's non-`auth.User` model - see CLAUDE.md for why `token_blacklist` must never be added to
-    `INSTALLED_APPS` here). `prune_revoked_tokens` isn't wired to a scheduler yet - see "No
-    scheduling" below.
-- **No scheduling infrastructure** - every `sync_*`/`match_*` management command, and now
-  `prune_revoked_tokens`, only runs manually or via the admin-triggered `sync-trigger` endpoints.
-  Deferred to v2 (see CLAUDE.md's roadmap section).
+    `INSTALLED_APPS` here). `prune_revoked_tokens` isn't wired to a scheduler yet - still true as of
+    2026-09-08, see the next bullet.
+- **Superseded (2026-09-08): scheduling infrastructure now exists.** Every plant's `sync_*`/
+  `match_*` pipeline runs on its own via a `django_q.models.Schedule` row (`manage.py
+  ensure_schedules`) - `Schedule.CRON`, `"0 9-20 * * *"` (9:00 AM-8:00 PM IST, hourly), on top of
+  the still-available admin-triggered `sync-trigger` endpoints. The Daily/Monthly Raw Material
+  Consumption reports and the Plant Data Correction report are each triggered by an external free
+  scheduler (cron-job.org) hitting a shared-secret-protected endpoint - see CLAUDE.md's "Outgoing
+  email inventory". `prune_revoked_tokens` specifically is still NOT wired to any scheduler -
+  that part of the original claim below remains true, only manual/`sync-trigger`-adjacent commands
+  gained scheduling.
