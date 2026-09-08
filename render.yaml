@@ -1,8 +1,10 @@
 # Render Blueprint for the Purchase Tracker Dashboard.
 # Deploy: connect this repo in the Render dashboard as a Blueprint, or run
-# `render blueprint launch`. Everything below is pinned to the starter plan
-# (Render's "starter" is a legacy alias Render still accepts and maps to its
-# current compute-plan IDs - no need to write the new IDs directly).
+# `render blueprint launch`. Both services are pinned to the starter plan
+# (Render's "starter" is a legacy alias Render still accepts for web/worker
+# services and maps to its current compute-plan IDs - no need to write the
+# new IDs directly). The database is on basic-256mb instead - see that
+# block's own comment for why 'starter' is rejected there specifically.
 #
 # Secrets (sync: false below) are NOT set here - Render prompts for them once
 # at blueprint creation, and updating them afterwards means Dashboard ->
@@ -12,9 +14,21 @@
 
 databases:
   - name: purchase-tracker-db
-    plan: starter
     databaseName: purchase_tracker
     user: purchase_tracker
+    # 'starter' (and every other legacy Postgres plan slug) is REJECTED by
+    # Render for new databases ("Legacy Postgres plans ... no longer
+    # supported") - Postgres plan slugs are size-suffixed and namespaced
+    # separately from web-service plan slugs (a service's own plan: starter
+    # just below is unaffected, that error is database-specific). basic-256mb
+    # is the same tier the sibling TDS Automation App already runs production
+    # traffic on (same Ravasco Render account) - this app's own data (POs/
+    # MIR/Stock across 3 plants, growing daily snapshot history) is a
+    # comparably small dataset, well under this tier's storage. Render bills
+    # storage separately from instance type and supports upgrading the
+    # instance type later from the dashboard (brief downtime, no migration
+    # needed) - a safe, reversible starting point, not a permanent ceiling.
+    plan: basic-256mb
 
 services:
   - type: web
