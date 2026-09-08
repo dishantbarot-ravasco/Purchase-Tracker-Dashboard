@@ -61,7 +61,13 @@ services:
       uv run --python 3.12 python manage.py migrate --noinput &&
       uv run --python 3.12 python manage.py ensure_schedules &&
       uv run --python 3.12 python manage.py createcachetable
-    startCommand: uv run gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2
+    # --python 3.12 here too - startCommand is a separate process invocation
+    # from buildCommand above (gunicorn, run every deploy AND every restart),
+    # and hits the exact same .python-version-vs-installed-interpreter issue
+    # if left unpinned. A real miss, caught from the actual Render deploy
+    # log: build succeeded (buildCommand was already fixed), then this
+    # startCommand crash-looped on "No interpreter found for Python 3.14".
+    startCommand: uv run --python 3.12 gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.8"
