@@ -8,6 +8,7 @@ auth, config via environment variables. See CLAUDE.md for the full rundown
 of what was ported from the TDS app vs. deliberately simplified/skipped.
 """
 
+import logging
 import os
 import sys
 from datetime import timedelta
@@ -25,6 +26,67 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key-change-in-production")
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+
+# ---------------------------------------------------------------------------
+# Sentry (added 2026-09-09) - real-time error tracking, closing the gap
+# flagged in a pre-go-live review: this app previously only ever surfaced a
+# failure via logs/app.log (see LOGGING below) or a SyncRun row - nobody was
+# actually watching either in real time. Runs in every process that loads
+# this settings module (gunicorn web workers AND the qcluster worker
+# process - both `manage.py runserver`/`gunicorn` and `manage.py qcluster`
+# import config.settings the same way), so a sync-pipeline exception logged
+# via log.exception() in apps/services/sync_trigger.py reaches Sentry from
+# the worker process too, not just web-request errors.
+#
+# No DSN set (SENTRY_DSN blank, the default in every environment until set)
+# -> sentry_sdk.init() is simply never called - a deliberate no-op, not a
+# silently-broken integration; local dev and CI need no Sentry account.
+#
+# LoggingIntegration piggybacks on the EXISTING `apps`/`django` loggers
+# (LOGGING dict below) rather than requiring every call site to explicitly
+# report to Sentry - every current log.error()/log.exception() call across
+# this app's sync commands, auth flows, and OAuth error paths becomes a
+# Sentry event for free, with no per-call-site changes needed.
+# send_default_pii=False - this app's logs/exceptions can carry a real
+# email address (e.g. a failed login) but not payment/financial data;
+# still, default to NOT attaching request user/cookie/IP data to events
+# unless a real triage need justifies turning it on later.
+# traces_sample_rate defaults to 0 (performance tracing off) - error
+# tracking alone doesn't need it, and it consumes a separate Sentry quota;
+# raise SENTRY_TRACES_SAMPLE_RATE explicitly if performance monitoring is
+# ever wanted.
+SENTRY_DSN = os.environ.get("SENTRY_DSN", "")
+# `or` (not a dict-default) - .env.example ships this key present-but-blank
+# (documenting it exists, same convention as other optional vars in that
+# file), and os.environ.get()'s own fallback only applies when the key is
+# entirely ABSENT, not when it's set to "" - a blank-but-present env var
+# would otherwise silently override the computed development/production
+# default with an empty string (the exact bug already caught once in this
+# app - see ADVANCE_LICENSE_FILE_TITLE's own comment for the same footgun).
+SENTRY_ENVIRONMENT = os.environ.get("SENTRY_ENVIRONMENT") or ("development" if DEBUG else "production")
+
+if SENTRY_DSN:
+    import sentry_sdk
+    from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=SENTRY_ENVIRONMENT,
+        integrations=[
+            DjangoIntegration(),
+            # Breadcrumbs from INFO+ logs, a real Sentry event from ERROR+ -
+            # matches this app's own LOGGING level split (apps.* loggers are
+            # already INFO/DEBUG, see below) rather than introducing a
+            # separate threshold to keep in sync with it.
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        ],
+        # Same blank-vs-absent reasoning as SENTRY_ENVIRONMENT above - a
+        # present-but-empty env var would otherwise crash float("") with a
+        # ValueError at Django startup, not just silently misconfigure.
+        traces_sample_rate=float(os.environ.get("SENTRY_TRACES_SAMPLE_RATE") or "0"),
+        send_default_pii=False,
+    )
 
 # No django-cors-headers app/middleware anywhere in this file, deliberately:
 # the frontend is same-origin (WhiteNoise serves frontend/ from the same

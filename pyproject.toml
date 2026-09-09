@@ -21,6 +21,7 @@ dependencies = [
     "requests>=2.34.2",
     "django-q2>=1.11.1",
     "croniter>=6.2.4",
+    "sentry-sdk>=2.69.1",
 ]
 
 [dependency-groups]

@@ -189,6 +189,17 @@ services:
       - key: REPORT_CRON_SECRET
         generateValue: true
 
+      # ── Sentry error tracking (added 2026-09-09) - real-time visibility
+      #    into failures across BOTH this web service and the qcluster
+      #    worker below (same DSN, same "environment" tag: "production").
+      #    Blank/absent -> Sentry is simply never initialized (see
+      #    config/settings.py's own comment) - set the real DSN from your
+      #    Sentry project's Settings -> Client Keys once you have one. ──────
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production
+
   # Runs the Drive sync/match pipelines queued by apps/services/sync_trigger.py
   # (django-q2's ORM broker - queued tasks are rows in the shared Postgres DB
   # above, not a separate broker). This is a real second OS process, wholly
@@ -260,3 +271,10 @@ services:
         sync: false
       - key: SMTP_FROM
         sync: false
+      # Same Sentry DSN as the web service above - see that block's own
+      # comment. Set to the SAME value on both services (Render doesn't
+      # share env vars across services automatically - copy it manually).
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_ENVIRONMENT
+        value: production
