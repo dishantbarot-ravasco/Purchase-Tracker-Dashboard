@@ -34,8 +34,9 @@ import io
 from dataclasses import dataclass
 
 import openpyxl
+from openpyxl.utils import column_index_from_string
 
-from apps.services.parsers.common import to_code_str, to_date, to_decimal, to_str
+from apps.services.parsers.common import stream_rows, to_code_str, to_date, to_decimal, to_str
 
 # ── Column/row layout constants ─────────────────────────────────────────────
 
@@ -91,9 +92,11 @@ def parse_vapi_stock_xlsx(file_bytes: bytes) -> list[ParsedVapiStockLot]:
     doesn't match what this parser was built against."""
     # read_only=True - see parsers/stock.py's own comment on this same line
     # for why (a real production OOM on Render, caused by default-mode
-    # loading pivot table caches this app never reads). Safe here for the
-    # same reason: every access below is a single-cell reference or
-    # ws.max_row, never a range slice or write.
+    # loading pivot table caches this app never reads). The data loop below
+    # streams via common.stream_rows() rather than per-cell random access -
+    # see that function's own docstring for why (ws.max_row/max_column can be
+    # None in read_only mode, and random access on a read_only worksheet is
+    # O(n) per call, not O(1) - both confirmed against real production data).
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
@@ -105,33 +108,34 @@ def parse_vapi_stock_xlsx(file_bytes: bytes) -> list[ParsedVapiStockLot]:
             raise HeaderMismatch(f"Column {col}{HEADER_ROW}: expected {expected!r}, found {actual!r}")
 
     lots = []
-    for r in range(DATA_START_ROW, ws.max_row + 1):
-        description = to_str(ws[f"C{r}"].value)
+    max_col = column_index_from_string("Q")
+    for r, c in stream_rows(ws, DATA_START_ROW, max_col):
+        description = to_str(c["C"].value)
         if not description:
             continue
 
-        sr_no_raw = ws[f"A{r}"].value
+        sr_no_raw = c["A"].value
         sr_no = int(sr_no_raw) if isinstance(sr_no_raw, (int, float)) else None
 
         lots.append(
             ParsedVapiStockLot(
                 sr_no=sr_no,
-                plant_tag=to_str(ws[f"B{r}"].value),  # this sheet is a shared multi-plant ledger (RTP-1/HRS/RTP-2 rows all seen live), not Vapi-exclusive
+                plant_tag=to_str(c["B"].value),  # this sheet is a shared multi-plant ledger (RTP-1/HRS/RTP-2 rows all seen live), not Vapi-exclusive
                 description=description,
-                category=to_str(ws[f"D{r}"].value),
-                sub_category=to_str(ws[f"E{r}"].value),
-                uom=to_str(ws[f"F{r}"].value),
-                opening_stock=to_decimal(ws[f"G{r}"].value) or 0,
-                received=to_decimal(ws[f"H{r}"].value) or 0,
-                issued=to_decimal(ws[f"I{r}"].value) or 0,
-                todays_stock=to_decimal(ws[f"J{r}"].value) or 0,
-                basic_rate=to_decimal(ws[f"K{r}"].value),
-                value=to_decimal(ws[f"L{r}"].value),
-                received_date=to_date(ws[f"M{r}"].value),
-                supplier_name=to_str(ws[f"N{r}"].value),
-                billing_on_plant=to_str(ws[f"O{r}"].value),
-                material_location=to_str(ws[f"P{r}"].value),
-                hsn_code=to_code_str(ws[f"Q{r}"].value),
+                category=to_str(c["D"].value),
+                sub_category=to_str(c["E"].value),
+                uom=to_str(c["F"].value),
+                opening_stock=to_decimal(c["G"].value) or 0,
+                received=to_decimal(c["H"].value) or 0,
+                issued=to_decimal(c["I"].value) or 0,
+                todays_stock=to_decimal(c["J"].value) or 0,
+                basic_rate=to_decimal(c["K"].value),
+                value=to_decimal(c["L"].value),
+                received_date=to_date(c["M"].value),
+                supplier_name=to_str(c["N"].value),
+                billing_on_plant=to_str(c["O"].value),
+                material_location=to_str(c["P"].value),
+                hsn_code=to_code_str(c["Q"].value),
                 source_row_ref=str(r),
             )
         )

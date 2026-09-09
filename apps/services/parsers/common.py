@@ -14,6 +14,8 @@ import datetime
 import re
 from decimal import Decimal, InvalidOperation
 
+from openpyxl.utils import get_column_letter
+
 _DATE_FORMATS = ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%m/%d/%y", "%d.%m.%Y", "%d.%m.%y"]
 
 
@@ -36,6 +38,67 @@ def to_decimal(value) -> Decimal | None:
         return Decimal(s)
     except InvalidOperation:
         return None
+
+
+def stream_rows(ws, min_row: int, max_col: int):
+    """Streams data rows forward from min_row, one underlying XML <row>
+    element at a time - the correct replacement for the
+    `range(DATA_START_ROW, ws.max_row + 1)` + per-cell random access
+    (`ws[f'{col}{r}'].value` / `ws.cell(row=, column=)`) pattern every
+    plant's MIR/Stock parser used to use on a `read_only=True` worksheet.
+    That pattern had two real, confirmed-in-production problems (2026-09-09):
+
+    1. `ws.max_row`/`ws.max_column` are read straight off the workbook XML's
+       <dimension> tag in read_only mode, rather than computed, and come back
+       None when that tag is missing or stale - every one of this app's live
+       HRS/Achhad/Vapi MIR/Stock files hit this (confirmed directly; also
+       visible in production as the openpyxl "invalid dependency definitions"
+       warnings on their pivotCache parts, logged right before the crash).
+       `ws.max_row + 1` then raised `TypeError: unsupported operand type(s)
+       for +: 'NoneType' and 'int'` on every single sync attempt across all
+       three plants, immediately, for 16+ hours straight until this fix.
+    2. Even with a manually-computed row count standing in for max_row,
+       per-cell RANDOM access on a read_only worksheet is NOT O(1) the way it
+       is on a normally-loaded one - confirmed empirically against a real
+       996-row file: 50 single-cell accesses (`ws[f'E{r}'].value`) near row 7
+       took 0.28s; the same 50 accesses near row 900 took 4.8s. Cost scales
+       with row depth, making a full per-row/per-column parse loop
+       effectively O(n^2) - slow enough, on real file sizes here
+       (~1,000-3,000 rows), to hang well past this app's own 900s sync-lock
+       timeout (sync_trigger.py) rather than crash cleanly. This would have
+       replaced problem 1's instant, obvious crash with a much worse silent
+       hang - confirmed directly: a full parse of the smallest real MIR file
+       timed out at 30s using the max_row-fallback-only fix, versus 0.13s
+       using this function.
+
+    Forward streaming via ws.iter_rows() reads each row's XML element exactly
+    once - independent of the (possibly broken) dimension tag, and immune to
+    problem 2 since nothing is ever re-accessed out of order. Confirmed no
+    row-number gaps across a real file with sparse/blank rows (divider rows,
+    542 rows checked) - plain sequential numbering from min_row is reliable,
+    no need to trust an individual Cell's own `.row` (which read_only's
+    EmptyCell doesn't even have).
+
+    `max_col` (an int - pass `openpyxl.utils.column_index_from_string(...)`
+    for a fixed lettered header) pins every yielded row to the same width, so
+    a row whose own last real cell sits earlier than a field this parser
+    reads still has every needed column present (as an EmptyCell, `.value`
+    None) instead of raising KeyError.
+
+    Yields (row_number, cells) where cells is a dict keyed by BOTH the
+    1-based column index and its letter (e.g. cells[5] is cells['E'], the
+    same Cell object) - every current caller has a fixed lettered header and
+    indexes by letter, but the integer key is kept available for any future
+    parser that needs to address a dynamically-discovered column. These are
+    Cell objects, not raw values, so a caller needing more than `.value`
+    (e.g. this app's Month/MIR-No. Excel-autoconvert workarounds, which also
+    read `cell.number_format`) keeps working unchanged."""
+    for row_num, row in enumerate(ws.iter_rows(min_row=min_row, max_col=max_col), start=min_row):
+        cells = {}
+        for i, cell in enumerate(row, start=1):
+            cells[i] = cell
+            cells[get_column_letter(i)] = cell
+        yield row_num, cells
 
 
 def to_str(value) -> str:

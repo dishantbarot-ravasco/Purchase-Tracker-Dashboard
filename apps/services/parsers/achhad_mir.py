@@ -46,8 +46,9 @@ import io
 from dataclasses import dataclass
 
 import openpyxl
+from openpyxl.utils import column_index_from_string
 
-from apps.services.parsers.common import to_code_str, to_date, to_decimal, to_str
+from apps.services.parsers.common import stream_rows, to_code_str, to_date, to_decimal, to_str
 
 # ── Column/row layout constants ─────────────────────────────────────────────
 
@@ -145,9 +146,11 @@ def parse_achhad_mir_xlsx(file_bytes: bytes) -> list[ParsedAchhadMirEntry]:
     cell doesn't match what this parser was built against."""
     # read_only=True - see parsers/stock.py's own comment on this same line
     # for why (a real production OOM on Render, caused by default-mode
-    # loading pivot table caches this app never reads). Safe here for the
-    # same reason: every access below is a single-cell reference or
-    # ws.max_row, never a range slice or write.
+    # loading pivot table caches this app never reads). The data loop below
+    # streams via common.stream_rows() rather than per-cell random access -
+    # see that function's own docstring for why (ws.max_row/max_column can be
+    # None in read_only mode, and random access on a read_only worksheet is
+    # O(n) per call, not O(1) - both confirmed against real production data).
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
@@ -159,45 +162,46 @@ def parse_achhad_mir_xlsx(file_bytes: bytes) -> list[ParsedAchhadMirEntry]:
             raise HeaderMismatch(f"Column {col}{HEADER_ROW}: expected {expected!r}, found {actual!r}")
 
     entries = []
-    for r in range(DATA_START_ROW, ws.max_row + 1):
-        party_name = to_str(ws[f"D{r}"].value)
+    max_col = column_index_from_string("AG")
+    for r, c in stream_rows(ws, DATA_START_ROW, max_col):
+        party_name = to_str(c["D"].value)
         if not party_name:
             continue  # a blank Party Name means an empty row, same convention as HRS's parser
 
         entries.append(
             ParsedAchhadMirEntry(
-                month=_month_label(ws[f"A{r}"]),
-                mir_no=_mir_no_label(ws[f"B{r}"]),
-                mir_date=to_date(ws[f"C{r}"].value),
-                po_number_raw=to_code_str(ws[f"H{r}"].value),
+                month=_month_label(c["A"]),
+                mir_no=_mir_no_label(c["B"]),
+                mir_date=to_date(c["C"].value),
+                po_number_raw=to_code_str(c["H"].value),
                 party_name=party_name,
-                state=to_str(ws[f"E{r}"].value),
-                invoice_no=to_str(ws[f"F{r}"].value),
-                invoice_date=to_date(ws[f"G{r}"].value),
-                material_description=to_str(ws[f"J{r}"].value),
-                qty=to_decimal(ws[f"K{r}"].value),
-                uom=to_str(ws[f"L{r}"].value),
-                rate=to_decimal(ws[f"M{r}"].value),
-                net=to_decimal(ws[f"N{r}"].value),
-                discount_rate_pct=to_decimal(ws[f"O{r}"].value),
-                discount_amt=to_decimal(ws[f"P{r}"].value),
-                others=to_decimal(ws[f"Q{r}"].value),
-                taxable_value=to_decimal(ws[f"R{r}"].value),
-                tax_rate_pct=to_decimal(ws[f"S{r}"].value),
-                igst=to_decimal(ws[f"T{r}"].value),
-                cgst_rate_pct=to_decimal(ws[f"U{r}"].value),
-                cgst_amt=to_decimal(ws[f"V{r}"].value),
-                sgst_rate_pct=to_decimal(ws[f"W{r}"].value),
-                sgst_amt=to_decimal(ws[f"X{r}"].value),
-                other_taxes_excl_gst=to_decimal(ws[f"Y{r}"].value),
-                total_amount=to_decimal(ws[f"Z{r}"].value),
-                tcs_rate_pct=to_decimal(ws[f"AA{r}"].value),
-                tcs_amt=to_decimal(ws[f"AB{r}"].value),
-                invoice_final_value=to_decimal(ws[f"AC{r}"].value),
-                plant_tag=to_str(ws[f"AD{r}"].value),
-                dept_use=to_str(ws[f"AE{r}"].value),
-                material_category=to_str(ws[f"AF{r}"].value),
-                remarks=to_str(ws[f"AG{r}"].value),
+                state=to_str(c["E"].value),
+                invoice_no=to_str(c["F"].value),
+                invoice_date=to_date(c["G"].value),
+                material_description=to_str(c["J"].value),
+                qty=to_decimal(c["K"].value),
+                uom=to_str(c["L"].value),
+                rate=to_decimal(c["M"].value),
+                net=to_decimal(c["N"].value),
+                discount_rate_pct=to_decimal(c["O"].value),
+                discount_amt=to_decimal(c["P"].value),
+                others=to_decimal(c["Q"].value),
+                taxable_value=to_decimal(c["R"].value),
+                tax_rate_pct=to_decimal(c["S"].value),
+                igst=to_decimal(c["T"].value),
+                cgst_rate_pct=to_decimal(c["U"].value),
+                cgst_amt=to_decimal(c["V"].value),
+                sgst_rate_pct=to_decimal(c["W"].value),
+                sgst_amt=to_decimal(c["X"].value),
+                other_taxes_excl_gst=to_decimal(c["Y"].value),
+                total_amount=to_decimal(c["Z"].value),
+                tcs_rate_pct=to_decimal(c["AA"].value),
+                tcs_amt=to_decimal(c["AB"].value),
+                invoice_final_value=to_decimal(c["AC"].value),
+                plant_tag=to_str(c["AD"].value),
+                dept_use=to_str(c["AE"].value),
+                material_category=to_str(c["AF"].value),
+                remarks=to_str(c["AG"].value),
                 source_row_ref=str(r),
             )
         )

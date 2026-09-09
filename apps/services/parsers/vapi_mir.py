@@ -34,8 +34,9 @@ import io
 from dataclasses import dataclass
 
 import openpyxl
+from openpyxl.utils import column_index_from_string
 
-from apps.services.parsers.common import to_code_str, to_date, to_decimal, to_str
+from apps.services.parsers.common import stream_rows, to_code_str, to_date, to_decimal, to_str
 
 # ── Column/row layout constants ─────────────────────────────────────────────
 
@@ -119,9 +120,11 @@ def parse_vapi_mir_xlsx(file_bytes: bytes) -> list[ParsedVapiMirEntry]:
     header cell doesn't match what this parser was built against."""
     # read_only=True - see parsers/stock.py's own comment on this same line
     # for why (a real production OOM on Render, caused by default-mode
-    # loading pivot table caches this app never reads). Safe here for the
-    # same reason: every access below is a single-cell reference or
-    # ws.max_row, never a range slice or write.
+    # loading pivot table caches this app never reads). The data loop below
+    # streams via common.stream_rows() rather than per-cell random access -
+    # see that function's own docstring for why (ws.max_row/max_column can be
+    # None in read_only mode, and random access on a read_only worksheet is
+    # O(n) per call, not O(1) - both confirmed against real production data).
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
@@ -133,44 +136,45 @@ def parse_vapi_mir_xlsx(file_bytes: bytes) -> list[ParsedVapiMirEntry]:
             raise HeaderMismatch(f"Column {col}{HEADER_ROW}: expected {expected!r}, found {actual!r}")
 
     entries = []
-    for r in range(DATA_START_ROW, ws.max_row + 1):
-        party_name = to_str(ws[f"I{r}"].value)
+    max_col = column_index_from_string("AC")
+    for r, c in stream_rows(ws, DATA_START_ROW, max_col):
+        party_name = to_str(c["I"].value)
         if not party_name:
             continue  # a blank Party Name means an empty row, same convention as HRS's/Achhad's parsers
 
         entries.append(
             ParsedVapiMirEntry(
-                month=_month_label(ws[f"A{r}"]),
-                mir_no=to_str(ws[f"B{r}"].value),
-                mir_date=to_date(ws[f"C{r}"].value),
-                po_number_raw=to_code_str(ws[f"D{r}"].value),  # ~100% blank on real data - matching runs on the weighted score alone for Vapi
-                sap_grn_number=to_code_str(ws[f"E{r}"].value),
-                park_invoice_no=to_code_str(ws[f"F{r}"].value),
-                post=to_str(ws[f"G{r}"].value),
-                post_no_correction=to_str(ws[f"H{r}"].value),
+                month=_month_label(c["A"]),
+                mir_no=to_str(c["B"].value),
+                mir_date=to_date(c["C"].value),
+                po_number_raw=to_code_str(c["D"].value),  # ~100% blank on real data - matching runs on the weighted score alone for Vapi
+                sap_grn_number=to_code_str(c["E"].value),
+                park_invoice_no=to_code_str(c["F"].value),
+                post=to_str(c["G"].value),
+                post_no_correction=to_str(c["H"].value),
                 party_name=party_name,
-                state=to_str(ws[f"J{r}"].value),
-                invoice_no=to_code_str(ws[f"K{r}"].value),
-                invoice_date=to_date(ws[f"L{r}"].value),
-                material_description=to_str(ws[f"M{r}"].value),
-                item_code=to_code_str(ws[f"N{r}"].value),
-                qty=to_decimal(ws[f"O{r}"].value),
-                uom=to_str(ws[f"P{r}"].value),
-                rate=to_decimal(ws[f"Q{r}"].value),
-                taxable_value=to_decimal(ws[f"R{r}"].value),
-                others_with_gst=to_decimal(ws[f"S{r}"].value),
+                state=to_str(c["J"].value),
+                invoice_no=to_code_str(c["K"].value),
+                invoice_date=to_date(c["L"].value),
+                material_description=to_str(c["M"].value),
+                item_code=to_code_str(c["N"].value),
+                qty=to_decimal(c["O"].value),
+                uom=to_str(c["P"].value),
+                rate=to_decimal(c["Q"].value),
+                taxable_value=to_decimal(c["R"].value),
+                others_with_gst=to_decimal(c["S"].value),
                 # a whole percentage (18.00 = 18%), not a fraction like HRS/Achhad's 0.18 -
                 # RTPVapiMIREntry.gst_rate_pct is decimal_places=2 for this reason, don't "fix" it to match
-                gst_rate_pct=to_decimal(ws[f"T{r}"].value),
-                igst_amt=to_decimal(ws[f"U{r}"].value),
-                cgst_amt=to_decimal(ws[f"V{r}"].value),
-                sgst_amt=to_decimal(ws[f"W{r}"].value),
-                other_taxes_excl_gst=to_decimal(ws[f"X{r}"].value),
-                tcs_amt=to_decimal(ws[f"Y{r}"].value),
-                invoice_final_value=to_decimal(ws[f"Z{r}"].value),
-                material_category=to_str(ws[f"AA{r}"].value),
-                date_sent_to_office=to_date(ws[f"AB{r}"].value),
-                date_sent_to_ho=to_date(ws[f"AC{r}"].value),
+                gst_rate_pct=to_decimal(c["T"].value),
+                igst_amt=to_decimal(c["U"].value),
+                cgst_amt=to_decimal(c["V"].value),
+                sgst_amt=to_decimal(c["W"].value),
+                other_taxes_excl_gst=to_decimal(c["X"].value),
+                tcs_amt=to_decimal(c["Y"].value),
+                invoice_final_value=to_decimal(c["Z"].value),
+                material_category=to_str(c["AA"].value),
+                date_sent_to_office=to_date(c["AB"].value),
+                date_sent_to_ho=to_date(c["AC"].value),
                 source_row_ref=str(r),
             )
         )

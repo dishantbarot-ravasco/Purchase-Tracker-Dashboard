@@ -19,6 +19,16 @@ occurrence counter), documented in stock_identity.py and
 apps/services/matching_achhad.py's module docstrings - still strictly
 better than a row number.
 
+**Superseded (2026-09-09): this command no longer writes
+RTPAchhadRMDailyMovement rows** - the parser's day-matrix scan
+(achhad_stock.py's former ParsedDailyMovement/_day_columns()/
+_sheet_month_year()) was removed per the project owner's own decision, so
+this sync is header-only now, the same shape as sync_stock.py/
+sync_vapi_stock.py. RTPAchhadRMDailyMovement's model/migration and its
+consumers (consumption_report.py) are left as-is - they already degrade
+gracefully to the existing monthly-summary `isEstimate` fallback when no new
+rows land, so nothing crashes; that table just stops growing going forward.
+
 Usage:
     python manage.py sync_achhad_stock
     python manage.py sync_achhad_stock --file path.xlsx    # parse a local file instead (dev/testing)
@@ -31,7 +41,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from apps.core.models import DataQualityFlag, RTPAchhadRMDailyMovement, RTPAchhadRMLot, RTPAchhadRMSnapshot, SyncRun
+from apps.core.models import DataQualityFlag, RTPAchhadRMLot, RTPAchhadRMSnapshot, SyncRun
 from apps.services.arithmetic_checks import check_stock_lot
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.achhad_stock import HeaderMismatch, parse_achhad_stock_xlsx
@@ -64,7 +74,6 @@ class Command(BaseCommand):
         rows_seen = 0
         rows_changed = 0
         rows_skipped = 0
-        movements_written = 0
         status = SyncRun.Status.SUCCESS
         error_detail = ""
 
@@ -88,7 +97,6 @@ class Command(BaseCommand):
                         rows_changed += 1
                     if not options["no_snapshot"]:
                         self._upsert_snapshot(lot, today)
-                    movements_written += self._upsert_daily_movements(lot, parsed.daily_movements)
                 deactivated = (
                     RTPAchhadRMLot.objects.filter(is_active=True)
                     .exclude(natural_key__in=seen_keys)
@@ -103,7 +111,6 @@ class Command(BaseCommand):
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_achhad_stock: {rows_seen} stock rows seen, {rows_changed} created/updated, "
-                f"{movements_written} daily movement(s) recorded, "
                 f"{rows_skipped} skipped (no identity), "
                 f"{deactivated} deactivated (no longer in sheet) "
                 f"({time.monotonic() - t0:.1f}s)"
@@ -162,32 +169,6 @@ class Command(BaseCommand):
             snapshot_date=snapshot_date,
             defaults={f: getattr(lot, f) for f in _SNAPSHOT_FIELDS},
         )
-
-    def _upsert_daily_movements(self, lot: RTPAchhadRMLot, movements: list) -> int:
-        """Upserts one RTPAchhadRMDailyMovement row per activity day parsed
-        for this lot (see achhad_stock.py's ParsedDailyMovement - only real
-        activity days are parsed at all, so `movements` is already sparse).
-        A day's own received/issued total only ever grows within the live
-        month (confirmed by the reconciliation check this feature was built
-        on), so overwriting on every sync is correct, not just idempotent -
-        no need for sync_utils.unchanged() here, an update_or_create per row
-        is cheap at this row count (one plant, real activity days only, not
-        one row per day per material). Returns how many rows were written,
-        for the command's own summary line."""
-        written = 0
-        for m in movements:
-            RTPAchhadRMDailyMovement.objects.update_or_create(
-                stock_lot=lot,
-                movement_date=m.movement_date,
-                defaults={
-                    "received": m.received,
-                    "issued": m.issued,
-                    "source_row_ref": lot.source_row_ref,
-                    "last_synced_at": timezone.now(),
-                },
-            )
-            written += 1
-        return written
 
     def _sync_data_quality_flags(self) -> None:
         """See sync_stock.py's own _sync_data_quality_flags (Match Accuracy

@@ -34,8 +34,9 @@ import io
 from dataclasses import dataclass
 
 import openpyxl
+from openpyxl.utils import column_index_from_string
 
-from apps.services.parsers.common import to_date, to_decimal, to_str
+from apps.services.parsers.common import stream_rows, to_date, to_decimal, to_str
 
 # ── Column/row layout constants ─────────────────────────────────────────────
 
@@ -96,10 +97,12 @@ def parse_stock_xlsx(file_bytes: bytes) -> list[ParsedStockLot]:
     # reads at all (confirmed via openpyxl's own "invalid dependency
     # definitions" warnings on every pivotCacheDefinition part of the real
     # file) - read_only mode streams instead, and explicitly skips pivot
-    # tables/charts/styles it doesn't need. Safe here: every access below is
-    # a single-cell reference (ws['A5'] or ws.cell(row=, column=)) or
-    # ws.max_row/max_column, all of which read_only worksheets support -
-    # never a range slice or a write, which read_only mode doesn't support.
+    # tables/charts/styles it doesn't need. The data loop below streams via
+    # common.stream_rows() rather than per-cell random access (ws['A5'] etc.)
+    # or ws.max_row/max_column - see that function's own docstring for why
+    # (both can be None in read_only mode when the workbook's <dimension> tag
+    # is broken, and random access on a read_only worksheet is O(n) per call,
+    # not O(1) - both confirmed against real production data/files).
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True, read_only=True)
     if SHEET_NAME not in wb.sheetnames:
         raise HeaderMismatch(f"Expected sheet {SHEET_NAME!r}, found sheets: {wb.sheetnames}")
@@ -111,35 +114,36 @@ def parse_stock_xlsx(file_bytes: bytes) -> list[ParsedStockLot]:
             raise HeaderMismatch(f"Column {col}{HEADER_ROW}: expected {expected!r}, found {actual!r}")
 
     lots = []
-    for r in range(DATA_START_ROW, ws.max_row + 1):
-        description = to_str(ws[f"B{r}"].value)
+    max_col = column_index_from_string("P")
+    for r, c in stream_rows(ws, DATA_START_ROW, max_col):
+        description = to_str(c["B"].value)
         if not description:
             continue
 
-        sr_no_raw = ws[f"A{r}"].value
+        sr_no_raw = c["A"].value
         sr_no = int(sr_no_raw) if isinstance(sr_no_raw, (int, float)) else None
 
-        no_of_days_raw = to_decimal(ws[f"N{r}"].value)
+        no_of_days_raw = to_decimal(c["N"].value)
         no_of_days = int(no_of_days_raw) if no_of_days_raw is not None else None
 
         lots.append(
             ParsedStockLot(
                 sr_no=sr_no,
                 description=description,
-                sap_item_code=to_str(ws[f"C{r}"].value),
-                category=to_str(ws[f"D{r}"].value),
-                sub_category=to_str(ws[f"E{r}"].value),
-                uom=to_str(ws[f"F{r}"].value),
-                opening_stock=to_decimal(ws[f"G{r}"].value) or 0,
-                received=to_decimal(ws[f"H{r}"].value) or 0,
-                issued=to_decimal(ws[f"I{r}"].value) or 0,
-                todays_stock=to_decimal(ws[f"J{r}"].value) or 0,
-                basic_rate=to_decimal(ws[f"K{r}"].value),
-                value=to_decimal(ws[f"L{r}"].value),
-                received_date=to_date(ws[f"M{r}"].value),
+                sap_item_code=to_str(c["C"].value),
+                category=to_str(c["D"].value),
+                sub_category=to_str(c["E"].value),
+                uom=to_str(c["F"].value),
+                opening_stock=to_decimal(c["G"].value) or 0,
+                received=to_decimal(c["H"].value) or 0,
+                issued=to_decimal(c["I"].value) or 0,
+                todays_stock=to_decimal(c["J"].value) or 0,
+                basic_rate=to_decimal(c["K"].value),
+                value=to_decimal(c["L"].value),
+                received_date=to_date(c["M"].value),
                 no_of_days=no_of_days,
-                party_name=to_str(ws[f"O{r}"].value),
-                location_tag=to_str(ws[f"P{r}"].value),
+                party_name=to_str(c["O"].value),
+                location_tag=to_str(c["P"].value),
                 source_row_ref=str(r),
             )
         )
