@@ -9,11 +9,14 @@ for what's genuinely different about Achhad's own file shapes:
   (HRS: "RAW MATERIAL", header row 6) - see apps/services/parsers/
   achhad_mir.py's module docstring.
 - Stock has no vendor/party-name column at all (one row per material, not
-  per (material, vendor) lot like HRS), the sheet's single tab is read
+  per (material, vendor) lot like HRS), and the sheet's single tab is read
   positionally (wb.sheetnames[0], renamed every month) rather than by a
-  fixed name, and row 1 must carry a literal "RM STOCK - DD.MM.YYYY" title
-  the parser extracts a year/month from for its daily-movement matrix - see
-  apps/services/parsers/achhad_stock.py's module docstring.
+  fixed name - see apps/services/parsers/achhad_stock.py's module docstring.
+  (Superseded 2026-09-09: that parser previously also required a literal
+  "RM STOCK - DD.MM.YYYY" title in row 1, to extract a year/month for a
+  daily-movement matrix it parsed - both the title requirement and the
+  matrix parse were removed the same day, per the project owner's own
+  decision to keep this parser header-only, matching HRS's/Vapi's shape.)
 """
 
 import csv
@@ -244,20 +247,10 @@ class TestSyncAchhadStock:
         per-vendor split like HRS's (see RTPAchhadRMLot's own docstring)."""
         assert not hasattr(RTPAchhadRMLot(), "party_name")
 
-    def test_missing_title_date_records_a_failed_syncrun_and_raises(self, tmp_path):
-        fixture_path = tmp_path / "stock.xlsx"
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Aug 26-27"
-        ws["A1"] = "no date here"
-        for col, header in STOCK_HEADERS.items():
-            ws[f"{col}{STOCK_HEADER_ROW}"] = header
-        buf = io.BytesIO()
-        wb.save(buf)
-        fixture_path.write_bytes(buf.getvalue())
-
-        with pytest.raises(SystemExit):
-            call_command("sync_achhad_stock", file=str(fixture_path))
-
-        run = SyncRun.objects.filter(plant=SyncRun.Plant.RTP_ACHHAD, source=SyncRun.Source.STOCK).latest("started_at")
-        assert run.status == SyncRun.Status.FAILED
+    # Superseded (2026-09-09): this class used to also have
+    # test_missing_title_date_records_a_failed_syncrun_and_raises, covering
+    # achhad_stock.py's since-removed _sheet_month_year() (a row-1
+    # "RM STOCK - DD.MM.YYYY" title requirement, needed only for the
+    # day-matrix parse that was removed the same day - see this file's own
+    # module docstring). Removed along with that feature; a row-1 title is
+    # no longer read or required at all.
