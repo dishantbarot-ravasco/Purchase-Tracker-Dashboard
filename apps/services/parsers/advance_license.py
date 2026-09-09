@@ -1,9 +1,9 @@
 """
-apps/services/parsers/advance_license.py — parses the "Advance License
-data" workbook (one fixed file, in the "Advance License" Drive folder,
-maintained by hand by the project owner - may be a native Google Sheet or
-an uploaded .xlsx, see google_client.download_spreadsheet_bytes()) into a
-list of ParsedAdvanceLicense, each carrying its own ParsedAdvanceLicenseMaterial
+apps/services/parsers/advance_license.py — parses the Advance License Data
+Google Sheet (one fixed file, referenced directly by Drive file id -
+settings.ADVANCE_LICENSE_FILE_ID - maintained by hand by the project owner,
+see google_client.download_spreadsheet_bytes_by_id()) into a list of
+ParsedAdvanceLicense, each carrying its own ParsedAdvanceLicenseMaterial
 rows.
 
 Column layout - the exact header the project owner's own template uses

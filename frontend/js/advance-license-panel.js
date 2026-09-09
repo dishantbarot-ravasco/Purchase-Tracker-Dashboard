@@ -40,8 +40,10 @@ function renderAdvanceLicenseLedgerBody(body, data) {
   const canSync = CURRENT_USER && CURRENT_USER.role === 'admin';
   const licenses = data.licenses || [];
   const lastSync = data.lastSync;
+  const failedTitle = lastSync && lastSync.status !== 'success' && lastSync.errorDetail
+    ? ' title="' + escapeHtml(lastSync.errorDetail) + '"' : '';
   const syncNote = lastSync
-    ? 'Last synced: ' + formatDateIN(lastSync.finishedAt) + ' (' + lastSync.status + ')'
+    ? '<span' + failedTitle + '>Last synced: ' + formatDateIN(lastSync.finishedAt) + ' (' + escapeHtml(lastSync.status) + ')</span>'
     : 'Never synced yet.';
 
   const today = new Date().toISOString().slice(0, 10);
@@ -67,7 +69,7 @@ function renderAdvanceLicenseLedgerBody(body, data) {
 
   body.innerHTML =
     '<div class="modal-head"><div><h2>Advance License Ledger</h2>' +
-    '<div class="modal-meta">' + escapeHtml(syncNote) + '</div></div>' +
+    '<div class="modal-meta">' + syncNote + '</div></div>' +
     '<span class="close-btn">&times;</span></div>' +
     '<div class="field-block full-width flex-row-gap10 mb-8">' +
       (canSync ? '<button class="primary" id="advanceLicenseSyncBtn">Sync Now</button>' : '') +

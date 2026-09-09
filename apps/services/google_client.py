@@ -126,35 +126,19 @@ def list_files_in_folder(parent_id: str, name_prefix: str | None = None) -> list
     return sorted(files, key=lambda f: f["name"])
 
 
-def find_file_by_title(title: str, parent_id: str | None = None) -> dict:
-    """Like find_file_id_by_title(), but returns the full {id, name,
-    mimeType, modifiedTime} dict instead of just the id - added for
-    download_spreadsheet_bytes() below, which needs to know the file's
-    mimeType to decide whether to export or download it directly."""
-    service = get_drive_service()
-    clauses = [f"name = '{_escape(title)}'", "trashed = false"]
-    if parent_id:
-        clauses.append(f"'{_escape(parent_id)}' in parents")
-    query = " and ".join(clauses)
-    resp = service.files().list(q=query, fields="files(id, name, mimeType, modifiedTime)", pageSize=5).execute()
-    files = resp.get("files", [])
-    if not files:
-        raise FileNotFoundError(f"No Drive file found matching title={title!r} parent={parent_id!r}")
-    return files[0]
-
-
-def download_spreadsheet_bytes(title: str, parent_id: str | None = None) -> bytes:
+def download_spreadsheet_bytes_by_id(file_id: str) -> bytes:
     """Downloads a spreadsheet file as xlsx bytes, regardless of whether
     Drive holds it as a native Google Sheet (exported via XLSX_EXPORT_MIME)
     or an already-uploaded .xlsx file (downloaded as-is) - added for
-    sync_advance_license.py, whose source file's real format isn't fixed
-    ahead of time (the project owner maintains it by hand and may keep it as
-    either). Every other sync command's source file has a known fixed
-    format, so this generality wasn't needed until now."""
-    file = find_file_by_title(title, parent_id=parent_id)
-    if file["mimeType"] == GOOGLE_SHEET_MIME:
-        return download_file_bytes(file["id"], export_mime_type=XLSX_EXPORT_MIME)
-    return download_file_bytes(file["id"])
+    sync_advance_license.py, whose source file the project owner gave as a
+    direct Drive share link (a file id, not a folder+title to search for,
+    unlike every other sync command's source file). One metadata lookup to
+    decide the mimeType, then one download."""
+    service = get_drive_service()
+    meta = service.files().get(fileId=file_id, fields="id, mimeType").execute()
+    if meta["mimeType"] == GOOGLE_SHEET_MIME:
+        return download_file_bytes(file_id, export_mime_type=XLSX_EXPORT_MIME)
+    return download_file_bytes(file_id)
 
 
 def _escape(value: str) -> str:

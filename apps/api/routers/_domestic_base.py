@@ -929,13 +929,26 @@ def make_sync_status(cfg: _PlantConfig):
         )
         snapshot_gap_days = (timezone.localdate() - last_snapshot_date).days if last_snapshot_date else None
 
-        return Response({
+        resp = Response({
             "sync": latest_by_source,
             "mirEntryCount": cfg.mir_model.objects.filter(is_active=True).count(),
             "syncInProgress": is_sync_in_progress(cfg.key),
             "lastSnapshotDate": last_snapshot_date.isoformat() if last_snapshot_date else None,
             "snapshotGapDays": snapshot_gap_days,
         })
+        # This endpoint's whole purpose is reporting LIVE state
+        # (syncInProgress in particular - the dashboard's "syncing..."
+        # badge) - a response with no explicit Cache-Control is still
+        # eligible for a browser's heuristic HTTP cache (RFC 7234), which
+        # can make a plain reload replay a stale cached response while a
+        # hard refresh (which bypasses the HTTP cache) shows the real,
+        # current state - reported by the project owner 2026-09-09 as
+        # "the frontend still shows syncing" after a sync had already
+        # finished, fixed only by a hard refresh. no-store forces every
+        # request for this endpoint to hit the server fresh, regardless of
+        # how the page itself was reloaded.
+        resp["Cache-Control"] = "no-store"
+        return resp
 
     return sync_status
 

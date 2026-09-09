@@ -439,20 +439,14 @@ RODTEP_FOLDER_ID = os.environ.get("RODTEP_FOLDER_ID", "16gdQxPCDutLTxZ2oiX1M1TCi
 # ---------------------------------------------------------------------------
 # Advance License ledger (added 2026-09-09) - company-wide, not per-plant,
 # same reasoning as RoDTEP above (one shared IEC, licenses aren't split per
-# plant the way MIR/Stock/PO data is). Unlike RoDTEP's own folder, this is
-# ONE fixed file ("Advance License data", per the project owner - they
-# maintain it by hand and it may be either a native Google Sheet or an
-# uploaded .xlsx, so manage.py sync_advance_license downloads it via
-# google_client.download_spreadsheet_bytes(), not a plain download_file_bytes()).
-# No hardcoded default here (unlike PURCHASE_TRACKER_DB_FOLDER_ID/
-# RODTEP_FOLDER_ID above) - this folder's real id isn't known yet; set
-# ADVANCE_LICENSE_FOLDER_ID in .env before running sync_advance_license.
-ADVANCE_LICENSE_FOLDER_ID = os.environ.get("ADVANCE_LICENSE_FOLDER_ID", "")
-# Hardcoded, like every other plant's *_TITLE constant above (HRS_PO_CSV_TITLE
-# etc.) - not env-driven, since an empty-but-present env var would silently
-# override this default with an empty string (os.environ.get's fallback only
-# applies when the key is entirely absent, not when it's set to "").
-ADVANCE_LICENSE_FILE_TITLE = "Advance License data"
+# plant the way MIR/Stock/PO data is). ONE fixed file - a native Google
+# Sheet, per the project owner's own share link (docs.google.com/spreadsheets/
+# d/<id>/...) - so manage.py sync_advance_license fetches it directly by
+# file id (google_client.download_spreadsheet_bytes_by_id()), not by
+# searching a folder for a title the way every other sync_* command does.
+# Real id confirmed by the project owner 2026-09-09, same as
+# RODTEP_FOLDER_ID's own hardcoded default above.
+ADVANCE_LICENSE_FILE_ID = os.environ.get("ADVANCE_LICENSE_FILE_ID", "1zqxUwxUn2fpftBUJhqjjfRmzjgkob0rb2U11VRXudX4")
 
 # ---------------------------------------------------------------------------
 # Session - DB-backed, required for the Google OAuth PKCE code_verifier

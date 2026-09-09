@@ -129,6 +129,10 @@ services:
         value: 1mviBKPDyZLVLfGVZ780BX_xPR9fLxdtH
       - key: VAPI_MIR_STOCK_FOLDER_ID
         value: 1kzWf8sf9UfXBG34WalJxgu7djX5fwNUU
+      - key: RODTEP_FOLDER_ID
+        value: 16gdQxPCDutLTxZ2oiX1M1TCi64kjnEnq
+      - key: ADVANCE_LICENSE_FILE_ID
+        value: 1zqxUwxUn2fpftBUJhqjjfRmzjgkob0rb2U11VRXudX4
 
       # ── SMTP (login OTP / new-device emails) ────────────────────────────
       - key: SMTP_HOST
@@ -235,6 +239,10 @@ services:
         value: 1mviBKPDyZLVLfGVZ780BX_xPR9fLxdtH
       - key: VAPI_MIR_STOCK_FOLDER_ID
         value: 1kzWf8sf9UfXBG34WalJxgu7djX5fwNUU
+      - key: RODTEP_FOLDER_ID
+        value: 16gdQxPCDutLTxZ2oiX1M1TCi64kjnEnq
+      - key: ADVANCE_LICENSE_FILE_ID
+        value: 1zqxUwxUn2fpftBUJhqjjfRmzjgkob0rb2U11VRXudX4
       - key: SMTP_HOST
         value: smtp.gmail.com
       - key: SMTP_PORT

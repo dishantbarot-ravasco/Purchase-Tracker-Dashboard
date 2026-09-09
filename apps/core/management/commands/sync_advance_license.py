@@ -1,18 +1,16 @@
 """
 apps/core/management/commands/sync_advance_license.py — syncs the
-"Advance License data" workbook from the "Advance License" Drive folder into
-AdvanceLicense / AdvanceLicenseMaterial.
+Advance License Data Google Sheet into AdvanceLicense / AdvanceLicenseMaterial.
 
 Company-wide, not per-plant (see SyncRun.Plant.COMPANY's own comment on
 RodtepScrollEntry) - one fixed file, unlike sync_rodtep's whole-folder
 listing (RoDTEP has one file per script; this app has one Advance License
-ledger file, maintained by hand). settings.ADVANCE_LICENSE_FILE_TITLE names
-it (default "Advance License data"); it may be a native Google Sheet or an
-uploaded .xlsx (the project owner hasn't fixed which), so this command
-downloads it via google_client.download_spreadsheet_bytes(), which figures
-out the real mimeType and exports/downloads accordingly - not the plain
-find_file_id_by_title()+download_file_bytes() every other sync_* command
-uses.
+ledger file, maintained by hand). settings.ADVANCE_LICENSE_FILE_ID names it
+directly by Drive file id (the project owner's own share link, confirmed
+2026-09-09) rather than a folder+title to search for - this command
+downloads it via google_client.download_spreadsheet_bytes_by_id(), which
+looks up the file's real mimeType and exports (native Google Sheet) or
+downloads (uploaded .xlsx) accordingly.
 
 Change detection: a whole-license SHA-256 hash (_license_hash), same
 reasoning as sync_po_csv.py's _po_hash - a license and all its material
@@ -124,10 +122,8 @@ class Command(BaseCommand):
         if local_path:
             with open(local_path, "rb") as f:
                 return f.read()
-        from apps.services.google_client import download_spreadsheet_bytes
-        return download_spreadsheet_bytes(
-            settings.ADVANCE_LICENSE_FILE_TITLE, parent_id=settings.ADVANCE_LICENSE_FOLDER_ID or None,
-        )
+        from apps.services.google_client import download_spreadsheet_bytes_by_id
+        return download_spreadsheet_bytes_by_id(settings.ADVANCE_LICENSE_FILE_ID)
 
     def _upsert_license(self, parsed) -> bool:
         """Upsert one parsed license by license_number; returns False (no-op)

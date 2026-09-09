@@ -460,7 +460,11 @@ def sync_status(request):
             "errorDetail": (run.error_detail or None) if run else None,
             "syncInProgress": is_imports_sync_in_progress(plant_key),
         }
-    return Response({"sync": latest_by_plant})
+    resp = Response({"sync": latest_by_plant})
+    # See _domestic_base.py's make_sync_status() for why this is here -
+    # same live-state/heuristic-caching reasoning, same fix.
+    resp["Cache-Control"] = "no-store"
+    return resp
 
 
 @api_view(["GET"])
@@ -650,6 +654,12 @@ def rodtep_ledger(request):
         "lastSync": {
             "status": last_run.status,
             "finishedAt": last_run.finished_at.isoformat() if last_run and last_run.finished_at else None,
+            # errorDetail (added 2026-09-09) - was always recorded server-side
+            # on a failed SyncRun, but never returned here, so a silently
+            # failing RoDTEP sync (e.g. Drive folder not shared with the
+            # service account) was invisible short of Django Admin/server
+            # log access - same fix as _domestic_base.py's make_sync_status().
+            "errorDetail": last_run.error_detail or None,
         } if last_run else None,
     })
 
@@ -792,6 +802,10 @@ def advance_license_ledger(request):
         "lastSync": {
             "status": last_run.status,
             "finishedAt": last_run.finished_at.isoformat() if last_run and last_run.finished_at else None,
+            # Surfaced so "why isn't this syncing" is answerable from this
+            # panel directly (e.g. the file not shared with the service
+            # account) instead of needing server log/Django Admin access.
+            "errorDetail": last_run.error_detail or None,
         } if last_run else None,
     })
 
