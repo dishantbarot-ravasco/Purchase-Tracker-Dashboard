@@ -252,6 +252,36 @@ class TestDeviceVerifyAndTrustedLogin:
         # No new email of any kind for a trusted-device login.
         assert len(mail.outbox) == 2
 
+    def test_new_device_login_records_last_login_at(self):
+        """Real bug, found and fixed 2026-09-09: PTUser.last_login_at was
+        defined and displayed in admin.html's Users panel, but no login path
+        anywhere in this app ever wrote to it - every account showed "Never"
+        regardless of real login history."""
+        assert self.user.last_login_at is None
+        self._login_new_device()
+        otp = _extract_otp_from_outbox()
+        self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")
+
+        self.user.refresh_from_db()
+        assert self.user.last_login_at is not None
+
+    def test_trusted_device_login_updates_last_login_at_again(self):
+        """Same fix as above, but the trusted-device (no-OTP) path - a
+        separate write site (PTLoginView.post()), must also update the
+        timestamp to a later value on a second login, not just once ever."""
+        self._login_new_device()
+        otp = _extract_otp_from_outbox()
+        self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")
+        self.user.refresh_from_db()
+        first_login_at = self.user.last_login_at
+
+        second_login = self.client.post(LOGIN_URL, {"email": self.user.email, "password": self.password}, format="json")
+        assert second_login.status_code == 200
+
+        self.user.refresh_from_db()
+        assert self.user.last_login_at is not None
+        assert self.user.last_login_at >= first_login_at
+
 
 @pytest.mark.django_db
 class TestLogoutAndProtectedAccess:

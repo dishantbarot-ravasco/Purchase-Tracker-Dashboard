@@ -81,11 +81,21 @@ class PTLoginView(TokenObtainPairView):
             if response.data.get("refresh"):
                 set_refresh_cookie(response, response.data["refresh"])
 
+            from django.utils import timezone
+
             from apps.core.audit_log import PTAuditLog, log_pt_action
             from apps.core.models import PTUser
 
             user = PTUser.objects.filter(pk=response.data.get("user_id")).first()
             log_pt_action(request, PTAuditLog.ACTION_LOGIN, actor=user, detail="trusted device")
+            # Real bug, found and fixed 2026-09-09: PTUser.last_login_at was
+            # defined and displayed in admin.html's Users panel, but no login
+            # path anywhere in this app ever wrote to it - every account
+            # showed "Never" regardless of actual login history. .update(),
+            # not user.save(), to avoid clobbering any other field a
+            # concurrent request may have just changed on this same row.
+            if user is not None:
+                PTUser.objects.filter(pk=user.pk).update(last_login_at=timezone.now())
         return response
 
 

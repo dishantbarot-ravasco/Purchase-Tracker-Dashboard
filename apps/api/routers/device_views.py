@@ -118,9 +118,14 @@ def device_verify(request):
 
     request.session.pop("pending_user_id", None)
 
+    from django.utils import timezone
+
     from apps.core.audit_log import PTAuditLog, log_pt_action
 
     log_pt_action(request, PTAuditLog.ACTION_LOGIN, actor=user, detail="new device (email OTP verified)")
+    # See auth_views.py's PTLoginView.post() for the full story on this fix -
+    # last_login_at previously had no writer anywhere in the app.
+    PTUser.objects.filter(pk=user.pk).update(last_login_at=timezone.now())
 
     log.info("device_verify: success user_id=%s role=%s", user_id, user.role)
     return response

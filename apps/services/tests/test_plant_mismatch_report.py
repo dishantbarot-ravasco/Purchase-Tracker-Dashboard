@@ -24,10 +24,12 @@ from apps.services.plant_mismatch_report import build_plant_mismatch_report, sen
 TODAY = datetime.date.today()
 
 
-def _make_po_mir_match(po_number="PO-1", qty_mismatched=False, rate_mismatched=False, dismissed=False):
+def _make_po_mir_match(po_number="PO-1", qty_mismatched=False, rate_mismatched=False, dismissed=False, month="Aug-26"):
     po = HRSDomesticPurchaseOrder.objects.create(po_drive_folder_name=po_number, po_number=po_number, vendor_name="Vendor A")
     item = HRSDomesticPOLineItem.objects.create(purchase_order=po, item_id="1", description="Widget")
-    mir = HRSMIREntry.objects.create(mir_no=f"MIR-{po_number}", party_name="Vendor A", material_description="Widget", source_row_ref=po_number)
+    mir = HRSMIREntry.objects.create(
+        mir_no=f"MIR-{po_number}", month=month, party_name="Vendor A", material_description="Widget", source_row_ref=po_number,
+    )
     return HRSPOMirMatch.objects.create(
         po_line_item=item, mir_entry=mir, tier="weighted", match_score="0.9",
         qty_mismatched=qty_mismatched, qty_diff_pct="12.00" if qty_mismatched else None,
@@ -36,8 +38,10 @@ def _make_po_mir_match(po_number="PO-1", qty_mismatched=False, rate_mismatched=F
     )
 
 
-def _make_mir_stock_match(material="Gadget", qty_mismatched=False, rate_mismatched=False, dismissed=False):
-    mir = HRSMIREntry.objects.create(mir_no=f"MIR-{material}", party_name="Vendor B", material_description=material, source_row_ref=material)
+def _make_mir_stock_match(material="Gadget", qty_mismatched=False, rate_mismatched=False, dismissed=False, month="Aug-26"):
+    mir = HRSMIREntry.objects.create(
+        mir_no=f"MIR-{material}", month=month, party_name="Vendor B", material_description=material, source_row_ref=material,
+    )
     lot = HRSRMLot.objects.create(description=material, party_name="Vendor B", source_row_ref=material)
     return HRSMirStockMatch.objects.create(
         mir_entry=mir, stock_lot=lot,
@@ -58,6 +62,8 @@ class TestBuildPlantMismatchReportHRS:
 
         [row] = report["poMismatches"]
         assert row["poNumber"] == "PO-1"
+        assert row["mirNo"] == "MIR-PO-1"
+        assert row["month"] == "Aug-26"
         assert row["qtyDiffPct"] is None
         assert row["rateDiffPct"] == 8.0
 
@@ -86,6 +92,8 @@ class TestBuildPlantMismatchReportHRS:
 
         [row] = report["stockMismatches"]
         assert row["material"] == "Zinc Oxide"
+        assert row["mirNo"] == "MIR-Zinc Oxide"
+        assert row["month"] == "Aug-26"
         assert row["qtyDiffPct"] == 15.0
         assert row["rateDiffPct"] == 9.0
 
@@ -164,3 +172,23 @@ class TestSendPlantMismatchReports:
         assert "Sulphur Powder" in mail.body
         assert "12.00%" in mail.body  # the PO row's qty mismatch
         assert "9.00%" in mail.body  # the stock row's rate mismatch
+
+    def test_email_body_includes_mir_number_and_month(self, mailoutbox):
+        """Project owner request, 2026-09-09: show MIR Number and Month
+        alongside PO Number, so the plant head can jump straight to the
+        exact MIR register row instead of searching by material/PO alone."""
+        _make_po_mir_match(po_number="PO-13", qty_mismatched=True, month="Jul-26")
+        _make_mir_stock_match(material="Copper Wire", rate_mismatched=True, month="Sep-26")
+
+        send_plant_mismatch_reports()
+
+        [mail] = mailoutbox
+        assert "MIR-PO-13" in mail.body
+        assert "MIR-Copper Wire" in mail.body
+        assert "Jul-26" in mail.body
+        assert "Sep-26" in mail.body
+        # HTML alternative gets its own "MIR Number"/"Month" table headers,
+        # not just the plain-text body's inline "MIR <no> (<month>)" phrasing.
+        html_body = mail.alternatives[0][0]
+        assert "MIR Number" in html_body
+        assert "Month" in html_body

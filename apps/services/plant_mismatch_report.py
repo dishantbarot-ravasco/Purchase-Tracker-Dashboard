@@ -95,9 +95,15 @@ def _display_name_from_email(email: str) -> str:
 
 def build_plant_mismatch_report(plant_key: str) -> dict:
     """Returns {'label', 'email', 'poMismatches': [...], 'stockMismatches': [...]}.
-    poMismatches row: poNumber, material, qtyDiffPct, rateDiffPct (either
-    diff can be None - "whichever applicable", see module docstring).
-    stockMismatches row: material, qtyDiffPct, rateDiffPct.
+    poMismatches row: poNumber, mirNo, month, material, qtyDiffPct, rateDiffPct
+    (either diff can be None - "whichever applicable", see module docstring).
+    stockMismatches row: mirNo, month, material, qtyDiffPct, rateDiffPct.
+
+    mirNo/month (added 2026-09-09, project owner request) come straight off
+    the matched HRSMIREntry/RTPAchhadMIREntry/RTPVapiMIREntry row (every
+    plant's own MIR model already carries both fields - no new data, no new
+    sync needed) - lets the plant head jump straight to the exact MIR
+    register page/month instead of searching by material/PO number alone.
 
     Only currently-flagged, NOT dismissed matches are included - a match an
     editor already reviewed and dismissed as fine has no business prompting
@@ -109,11 +115,13 @@ def build_plant_mismatch_report(plant_key: str) -> dict:
     po_matches = (
         cfg["po_mir_match_model"].objects
         .filter(mismatch_filter, dismissed_by_override=False)
-        .select_related("po_line_item__purchase_order")
+        .select_related("po_line_item__purchase_order", "mir_entry")
     )
     for m in po_matches:
         po_rows.append({
             "poNumber": m.po_line_item.purchase_order.po_number,
+            "mirNo": m.mir_entry.mir_no,
+            "month": m.mir_entry.month,
             "material": m.po_line_item.description,
             "qtyDiffPct": float(m.qty_diff_pct) if m.qty_mismatched and m.qty_diff_pct is not None else None,
             "rateDiffPct": float(m.rate_diff_pct) if m.rate_mismatched and m.rate_diff_pct is not None else None,
@@ -124,10 +132,12 @@ def build_plant_mismatch_report(plant_key: str) -> dict:
     stock_matches = (
         cfg["mir_stock_match_model"].objects
         .filter(mismatch_filter, dismissed_by_override=False)
-        .select_related("stock_lot")
+        .select_related("stock_lot", "mir_entry")
     )
     for m in stock_matches:
         stock_rows.append({
+            "mirNo": m.mir_entry.mir_no,
+            "month": m.mir_entry.month,
             "material": m.stock_lot.description,
             "qtyDiffPct": float(m.qty_diff_pct) if m.qty_mismatched and m.qty_diff_pct is not None else None,
             "rateDiffPct": float(m.rate_diff_pct) if m.rate_mismatched and m.rate_diff_pct is not None else None,
@@ -144,6 +154,13 @@ def build_plant_mismatch_report(plant_key: str) -> dict:
 
 def _pct_cell(value) -> str:
     return f"{value:.2f}%" if value is not None else "-"
+
+
+def _text_cell(value: str) -> str:
+    """month/mirNo are plain CharFields, blank ('') rather than None when
+    the source MIR sheet's row never had one - same "-" placeholder
+    convention as _pct_cell above, not an empty-looking table cell."""
+    return value if value else "-"
 
 
 def _render_mismatch_table_html(headers: list, rows: list, row_cells) -> str:
@@ -171,15 +188,21 @@ def _render_plant_mismatch_email(report: dict, today: datetime.date) -> tuple:
 
     po_table_html = (
         _render_mismatch_table_html(
-            ["PO Number", "Material", "Qty Mismatch", "Rate Mismatch"], po_rows,
-            lambda r: [html.escape(r["poNumber"]), html.escape(r["material"]), _pct_cell(r["qtyDiffPct"]), _pct_cell(r["rateDiffPct"])],
+            ["PO Number", "MIR Number", "Month", "Material", "Qty Mismatch", "Rate Mismatch"], po_rows,
+            lambda r: [
+                html.escape(r["poNumber"]), html.escape(_text_cell(r["mirNo"])), html.escape(_text_cell(r["month"])),
+                html.escape(r["material"]), _pct_cell(r["qtyDiffPct"]), _pct_cell(r["rateDiffPct"]),
+            ],
         )
         if po_rows else '<p style="font-size:12.5px;color:#718096;">No open Purchase Order vs MIR mismatches right now.</p>'
     )
     stock_table_html = (
         _render_mismatch_table_html(
-            ["Material", "Qty Mismatch", "Rate Mismatch"], stock_rows,
-            lambda r: [html.escape(r["material"]), _pct_cell(r["qtyDiffPct"]), _pct_cell(r["rateDiffPct"])],
+            ["MIR Number", "Month", "Material", "Qty Mismatch", "Rate Mismatch"], stock_rows,
+            lambda r: [
+                html.escape(_text_cell(r["mirNo"])), html.escape(_text_cell(r["month"])),
+                html.escape(r["material"]), _pct_cell(r["qtyDiffPct"]), _pct_cell(r["rateDiffPct"]),
+            ],
         )
         if stock_rows else '<p style="font-size:12.5px;color:#718096;">No open Raw Material Stock vs MIR mismatches right now.</p>'
     )
@@ -214,7 +237,8 @@ def _render_plant_mismatch_email(report: dict, today: datetime.date) -> tuple:
         if not po_rows:
             return "  (none)"
         return "\n".join(
-            f'  - PO {r["poNumber"]}, {r["material"]}: qty mismatch {_pct_cell(r["qtyDiffPct"])}, rate mismatch {_pct_cell(r["rateDiffPct"])}'
+            f'  - PO {r["poNumber"]}, MIR {_text_cell(r["mirNo"])} ({_text_cell(r["month"])}), {r["material"]}: '
+            f'qty mismatch {_pct_cell(r["qtyDiffPct"])}, rate mismatch {_pct_cell(r["rateDiffPct"])}'
             for r in po_rows
         )
 
@@ -222,7 +246,8 @@ def _render_plant_mismatch_email(report: dict, today: datetime.date) -> tuple:
         if not stock_rows:
             return "  (none)"
         return "\n".join(
-            f'  - {r["material"]}: qty mismatch {_pct_cell(r["qtyDiffPct"])}, rate mismatch {_pct_cell(r["rateDiffPct"])}'
+            f'  - MIR {_text_cell(r["mirNo"])} ({_text_cell(r["month"])}), {r["material"]}: '
+            f'qty mismatch {_pct_cell(r["qtyDiffPct"])}, rate mismatch {_pct_cell(r["rateDiffPct"])}'
             for r in stock_rows
         )
 

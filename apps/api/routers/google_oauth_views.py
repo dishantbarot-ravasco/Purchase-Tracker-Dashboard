@@ -35,6 +35,7 @@ import os
 import requests as http_requests
 from django.conf import settings
 from django.http import HttpResponseRedirect
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from google_auth_oauthlib.flow import Flow
 from rest_framework.decorators import api_view, permission_classes
@@ -210,6 +211,9 @@ def google_callback(request):
         from apps.core.audit_log import PTAuditLog, log_pt_action
 
         log_pt_action(request, PTAuditLog.ACTION_LOGIN, actor=user, detail="Google OAuth, trusted device")
+        # See auth_views.py's PTLoginView.post() for the full story on this
+        # fix - last_login_at previously had no writer anywhere in the app.
+        PTUser.objects.filter(pk=user.pk).update(last_login_at=timezone.now())
 
         return redirect_response
     else:
