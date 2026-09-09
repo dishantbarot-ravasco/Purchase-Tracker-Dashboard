@@ -1,26 +1,30 @@
 """
 apps/api/routers/reports_views.py — Endpoints for a free external scheduler
-to trigger the daily and monthly Raw Material Consumption reports, since:
+to trigger this app's time-based jobs (report emails + the one housekeeping
+job that needs a periodic sweep), since:
   - Render's free web service plan has no built-in cron scheduler, and
   - Render's own Cron Jobs feature has a $1/month minimum (no free tier).
 
 Instead, a free external pinger (cron-job.org) hits trigger_daily_report once
-a day (e.g. 20:30 IST) and trigger_monthly_report once a month (the 1st, any time
+a day (e.g. 20:30 IST), trigger_monthly_report once a month (the 1st, any time
 after 00:00 IST - see send_monthly_consumption_reports()'s own default month
-selection). Because the caller has no login session or JWT, both are
-protected by a shared-secret query param / header instead -
-REPORT_CRON_SECRET, set as a Render environment variable and given only to
-the scheduler config, never to a browser or the frontend. Two separate
-endpoints (not one with a `type=daily|monthly` mode flag) since they run on
-genuinely different schedules with a real external scheduler - one cron
-job per endpoint is simpler to configure than one job with a parameter that
-must vary by day-of-month.
+selection), trigger_mismatch_report on whatever interval is chosen (e.g.
+10:30 IST daily), and trigger_prune_revoked_tokens once a day. Because the
+caller has no login session or JWT, all four are protected by a shared-secret
+query param / header instead - REPORT_CRON_SECRET, set as a Render
+environment variable and given only to the scheduler config, never to a
+browser or the frontend. Four separate endpoints (not one with a mode flag)
+since each runs on its own independent schedule with a real external
+scheduler - one cron job per endpoint is simpler to configure than one job
+with a parameter that must vary by call.
 
-The daily endpoint's auth scheme was ported byte-for-byte (auth scheme only -
-the report itself is this app's own) from the TDS Automation App's own
-apps/api/routers/reports_views.py - same reasoning, same shared-secret
-scheme, don't diverge without a reason. The monthly endpoint (added
-2026-09-08) reuses the exact same scheme, not a new one.
+The daily report endpoint's auth scheme was ported byte-for-byte (auth
+scheme only - the report itself is this app's own) from the TDS Automation
+App's own apps/api/routers/reports_views.py - same reasoning, same
+shared-secret scheme, don't diverge without a reason. The monthly report
+endpoint (added 2026-09-08), the mismatch report endpoint, and
+trigger_prune_revoked_tokens (both added 2026-09-09) all reuse the exact
+same scheme, not a new one per endpoint.
 """
 import hmac
 import logging
@@ -33,6 +37,7 @@ from rest_framework.response import Response
 
 from apps.services.consumption_report import send_daily_consumption_reports, send_monthly_consumption_reports
 from apps.services.plant_mismatch_report import send_plant_mismatch_reports
+from apps.services.token_revocation import prune_expired_revoked_tokens
 
 log = logging.getLogger(__name__)
 
@@ -155,3 +160,31 @@ def trigger_mismatch_report(request):
         result.get("plants_sent"), result.get("plants_skipped_no_mismatches"),
     )
     return Response({"status": "ok", **result})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def trigger_prune_revoked_tokens(request):
+    """
+    GET/POST /api/internal/prune-revoked-tokens?secret=<REPORT_CRON_SECRET>
+    (or header 'X-Report-Secret: <REPORT_CRON_SECRET>')
+
+    Deletes RevokedRefreshToken rows past their own expiry (same logic as
+    manage.py prune_revoked_tokens - both call the shared
+    apps/services/token_revocation.prune_expired_revoked_tokens()). Added
+    2026-09-09 to close the one real scheduling gap left after the
+    daily/monthly/mismatch reports above: this table had nothing that ever
+    deleted a row, and no scheduler (internal or external) ever called this
+    command. Same shared-secret scheme as the other three endpoints in this
+    file - reuses REPORT_CRON_SECRET rather than introducing a second secret
+    for one more low-stakes internal job. Cheap and idempotent - safe on any
+    interval (daily is more than enough for a table that only grows from
+    token rotation/logout events).
+    """
+    denied = _check_report_secret(request)
+    if denied is not None:
+        return denied
+
+    deleted = prune_expired_revoked_tokens()
+    log.info("trigger_prune_revoked_tokens: pruned %s expired row(s)", deleted)
+    return Response({"status": "ok", "deleted": deleted})

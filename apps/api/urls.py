@@ -25,6 +25,7 @@ urlpatterns = [
     path("internal/send-daily-report", reports_views.trigger_daily_report, name="trigger-daily-report"),
     path("internal/send-monthly-report", reports_views.trigger_monthly_report, name="trigger-monthly-report"),
     path("internal/send-mismatch-report", reports_views.trigger_mismatch_report, name="trigger-mismatch-report"),
+    path("internal/prune-revoked-tokens", reports_views.trigger_prune_revoked_tokens, name="trigger-prune-revoked-tokens"),
 
     # ── Authentication ────────────────────────────────────────────────────
     path("auth/login", PTLoginView.as_view(), name="auth-login"),

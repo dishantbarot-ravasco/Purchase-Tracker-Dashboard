@@ -15,7 +15,28 @@ apps/api/routers/device_views.py's logout_view (revoke the current refresh
 token's jti directly on logout).
 """
 
+from django.utils import timezone
+
 from apps.core.models import PTUser, RevokedRefreshToken, TrustedDevice
+
+
+def prune_expired_revoked_tokens() -> int:
+    """Deletes RevokedRefreshToken rows past their own expires_at, returns
+    the count deleted. A row past expiry is safe to remove - the token it
+    refers to would already be rejected by JWT expiry validation before this
+    table is ever consulted (see PTTokenRefreshSerializer), so keeping a
+    revocation record for an already-expired token serves no purpose.
+
+    Shared by manage.py prune_revoked_tokens (CLI) and
+    apps/api/routers/reports_views.py's trigger_prune_revoked_tokens
+    (external cron) - kept here rather than duplicated in both, and rather
+    than having the view call the command via call_command(): Django's
+    BaseCommand.execute() re-writes handle()'s return value to stdout
+    whenever it's truthy, which crashes on a plain int (`'int' object has no
+    attribute 'endswith'`) - confirmed hitting this directly. A shared plain
+    function avoids the mismatch entirely."""
+    deleted, _ = RevokedRefreshToken.objects.filter(expires_at__lt=timezone.now()).delete()
+    return deleted
 
 
 def revoke_refresh_jti(jti: str, expires_at) -> None:

@@ -1,12 +1,15 @@
 """
 Tests for apps/api/routers/reports_views.py's trigger_daily_report/
-trigger_monthly_report/trigger_mismatch_report - the shared-secret-protected
-endpoints an external free scheduler (cron-job.org) hits (daily / on the 1st
-of each month / whatever cadence is configured) to send the Raw Material
-Consumption and plant-head Data Correction reports. Only the auth scheme
-(and trigger_monthly_report's own year/month param validation) is tested
-here (settings.override + APIClient) - the report content itself is covered
-in apps/services/tests/test_consumption_report.py/test_plant_mismatch_report.py.
+trigger_monthly_report/trigger_mismatch_report/trigger_prune_revoked_tokens -
+the shared-secret-protected endpoints an external free scheduler
+(cron-job.org) hits (daily / on the 1st of each month / whatever cadence is
+configured) to send the Raw Material Consumption and plant-head Data
+Correction reports, and to sweep expired RevokedRefreshToken rows. Only the
+auth scheme (and trigger_monthly_report's own year/month param validation) is
+tested here (settings.override + APIClient) - the report content itself is
+covered in apps/services/tests/test_consumption_report.py/
+test_plant_mismatch_report.py, and prune_revoked_tokens' own deletion logic in
+apps/api/tests/test_prune_revoked_tokens.py.
 """
 import pytest
 from rest_framework.test import APIClient
@@ -110,6 +113,48 @@ class TestTriggerMonthlyReport:
             {"secret": "the-real-secret", "year": "2025", "month": "13"},
         )
         assert response.status_code == 400
+
+    def test_no_login_session_required(self):
+        client = APIClient()
+        assert "pt_access" not in client.cookies
+
+
+@pytest.mark.django_db
+class TestTriggerPruneRevokedTokens:
+    def test_missing_secret_setting_returns_503(self, settings):
+        settings.REPORT_CRON_SECRET = ""
+        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "anything"})
+        assert response.status_code == 503
+
+    def test_wrong_secret_returns_403(self, settings):
+        settings.REPORT_CRON_SECRET = "the-real-secret"
+        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "wrong"})
+        assert response.status_code == 403
+
+    def test_correct_secret_runs_and_returns_deleted_count(self, settings):
+        settings.REPORT_CRON_SECRET = "the-real-secret"
+        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "the-real-secret"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert body["deleted"] == 0
+
+    def test_actually_deletes_expired_rows(self, settings):
+        import datetime
+
+        from django.utils import timezone
+
+        from apps.core.models import RevokedRefreshToken
+
+        settings.REPORT_CRON_SECRET = "the-real-secret"
+        RevokedRefreshToken.objects.create(jti="expired-1", expires_at=timezone.now() - datetime.timedelta(days=1))
+        RevokedRefreshToken.objects.create(jti="still-valid", expires_at=timezone.now() + datetime.timedelta(days=1))
+
+        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "the-real-secret"})
+        assert response.status_code == 200
+        assert response.json()["deleted"] == 1
+        assert RevokedRefreshToken.objects.filter(jti="still-valid").exists()
+        assert not RevokedRefreshToken.objects.filter(jti="expired-1").exists()
 
     def test_no_login_session_required(self):
         client = APIClient()

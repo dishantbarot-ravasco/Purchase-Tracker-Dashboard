@@ -10,21 +10,22 @@ by JWT expiry validation anyway (see PTTokenRefreshSerializer's own token
 decode, which checks `exp` before this table is ever consulted), so keeping
 a revocation record for an already-expired token serves no purpose.
 
-Not wired to any scheduler yet (this app has no cron/scheduled-task
-infrastructure at all - see CLAUDE.md's "No scheduling" known gap) - run
-manually or via whatever job scheduler is set up alongside the other
-`sync_*`/`match_*` commands once that gap is closed.
+Wired to the same external-cron pattern as the report emails (added
+2026-09-09) - apps/api/routers/reports_views.py's trigger_prune_revoked_tokens
+calls the shared apps/services/token_revocation.prune_expired_revoked_tokens()
+directly (not via call_command() - see that function's own docstring for
+why), same shared-secret scheme, no separate infrastructure needed. Still
+runnable directly (`manage.py prune_revoked_tokens`) for a manual one-off too.
 """
 
 from django.core.management.base import BaseCommand
-from django.utils import timezone
 
-from apps.core.models import RevokedRefreshToken
+from apps.services.token_revocation import prune_expired_revoked_tokens
 
 
 class Command(BaseCommand):
     help = "Delete RevokedRefreshToken rows whose underlying token has already expired."
 
     def handle(self, *args, **options):
-        deleted, _ = RevokedRefreshToken.objects.filter(expires_at__lt=timezone.now()).delete()
+        deleted = prune_expired_revoked_tokens()
         self.stdout.write(self.style.SUCCESS(f"Pruned {deleted} expired revoked-refresh-token row(s)."))
