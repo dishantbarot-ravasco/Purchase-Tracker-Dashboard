@@ -124,6 +124,12 @@ urlpatterns = [
     path("imports/rodtep/sync-trigger", imports_views.rodtep_sync_trigger, name="imports-rodtep-sync-trigger"),
     path("imports/rodtep/<str:script_no>", imports_views.rodtep_script_detail, name="imports-rodtep-script-detail"),
 
+    # Advance License ledger (added 2026-09-09) - company-wide, not per-plant
+    # (see AdvanceLicense's own docstring), same "Imports only" scoping
+    # reasoning as RoDTEP directly above.
+    path("imports/advance-license", imports_views.advance_license_ledger, name="imports-advance-license-ledger"),
+    path("imports/advance-license/sync-trigger", imports_views.advance_license_sync_trigger, name="imports-advance-license-sync-trigger"),
+
     # Match Accuracy Programme, Phase 1 - the review screen (doc 03, 1.2).
     # Cross-plant like imports_views.py above, not per-plant-prefixed - see
     # review_views.py's own module docstring.

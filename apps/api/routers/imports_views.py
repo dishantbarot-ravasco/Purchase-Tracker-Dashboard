@@ -29,6 +29,7 @@ from rest_framework.response import Response
 
 from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
 from apps.core.models import (
+    AdvanceLicense,
     FlagDismissal,
     HRSImportPOLineItem,
     HRSImportPOMirMatch,
@@ -726,6 +727,86 @@ def rodtep_sync_trigger(request):
     from apps.services.sync_trigger import trigger_rodtep_sync
 
     started = trigger_rodtep_sync()
+    if not started:
+        return Response({"status": "already_running"}, status=409)
+    return Response({"status": "ok"})
+
+
+# ── Advance License ledger (added 2026-09-09) ───────────────────────────────
+# Company-wide (see AdvanceLicense's own docstring), lives under
+# /api/imports/advance-license - same reasoning as RoDTEP directly above:
+# scoped to Import Purchases only, not per-plant, not a new top-level tab.
+# Unlike RoDTEP, there is no manual-usage-entry side here - the source
+# workbook the project owner maintains by hand already carries the usage
+# columns (BOE/import PO/qty/value), synced as-is onto each material row.
+
+def _advance_license_material_dict(m) -> dict:
+    return {
+        "materialDescription": m.material_description,
+        "itchsCode": m.itchs_code,
+        "qtyAuthorized": m.qty_authorized,
+        "cifValueAuthorized": m.cif_value_authorized,
+        "dutySavedPct": m.duty_saved_pct,
+        "boeNumber": m.boe_number,
+        "boeDate": m.boe_date.isoformat() if m.boe_date else None,
+        "importPoNumber": m.import_po_number,
+        "qtyImported": m.qty_imported,
+        "valueImported": m.value_imported,
+    }
+
+
+def _advance_license_dict(lic) -> dict:
+    # Field order matches the project owner's own requested view order:
+    # License Number -> Export Product Description -> CIF Value Authorized
+    # -> FOB Export Target -> Export Validity -> Material Description(s).
+    return {
+        "licenseNumber": lic.license_number,
+        "exportProductDescription": lic.export_product_description,
+        "cifValueAuthorized": lic.cif_value_authorized,
+        "fobValueExportTarget": lic.fob_value_export_target,
+        "exportValidityDate": lic.export_validity_date.isoformat() if lic.export_validity_date else None,
+        "materials": [_advance_license_material_dict(m) for m in lic.materials.all()],
+        # Extra fields kept alongside (not part of the requested view, but
+        # already computed by the sync - no reason to withhold them from the
+        # payload; the frontend simply doesn't render them today).
+        "issueDate": lic.issue_date.isoformat() if lic.issue_date else None,
+        "iec": lic.iec,
+        "importValidityDate": lic.import_validity_date.isoformat() if lic.import_validity_date else None,
+        "status": lic.status,
+    }
+
+
+@api_view(["GET"])
+def advance_license_ledger(request):
+    """GET /api/imports/advance-license - every synced Advance License, each
+    with its Export Product Description/CIF Value Authorized/FOB Export
+    Target/Export Validity plus its input materials' descriptions. Any role
+    can read (same as every other GET in this file)."""
+    licenses = AdvanceLicense.objects.prefetch_related("materials").order_by("license_number")
+    last_run = (
+        SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.ADVANCE_LICENSE)
+        .order_by("-finished_at").first()
+    )
+    return Response({
+        "licenses": [_advance_license_dict(lic) for lic in licenses],
+        "lastSync": {
+            "status": last_run.status,
+            "finishedAt": last_run.finished_at.isoformat() if last_run and last_run.finished_at else None,
+        } if last_run else None,
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def advance_license_sync_trigger(request):
+    """POST /api/imports/advance-license/sync-trigger - runs manage.py
+    sync_advance_license via trigger_advance_license_sync(), same
+    lock-protected "already running -> 409" contract as rodtep_sync_trigger
+    above, for the same reasons (one small file, well under gunicorn's 30s
+    worker timeout, run synchronously rather than backgrounded)."""
+    from apps.services.sync_trigger import trigger_advance_license_sync
+
+    started = trigger_advance_license_sync()
     if not started:
         return Response({"status": "already_running"}, status=409)
     return Response({"status": "ok"})

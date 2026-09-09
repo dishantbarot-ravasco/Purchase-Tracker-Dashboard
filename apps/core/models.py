@@ -67,6 +67,7 @@ class SyncRun(models.Model):
         # own header comment for the fix.
         MATCH = "match", "PO<->MIR<->Stock matching"
         RODTEP = "rodtep", "RoDTEP scrip ledger"
+        ADVANCE_LICENSE = "advance_license", "Advance License ledger"
 
     class Status(models.TextChoices):
         SUCCESS = "success", "Success"
@@ -2497,3 +2498,72 @@ class RodtepUsage(models.Model):
 
     def __str__(self):
         return f"{self.script_no}: ₹{self.used_amount} used against BOE {self.boe_number or '-'}"
+
+
+# ── Advance License ledger (added 2026-09-09) ───────────────────────────────
+# Company-wide, not per-plant (see SyncRun.Plant.COMPANY's own comment) -
+# one shared IEC, one shared Drive file ("Advance License data", maintained
+# by hand by the project owner and synced via manage.py sync_advance_license,
+# apps/services/parsers/advance_license.py). Scoped to Import Purchases only
+# per the project owner's own instruction, same as RoDTEP above.
+#
+# Two-model shape, mirroring the CSV/xlsx layout the project owner already
+# populated by hand: AdvanceLicense holds the license-level fields (CIF
+# Value Authorized, FOB Export Target, validity dates, etc. - repeated
+# identically across every row of that license in the source file), and
+# AdvanceLicenseMaterial holds one row per (license, input material, usage
+# instance) - a material already imported against more than once (e.g. drawn
+# from multiple BOEs) appears as more than one row for the same material,
+# exactly like the source file. No independent identity worth diffing at
+# the material level (same reasoning as HRSDomesticPOLineItem's own
+# docstring / po_csv.py's sync command) - sync_advance_license.py deletes
+# and rebuilds a license's whole materials list on any change, keyed by a
+# whole-license content hash, rather than per-material upserts.
+class AdvanceLicense(models.Model):
+    license_number = models.CharField(max_length=50, unique=True)
+    issue_date = models.DateField(null=True, blank=True)
+    iec = models.CharField(max_length=50, blank=True)
+    cif_value_authorized = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    fob_value_export_target = models.DecimalField(max_digits=16, decimal_places=2, default=0)
+    export_product_description = models.TextField(blank=True)
+    # "Export Obligation Period End Date" in the source file - the deadline
+    # to have exported enough to meet fob_value_export_target.
+    export_validity_date = models.DateField(null=True, blank=True)
+    import_validity_date = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=30, blank=True)
+
+    synced_from_row_hash = models.CharField(max_length=64, blank=True)
+    last_synced_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "advance_license"
+        ordering = ["license_number"]
+
+    def __str__(self):
+        return f"Advance License {self.license_number}"
+
+
+class AdvanceLicenseMaterial(models.Model):
+    license = models.ForeignKey(AdvanceLicense, on_delete=models.CASCADE, related_name="materials")
+    material_description = models.CharField(max_length=255, blank=True)
+    itchs_code = models.CharField(max_length=20, blank=True)
+    qty_authorized = models.DecimalField(max_digits=16, decimal_places=3, null=True, blank=True)
+    cif_value_authorized = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+    duty_saved_pct = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
+
+    # Usage side - blank until this material has actually been drawn against
+    # for a real import. A material imported against more than once (e.g.
+    # multiple BOEs) gets one AdvanceLicenseMaterial row per usage instance,
+    # same material_description repeated - matches the source file exactly.
+    boe_number = models.CharField(max_length=50, blank=True)
+    boe_date = models.DateField(null=True, blank=True)
+    import_po_number = models.CharField(max_length=50, blank=True)
+    qty_imported = models.DecimalField(max_digits=16, decimal_places=3, null=True, blank=True)
+    value_imported = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+
+    class Meta:
+        db_table = "advance_license_material"
+        ordering = ["id"]
+
+    def __str__(self):
+        return f"{self.license.license_number}: {self.material_description}"

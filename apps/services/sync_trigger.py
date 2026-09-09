@@ -123,6 +123,15 @@ def is_rodtep_sync_in_progress() -> bool:
     return bool(cache.get(_RODTEP_LOCK_KEY))
 
 
+# Advance License ledger is also company-wide, not per-plant (see
+# AdvanceLicense's own docstring) - one shared lock, same shape as RoDTEP's.
+_ADVANCE_LICENSE_LOCK_KEY = "sync_trigger_advance_license_in_progress"
+
+
+def is_advance_license_sync_in_progress() -> bool:
+    return bool(cache.get(_ADVANCE_LICENSE_LOCK_KEY))
+
+
 # ── Domestic sync+match pipeline ─────────────────────────────────────────────
 
 def _run_pipeline(plant_key: str) -> None:
@@ -179,6 +188,33 @@ def trigger_rodtep_sync() -> bool:
     return True
 
 
+def _run_advance_license_pipeline() -> None:
+    """Runs manage.py sync_advance_license, same catch/notify/always-clear-
+    the-lock shape as _run_rodtep_pipeline() above."""
+    from apps.services.security_alerts import notify_admins_sync_failure
+
+    try:
+        try:
+            call_command("sync_advance_license")
+        except SystemExit:
+            log.error("sync_trigger: sync_advance_license exited with failure")
+            notify_admins_sync_failure("company", "sync_advance_license")
+        except Exception as exc:
+            log.exception("sync_trigger: sync_advance_license raised an unexpected error")
+            notify_admins_sync_failure("company", "sync_advance_license", detail=str(exc))
+    finally:
+        cache.delete(_ADVANCE_LICENSE_LOCK_KEY)
+
+
+def trigger_advance_license_sync() -> bool:
+    """Same contract/reasoning as trigger_rodtep_sync() - one fixed file,
+    small, runs synchronously even outside tests."""
+    if not cache.add(_ADVANCE_LICENSE_LOCK_KEY, True, timeout=_LOCK_TIMEOUT_SECONDS):
+        return False
+    _run_advance_license_pipeline()
+    return True
+
+
 def run_daily_sync_all_plants() -> None:
     """Snapshot Pipeline Rebuild, Phase B (see CLAUDE.md) - the scheduled
     job apps/core/management/commands/ensure_schedules.py wires up as a
@@ -222,6 +258,10 @@ def run_daily_sync_all_plants() -> None:
     company-wide, not per-plant, so it isn't looped the way the two blocks
     above are; skipped (not queued behind) the same way if a manual RoDTEP
     sync is already in progress via _RODTEP_LOCK_KEY.
+
+    Also runs the Advance License ledger sync (_run_advance_license_pipeline(),
+    added 2026-09-09), same company-wide/skip-not-queue shape as RoDTEP
+    directly above, via _ADVANCE_LICENSE_LOCK_KEY.
     """
     for plant_key in _PLANT_COMMANDS:
         if not cache.add(_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
@@ -256,6 +296,16 @@ def run_daily_sync_all_plants() -> None:
             _run_rodtep_pipeline()
         except Exception:
             log.exception("run_daily_sync_all_plants: RoDTEP pipeline failed")
+
+    # Advance License ledger (added 2026-09-09) - company-wide, one shared
+    # lock, same shape as RoDTEP directly above.
+    if not cache.add(_ADVANCE_LICENSE_LOCK_KEY, True, timeout=_LOCK_TIMEOUT_SECONDS):
+        log.info("run_daily_sync_all_plants: skipping Advance License - a manual refresh is already in progress")
+    else:
+        try:
+            _run_advance_license_pipeline()
+        except Exception:
+            log.exception("run_daily_sync_all_plants: Advance License pipeline failed")
 
 
 def trigger_plant_sync(plant_key: str) -> bool:

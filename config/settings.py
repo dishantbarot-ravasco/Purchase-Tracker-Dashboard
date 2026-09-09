@@ -437,6 +437,24 @@ VAPI_MIR_STOCK_FOLDER_ID = os.environ.get("VAPI_MIR_STOCK_FOLDER_ID", "1kzWf8sf9
 RODTEP_FOLDER_ID = os.environ.get("RODTEP_FOLDER_ID", "16gdQxPCDutLTxZ2oiX1M1TCi64kjnEnq")
 
 # ---------------------------------------------------------------------------
+# Advance License ledger (added 2026-09-09) - company-wide, not per-plant,
+# same reasoning as RoDTEP above (one shared IEC, licenses aren't split per
+# plant the way MIR/Stock/PO data is). Unlike RoDTEP's own folder, this is
+# ONE fixed file ("Advance License data", per the project owner - they
+# maintain it by hand and it may be either a native Google Sheet or an
+# uploaded .xlsx, so manage.py sync_advance_license downloads it via
+# google_client.download_spreadsheet_bytes(), not a plain download_file_bytes()).
+# No hardcoded default here (unlike PURCHASE_TRACKER_DB_FOLDER_ID/
+# RODTEP_FOLDER_ID above) - this folder's real id isn't known yet; set
+# ADVANCE_LICENSE_FOLDER_ID in .env before running sync_advance_license.
+ADVANCE_LICENSE_FOLDER_ID = os.environ.get("ADVANCE_LICENSE_FOLDER_ID", "")
+# Hardcoded, like every other plant's *_TITLE constant above (HRS_PO_CSV_TITLE
+# etc.) - not env-driven, since an empty-but-present env var would silently
+# override this default with an empty string (os.environ.get's fallback only
+# applies when the key is entirely absent, not when it's set to "").
+ADVANCE_LICENSE_FILE_TITLE = "Advance License data"
+
+# ---------------------------------------------------------------------------
 # Session - DB-backed, required for the Google OAuth PKCE code_verifier
 # round-trip and for the pending_user_id stored during the device-verify OTP
 # flow. SESSION_SAVE_EVERY_REQUEST is essential: without it, session writes

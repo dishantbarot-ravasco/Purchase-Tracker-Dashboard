@@ -357,6 +357,7 @@ function renderImportPoList(el) {
       // only, per the project owner's own instruction, rather than added
       // to Domestic Purchases or as a new top-level nav tab.
       '<button id="importRodtepBtn" class="ml-auto">RoDTEP Ledger</button>' +
+      '<button id="importAdvanceLicenseBtn">Advance License</button>' +
     '</div>' +
     '<div class="kpi-grid">' + kpiHtml + '</div>' +
     // Category / Sub Category / Flags filters, same 3-dropdown pattern as
@@ -466,6 +467,7 @@ function renderImportPoList(el) {
   };
   document.getElementById('importClearFilter').onclick = () => { state.importFrom = null; state.importTo = null; state.importTablePage = 1; renderImportPoList(el); };
   document.getElementById('importRodtepBtn').onclick = () => openRodtepPanel();
+  document.getElementById('importAdvanceLicenseBtn').onclick = () => openAdvanceLicensePanel();
   const toggleBtn = document.getElementById('importToggleAllBtn');
   if (toggleBtn) toggleBtn.onclick = () => { state.importShowAllPOs = !state.importShowAllPOs; state.importTablePage = 1; renderImportPoList(el); };
   document.querySelectorAll('[data-impo]').forEach(el2 => el2.onclick = () => openImportPoModal(el2.dataset.impo));
