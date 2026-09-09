@@ -428,6 +428,15 @@ VAPI_STOCK_FILE_TITLE = "RAVASCO VAPI RM STOCK FILE.xlsx"
 VAPI_MIR_STOCK_FOLDER_ID = os.environ.get("VAPI_MIR_STOCK_FOLDER_ID", "1kzWf8sf9UfXBG34WalJxgu7djX5fwNUU")
 
 # ---------------------------------------------------------------------------
+# RoDTEP scrip ledger (added 2026-09-09) - company-wide, not per-plant (see
+# SyncRun.Plant.COMPANY's own comment). Unlike every other Drive source in
+# this app, there is no fixed file title here - the folder holds one file
+# per Script Number ("RODTEP-JNPT-<N>.xlsx"), listed and parsed in full by
+# manage.py sync_rodtep (apps/services/google_client.py's
+# list_files_in_folder()), not searched for by name.
+RODTEP_FOLDER_ID = os.environ.get("RODTEP_FOLDER_ID", "16gdQxPCDutLTxZ2oiX1M1TCi64kjnEnq")
+
+# ---------------------------------------------------------------------------
 # Session - DB-backed, required for the Google OAuth PKCE code_verifier
 # round-trip and for the pending_user_id stored during the device-verify OTP
 # flow. SESSION_SAVE_EVERY_REQUEST is essential: without it, session writes

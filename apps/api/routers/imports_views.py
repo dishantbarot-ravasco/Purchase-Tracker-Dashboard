@@ -20,6 +20,7 @@ exception, deliberately, per the build spec's inline-correction requirement).
 """
 
 import datetime
+from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
 from django.utils import timezone
@@ -39,6 +40,8 @@ from apps.core.models import (
     RTPVapiImportPOLineItem,
     RTPVapiImportPOMirMatch,
     RTPVapiImportPurchaseOrder,
+    RodtepScrollEntry,
+    RodtepUsage,
     SyncRun,
 )
 from apps.api.routers._domestic_base import _category_reference_map, _po_material_categories
@@ -552,3 +555,177 @@ def dismiss_flag(request, plant, po_number):
     reason = (request.data.get("reason") or "").strip()
     fd = dismiss_po_flag(sr_plant, po_number, flag_key, request.user, dismissed, reason)
     return Response(_flag_dismissal_dict(fd))
+
+
+# ── RoDTEP scrip ledger (added 2026-09-09) ──────────────────────────────────
+# Company-wide (see RodtepScrollEntry's own docstring) - lives under
+# /api/imports/rodtep, not per-plant, same reasoning imports_views.py's own
+# cross-plant purchase_orders()/sync_status() above already established for
+# genuinely shared (not per-plant) data.
+
+_BOE_LINE_ITEM_MODELS = [HRSImportPOLineItem, RTPAchhadImportPOLineItem, RTPVapiImportPOLineItem]
+
+
+def _boe_exists(boe_number: str) -> bool:
+    """Whether `boe_number` appears on any plant's Import PO line items -
+    the real, checkable cross-reference a RodtepUsage entry's boe_number
+    should have; surfaced to the frontend as `boeVerified` so a reviewer can
+    spot a typo'd/unrecognized BOE number without a separate lookup."""
+    if not boe_number:
+        return False
+    return any(model.objects.filter(boe_number=boe_number).exists() for model in _BOE_LINE_ITEM_MODELS)
+
+
+def _rodtep_entry_dict(e: RodtepScrollEntry) -> dict:
+    return {
+        "id": e.id,
+        "scriptNo": e.script_no,
+        "scriptDate": e.script_date.isoformat() if e.script_date else None,
+        "sbNumber": e.sb_number,
+        "sbDate": e.sb_date.isoformat() if e.sb_date else None,
+        "scrollNumber": e.scroll_number,
+        "scrollDate": e.scroll_date.isoformat() if e.scroll_date else None,
+        "location": e.location,
+        "sanctionedAmount": e.sanctioned_amount,
+    }
+
+
+def _rodtep_usage_dict(u: RodtepUsage) -> dict:
+    return {
+        "id": u.id,
+        "scriptNo": u.script_no,
+        "usedAmount": u.used_amount,
+        "boeNumber": u.boe_number,
+        "boeVerified": _boe_exists(u.boe_number),
+        "importPoNumber": u.import_po_number,
+        "usedDate": u.used_date.isoformat() if u.used_date else None,
+        "notes": u.notes,
+        "enteredBy": u.entered_by.email if u.entered_by else None,
+        "createdAt": u.created_at.isoformat(),
+    }
+
+
+@api_view(["GET"])
+def rodtep_ledger(request):
+    """GET /api/imports/rodtep - one row per Script Number, with total
+    credit sanctioned (from the auto-synced RodtepScrollEntry ledger),
+    total used (from the manually-entered RodtepUsage log), and the
+    resulting balance. Any role can read (same as every other GET in this
+    file) - see rodtep_usage_create below for the write side."""
+    from django.db.models import Sum
+
+    sanctioned_by_script = {
+        row["script_no"]: row["total"]
+        for row in RodtepScrollEntry.objects.values("script_no").annotate(total=Sum("sanctioned_amount"))
+    }
+    used_by_script = {
+        row["script_no"]: row["total"]
+        for row in RodtepUsage.objects.values("script_no").annotate(total=Sum("used_amount"))
+    }
+    # A script might have usage entered before its own ledger file has been
+    # synced yet (see RodtepUsage's own docstring on why there's no FK) -
+    # union both key sets so that script still shows up, with 0 sanctioned
+    # rather than being silently dropped.
+    all_scripts = sorted(set(sanctioned_by_script) | set(used_by_script))
+
+    scripts = []
+    for script_no in all_scripts:
+        sanctioned = sanctioned_by_script.get(script_no) or 0
+        used = used_by_script.get(script_no) or 0
+        entries = RodtepScrollEntry.objects.filter(script_no=script_no).order_by("sb_date")
+        scripts.append({
+            "scriptNo": script_no,
+            "scriptDate": entries.first().script_date.isoformat() if entries and entries.first().script_date else None,
+            "location": entries.first().location if entries else "",
+            "entryCount": entries.count(),
+            "totalSanctioned": sanctioned,
+            "totalUsed": used,
+            "balance": sanctioned - used,
+        })
+
+    last_run = SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.RODTEP).order_by("-finished_at").first()
+    return Response({
+        "scripts": scripts,
+        "lastSync": {
+            "status": last_run.status,
+            "finishedAt": last_run.finished_at.isoformat() if last_run and last_run.finished_at else None,
+        } if last_run else None,
+    })
+
+
+@api_view(["GET"])
+def rodtep_script_detail(request, script_no):
+    """GET /api/imports/rodtep/<script_no> - every Shipping Bill row (the
+    auto-synced ledger) and every manually-entered usage row for one
+    script, for the drill-down panel."""
+    entries = RodtepScrollEntry.objects.filter(script_no=script_no).order_by("sb_date")
+    usages = RodtepUsage.objects.filter(script_no=script_no)
+    if not entries.exists() and not usages.exists():
+        return Response({"error": "No RoDTEP data found for this Script Number."}, status=404)
+    return Response({
+        "scriptNo": script_no,
+        "entries": [_rodtep_entry_dict(e) for e in entries],
+        "usages": [_rodtep_usage_dict(u) for u in usages],
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsEditor])
+def rodtep_usage_create(request):
+    """POST /api/imports/rodtep/usage - log that some of a script's credit
+    was used against a specific import. Body: {scriptNo, usedAmount,
+    boeNumber?, importPoNumber?, usedDate?, notes?}. IsEditor-gated (a
+    viewer can look but not touch, same split as every other write endpoint
+    in this file) - not plant-scoped, since RoDTEP itself isn't a
+    single-plant resource (see this section's own header comment)."""
+    script_no = (request.data.get("scriptNo") or "").strip()
+    if not script_no:
+        return Response({"error": "scriptNo is required."}, status=400)
+    try:
+        used_amount = Decimal(str(request.data.get("usedAmount")))
+    except (TypeError, ValueError, InvalidOperation):
+        return Response({"error": "usedAmount must be a number."}, status=400)
+
+    used_date = None
+    if request.data.get("usedDate"):
+        try:
+            used_date = datetime.date.fromisoformat(request.data["usedDate"])
+        except ValueError:
+            return Response({"error": "usedDate must be YYYY-MM-DD."}, status=400)
+
+    usage = RodtepUsage.objects.create(
+        script_no=script_no,
+        used_amount=used_amount,
+        boe_number=(request.data.get("boeNumber") or "").strip(),
+        import_po_number=(request.data.get("importPoNumber") or "").strip(),
+        used_date=used_date,
+        notes=(request.data.get("notes") or "").strip(),
+        entered_by=request.user,
+    )
+    return Response(_rodtep_usage_dict(usage), status=201)
+
+
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def rodtep_sync_trigger(request):
+    """POST /api/imports/rodtep/sync-trigger - runs manage.py sync_rodtep
+    via apps/services/sync_trigger.py's trigger_rodtep_sync(), same
+    lock-protected "already running -> 409" contract as every other
+    sync-trigger endpoint in this app (so a manual click here can't race
+    the daily scheduled RoDTEP sync - see run_daily_sync_all_plants()'s own
+    RoDTEP block). IsAdmin-gated, same as every other sync_trigger.
+
+    Run synchronously (not queued via django-q's async_task() the way
+    trigger_plant_sync() is) rather than backgrounded - this syncs 1-2
+    small xlsx files (confirmed a few seconds end-to-end against real
+    Drive data), nowhere near gunicorn's 30s worker timeout, so the added
+    complexity of a background task + polling isn't justified here the way
+    it is for a full plant's multi-file MIR/Stock pipeline (see
+    sync_trigger.py's own module docstring for why THAT one needs to be
+    async)."""
+    from apps.services.sync_trigger import trigger_rodtep_sync
+
+    started = trigger_rodtep_sync()
+    if not started:
+        return Response({"status": "already_running"}, status=409)
+    return Response({"status": "ok"})

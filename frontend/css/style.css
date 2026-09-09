@@ -513,6 +513,11 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .flag-badge.sev-rounding { background:var(--gray-soft); color:var(--gray); }
 .flag-badge.dismissed { background:var(--border); color:var(--slate-soft); text-decoration:line-through; }
 .dismissed-tag { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:6px; background:var(--border); color:var(--slate-soft); cursor:default; }
+/* RoDTEP usage log's BOE cross-check (apps/api/routers/imports_views.py's
+   _boe_exists()) - a real, checkable signal (does this BOE number appear
+   on any plant's synced Import PO line items), not a guess. */
+.badge-verified { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--green-soft); color:var(--green-text); }
+.badge-warn { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--red-soft); color:var(--red-text); }
 .dismiss-link { display:inline-block; font-size:10.5px; font-weight:600; margin-left:6px; color:var(--gold-accent-text); cursor:pointer; }
 .dismiss-link:hover { text-decoration:underline; }
 

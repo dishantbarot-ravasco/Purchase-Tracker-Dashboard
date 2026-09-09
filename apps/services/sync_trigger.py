@@ -114,6 +114,15 @@ def is_sync_in_progress(plant_key: str) -> bool:
     return bool(cache.get(_lock_key(plant_key)))
 
 
+# RoDTEP is company-wide, not per-plant (see RodtepScrollEntry's own
+# docstring) - one shared lock, not one per plant key.
+_RODTEP_LOCK_KEY = "sync_trigger_rodtep_in_progress"
+
+
+def is_rodtep_sync_in_progress() -> bool:
+    return bool(cache.get(_RODTEP_LOCK_KEY))
+
+
 # ── Domestic sync+match pipeline ─────────────────────────────────────────────
 
 def _run_pipeline(plant_key: str) -> None:
@@ -135,6 +144,39 @@ def _run_pipeline(plant_key: str) -> None:
                 notify_admins_sync_failure(plant_key, cmd_name, detail=str(exc))
     finally:
         cache.delete(_lock_key(plant_key))
+
+
+def _run_rodtep_pipeline() -> None:
+    """Runs manage.py sync_rodtep, same catch/notify/always-clear-the-lock
+    shape as _run_pipeline() above. Company-wide, not per-plant - see
+    _RODTEP_LOCK_KEY's own comment."""
+    from apps.services.security_alerts import notify_admins_sync_failure
+
+    try:
+        try:
+            call_command("sync_rodtep")
+        except SystemExit:
+            log.error("sync_trigger: sync_rodtep exited with failure")
+            notify_admins_sync_failure("company", "sync_rodtep")
+        except Exception as exc:
+            log.exception("sync_trigger: sync_rodtep raised an unexpected error")
+            notify_admins_sync_failure("company", "sync_rodtep", detail=str(exc))
+    finally:
+        cache.delete(_RODTEP_LOCK_KEY)
+
+
+def trigger_rodtep_sync() -> bool:
+    """Starts the RoDTEP sync if one isn't already running. Returns True if
+    a new run was started, False if one was already in progress - same
+    "already syncing, not an error" contract as trigger_plant_sync(). Runs
+    synchronously (not via async_task()) even outside tests, unlike
+    trigger_plant_sync() - see imports_views.py's rodtep_sync_trigger view
+    for why (1-2 small files, a few seconds end-to-end against real Drive
+    data, nowhere near gunicorn's 30s worker timeout)."""
+    if not cache.add(_RODTEP_LOCK_KEY, True, timeout=_LOCK_TIMEOUT_SECONDS):
+        return False
+    _run_rodtep_pipeline()
+    return True
 
 
 def run_daily_sync_all_plants() -> None:
@@ -174,6 +216,12 @@ def run_daily_sync_all_plants() -> None:
     triggerRealSyncAndRefresh() in frontend/js/main.js for the matching
     frontend-side fix). Uses the separate _imports_lock_key() namespace so
     an in-flight manual imports sync isn't skipped-then-double-run.
+
+    Also runs the RoDTEP scrip ledger sync (_run_rodtep_pipeline(), added
+    2026-09-09) once per call, after every plant's domestic/imports blocks -
+    company-wide, not per-plant, so it isn't looped the way the two blocks
+    above are; skipped (not queued behind) the same way if a manual RoDTEP
+    sync is already in progress via _RODTEP_LOCK_KEY.
     """
     for plant_key in _PLANT_COMMANDS:
         if not cache.add(_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
@@ -198,6 +246,16 @@ def run_daily_sync_all_plants() -> None:
             _run_imports_pipeline(plant_key)
         except Exception:
             log.exception("run_daily_sync_all_plants: imports pipeline failed for plant=%s", plant_key)
+
+    # RoDTEP (added 2026-09-09) - company-wide, one shared lock, not looped
+    # per plant like the two blocks above.
+    if not cache.add(_RODTEP_LOCK_KEY, True, timeout=_LOCK_TIMEOUT_SECONDS):
+        log.info("run_daily_sync_all_plants: skipping RoDTEP - a manual refresh is already in progress")
+    else:
+        try:
+            _run_rodtep_pipeline()
+        except Exception:
+            log.exception("run_daily_sync_all_plants: RoDTEP pipeline failed")
 
 
 def trigger_plant_sync(plant_key: str) -> bool:

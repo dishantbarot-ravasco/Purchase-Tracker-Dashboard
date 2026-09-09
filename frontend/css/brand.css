@@ -590,6 +590,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .mb-10 { margin-bottom: 10px; }
 .mb-20 { margin-bottom: 20px; }
 .my-4 { margin: 4px 0; }
+.ml-auto { margin-left: auto; }
 .mb-block-16 { margin: 0 0 16px; }
 .stat-sub-tight { margin: -10px 0 18px; }
 .note-block { margin: 8px 0 12px; }

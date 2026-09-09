@@ -100,6 +100,31 @@ def find_file_id_by_title(title: str, parent_id: str | None = None, mime_type: s
     return files[0]["id"]
 
 
+def list_files_in_folder(parent_id: str, name_prefix: str | None = None) -> list[dict]:
+    """Returns [{id, name, modifiedTime}, ...] for every non-trashed file
+    directly inside `parent_id`, optionally narrowed to names starting with
+    `name_prefix`. Added for sync_rodtep.py - unlike every other sync
+    command, RoDTEP's own Drive files are NOT one fixed title
+    (find_file_id_by_title() doesn't apply): the "RODTEP SCRIPT LICENSE"
+    folder holds one file per Script Number, named "RODTEP-JNPT-<N>.xlsx"
+    with N incrementing as new scripts are issued - a real, ongoing count
+    with no fixed final name to search for. Sorted by name so callers get a
+    stable, predictable processing order run to run."""
+    service = get_drive_service()
+    clauses = [f"'{_escape(parent_id)}' in parents", "trashed = false"]
+    if name_prefix:
+        clauses.append(f"name contains '{_escape(name_prefix)}'")
+    query = " and ".join(clauses)
+    resp = service.files().list(q=query, fields="files(id, name, modifiedTime)", pageSize=100).execute()
+    files = resp.get("files", [])
+    # "name contains" is a substring match, not a prefix match - Drive API
+    # has no prefix operator - so narrow further in Python for a real
+    # prefix check when name_prefix was given.
+    if name_prefix:
+        files = [f for f in files if f["name"].startswith(name_prefix)]
+    return sorted(files, key=lambda f: f["name"])
+
+
 def _escape(value: str) -> str:
     """Escape backslash/single-quote for safe interpolation into a Drive
     API query string literal (the query is built by string formatting, not
