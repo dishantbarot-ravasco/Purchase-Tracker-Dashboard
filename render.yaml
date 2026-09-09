@@ -156,7 +156,14 @@ services:
       - key: GOOGLE_CLIENT_SECRET
         sync: false
       - key: GOOGLE_OAUTH_REDIRECT_URI
-        value: https://purchase-tracker-dashboard.onrender.com/api/auth/google/callback/
+        # Real deployed hostname carries a "-pqgi" suffix Render appended
+        # (the plain "purchase-tracker-dashboard.onrender.com" name was
+        # already taken) - confirmed against the live service 2026-09-09
+        # after this exact mismatch caused a real redirect_uri_mismatch
+        # error on Google's consent screen. If this service is ever
+        # recreated under a different name, update this to match Render's
+        # actual assigned hostname, not the service `name:` above.
+        value: https://purchase-tracker-dashboard-pqgi.onrender.com/api/auth/google/callback/
 
       # ── SafeCube (Sinay) Container Tracking API - powers the Import
       #    Purchases page's BL-number "Track" links (apps/services/
