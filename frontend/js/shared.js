@@ -579,10 +579,31 @@ function plainLine(label, value) {
 // "Label: value" text (which mixes both together) - selectFieldForCorrection()
 // needs the label on its own for the "Correcting: X" banner, same as the
 // artifact's fld() stashing `data-ov-label` for the same reason.
+// Real bug, found and fixed 2026-09-10: a 'date' field's read-only display
+// used to show the raw ISO value (e.g. "2026-06-24") verbatim, instead of
+// the dd/mm/yyyy every other date on this dashboard uses (formatDateIN()) -
+// project owner noticed this on the PO modal's "Created on" line. Fixed
+// here rather than at each of editableLine()'s/editableCell()'s call sites,
+// since every 'date'-typed field goes through one of these two functions.
+// The raw ISO value is still stashed in data-raw-value (see below) - the
+// override box's native <input type="date"> needs the real ISO value to
+// pre-fill correctly, and that value must never be derived from the
+// now-reformatted display text.
+function _fieldDisplay(value, fieldType) {
+  if (value === null || value === undefined || value === '') return null;
+  return fieldType === 'date' ? formatDateIN(value) : String(value);
+}
+
 function editableLine(plantKey, label, value, fieldName, itemId, fieldType, options) {
-  if (!canEditField(plantKey)) return plainLine(label, value);
-  const display = (value === null || value === undefined || value === '') ? 'Not available' : escapeHtml(String(value));
+  if (!canEditField(plantKey)) return plainLine(label, _fieldDisplay(value, fieldType));
+  const display = escapeHtml(_fieldDisplay(value, fieldType) ?? 'Not available');
   const optsAttr = options && options.length ? ' data-options="' + escapeHtml(encodeURIComponent(JSON.stringify(options))) + '"' : '';
+  // See _fieldDisplay()'s own comment above for why the raw ISO value is
+  // stashed separately from the (now human-formatted) display text for a
+  // 'date' field - wireEditIcons()'s pencil handler reads this instead of
+  // re-parsing the shown text, so the override box's date picker still
+  // pre-fills with a value it can actually understand.
+  const rawValueAttr = fieldType === 'date' && value != null && value !== '' ? ' data-raw-value="' + escapeHtml(String(value)) + '"' : '';
   // data-plant lets a container whose lines span more than one plant (the
   // material modal's Overview tab, once its Category/Sub Category lines
   // target the anchor lot's own plant) resolve each line's own fieldsUrl -
@@ -594,7 +615,7 @@ function editableLine(plantKey, label, value, fieldName, itemId, fieldType, opti
     (itemId ? ' data-item="' + escapeHtml(itemId) + '"' : '') +
     ' data-plant="' + escapeHtml(plantKey) + '"' +
     ' data-label="' + escapeHtml(label) + '"' +
-    ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + '>' +
+    ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + rawValueAttr + '>' +
     escapeHtml(label) + ': <span class="line-val">' + display + '</span>' +
     '<span class="edit-pencil" title="Correct this field">&#9998;</span>' +
   '</div>';
@@ -827,12 +848,14 @@ async function savePoField(fieldsUrl, itemId, field, value, reason) {
 // a table cell has no adjacent "Label:" text the way editableLine()'s block
 // line does - callers should pass something like 'Category (RTP-Vapi)'.
 function editableCell(plantKey, label, value, fieldName, itemId, fieldType, options) {
-  const display = (value === null || value === undefined || value === '') ? '-' : escapeHtml(String(value));
+  const display = escapeHtml(_fieldDisplay(value, fieldType) ?? '-');
   if (!canEditField(plantKey)) return display;
   const optsAttr = options && options.length ? ' data-options="' + escapeHtml(encodeURIComponent(JSON.stringify(options))) + '"' : '';
+  // See editableLine()'s identical data-raw-value comment above.
+  const rawValueAttr = fieldType === 'date' && value != null && value !== '' ? ' data-raw-value="' + escapeHtml(String(value)) + '"' : '';
   return '<span class="editable-line cell-editable" data-field="' + escapeHtml(fieldName) + '" data-item="' + escapeHtml(String(itemId)) + '" data-plant="' + escapeHtml(plantKey) + '"' +
     ' data-label="' + escapeHtml(label) + '"' +
-    ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + '>' +
+    ' data-field-type="' + (fieldType || 'text') + '"' + optsAttr + rawValueAttr + '>' +
     '<span class="line-val">' + display + '</span>' +
     '<span class="edit-pencil" title="Correct this field">&#9998;</span>' +
   '</span>';
@@ -934,7 +957,13 @@ function selectFieldForCorrection(field) {
   if (!hintEl || !selEl) return; // this modal has no override box in the DOM (shouldn't happen for an edit-enabled field)
   hintEl.hidden = true;
   selEl.hidden = false;
-  selEl.textContent = 'Correcting: ' + field.label + ' (currently: ' + (field.currentValue || 'Not available') + ')';
+  // A 'date' field's currentValue is the raw ISO string (input.value needs
+  // that, see renderOverrideValueInput()) - shown here as dd/mm/yyyy instead,
+  // same reformatting the field's own read-only display already gets
+  // (_fieldDisplay() above), so this banner doesn't read as a format
+  // regression from the line it was just clicked from.
+  const currentDisplay = field.fieldType === 'date' ? _fieldDisplay(field.currentValue, 'date') : field.currentValue;
+  selEl.textContent = 'Correcting: ' + field.label + ' (currently: ' + (currentDisplay || 'Not available') + ')';
   if (reasonEl) reasonEl.value = '';
   if (statusEl) { statusEl.textContent = ''; statusEl.className = ''; }
   if (submitBtn) submitBtn.disabled = false;
@@ -996,9 +1025,16 @@ function wireEditIcons(container, fieldsUrl, switchToTab, onSaved) {
     const pencil = el.querySelector('.edit-pencil');
     if (!pencil) return;
     pencil.onclick = () => {
+      // A 'date' field's shown text is now human-formatted (dd/mm/yyyy, see
+      // editableLine()'s/editableCell()'s own _fieldDisplay() comment) - the
+      // override box's native <input type="date"> needs the real ISO value
+      // to pre-fill correctly, so prefer the raw value stashed in
+      // data-raw-value over re-parsing the (now reformatted) display text.
       const valueEl = el.querySelector('.line-val');
       const shown = valueEl ? valueEl.textContent : '';
-      const currentValue = (shown === 'Not available' || shown === '-') ? '' : shown;
+      const currentValue = el.dataset.rawValue !== undefined
+        ? el.dataset.rawValue
+        : ((shown === 'Not available' || shown === '-') ? '' : shown);
       const options = el.dataset.options ? JSON.parse(decodeURIComponent(el.dataset.options)) : [];
       selectFieldForCorrection({
         label: el.dataset.label || el.dataset.field,
