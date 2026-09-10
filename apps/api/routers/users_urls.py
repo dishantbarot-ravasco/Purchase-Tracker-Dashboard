@@ -10,6 +10,10 @@ Endpoints
 GET    /api/auth/users                          -> users_views.list_users
 POST   /api/auth/users/create                    -> users_views.create_user
 PATCH  /api/auth/users/<id>                       -> users_views.update_user
+DELETE /api/auth/users/<id>                       -> users_views.update_user (same view,
+                                                      branches on request.method - only
+                                                      dishant.barot@ravasco.com may actually
+                                                      delete, see users_views.py's own comment)
 GET    /api/auth/users/<id>/devices               -> users_views.list_user_devices
 DELETE /api/auth/users/<id>/devices/<device_id>   -> users_views.revoke_user_device
 POST   /api/auth/users/<id>/logout-everywhere     -> users_views.admin_logout_everywhere

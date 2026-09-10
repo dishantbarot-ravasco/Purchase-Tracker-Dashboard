@@ -65,6 +65,7 @@ class PTAuditLog(models.Model):
     ACTION_LOGOUT = "logout"
     ACTION_USER_CREATED = "user_created"
     ACTION_USER_UPDATED = "user_updated"
+    ACTION_USER_DELETED = "user_deleted"
     ACTION_DEVICE_REVOKED = "device_revoked"
     ACTION_SESSIONS_REVOKED = "sessions_revoked"
 
@@ -73,6 +74,7 @@ class PTAuditLog(models.Model):
         (ACTION_LOGOUT, "Logout"),
         (ACTION_USER_CREATED, "User created"),
         (ACTION_USER_UPDATED, "User updated"),
+        (ACTION_USER_DELETED, "User deleted"),
         (ACTION_DEVICE_REVOKED, "Trusted device revoked"),
         (ACTION_SESSIONS_REVOKED, "All sessions revoked (log out everywhere)"),
     ]

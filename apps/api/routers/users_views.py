@@ -19,6 +19,12 @@ POST  /api/auth/users/create      Create a user (email + password + role +
 PATCH /api/auth/users/<id>        Update role / is_active / full_name /
                                    designation / plants / password. Admin
                                    only.
+DELETE /api/auth/users/<id>       Permanently delete the account (same view
+                                   as PATCH, branches on request.method).
+                                   Admin only, AND only when the caller is
+                                   dishant.barot@ravasco.com (hardcoded, per
+                                   project owner's explicit request - every
+                                   other admin only sees Deactivate).
 
 URL naming (see CLAUDE.md's "In-app user management"): GET and POST are
 split by path segment (`/auth/users` vs. `/auth/users/create`), not by
@@ -54,7 +60,7 @@ import bcrypt
 from django.conf import settings
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from apps.api.permissions import AdminWriteThrottle, IsAdmin, is_allowed_email_domain
 from apps.core.audit_log import PTAuditLog, log_pt_action
@@ -202,7 +208,15 @@ def create_user(request):
     return Response(_user_out(user), status=201)
 
 
-@api_view(["PATCH"])
+# Hardcoded on purpose, per project owner's explicit request ("only for
+# dishant.barot@ravasco.com email only hard code it") - deleting a PTUser is
+# irreversible (unlike deactivate, which just blocks sign-in) and every other
+# admin action in this file is available to any admin account, so this one
+# extra gate is deliberately narrower than IsAdmin alone, not a bug.
+_DELETE_USER_ALLOWED_EMAIL = "dishant.barot@ravasco.com"
+
+
+@api_view(["PATCH", "DELETE"])
 @permission_classes([IsAdmin])
 @throttle_classes([AdminWriteThrottle])
 def update_user(request, user_id):
@@ -211,10 +225,35 @@ def update_user(request, user_id):
     "password" }
 
     Admin only. No email field (identity, not editable) - see this file's
-    header comment for the password field's own history."""
+    header comment for the password field's own history.
+
+    DELETE /api/auth/users/<id> - permanently delete the account. Admin only,
+    AND only when the caller's own account is dishant.barot@ravasco.com
+    (hardcoded, see comment above) - every other admin still sees
+    Deactivate/Activate only, no Delete control at all. Shares this view
+    (rather than a separate one) because both must live at the same URL -
+    `path()` matches on URL alone, not HTTP method."""
     user = PTUser.objects.filter(pk=user_id).first()
     if not user:
         raise NotFound(f"User {user_id} not found.")
+
+    if request.method == "DELETE":
+        if request.user.email.lower() != _DELETE_USER_ALLOWED_EMAIL:
+            raise PermissionDenied("Only dishant.barot@ravasco.com can delete a user account.")
+        if user.role == PTUser.Role.ADMIN and user.is_active:
+            other_active_admins = (
+                PTUser.objects.filter(role=PTUser.Role.ADMIN, is_active=True).exclude(pk=user.pk).exists()
+            )
+            if not other_active_admins:
+                raise ValidationError({"detail": "Cannot delete the last active admin account."})
+        email = user.email
+        user.delete()
+        logger.info("users_views: admin %s deleted PTUser %s", request.user.email, email)
+        log_pt_action(
+            request, PTAuditLog.ACTION_USER_DELETED, actor=request.user,
+            detail=f"deleted {email}",
+        )
+        return Response(status=204)
 
     # Captured before any field is mutated below, purely to build an audit
     # `detail` string afterwards - role changes and password resets are the

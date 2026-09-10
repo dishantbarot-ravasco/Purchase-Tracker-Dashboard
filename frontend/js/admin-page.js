@@ -22,10 +22,19 @@
 let USERS = [];
 let editingUserId = null;
 let CURRENT_ADMIN_TAB = 'overview';
+let CURRENT_ADMIN_EMAIL = '';
+
+// Delete is a real, irreversible destructive action (unlike Deactivate,
+// which just blocks sign-in) - project owner asked for it restricted to
+// this one account only, hardcoded. The backend (users_views.py's
+// update_user()) enforces this for real; this is just so nobody else even
+// sees a Delete button to click in the first place.
+const DELETE_USER_ALLOWED_EMAIL = 'dishant.barot@ravasco.com';
 
 (async function () {
   const user = await requireAuth();
   if (!user) return;
+  CURRENT_ADMIN_EMAIL = (user.email || '').toLowerCase();
   renderNavTabs(document.getElementById('navTabs'), 'admin');
   renderUserBadge(document.getElementById('navUser'));
   initThemeToggle();
@@ -232,6 +241,9 @@ function renderUsers() {
         '<div class="user-card-actions">' +
           '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
           '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>' +
+          (CURRENT_ADMIN_EMAIL === DELETE_USER_ALLOWED_EMAIL
+            ? '<button type="button" class="icon-btn danger" data-delete="' + u.userId + '">Delete</button>'
+            : '') +
         '</div>' +
       '</div>' +
     '</div>';
@@ -239,6 +251,7 @@ function renderUsers() {
 
   el.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openForm(USERS.find(u => u.userId === Number(btn.dataset.edit))));
   el.querySelectorAll('[data-toggle]').forEach(btn => btn.onclick = () => toggleActive(Number(btn.dataset.toggle)));
+  el.querySelectorAll('[data-delete]').forEach(btn => btn.onclick = () => deleteUser(Number(btn.dataset.delete)));
 }
 
 function updateUserCounts() {
@@ -440,6 +453,23 @@ async function toggleActive(userId) {
   try {
     await patchUser(userId, { isActive: !user.isActive });
     showToast('User ' + (user.isActive ? 'deactivated' : 'activated') + '.', 'success');
+    await loadUsers();
+  } catch (e) {
+    showToast('Failed: ' + e.message, 'error');
+  }
+}
+
+async function deleteUser(userId) {
+  const user = USERS.find(u => u.userId === userId);
+  if (!user) return;
+  if (!window.confirm('Permanently delete ' + (user.fullName || user.email) + ' (' + user.email + ')? This cannot be undone - consider Deactivate instead if you just want to block sign-in.')) return;
+  try {
+    const res = await fetch('/api/auth/users/' + userId, { method: 'DELETE', credentials: 'same-origin' });
+    if (!res.ok && res.status !== 204) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || 'HTTP ' + res.status);
+    }
+    showToast('User deleted.', 'success');
     await loadUsers();
   } catch (e) {
     showToast('Failed: ' + e.message, 'error');
