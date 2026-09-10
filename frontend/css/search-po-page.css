@@ -30,3 +30,8 @@
 .search-filter-field .form-control { font-size: 13.5px; padding: 9px 12px; }
 .search-filter-field.search-filter-date-range { flex-direction: row; align-items: center; gap: 6px; }
 .search-filter-date-range label { margin-right: 2px; }
+/* Match highlighting in result cards (2026-09-10) - a plain semantic <mark>,
+   styled with the same gold token the rest of this app already uses for
+   "currently active/selected" emphasis (see brand.css), so it reads as a
+   highlight rather than a new, unrelated color introduced just for this. */
+mark.search-hit { background: var(--gold-pale); color: var(--gold-text); border-radius: 3px; padding: 0 2px; font-weight: 700; }

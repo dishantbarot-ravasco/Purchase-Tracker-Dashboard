@@ -4,6 +4,7 @@
 // a straight extraction, not a rewrite.
 let POS_BY_PLANT = {}; // lazy-loaded per plant, cached for this page's lifetime
 let loadPromise = null;
+let dataReady = false; // true once loadPromise has actually resolved - see runSearch()'s spinner check
 
 (async function () {
   const user = await requireAuth();
@@ -12,20 +13,41 @@ let loadPromise = null;
   renderUserBadge(document.getElementById('navUser'));
   initThemeToggle();
 
-  document.getElementById('searchBtn').onclick = runSearch;
-  ['searchInput', 'vendorInput', 'materialInput'].forEach(id =>
-    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); })
-  );
+  // Kicked off here rather than waiting for the first search (added
+  // alongside live-as-you-type search below, 2026-09-10, project owner:
+  // "make searching a bit more user friendly") - by the time the user has
+  // typed enough characters to search, the data is very likely already
+  // cached, so the debounced live search below rarely has to show its own
+  // loading spinner. Fire-and-forget (not awaited) - a viewer who never
+  // searches at all still only pays for this once, same as before, just
+  // started a little earlier instead of waiting for their first keystroke.
+  ensureLoaded();
+
+  document.getElementById('searchBtn').onclick = () => runSearch();
+  ['searchInput', 'vendorInput', 'materialInput', 'dateFromInput', 'dateToInput'].forEach(id => {
+    const el = document.getElementById(id);
+    // Live search (2026-09-10): every keystroke/date pick re-filters
+    // automatically, debounced so a fast typist doesn't re-run the filter
+    // on every single character - no more "type, then remember to click
+    // Search" step for the common case. Enter/the Search button still
+    // trigger an immediate, non-debounced search for anyone who prefers
+    // the old explicit-submit feel (e.g. muscle memory, or wanting to
+    // finish a whole query before searching).
+    el.addEventListener('input', () => runSearch({ debounce: true }));
+    el.addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(); });
+  });
   document.getElementById('clearFiltersBtn').onclick = () => {
+    clearTimeout(searchDebounceTimer);
     ['searchInput', 'vendorInput', 'materialInput', 'dateFromInput', 'dateToInput'].forEach(id => document.getElementById(id).value = '');
     document.getElementById('detailArea').innerHTML = '';
     document.getElementById('resultsArea').innerHTML = '';
   };
 })();
 
-// All 3 plants' PO data is fetched once, lazily, on the first search -
-// not on page load, since a viewer who never searches shouldn't pay for
-// 3 fetches they didn't ask for.
+// All 3 plants' PO data is fetched once (see the prefetch-on-load comment
+// above) and cached for this page's lifetime - ensureLoaded() is still
+// safe to call from runSearch() too, since a second call while the first
+// is still in flight (or already resolved) just returns the same promise.
 function ensureLoaded() {
   if (loadPromise) return loadPromise;
   loadPromise = Promise.all(PLANT_KEYS.map(async key => {
@@ -36,7 +58,7 @@ function ensureLoaded() {
       console.error('search-po: failed to load purchase orders for ' + key + ':', e);
       POS_BY_PLANT[key] = null; // failed, not empty - see renderResults()
     }
-  }));
+  })).then(() => { dataReady = true; });
   return loadPromise;
 }
 
@@ -68,7 +90,37 @@ function poMatchesFilters(po, f) {
   return true;
 }
 
-async function runSearch() {
+// Debounce delay for live-as-you-type search - long enough that a fast
+// typist doesn't re-filter on every keystroke, short enough that the result
+// still feels immediate once they pause. 250ms is the same rough figure
+// most search-as-you-type UIs settle on.
+const SEARCH_DEBOUNCE_MS = 250;
+let searchDebounceTimer = null;
+// Stale-response guard, same pattern/reasoning as charts.js's own
+// modalRequestId (see that file's comment) - without it, a fast typist
+// whose earlier keystroke's ensureLoaded() await is still in flight when a
+// later keystroke fires its own runSearch() could have the earlier, now-
+// stale call's renderResults() overwrite the newer one's results. In
+// practice ensureLoaded() usually resolves instantly after the first real
+// load (see the page-load prefetch above), so this mostly guards the rare
+// case where the very first search races the initial fetch.
+let searchRequestId = 0;
+
+/** opts.debounce: true schedules a delayed, cancelable re-search (every
+ * keystroke/date-field change) instead of running immediately - used by the
+ * live-search wiring above. Any call with opts.debounce falsy (the Search
+ * button, Enter key) runs right away and cancels a pending debounced one,
+ * so pressing Enter mid-type doesn't leave a stale debounced search to fire
+ * a moment later on top of it. */
+async function runSearch(opts) {
+  opts = opts || {};
+  clearTimeout(searchDebounceTimer);
+  if (opts.debounce) {
+    searchDebounceTimer = setTimeout(() => runSearch(), SEARCH_DEBOUNCE_MS);
+    return;
+  }
+
+  const myRequestId = ++searchRequestId;
   document.getElementById('detailArea').innerHTML = '';
   const resultsEl = document.getElementById('resultsArea');
   const f = activeFilters();
@@ -85,9 +137,35 @@ async function runSearch() {
       '</div>';
     return;
   }
-  resultsEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><span>Searching&hellip;</span></div>';
+  // Only show the spinner before data is cached at all - once
+  // ensureLoaded() has resolved once (the common case now that it's kicked
+  // off on page load, see the bootstrap IIFE above), every later keystroke's
+  // re-filter is instant and a spinner flash would just be visual noise on
+  // top of an otherwise-live search.
+  if (!dataReady) {
+    resultsEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><span>Searching&hellip;</span></div>';
+  }
   await ensureLoaded();
+  if (myRequestId !== searchRequestId) return; // a newer search superseded this one
   renderResults(f);
+}
+
+// Wraps the first case-insensitive occurrence of `query` in `text` with a
+// <mark> tag, so a result card visually shows WHY it matched instead of
+// making the user re-scan the whole card for their own search term (2026-
+// 09-10, project owner: "make searching a bit more user friendly"). Every
+// piece of `text` is still run through escapeHtml() - only the tag itself
+// is real markup, never anything derived from `text`/`query` directly, so
+// this can't reopen the XSS-safety this app's innerHTML sites are otherwise
+// careful about (see CLAUDE.md's "Security hardening pass").
+function highlightMatch(text, query) {
+  const raw = text || '';
+  if (!query) return escapeHtml(raw);
+  const idx = raw.toLowerCase().indexOf(query.toLowerCase());
+  if (idx === -1) return escapeHtml(raw);
+  return escapeHtml(raw.slice(0, idx)) +
+    '<mark class="search-hit">' + escapeHtml(raw.slice(idx, idx + query.length)) + '</mark>' +
+    escapeHtml(raw.slice(idx + query.length));
 }
 
 function renderResults(f) {
@@ -133,14 +211,18 @@ function renderResults(f) {
         ? (po.items || []).filter(it => (it.description || '').toLowerCase().includes(f.material)).map(it => it.description)
         : [];
       const materialHtml = materialHit.length
-        ? '<div class="search-result-meta">Matched material: ' + escapeHtml(materialHit.join(', ')) + '</div>'
+        ? '<div class="search-result-meta">Matched material: ' + materialHit.map(d => highlightMatch(d, f.material)).join(', ') + '</div>'
         : '';
+      const poNumberHtml = f.po.length >= MIN_FILTER_LEN ? highlightMatch(po.poNumber, f.po) : escapeHtml(po.poNumber);
+      const vendorHtml = f.vendor.length >= MIN_FILTER_LEN
+        ? highlightMatch(po.vendorName || 'Vendor not recorded', f.vendor)
+        : escapeHtml(po.vendorName || 'Vendor not recorded');
       return '<div class="search-result-card" data-idx="' + i + '" tabindex="0" role="button" aria-label="View details for PO ' + escapeHtml(po.poNumber) + '">' +
         '<div class="search-result-top">' +
-          '<span class="search-result-po">' + escapeHtml(po.poNumber) + '</span>' +
+          '<span class="search-result-po">' + poNumberHtml + '</span>' +
           '<span class="search-result-plant">' + escapeHtml(PLANTS[m.plantKey].label) + '</span>' +
         '</div>' +
-        '<div class="search-result-meta">' + escapeHtml(po.vendorName || 'Vendor not recorded') + ' &middot; Created ' + escapeHtml(formatDateIN(po.createdDate)) +
+        '<div class="search-result-meta">' + vendorHtml + ' &middot; Created ' + escapeHtml(formatDateIN(po.createdDate)) +
           ' &middot; ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : 'Value not recorded') +
           ' &middot; ' + matchedCount + ' / ' + totalCount + ' line items matched to MIR</div>' +
         materialHtml +
