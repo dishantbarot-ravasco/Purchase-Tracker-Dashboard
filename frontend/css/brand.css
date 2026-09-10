@@ -341,13 +341,21 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .user-card-email { font-size: 11.5px; color: var(--text-muted); word-break: break-all; }
 .user-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; font-size: 11.5px; color: var(--text-muted); }
 .user-card-desig { font-size: 12px; color: var(--text-dim); margin-bottom: 14px; min-height: 1em; }
-.user-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+/* flex-wrap (added alongside the Delete button, 2026-09-10): a user card's
+   min-width is 280px (.users-grid's grid-template-columns) - two actions
+   (Edit/Deactivate) fit that comfortably, but three (Edit/Deactivate/Delete,
+   the latter only rendered for the one admin allowed to delete - see
+   admin-page.js's DELETE_USER_ALLOWED_EMAIL) do not. Wrapping lets the
+   "Since ..." date drop to its own line above the actions instead of
+   overflowing the card and pushing a horizontal scrollbar onto the whole
+   page (confirmed the bug this fixes by screenshot before this change). */
+.user-card-foot { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--border); }
 .status-pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 700; }
 .status-pill.active { background: var(--green-pale); color: var(--green); }
 .status-pill.inactive { background: var(--bg-section); color: var(--text-muted); }
-.user-card-actions { display: flex; gap: 6px; }
+.user-card-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
 .icon-btn {
-  padding: 6px 12px; font-family: var(--font-head); font-size: 10.5px; font-weight: 700;
+  padding: 6px 10px; font-family: var(--font-head); font-size: 10.5px; font-weight: 700;
   letter-spacing: .04em; text-transform: uppercase; border-radius: var(--radius);
   border: 1px solid var(--border-mid); background: var(--bg-card); color: var(--text-dim); cursor: pointer; transition: all .15s;
 }

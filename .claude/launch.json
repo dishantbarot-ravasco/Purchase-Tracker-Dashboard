@@ -3,9 +3,13 @@
   "configurations": [
     {
       "name": "purchase-tracker-dev",
-      "runtimeExecutable": "uv",
-      "runtimeArgs": ["run", "python", "manage.py", "runserver", "0.0.0.0:8000"],
-      "port": 8000
+      "url": "http://localhost:8010"
+    },
+    {
+      "name": "pt-dashboard-dev",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/d", "/c", "cd /d C:/Users/Admin/OneDrive/Desktop/Purchase Automation App/Purchase Tracker Dashboard && uv run python manage.py runserver 0.0.0.0:8020"],
+      "port": 8020
     }
   ]
 }
