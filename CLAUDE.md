@@ -874,21 +874,63 @@ confidence-band mechanism below as the mitigation rather than waiting on an unst
 fix - a lot whose history keeps resetting will simply sit at LOW/NONE confidence rather than
 reporting a wrong number with false certainty.
 
-**Why this can't use `issued`/`received`**: those columns mean a different thing at each plant's
-Stock sheet - RTP-Achhad's `issued` is a period-to-date summary that resets each period; HRS's/
-RTP-Vapi's `issued`/`received` are formula cells pulled from a separate Receipt/Issue tab, and
-HRS's own `received` is already documented elsewhere in this file as reading 0 for nearly every
-real lot. The one field that means the same thing everywhere is the closing balance,
-`todays_stock` - so the portable signal is the day-over-day drawdown between consecutive
-snapshots of it, not either of those columns.
+**Why this can't use `issued`/`received` as the primary signal**: those columns mean a different
+thing at each plant's Stock sheet - RTP-Achhad's `issued` is a period-to-date summary that resets
+each period; HRS's/RTP-Vapi's `issued`/`received` are formula cells pulled from a separate
+Receipt/Issue tab, and HRS's own `received` is already documented elsewhere in this file as
+reading 0 for nearly every real lot. The one field that means the same thing everywhere is the
+closing balance, `todays_stock` - so the portable signal is the day-over-day drawdown between
+consecutive snapshots of it, not either of those columns. **Confirmed with real synced data,
+2026-09-10** (project owner pushed back on this design and asked for it to be checked, not just
+asserted): comparing every consecutive-day snapshot pair's logged `received`/`issued` against what
+the balance actually did, the books only reconcile with the real balance change on 45% of HRS's
+days, 87% of Achhad's, and 82% of Vapi's - and in aggregate the logged figures are off from the
+real balance movement by roughly 2x-10x depending on the plant. `issued` alone is worse still: HRS
+has real cases of a multi-thousand-unit balance drop recorded as `issued: 0`. This is why
+`todays_stock` stays the one number trusted as ground truth.
 
 - **`apps/services/stock_consumption.py`** - the pure algorithm (`consumption_stats()`), tested
   dependency-free in `apps/services/tests/test_stock_consumption.py` (no DB), same convention as
   `matching.py`/`test_matching.py`. Skips any consecutive-snapshot gap over 7 days (averaging
-  across a long hole would invent a drawdown that never happened) and excludes any interval where
-  stock rose (a receipt landed) entirely rather than counting it as zero consumption, which would
-  drag the average down and overstate days-left - the exact direction of error that hides a real
-  reorder need. Confidence travels in the payload as `high`/`medium`/`low`/`none` (based on days
+  across a long hole would invent a drawdown that never happened).
+
+  **`received` recovers real consumption a receipt would otherwise hide - added/generalized
+  2026-09-10** (project owner: "if issue is having mistake then received can be used along with
+  todays stock"). The relationship is one formula, always true regardless of which direction the
+  balance moved: `real consumption for an interval = (stock_yesterday - stock_today) + received`.
+  - **Stock fell or stayed flat** (the ordinary case) - the drop alone already proves that much was
+    consumed; `received` logged the same day can only mean MORE was consumed, never less, so it's
+    added straight in. **This turned out to be the bigger, more common gap** - found while
+    investigating the project owner's own follow-up question about whether `received` could help
+    further: a receipt can land the SAME day as heavy consumption WITHOUT the net balance ever
+    reversing direction, so the pre-2026-09-10 code (which only ever looked at `received` on a
+    receipt day) silently ignored it here entirely. Confirmed against real data across all three
+    plants: **178,282 units of HRS consumption, 82,012 of Achhad's, and 190,501 of Vapi's** were
+    invisible this way in just one week of synced history - larger than the receipt-day case below.
+    Real HRS example: balance dropped by only 1,040 net, but 5,040 was also received the same day -
+    real consumption was 6,080, not 1,040.
+  - **Stock rose overall** (a receipt landed, net direction reversed) - used to be excluded
+    entirely rather than counted as zero consumption (counting it as zero would drag the average
+    down and overstate days-left, the exact direction of error that hides a real reorder need).
+    The same formula above still applies and is trusted whenever it gives a real, positive answer -
+    e.g. a real HRS lot: balance rose 4,350 -> 25,000, but `received` was logged as 25,000, meaning
+    4,350 units were ALSO consumed that same day (the rise alone only accounts for 20,650 of the
+    25,000 received). `received` is frequently blank/zero even on a genuine receipt day (confirmed:
+    98 of 111 real HRS receipt days in this same data) - a non-positive result from the formula is
+    never counted, so those days still have nothing trustworthy to recover and are skipped exactly
+    as before, with no separate special case needed to make that happen.
+  - **A real double-counting bug found and fixed the same session, before either of the above
+    shipped further**: `received` can stay frozen at the same nonzero figure across several
+    consecutive snapshot rows instead of resetting to 0 once "used" - confirmed on a real HRS lot
+    showing the identical `received` value (7,487) unchanged across three snapshots in a row.
+    Naively adding `received` into every interval it's visible in would count that ONE real receipt
+    two or three times over. Fixed by only trusting `received` as a genuinely NEW event when it
+    differs from the immediately preceding snapshot's own reading for that lot - a repeat of the
+    same figure contributes 0, not another full recovery.
+  Regression tests: `test_stock_consumption.py::TestReceiptDayConsumptionRecovery`,
+  `TestReceiptMaskedConsumptionWithoutChangingNetDirection` (includes the stale-repeat guard).
+
+  Confidence travels in the payload as `high`/`medium`/`low`/`none` (based on days
   spanned + usable intervals), rendered rather than used as a hidden filter - the whole point is to
   show a thin-history figure while being honest about how thin it is. `issued` still feeds a
   secondary cross-check (`estimatesAgree`) where it happens to behave cumulatively, but never

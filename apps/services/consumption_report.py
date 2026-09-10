@@ -447,10 +447,27 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     </tbody>
   </table>
   <p style="margin:20px 0 0;font-size:11px;color:#718096;">
-    Days-left is an estimate based on the last {DEFAULT_WINDOW_DAYS} days of stock movement, not a
-    guarantee - see the confidence level next to each figure (none/low/medium/high, based on how
-    much real history is available). Figures reflect the most recent successful Drive sync for
-    this plant (automatic or manually triggered).
+    Days Left = that row's current stock &divide; its average daily consumption over the last
+    {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each row is one specific vendor's
+    stock lot, not the material's combined total across every vendor - a low days-left figure
+    applies to that lot only. Figures reflect the most recent successful Drive sync for this plant
+    (automatic or manually triggered).
+  </p>
+  <p style="margin:10px 0 0;font-size:11px;color:#718096;">
+    <strong>The word in parentheses next to Days Left is NOT a stock-level warning</strong> - it's
+    how much snapshot history backs that estimate, shown so a thin estimate is never mistaken for a
+    confirmed one:
+  </p>
+  <ul style="margin:4px 0 0;padding-left:18px;font-size:11px;color:#718096;">
+    <li><strong>none</strong> - not enough snapshot history yet to estimate at all</li>
+    <li><strong>low</strong> - thin history (as little as 2 days / 1 usable data point)</li>
+    <li><strong>medium</strong> - moderate history (7+ days / 3+ usable data points)</li>
+    <li><strong>high</strong> - strong history (14+ days / 5+ usable data points)</li>
+  </ul>
+  <p style="margin:6px 0 0;font-size:11px;color:#718096;">
+    A material tagged <strong>(low)</strong> can still have a perfectly healthy Days Left number -
+    the tag means treat that particular figure cautiously until more history accumulates, not that
+    the material itself is running low.
   </p>
   {estimate_note_html}
   <p style="margin:16px 0 0;font-size:11px;color:#718096;">
@@ -462,9 +479,21 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     text_body = (
         f"{title}\n\n"
         + "\n".join(text_rows)
-        + f"\n\nDays-left is an estimate based on the last {DEFAULT_WINDOW_DAYS} days of stock "
-        "movement; see the confidence level (none/low/medium/high) next to each figure. Figures "
-        "reflect the most recent successful Drive sync (automatic or manual).\n"
+        + f"\n\nDays Left = that row's current stock divided by its average daily consumption over "
+        f"the last {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each row is one "
+        "specific vendor's stock lot, not the material's combined total across every vendor - a low "
+        "days-left figure applies to that lot only. Figures reflect the most recent successful Drive "
+        "sync for this plant (automatic or manual).\n"
+        "\nThe word in parentheses next to Days Left is NOT a stock-level warning - it's how much "
+        "snapshot history backs that estimate, shown so a thin estimate is never mistaken for a "
+        "confirmed one:\n"
+        "  none   - not enough snapshot history yet to estimate at all\n"
+        "  low    - thin history (as little as 2 days / 1 usable data point)\n"
+        "  medium - moderate history (7+ days / 3+ usable data points)\n"
+        "  high   - strong history (14+ days / 5+ usable data points)\n"
+        "A material tagged (low) can still have a perfectly healthy Days Left number - the tag means "
+        "treat that particular figure cautiously until more history accumulates, not that the "
+        "material itself is running low.\n"
         + estimate_note_text
         + "\n\nThis is a system generated email. Please do not reply.\n"
     )

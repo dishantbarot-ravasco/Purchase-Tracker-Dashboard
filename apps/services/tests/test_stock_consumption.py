@@ -66,6 +66,151 @@ class TestReceiptExclusion:
         assert stats["avgDaily"] == 100.0  # not (100 / 3) ~= 33.3
 
 
+class TestReceiptDayConsumptionRecovery:
+    """A receipt day (stock rose overall) can still hide real same-day
+    consumption if `received` is populated and genuinely exceeds the rise -
+    added 2026-09-10, project owner: "if issue is having mistake then
+    received can be used along with todays stock". Confirmed against real
+    synced HRS data before building this: `received` reads 0 on the large
+    majority of real receipt days (nothing recoverable then, correctly
+    still skipped), but on the days it IS populated and doesn't match the
+    rise alone, that gap is real consumption that used to be silently
+    thrown away entirely."""
+
+    def test_a_receipt_day_with_no_received_figure_is_still_skipped(self):
+        """The exact scenario asked about: yesterday=100, today=200, no
+        `received` value recorded at all - nothing to recover from, must
+        behave exactly as before (skipped, not zeroed)."""
+        points = _points([(0, 100, None, None), (1, 200, None, None), (2, 150, None, None)])
+        stats = consumption_stats(points)
+        assert stats["receiptIntervals"] == 1
+        assert stats["intervalsUsed"] == 1  # only the second interval (200->150)
+        assert stats["avgDaily"] == 50.0
+
+    def test_received_exactly_explaining_the_rise_recovers_nothing(self):
+        """received=100 fully accounts for a 100->200 rise on its own -
+        zero implied hidden consumption, so nothing should be added."""
+        points = _points([(0, 100, None, None), (1, 200, 100, None)])
+        stats = consumption_stats(points)
+        assert stats["receiptIntervals"] == 1
+        assert stats["intervalsUsed"] == 0
+        assert stats["avgDaily"] is None
+
+    def test_received_exceeding_the_rise_recovers_the_real_hidden_consumption(self):
+        """Real case confirmed against live HRS data: stock rose 4,350 ->
+        25,000, but received was logged as 25,000 - meaning 4,350 units
+        were ALSO consumed the same day, hidden behind the net rise."""
+        points = _points([(0, 4350, None, None), (1, 25000, 25000, None)])
+        stats = consumption_stats(points)
+        assert stats["receiptIntervals"] == 1
+        assert stats["intervalsUsed"] == 1
+        assert stats["avgDaily"] == 4350.0
+        assert stats["daysLeft"] == 25000 / 4350.0
+
+    def test_received_less_than_the_rise_is_not_treated_as_negative_consumption(self):
+        """received=50 on a 100->200 rise doesn't fully explain it (the
+        other 50 is unexplained, not evidence of consumption) - must not
+        produce a negative/nonsensical implied consumption figure."""
+        points = _points([(0, 100, None, None), (1, 200, 50, None)])
+        stats = consumption_stats(points)
+        assert stats["receiptIntervals"] == 1
+        assert stats["intervalsUsed"] == 0
+        assert stats["avgDaily"] is None
+
+    def test_recovered_consumption_combines_correctly_with_ordinary_drawdown_intervals(self):
+        """A mix of an ordinary consumption interval and a recovered
+        receipt-day interval must average together correctly, not just
+        work in isolation."""
+        points = _points([
+            (0, 1000, None, None),
+            (1, 900, None, None),        # ordinary: -100 over 1 day
+            (2, 1400, 600, None),        # receipt: rise=500, received=600 -> 100 hidden consumption over 1 day
+        ])
+        stats = consumption_stats(points)
+        assert stats["receiptIntervals"] == 1
+        assert stats["intervalsUsed"] == 2
+        # consumed = 100 + 100 = 200 over 1+1 = 2 days -> 100/day
+        assert stats["avgDaily"] == 100.0
+
+
+class TestReceiptMaskedConsumptionWithoutChangingNetDirection:
+    """A bigger, more common gap than the receipt-day case above - found
+    while answering the project owner's own follow-up question about
+    `received`, 2026-09-10, then confirmed against real data before fixing:
+    a receipt can land the SAME day as heavy consumption WITHOUT the net
+    balance ever rising - the interval still looks like ordinary
+    consumption (delta >= 0), so the old code trusted `delta` alone and
+    never even looked at `received` for this branch. Real HRS example
+    found this session: balance dropped by only 1,040 net, but 5,040 was
+    also received that day - real consumption was 6,080, not 1,040."""
+
+    def test_a_receipt_alongside_heavy_consumption_still_showing_a_net_drop_is_recovered(self):
+        # Real case: stock0=8040, stock1=7000 (net drop of 1,040), but
+        # received=5040 that day -> real consumption = 1040 + 5040 = 6080.
+        points = _points([(0, 8040, None, None), (1, 7000, 5040, None)])
+        stats = consumption_stats(points)
+        assert stats["receiptIntervals"] == 0  # net direction never reversed - not a "receipt interval"
+        assert stats["intervalsUsed"] == 1
+        assert stats["avgDaily"] == 6080.0
+        assert stats["daysLeft"] == 7000 / 6080.0
+
+    def test_a_receipt_alongside_consumption_that_exactly_offsets_it_is_recovered_even_though_stock_is_flat(self):
+        """Real case confirmed this session: stock stayed EXACTLY flat
+        (25000 -> 25000) with received=25000 logged - meaning the entire
+        25000 received was also consumed the same day. Delta alone (0)
+        would say "nothing happened"; that's wrong."""
+        points = _points([(0, 25000, None, None), (1, 25000, 25000, None)])
+        stats = consumption_stats(points)
+        assert stats["receiptIntervals"] == 0
+        assert stats["intervalsUsed"] == 1
+        assert stats["avgDaily"] == 25000.0
+
+    def test_an_ordinary_drop_with_no_received_figure_is_unaffected(self):
+        """No `received` logged at all on a normal consumption day - must
+        behave exactly as it always did (no regression from this fix)."""
+        points = _points([(0, 1000, None, None), (1, 900, None, None)])
+        stats = consumption_stats(points)
+        assert stats["intervalsUsed"] == 1
+        assert stats["avgDaily"] == 100.0
+
+    def test_a_received_figure_that_stays_frozen_across_snapshots_is_not_double_counted(self):
+        """Real bug found while verifying against live HRS data (2026-09-10):
+        `received` can stay frozen at the same nonzero value across several
+        consecutive snapshot rows instead of resetting to 0 once "used" -
+        found a real lot where 7,487 appeared unchanged on three snapshots
+        in a row. A naive `delta + received` on every interval would count
+        that one receipt three times over. It must only be added on the
+        ONE interval where it actually first appears (changed from the
+        previous row's own reading) - every later interval where it's
+        merely still visible, unchanged, must add 0."""
+        points = _points([
+            (0, 3100, 0, None),
+            (1, 2950, 0, None),        # ordinary: -150... wait direction: 3100->2950 is -150 drop = 150 consumed
+            (2, 10187, 7487, None),    # receipt: rise, received=7487 first appears -> counted once
+            (5, 10187, 7487, None),    # flat, received UNCHANGED from previous row -> must NOT be recounted
+            (6, 7000, 7487, None),     # ordinary drop, received STILL unchanged -> must NOT be recounted again
+        ])
+        stats = consumption_stats(points)
+        # interval1 (3100->2950): ordinary drop of 150, received 0->0 (no new event) => 150
+        # interval2 (2950->10187): rise of 7237, received 0->7487 (NEW) => implied = -7237+7487 = 250
+        # interval3 (10187->10187): flat, received 7487->7487 (unchanged, NOT a new event) => 0
+        # interval4 (10187->7000): ordinary drop of 3187, received 7487->7487 (unchanged) => 3187
+        # total consumed = 150 + 250 + 0 + 3187 = 3587, over 1+1+3+1 = 6 days
+        assert stats["intervalsUsed"] == 4
+        assert stats["avgDaily"] == 3587 / 6
+
+    def test_a_perfectly_flat_day_with_no_received_figure_still_dilutes_the_average(self):
+        """A real "nothing happened" day (no drop, no logged receipt) must
+        still count as a zero-consumption interval that dilutes the
+        average - not be skipped, which would inflate avgDaily by
+        pretending fewer days were observed than really were."""
+        points = _points([(0, 1000, None, None), (1, 1000, None, None), (2, 900, None, None)])
+        stats = consumption_stats(points)
+        assert stats["intervalsUsed"] == 2
+        # consumed = 0 + 100 = 100 over 1+1 = 2 days -> 50/day, not 100/day
+        assert stats["avgDaily"] == 50.0
+
+
 class TestGapHandling:
     def test_a_20_day_gap_is_skipped_entirely(self):
         points = _points([(0, 1000, None, None), (20, 500, None, None)])

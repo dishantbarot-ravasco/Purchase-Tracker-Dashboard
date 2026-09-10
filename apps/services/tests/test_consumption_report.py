@@ -318,6 +318,24 @@ class TestSendDailyConsumptionReports:
         assert result["plants_sent"] == 3
         assert all("This is a system generated email. Please do not reply." in m.body for m in mailoutbox)
 
+    def test_email_explains_confidence_labels_are_not_a_stock_level_warning(self, mailoutbox):
+        """Added 2026-09-10, project owner: "(low) sitting right next to a
+        days-left number reads exactly like 'low stock' - which it isn't" -
+        every report must carry a legend explaining Days Left's formula/
+        per-lot scope and that none/low/medium/high describe how much
+        history backs the estimate, not the stock level, in both the HTML
+        and plain-text body (an email client that can't/won't render HTML
+        must not silently lose this explanation)."""
+        make_user(email="admin-legend@ravasco.com", role="admin")
+        send_daily_consumption_reports()
+
+        for m in mailoutbox:
+            assert "NOT a stock-level warning" in m.alternatives[0][0]  # HTML body
+            assert "NOT a stock-level warning" in m.body               # plain-text body
+            for label in ("none", "low", "medium", "high"):
+                assert label in m.body
+            assert "vendor's stock lot" in m.body
+
 
 # ── Monthly report (added 2026-09-08, project owner request) ────────────────
 # A fixed reference "today" so month arithmetic (current vs. past period,
@@ -490,3 +508,18 @@ class TestSendMonthlyConsumptionReports:
         assert "Natural Rubber" in hrs_mail.body
         assert hrs_mail.body.index("Natural Rubber") < hrs_mail.body.index("ISNR-20")
         assert "Issued This Month" in hrs_mail.alternatives[0][0]
+
+    def test_monthly_email_also_explains_confidence_labels(self, mailoutbox):
+        """Same legend as the daily report - see that report's own
+        test_email_explains_confidence_labels_are_not_a_stock_level_warning,
+        both reports share _render_consumption_email() so this is really
+        confirming the shared builder is actually used by both, not a
+        second implementation of the same explanation."""
+        make_user(email="admin-legend-monthly@ravasco.com", role="admin")
+
+        send_monthly_consumption_reports(year=2026, month=8)
+
+        for m in mailoutbox:
+            assert "NOT a stock-level warning" in m.alternatives[0][0]
+            assert "NOT a stock-level warning" in m.body
+            assert "vendor's stock lot" in m.body
