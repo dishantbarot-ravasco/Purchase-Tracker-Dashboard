@@ -346,7 +346,12 @@ function renderPoList(el) {
       // color-per-category scheme and DISCREPANCY_LEGEND for what each one
       // means.
       const rowFlags = po => {
-        const cats = po._categories || [];
+        // Only a 'critical' category gets a row icon (2026-09-10, project
+        // owner: keep the flag symbol only for red/critical flags near
+        // status - an 'info' category still counts toward the Data Quality
+        // Flags KPI/filter, it just doesn't clutter the status cell with a
+        // row of icons for every minor note).
+        const cats = (po._categories || []).filter(c => c.severity === 'critical');
         return cats.map(c =>
           // data-tooltip + CSS (.row-flag-wrap::after, see style.css) instead
           // of a native title attribute - title tooltips have a ~1s hover

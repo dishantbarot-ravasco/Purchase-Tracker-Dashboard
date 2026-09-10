@@ -33,8 +33,12 @@ function shipmentStepperHtml(po) {
 // found/tax-type/value-mismatch categories had no row-level icon at all,
 // only a KPI-card count - fixed 2026-09-08 alongside extending Data Quality
 // Flags to cover those categories here in the first place.
+// Only a 'critical' category gets a row icon (2026-09-10, project owner:
+// keep the flag symbol only for red/critical flags near status - an 'info'
+// category still counts toward the Data Quality Flags KPI/filter, it just
+// doesn't clutter the status cell with a row of icons for every minor note).
 function importRowFlags(po) {
-  return (po._categories || []).map(c =>
+  return (po._categories || []).filter(c => c.severity === 'critical').map(c =>
     ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
   ).join('');
 }

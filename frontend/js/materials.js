@@ -442,8 +442,13 @@ function renderMaterialsView() {
   // `categories` list. Rendered next to the status pill below (see
   // computeMaterialStatus()), same "pill + flags" combo as PO's own Status
   // column.
+  // Only a 'critical' category gets a row icon (2026-09-10, project owner:
+  // keep the flag symbol only for red/critical flags near status - an
+  // 'info' category still counts toward the Data Quality Flags KPI/filter,
+  // it just doesn't clutter the status cell with a row of icons for every
+  // minor note).
   const rowFlags = entry => {
-    const cats = entry ? entry.categories : [];
+    const cats = (entry ? entry.categories : []).filter(c => c.severity === 'critical');
     if (!cats.length) return '';
     return cats.map(c =>
       '<span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
