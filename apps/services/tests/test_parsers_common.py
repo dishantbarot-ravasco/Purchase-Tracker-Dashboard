@@ -16,6 +16,7 @@ from apps.services.parsers.common import (
     normalize_material,
     normalize_uom,
     normalize_vendor,
+    normalize_vendor_for_matching,
     to_code_str,
     to_date,
     to_decimal,
@@ -154,6 +155,63 @@ class TestNormalizeVendor:
         """Blank/None input normalizes to an empty string, not a crash."""
         assert normalize_vendor("") == ""
         assert normalize_vendor(None) == ""
+
+
+# ── normalize_vendor_for_matching(): looser fold for the PO<->MIR/MIR<->Stock ──
+# vendor hard gate ONLY - never a persisted identity key. See its own
+# docstring for why it must stay a separate function from normalize_vendor().
+
+class TestNormalizeVendorForMatching:
+    def test_fold_connector_and_into_ampersand_equivalent(self):
+        """Real HRS case: "Yogleela Sulphur and Agchem Industries Pvt Ltd"
+        (PO) vs "Yogleela Sulphur & Agchem Ind. Pvt. Ltd." (MIR) used to fail
+        containment purely because "and" sat as literal letters on one side
+        and "&" (already silently stripped) on the other - confirmed
+        introduces zero collisions between genuinely different vendors
+        across all three plants' real vendor lists before being applied."""
+        po_side = normalize_vendor_for_matching("Yogleela Sulphur and Agchem Industries Private Limited")
+        mir_side = normalize_vendor_for_matching("Yogleela Sulphur & Agchem Ind. Pvt. Ltd.")
+        assert mir_side in po_side
+
+    def test_and_as_a_standalone_word_is_removed_not_a_substring_inside_another_word(self):
+        """The connector-word strip uses a word boundary - it must not eat
+        the "and" inside an unrelated word like "Anand"."""
+        assert "and" not in normalize_vendor_for_matching("Sood and Sons")
+        assert normalize_vendor_for_matching("Anand Oil") == "anandoil"
+
+    def test_fold_trailing_plural_s_per_word(self):
+        """Real RTP-Achhad case: "Shreeji Minerals & Chemical Co" (PO) vs
+        "Shreeji Mineral & Chemical Co" (MIR) - plural vs singular on one
+        word only. Confirmed to introduce zero collisions between genuinely
+        different vendors across all three plants' real vendor lists."""
+        po_side = normalize_vendor_for_matching("Shreeji Minerals & Chemical Co")
+        mir_side = normalize_vendor_for_matching("Shreeji Mineral & Chemical Co")
+        assert po_side == mir_side
+
+    def test_short_word_keeps_its_trailing_s(self):
+        """The plural strip only applies to words longer than 3 characters -
+        a short word (<=3 chars) like "Gas" keeps its "s" rather than
+        risking a word that short losing its identity entirely."""
+        assert normalize_vendor_for_matching("Gas") == "gas"
+
+    def test_still_strips_legal_suffixes_the_same_way(self):
+        """Same legal-suffix stripping as normalize_vendor() - this function
+        only adds folding on top, it doesn't drop any existing behavior."""
+        assert normalize_vendor_for_matching("Kedar Metals Pvt Ltd") == normalize_vendor_for_matching("KEDAR METALS PVT. LTD.")
+
+    def test_blank_and_none_become_empty_string(self):
+        assert normalize_vendor_for_matching("") == ""
+        assert normalize_vendor_for_matching(None) == ""
+
+    def test_does_not_change_normalize_vendors_own_output(self):
+        """Guard against ever merging these two functions back together:
+        normalize_vendor() must stay exactly as it always was, since
+        stock_identity.py's lot_natural_key() depends on its output being
+        stable across syncs (see normalize_vendor()'s own docstring) - a
+        vendor name with a foldable "and"/plural must NOT change under
+        normalize_vendor(), only under normalize_vendor_for_matching()."""
+        assert normalize_vendor("Shreeji Minerals & Chemical Co") == "shreejimineralschemical"
+        assert normalize_vendor_for_matching("Shreeji Minerals & Chemical Co") == "shreejimineralchemical"
 
 
 # ── normalize_material(): lowercases/collapses punctuation for description matching ──

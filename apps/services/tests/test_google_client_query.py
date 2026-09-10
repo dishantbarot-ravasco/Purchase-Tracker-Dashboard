@@ -24,7 +24,7 @@ MediaIoBaseDownload with no query-string-shaped risk, unlike this function.
 
 import pytest
 
-from apps.services.google_client import _escape, find_file_id_by_title
+from apps.services.google_client import _escape, find_file_id_by_title, list_files_in_folder
 
 
 class _FakeFilesResource:
@@ -119,6 +119,57 @@ class TestFindFileIdByTitleQueryConstruction:
 
         with pytest.raises(FileNotFoundError):
             find_file_id_by_title("Nonexistent File.csv")
+
+
+class TestListFilesInFolder:
+    """Covers list_files_in_folder()'s Python-side name_prefix re-check
+    (added for sync_rodtep.py's whole-folder listing - see that function's
+    own docstring). Real bug, found and fixed 2026-09-10 (reported as "the
+    rodtep script sync is not working" right after a new file was added to
+    the Drive folder): this re-check used a case-sensitive str.startswith(),
+    inconsistent with Drive's own case-insensitive "contains" query - a
+    validly-matching new file named with different casing than the
+    established "RODTEP-JNPT-<N>" convention could be silently dropped right
+    back out here, indistinguishable from "the sync isn't picking up the
+    new file" at all."""
+
+    def test_prefix_match_is_case_insensitive(self, monkeypatch):
+        service = _FakeDriveService(files_response=[
+            {"id": "f1", "name": "Rodtep-JNPT-16.xlsx"},  # differently cased than the usual "RODTEP-..." convention
+            {"id": "f2", "name": "rodtep-jnpt-17.xlsx"},
+            {"id": "f3", "name": "Unrelated File.xlsx"},
+        ])
+        import apps.services.google_client as google_client
+        monkeypatch.setattr(google_client, "get_drive_service", lambda: service)
+
+        files = list_files_in_folder("folder123", name_prefix="RODTEP")
+
+        names = {f["name"] for f in files}
+        assert names == {"Rodtep-JNPT-16.xlsx", "rodtep-jnpt-17.xlsx"}
+
+    def test_still_a_prefix_check_not_a_bare_substring_match(self, monkeypatch):
+        """A file that merely CONTAINS "rodtep" somewhere but doesn't start
+        with it must still be excluded - only the case-sensitivity was the
+        bug, not the prefix-vs-substring distinction itself."""
+        service = _FakeDriveService(files_response=[
+            {"id": "f1", "name": "RODTEP-JNPT-1.xlsx"},
+            {"id": "f2", "name": "Old RODTEP backup.xlsx"},
+        ])
+        import apps.services.google_client as google_client
+        monkeypatch.setattr(google_client, "get_drive_service", lambda: service)
+
+        files = list_files_in_folder("folder123", name_prefix="RODTEP")
+
+        assert [f["name"] for f in files] == ["RODTEP-JNPT-1.xlsx"]
+
+    def test_no_prefix_returns_everything_unfiltered(self, monkeypatch):
+        service = _FakeDriveService(files_response=[{"id": "f1", "name": "Anything.xlsx"}])
+        import apps.services.google_client as google_client
+        monkeypatch.setattr(google_client, "get_drive_service", lambda: service)
+
+        files = list_files_in_folder("folder123")
+
+        assert [f["name"] for f in files] == ["Anything.xlsx"]
 
 
 class TestEscape:

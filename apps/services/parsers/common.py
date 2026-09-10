@@ -151,16 +151,67 @@ def to_date(value) -> datetime.date | None:
 
 # ── Vendor/material name normalization (used by PO<->MIR<->Stock matching) ──
 
+_LEGAL_SUFFIX_RE = re.compile(
+    r"\b(private limited|pvt\.?\s*ltd\.?|pvt\.?|ltd\.?|limited|llp|inc\.?|corp(oration)?\.?|co\.?|company)\b"
+)
+
+
 def normalize_vendor(name: str) -> str:
     """Strips common legal suffixes and punctuation so "Kedar Metals Pvt
-    Ltd" and "KEDAR METALS PVT. LTD." compare equal. Used as the hard gate
-    in PO<->MIR matching - never as a display value."""
+    Ltd" and "KEDAR METALS PVT. LTD." compare equal.
+
+    This is a STABLE, persisted-identity function - stock_identity.py's
+    lot_natural_key() uses its output as (part of) the natural key it
+    upserts HRSRMLot/RTPAchhadRMLot/RTPVapiRMLot rows on across every sync
+    run (see that module's own docstring on the row-number-key incident
+    this replaced). Changing this function's output for any real vendor
+    name would silently make every existing lot with that vendor look like
+    a brand-new lot on the next sync, forking its snapshot history exactly
+    the way that incident did - so this function's algorithm must never
+    change for the sake of a looser fuzzy match. For PO<->MIR/MIR<->Stock
+    vendor-gate MATCHING (never for a persisted key), use
+    normalize_vendor_for_matching() instead - see its own docstring for
+    why matching needs a looser fold than identity can safely tolerate."""
     if not name:
         return ""
-    n = name.lower()
-    n = re.sub(r"\b(private limited|pvt\.?\s*ltd\.?|pvt\.?|ltd\.?|limited|llp|inc\.?|corp(oration)?\.?|co\.?|company)\b", "", n)
+    n = _LEGAL_SUFFIX_RE.sub("", name.lower())
     n = re.sub(r"[^a-z0-9]+", "", n)
     return n.strip()
+
+
+def normalize_vendor_for_matching(name: str) -> str:
+    """Loosened vendor normalization for the PO<->MIR/MIR<->Stock vendor
+    hard gate ONLY (_vendor_matches() in matching_core.py) - never use this
+    for a persisted identity key (see normalize_vendor()'s own docstring on
+    why: its output must stay stable across syncs, which this function's
+    extra folding does not guarantee, deliberately, in exchange for
+    catching more real spelling variants at comparison time).
+
+    Same legal-suffix stripping as normalize_vendor(), plus two further
+    real-world spelling-variant classes, confirmed against every distinct
+    real vendor name across all three plants (2026-09-10) to introduce zero
+    new collisions between genuinely different vendors before being applied
+    here - vendor is the one hard gate the whole matcher depends on, so
+    this was checked against real data, not guessed:
+      - The connector word "and" folds the same way "&" already silently
+        does via the alphanumeric-only strip below - e.g. "Yogleela
+        Sulphur and Agchem Industries" vs "...Sulphur & Agchem Ind." used
+        to fail containment purely because "and" sat as literal letters in
+        the middle of one side and nothing in the other.
+      - A trailing plural "s" on any individual word longer than 3
+        characters - e.g. "Shreeji Minerals & Chemical Co" vs "Shreeji
+        Mineral & Chemical Co". Deliberately applied per-WORD (split on
+        non-alphanumeric runs first, before the final alphanumeric-only
+        join), not to the whole concatenated string, so it can only ever
+        drop one real trailing "s" per word, never eat into an unrelated
+        part of a longer joined name."""
+    if not name:
+        return ""
+    n = _LEGAL_SUFFIX_RE.sub("", name.lower())
+    n = re.sub(r"\band\b", " ", n)
+    words = [w for w in re.split(r"[^a-z0-9]+", n) if w]
+    words = [w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words]
+    return "".join(words)
 
 
 def normalize_material(name: str) -> str:

@@ -110,3 +110,42 @@ class TestSyncRodtep:
 
         run = SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.RODTEP).latest("started_at")
         assert run.status == SyncRun.Status.FAILED
+
+    def test_one_bad_file_does_not_block_the_others(self, monkeypatch):
+        """Regression test for a real bug (found and fixed 2026-09-10,
+        reported as "the rodtep script sync is not working" right after a
+        new file was added to the Drive folder): a single file with a
+        HeaderMismatch used to abort the whole command via an unhandled
+        raise, so every other already-working script file silently stopped
+        updating too. A bad file must now be skipped (PARTIAL status,
+        named in error_detail) while every good file still syncs."""
+        good_bytes = _build_workbook([("SCRIPT1", "SB1", 100)])
+        bad_wb = openpyxl.Workbook()
+        bad_wb.active["A1"] = "not the real header"
+        bad_buf = io.BytesIO()
+        bad_wb.save(bad_buf)
+        bad_bytes = bad_buf.getvalue()
+
+        import apps.services.google_client as google_client
+
+        monkeypatch.setattr(
+            google_client, "list_files_in_folder",
+            lambda parent_id, name_prefix=None: [
+                {"id": "good-id", "name": "RODTEP-JNPT-1.xlsx"},
+                {"id": "bad-id", "name": "RODTEP-JNPT-2.xlsx"},
+            ],
+        )
+        monkeypatch.setattr(
+            google_client, "download_file_bytes",
+            lambda file_id: good_bytes if file_id == "good-id" else bad_bytes,
+        )
+
+        call_command("sync_rodtep")
+
+        assert RodtepScrollEntry.objects.filter(script_no="SCRIPT1").exists(), "the good file must still sync"
+        run = SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.RODTEP).latest("started_at")
+        assert run.status == SyncRun.Status.PARTIAL
+        assert "RODTEP-JNPT-2.xlsx" in run.error_detail
+        assert run.rows_seen == 1
+        assert run.rows_changed == 1
+

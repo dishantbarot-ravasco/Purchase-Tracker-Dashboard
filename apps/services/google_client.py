@@ -120,9 +120,17 @@ def list_files_in_folder(parent_id: str, name_prefix: str | None = None) -> list
     files = resp.get("files", [])
     # "name contains" is a substring match, not a prefix match - Drive API
     # has no prefix operator - so narrow further in Python for a real
-    # prefix check when name_prefix was given.
+    # prefix check when name_prefix was given. Case-insensitive (real bug,
+    # found and fixed 2026-09-10): Drive's own "contains" operator is
+    # case-insensitive, but this Python-side re-check used a plain
+    # str.startswith(), which isn't - a file the Drive query correctly
+    # matched (e.g. a newly added "Rodtep-JNPT-16.xlsx", differently cased
+    # from the established "RODTEP-JNPT-<N>.xlsx" convention) could be
+    # silently dropped right back out here with no error at all, looking
+    # exactly like "the sync isn't picking up the new file" from the
+    # outside. Matching Drive's own case-insensitivity here closes that gap.
     if name_prefix:
-        files = [f for f in files if f["name"].startswith(name_prefix)]
+        files = [f for f in files if f["name"].lower().startswith(name_prefix.lower())]
     return sorted(files, key=lambda f: f["name"])
 
 

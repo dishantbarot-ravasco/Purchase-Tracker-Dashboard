@@ -65,26 +65,53 @@ class Command(BaseCommand):
         rows_seen = 0
         rows_changed = 0
         files_processed = 0
+        files_failed = []  # [(file_label, error_message), ...]
         status = SyncRun.Status.SUCCESS
         error_detail = ""
 
         try:
-            for file_label, file_bytes in self._iter_files(options.get("file")):
-                entries = parse_rodtep_xlsx(file_bytes)
+            files = list(self._iter_files(options.get("file")))
+            for file_label, file_bytes in files:
+                # Real bug, found and fixed 2026-09-10 (project owner
+                # reported "the rodtep script sync is not working" right
+                # after adding a new file to the RoDTEP Drive folder): one
+                # file failing HeaderMismatch (e.g. a header row shifted
+                # further down than _MAX_HEADER_SCAN_ROW tolerates, or a
+                # genuinely different layout) used to raise straight out of
+                # this loop, aborting the ENTIRE sync - every other,
+                # already-working script file silently stopped updating
+                # too, with no indication which file was actually the
+                # problem. Each file is now isolated: a bad file is
+                # skipped (with its own name and error recorded) and every
+                # other file still syncs normally, same "one bad row/file
+                # shouldn't sink the whole run" principle sync_stock.py's
+                # own rows_skipped/PARTIAL handling already follows.
+                try:
+                    entries = parse_rodtep_xlsx(file_bytes)
+                except HeaderMismatch as exc:
+                    files_failed.append((file_label, str(exc)))
+                    self.stderr.write(self.style.ERROR(f"sync_rodtep: {file_label}: header mismatch - {exc}"))
+                    continue
                 rows_seen += len(entries)
                 files_processed += 1
                 for parsed in entries:
                     if self._upsert_entry(parsed, file_label):
                         rows_changed += 1
 
+            if files_failed:
+                failed_names = ", ".join(name for name, _ in files_failed)
+                status = SyncRun.Status.PARTIAL if files_processed else SyncRun.Status.FAILED
+                error_detail = (
+                    f"{len(files_failed)} file(s) skipped (header mismatch): {failed_names}. "
+                    + "; ".join(f"{name}: {msg}" for name, msg in files_failed)
+                )
+
             self.stdout.write(self.style.SUCCESS(
-                f"sync_rodtep: {files_processed} file(s), {rows_seen} rows seen, "
-                f"{rows_changed} created/updated ({time.monotonic() - t0:.1f}s)"
+                f"sync_rodtep: {files_processed}/{len(files)} file(s) synced, {rows_seen} rows seen, "
+                f"{rows_changed} created/updated"
+                + (f", {len(files_failed)} file(s) skipped" if files_failed else "")
+                + f" ({time.monotonic() - t0:.1f}s)"
             ))
-        except HeaderMismatch as exc:
-            status = SyncRun.Status.FAILED
-            error_detail = str(exc)
-            self.stderr.write(self.style.ERROR(f"sync_rodtep: header mismatch - {exc}"))
         except Exception as exc:
             status = SyncRun.Status.FAILED
             error_detail = str(exc)

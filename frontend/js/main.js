@@ -359,6 +359,25 @@ async function triggerRealSyncAndRefresh(btn) {
         if (e.status !== 409) throw e;
       }
     }));
+    // RoDTEP and Advance License are company-wide, not per-plant (one
+    // shared lock each - see sync_trigger.py's _RODTEP_LOCK_KEY/
+    // _ADVANCE_LICENSE_LOCK_KEY), so each is triggered once per click here,
+    // not once per selected plant like the two loops above. Found 2026-09-10
+    // (project owner: "the rodtep script sync is not working... add that
+    // and advance license in refresh data") that "Refresh Data" never
+    // triggered either of these at all - the only way to sync them was the
+    // RoDTEP panel's own dedicated "Sync Now" button, so a plain "Refresh
+    // Data" click could look up to date while these two silently weren't.
+    try {
+      await apiImports('/rodtep/sync-trigger', { method: 'POST' });
+    } catch (e) {
+      if (e.status !== 409) throw e;
+    }
+    try {
+      await apiImports('/advance-license/sync-trigger', { method: 'POST' });
+    } catch (e) {
+      if (e.status !== 409) throw e;
+    }
   } catch (e) {
     console.error('sync-trigger failed:', e);
     btn.disabled = false;
@@ -390,9 +409,15 @@ async function pollSyncUntilDone(btn, targetKeys) {
       // imports/sync-status is a single cross-plant endpoint (unlike the
       // domestic per-plant one above) - see imports_views.py's sync_status()
       // docstring - so it's fetched once and narrowed to targetKeys here.
+      // Also carries the two company-wide flags (rodtepInProgress/
+      // advanceLicenseInProgress, added 2026-09-10 alongside triggering
+      // these from this same button) - not scoped to targetKeys since
+      // they're triggered unconditionally every click, regardless of which
+      // plant(s) are selected.
       const importsStatus = await apiImports('/sync-status');
       stillRunning = results.some(r => r.syncInProgress) ||
-        targetKeys.some(key => importsStatus.sync[key] && importsStatus.sync[key].syncInProgress);
+        targetKeys.some(key => importsStatus.sync[key] && importsStatus.sync[key].syncInProgress) ||
+        importsStatus.rodtepInProgress || importsStatus.advanceLicenseInProgress;
     } catch (e) {
       console.error('Polling sync-status failed:', e);
       continue; // one bad poll shouldn't abandon the wait - try again next tick

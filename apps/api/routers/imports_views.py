@@ -53,7 +53,12 @@ from apps.services.match_dismiss import dismiss_match
 from apps.services.matching import run_full_match as _hrs_run_full_match
 from apps.services.matching_achhad import run_full_match as _achhad_run_full_match
 from apps.services.matching_vapi import run_full_match as _vapi_run_full_match
-from apps.services.sync_trigger import is_imports_sync_in_progress, trigger_plant_imports_sync
+from apps.services.sync_trigger import (
+    is_advance_license_sync_in_progress,
+    is_imports_sync_in_progress,
+    is_rodtep_sync_in_progress,
+    trigger_plant_imports_sync,
+)
 
 # plant URL segment -> that plant's run_full_match() - re-run synchronously
 # by correct_field() below when an import line item edit could change its
@@ -445,7 +450,15 @@ def sync_status(request):
     """GET /api/imports/sync-status - latest IMPORT_PO_CSV SyncRun per plant,
     plus each plant's own in-progress flag (see is_imports_sync_in_progress)
     - same "last synced, not just trust stale data" reasoning as the domestic
-    routers' own sync_status views."""
+    routers' own sync_status views.
+
+    Also exposes the two company-wide (not per-plant) sync flags,
+    rodtepInProgress/advanceLicenseInProgress (added 2026-09-10, alongside
+    wiring "Refresh Data" to actually trigger these two - see
+    triggerRealSyncAndRefresh() in frontend/js/main.js) - is_rodtep_sync_in_
+    progress()/is_advance_license_sync_in_progress() (apps/services/
+    sync_trigger.py) already existed but were never read by anything until
+    now, so the frontend had no way to know when to stop polling for these."""
     latest_by_plant = {}
     for plant_key, (_po_model, _item_model, sr_plant, _label, _match_model) in _PLANTS.items():
         if not user_can_access_plant(request.user, plant_key):
@@ -460,7 +473,11 @@ def sync_status(request):
             "errorDetail": (run.error_detail or None) if run else None,
             "syncInProgress": is_imports_sync_in_progress(plant_key),
         }
-    resp = Response({"sync": latest_by_plant})
+    resp = Response({
+        "sync": latest_by_plant,
+        "rodtepInProgress": is_rodtep_sync_in_progress(),
+        "advanceLicenseInProgress": is_advance_license_sync_in_progress(),
+    })
     # See _domestic_base.py's make_sync_status() for why this is here -
     # same live-state/heuristic-caching reasoning, same fix.
     resp["Cache-Control"] = "no-store"

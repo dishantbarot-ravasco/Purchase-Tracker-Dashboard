@@ -1660,6 +1660,59 @@ clamp and `sync_utils.unchanged()`'s `ROUND_HALF_UP` quantization both applied c
 everywhere they should be, and the internal report-trigger endpoints' shared-secret check already
 uses `hmac.compare_digest()` (constant-time), not a timing-unsafe `==`.
 
+## RoDTEP sync resilience + "Refresh Data" gap (2026-09-10)
+
+Project owner reported "the rodtep script sync is not working" right after adding a new file to the
+RoDTEP Drive folder, and asked for RoDTEP + Advance License to be added to "Refresh Data" and
+qcluster. Investigation found three separate real issues, not one:
+
+1. **One malformed file used to abort the entire RoDTEP sync, not just the new file.**
+   `sync_rodtep.py`'s file loop had a single try/except around the whole thing - one file raising
+   `parsers/rodtep.py`'s `HeaderMismatch` (e.g. a header row shifted further down than
+   `_MAX_HEADER_SCAN_ROW` tolerates, or a genuinely different layout) aborted the whole command, so
+   every OTHER already-working script file silently stopped updating too, with the `SyncRun` row
+   just saying "failed" with no indication which file was the actual problem. Fixed by isolating
+   each file: a bad file is now skipped (recorded by name in `error_detail`) while every good file
+   still syncs normally, and the overall `SyncRun.Status` is `PARTIAL` (not `FAILED`) as long as at
+   least one file succeeded - same convention `sync_stock.py`'s own `rows_skipped`/`PARTIAL` handling
+   already uses. Regression test: `test_sync_rodtep_pipeline.py::test_one_bad_file_does_not_block_the_others`.
+2. **`list_files_in_folder()`'s own filename-prefix check was case-sensitive, Drive's own query
+   isn't.** `google_client.py` narrows Drive's `name contains 'RODTEP'` (a case-insensitive,
+   substring match - Drive has no prefix operator) with a Python-side `str.startswith()` re-check
+   for a real prefix match - but that re-check was plain `startswith()`, not case-insensitive like
+   the Drive-side query it's meant to tighten. A new file named with different casing than the
+   established `RODTEP-JNPT-<N>.xlsx` convention (e.g. `Rodtep-JNPT-16.xlsx`) would pass Drive's own
+   query, then get silently dropped right back out by this re-check - indistinguishable from "the
+   sync isn't picking up the new file" at all, and the single most likely explanation for what was
+   actually reported. Fixed by lower-casing both sides of the comparison. Regression tests:
+   `test_google_client_query.py::TestListFilesInFolder`.
+3. **"Refresh Data" never triggered RoDTEP or Advance License at all**, even though the backend
+   already fully supported it (`trigger_rodtep_sync()`/`trigger_advance_license_sync()` in
+   `sync_trigger.py`, and `POST /api/imports/rodtep/sync-trigger`/`.../advance-license/sync-trigger`
+   - the RoDTEP panel's own "Sync Now" button already used these). `main.js`'s
+   `triggerRealSyncAndRefresh()` only ever looped over each selected plant's domestic + import
+   pipelines - these two company-wide syncs had no frontend control anywhere except that one
+   dedicated panel button, so a plain "Refresh Data" click could look fully up to date while these
+   two silently weren't. Fixed by triggering both once per click (not once per selected plant -
+   they're company-wide, one shared lock each, same as `run_daily_sync_all_plants()`'s own
+   treatment of them), and extending `pollSyncUntilDone()`'s "still running?" check to also read the
+   two new `rodtepInProgress`/`advanceLicenseInProgress` flags now exposed on
+   `GET /api/imports/sync-status` (backed by `is_rodtep_sync_in_progress()`/
+   `is_advance_license_sync_in_progress()` in `sync_trigger.py` - both existed already but nothing
+   had ever read them before this). Verified live in a browser (stubbed `fetch`, real
+   `triggerRealSyncAndRefresh()`/`pollSyncUntilDone()` loaded from the actual file) that each fires
+   exactly once regardless of how many plants are selected, and that polling genuinely waits for
+   both flags to clear before finishing, not just reads them cosmetically. Regression test:
+   `test_imports_sync_status_company_wide_flags.py`.
+
+**The qcluster scheduled job needed no fix** - `run_daily_sync_all_plants()` (the function
+`ensure_schedules.py`'s `Schedule` row actually calls, 9 AM-8 PM IST hourly) already ran both RoDTEP
+and Advance License, added 2026-09-09 alongside the pipelines themselves; only the frontend button
+and the RoDTEP sync's own single-bad-file fragility were real gaps. If RoDTEP still doesn't pick up
+a specific new file after this fix, check its exact header row/column layout against
+`parsers/rodtep.py`'s `EXPECTED_HEADERS` next - `error_detail` on the `SyncRun` row now names the
+file and the mismatch directly instead of failing silently for everything.
+
 ## Known gaps (confirm still true before treating as blocking)
 
 - ~~**`style-src 'unsafe-inline'` in `config/security_headers.py`'s CSP — still not dropped**~~ —

@@ -91,7 +91,7 @@ from typing import Callable, NamedTuple, Optional
 from django.db import transaction
 from django.utils import timezone
 
-from apps.services.parsers.common import normalize_material, normalize_uom, normalize_vendor, tokenize
+from apps.services.parsers.common import normalize_material, normalize_uom, normalize_vendor_for_matching, tokenize
 
 TIER_PO_NUMBER = "po_number"
 # TIER_MATERIAL replaces the old TIER_WEIGHTED label (2026-09-07 redesign -
@@ -289,9 +289,9 @@ def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
 # ── Shared scoring building blocks ──────────────────────────────────────────
 
 def _candidate_mir_entries(config: _MatchConfig, vendor_name: str) -> list:
-    vendor = normalize_vendor(vendor_name)
+    vendor = normalize_vendor_for_matching(vendor_name)
     candidates = list(config.mir_model.objects.filter(is_active=True, party_name__isnull=False).exclude(party_name=""))
-    return [c for c in candidates if _vendor_matches(normalize_vendor(c.party_name), vendor)]
+    return [c for c in candidates if _vendor_matches(normalize_vendor_for_matching(c.party_name), vendor)]
 
 
 def _material_matches(config: _MatchConfig, description: str, mir_description: str) -> bool:
@@ -1026,7 +1026,7 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry):
     Basic Rate) compared against MIR's own net-value (config.mir_value) -
     the one figure that's actually comparable to a single MIR line."""
     mir_material = normalize_material(mir_entry.material_description)
-    mir_vendor = normalize_vendor(mir_entry.party_name) if config.stock_vendor_field else None
+    mir_vendor = normalize_vendor_for_matching(mir_entry.party_name) if config.stock_vendor_field else None
     if not mir_material or (config.stock_vendor_field and not mir_vendor):
         return []
 
@@ -1036,7 +1036,7 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry):
 
     candidates = []  # (lot, material_matched, date_matched)
     for lot in lots:
-        if config.stock_vendor_field and not _vendor_matches(normalize_vendor(getattr(lot, config.stock_vendor_field)), mir_vendor):
+        if config.stock_vendor_field and not _vendor_matches(normalize_vendor_for_matching(getattr(lot, config.stock_vendor_field)), mir_vendor):
             continue
         material_matched = normalize_material(lot.description) == mir_material
         if not material_matched:
