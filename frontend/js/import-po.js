@@ -81,12 +81,16 @@ function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
   // on these (unlike the 3 above) - they only ever appear as `cat:<label>`
   // dropdown options, not a dedicated fixed shortcut.
   const items = po.items || [];
+  // A dismissed match is excluded from every match-derived check below
+  // (2026-09-10 fix) - same reasoning as flags.js's computePoFlags()'s own
+  // comment.
+  const live = i => i.mirMatch && !i.mirMatch.dismissedByOverride;
   if (items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
-  if (items.some(i => i.mirMatch && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.finalValueMismatched)) cats.push({ label: 'Final Amount Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.uomMismatch)) cats.push({ label: 'UOM Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.finalValueMismatched)) cats.push({ label: 'Final Amount Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.uomMismatch)) cats.push({ label: 'UOM Mismatch in MIR', severity: 'info' });
   const seenCodes = new Set();
   (po.dataQualityFlags || []).forEach(f => {
     if (seenCodes.has(f.code)) return;
@@ -144,8 +148,10 @@ function renderImportPoList(el) {
   // PO-level MIR aggregate for imports (only per-item mirMatch), so this is
   // done client-side here instead.
   const poInwarded = p => (p.items || []).some(i => i.mirMatch);
-  const poQtyDiscMir = p => (p.items || []).some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0);
-  const poRateDiscMir = p => (p.items || []).some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0);
+  // Excludes a dismissed match (2026-09-10 fix) - same reasoning as
+  // flags.js's computePoFlags()/importCriticalFlagsFor() own comment.
+  const poQtyDiscMir = p => (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.qtyDiffPct > 0);
+  const poRateDiscMir = p => (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.rateDiffPct > 0);
   filtered.forEach(po => {
     po._categories = importCategoriesFor(po, poQtyDiscMir, poRateDiscMir);
     // Same _qtyFlag/_rateFlag/_maxDiffPct shape as Domestic's computePoFlags()

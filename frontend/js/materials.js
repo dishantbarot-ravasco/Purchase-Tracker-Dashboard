@@ -228,11 +228,19 @@ function computeMaterialPoLinkage(materials, plantKeys) {
     // finer-grained source exists) - same as computePoFlags() itself.
     const catMap = new Map();
     links.forEach(l => {
-      if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) catMap.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
+      // A dismissed match (l.item.dismissedByOverride) is excluded from
+      // every match-derived check below (2026-09-10 fix) - same reasoning
+      // as flags.js's computePoFlags()'s own comment: the Plant Data
+      // Correction email already excludes a dismissed match, and its badge
+      // already renders struck-through/muted, so this KPI must agree.
+      // `!l.item.matched` is unaffected - there's nothing to dismiss when
+      // there's no match at all.
+      const dismissed = l.item.dismissedByOverride;
+      if (!dismissed && l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) catMap.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
       // Rate only, not value - see flags.js's computePoFlags() for why
       // (value = qty x rate, so a qty mismatch alone would otherwise
       // double-count as a second, unrelated-looking rate/value problem).
-      if (l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) catMap.set('Rate Mismatch in MIR', { label: 'Rate Mismatch in MIR', severity: 'critical' });
+      if (!dismissed && l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) catMap.set('Rate Mismatch in MIR', { label: 'Rate Mismatch in MIR', severity: 'critical' });
       // 2026-09-08 (Data Quality Flags clarity pass, extended to Raw
       // Material Analysis) - same previously-computed-but-discarded
       // match-quality signals Domestic's/Import's own category lists now
@@ -241,11 +249,11 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       // above - never misattributed from a different line item on the same
       // multi-item PO.
       if (!l.item.matched) catMap.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
-      if (l.item.taxTypeMismatch) catMap.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
-      if (l.item.netValueMismatched) catMap.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
-      if (l.item.taxableValueMismatched) catMap.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });
-      if (l.item.finalValueMismatched) catMap.set('Final Amount Mismatch in MIR', { label: 'Final Amount Mismatch in MIR', severity: 'info' });
-      if (l.item.uomMismatch) catMap.set('UOM Mismatch in MIR', { label: 'UOM Mismatch in MIR', severity: 'info' });
+      if (!dismissed && l.item.taxTypeMismatch) catMap.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
+      if (!dismissed && l.item.netValueMismatched) catMap.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
+      if (!dismissed && l.item.taxableValueMismatched) catMap.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+      if (!dismissed && l.item.finalValueMismatched) catMap.set('Final Amount Mismatch in MIR', { label: 'Final Amount Mismatch in MIR', severity: 'info' });
+      if (!dismissed && l.item.uomMismatch) catMap.set('UOM Mismatch in MIR', { label: 'UOM Mismatch in MIR', severity: 'info' });
       if (l.po.remarks) { const c = categorizeFlag(l.po.remarks); catMap.set(c.label, c); }
     });
     const categories = Array.from(catMap.values());

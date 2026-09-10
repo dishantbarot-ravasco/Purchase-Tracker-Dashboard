@@ -284,20 +284,25 @@ function poFlagHtml(c, po, plantKey, isImport) {
 function importCriticalFlagsFor(po) {
   const cats = [];
   const items = po.items || [];
+  // A dismissed match (i.mirMatch.dismissedByOverride) is excluded from
+  // every match-derived check below - 2026-09-10 fix, same reasoning as
+  // computePoFlags()'s own comment (dashboard/email must agree on the same
+  // underlying dismissed-match handling).
+  const live = i => i.mirMatch && !i.mirMatch.dismissedByOverride;
   if (po.qtyDiscrepancy) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical' });
-  if (items.some(i => i.mirMatch && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
-  if (items.some(i => i.mirMatch && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
+  if (items.some(i => live(i) && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
+  if (items.some(i => live(i) && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
   // 2026-09-08 (extended to Imports, same day as Domestic's own version) -
   // see computePoFlags()'s own comment for what these 6 fields are and why
   // they were previously discarded. `!i.mirMatch` (no mir_match payload at
   // all - imports_views.py's _mir_match_dict() returns null below
   // MATCH_THRESHOLD) is the import equivalent of Domestic's `!it.matched`.
   if (items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
-  if (items.some(i => i.mirMatch && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.finalValueMismatched)) cats.push({ label: 'Final Amount Mismatch in MIR', severity: 'info' });
-  if (items.some(i => i.mirMatch && i.mirMatch.uomMismatch)) cats.push({ label: 'UOM Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.finalValueMismatched)) cats.push({ label: 'Final Amount Mismatch in MIR', severity: 'info' });
+  if (items.some(i => live(i) && i.mirMatch.uomMismatch)) cats.push({ label: 'UOM Mismatch in MIR', severity: 'info' });
   return cats;
 }
 
@@ -484,7 +489,18 @@ function computePoDeliveryDate(po) {
 // as of 2026-09-04, see FLAG_PCT's own comment for why.
 function computePoFlags(po) {
   const items = po.items || [];
-  po._qtyFlag = items.some(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT);
+  // Every check below that reads a match-row field (qty/rate/tax/value/uom)
+  // excludes an item whose match was dismissed by an editor
+  // (it.dismissedByOverride) - 2026-09-10 fix, project owner report: the
+  // Plant Data Correction email already excludes a dismissed match
+  // (plant_mismatch_report.py's own dismissed_by_override=False filter),
+  // and a dismissed match's own badge already renders struck-through/muted
+  // (matchStatusHtml() below) to say "reviewed, not a real problem" - but
+  // these KPI/category counts kept counting it anyway, so the dashboard and
+  // the email could disagree on the same underlying data for no reason
+  // other than this inconsistency. `!it.matched` (no match row exists at
+  // all) is unaffected - there's nothing to dismiss when there's no match.
+  po._qtyFlag = items.some(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT && !it.dismissedByOverride);
   // Rate mismatch only - NOT value. Value = qty x rate, so a qty mismatch
   // alone already drags value along with it; counting that as a second,
   // independent "rate/value" problem double-counted the same underlying
@@ -492,7 +508,7 @@ function computePoFlags(po) {
   // 2026-09-08: of 119 POs this used to flag, 114 were already flagged by
   // qty alone - only 5 had a genuine standalone rate issue). Project owner
   // decision, 2026-09-08: drop value from this determination entirely.
-  po._rateFlag = items.some(it => it.rateDiffPct != null && it.rateDiffPct > FLAG_PCT);
+  po._rateFlag = items.some(it => it.rateDiffPct != null && it.rateDiffPct > FLAG_PCT && !it.dismissedByOverride);
   // Largest single diff percentage across every line item (qty/rate/value
   // alike) - drives rowTintClass()'s severity-scaled row background in the
   // "View all" table/top-5 preview, so a reviewer's eye is pulled toward the
@@ -500,7 +516,7 @@ function computePoFlags(po) {
   // meaningful when _qtyFlag/_rateFlag is actually true - a PO with no flag
   // may still have a small nonzero diff sitting under FLAG_PCT's zero-
   // tolerance threshold that rounds to 0.00% and shouldn't drive any tint.
-  const allDiffs = items.flatMap(it => [it.qtyDiffPct, it.rateDiffPct, it.valueDiffPct]).filter(v => v != null);
+  const allDiffs = items.filter(it => !it.dismissedByOverride).flatMap(it => [it.qtyDiffPct, it.rateDiffPct, it.valueDiffPct]).filter(v => v != null);
   po._maxDiffPct = allDiffs.length ? Math.max(...allDiffs) : 0;
   const cats = new Map();
   if (po._qtyFlag) cats.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
@@ -514,11 +530,11 @@ function computePoFlags(po) {
   // line item at all) rather than any match-row field, since there's no
   // match row to read from in that case.
   if (items.some(it => !it.matched)) cats.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
-  if (items.some(it => it.taxTypeMismatch)) cats.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
-  if (items.some(it => it.netValueMismatched)) cats.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
-  if (items.some(it => it.taxableValueMismatched)) cats.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });
-  if (items.some(it => it.finalValueMismatched)) cats.set('Final Amount Mismatch in MIR', { label: 'Final Amount Mismatch in MIR', severity: 'info' });
-  if (items.some(it => it.uomMismatch)) cats.set('UOM Mismatch in MIR', { label: 'UOM Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.taxTypeMismatch && !it.dismissedByOverride)) cats.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.netValueMismatched && !it.dismissedByOverride)) cats.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.taxableValueMismatched && !it.dismissedByOverride)) cats.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.finalValueMismatched && !it.dismissedByOverride)) cats.set('Final Amount Mismatch in MIR', { label: 'Final Amount Mismatch in MIR', severity: 'info' });
+  if (items.some(it => it.uomMismatch && !it.dismissedByOverride)) cats.set('UOM Mismatch in MIR', { label: 'UOM Mismatch in MIR', severity: 'info' });
   if (po.remarks) { const c = categorizeFlag(po.remarks); cats.set(c.label, c); }
   po._categories = Array.from(cats.values());
   po._hasInfoFlag = po._categories.some(c => c.severity === 'info');
