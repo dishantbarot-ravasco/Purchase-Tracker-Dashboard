@@ -31,6 +31,15 @@ async function onDomesticFieldSaved(plantKey, poNumber) {
 }
 
 async function openPoModal(compositeKey) {
+  // Stale-response guard - same fix/reasoning as openImportPoModal()'s and
+  // openMaterialModal()'s own modalRequestId checks (charts.js): without
+  // this, clicking one PO row then a different one before the first row's
+  // own await below resolves could let the first (now-stale) response land
+  // after the second and silently overwrite the modal with the wrong PO's
+  // data. This function was missed when that fix was applied to the other
+  // two modal-openers on 2026-09-04 - found during a later full-codebase
+  // audit and fixed here to match.
+  const myModalRequestId = ++modalRequestId;
   const sep = compositeKey.indexOf('::');
   const plantKey = compositeKey.slice(0, sep);
   const poNumber = compositeKey.slice(sep + 2);
@@ -56,6 +65,7 @@ async function openPoModal(compositeKey) {
   } catch (e) {
     console.error('openPoModal: ensureMaterialsLoaded failed:', e);
   }
+  if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
 
   const itemsHtml = (po.items || []).length
     ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th><th>MIR Matched</th><th>Material Analysis</th></tr></thead><tbody>' +

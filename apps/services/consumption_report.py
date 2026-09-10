@@ -52,6 +52,7 @@ from django.utils import timezone
 from apps.core.models import (
     HRSRMLot,
     HRSRMSnapshot,
+    ReportSendLog,
     RTPAchhadRMDailyMovement,
     RTPAchhadRMLot,
     RTPAchhadRMSnapshot,
@@ -515,7 +516,23 @@ def send_daily_consumption_reports() -> dict:
     unrelated request/task that must return immediately).
 
     Best-effort per plant: one plant's report failing to build/send must
-    not block the other two."""
+    not block the other two.
+
+    Dedup guard (added 2026-09-10, full-codebase audit): before this,
+    nothing stopped the external scheduler double-firing
+    trigger_daily_report (a network retry, or a misconfigured overlapping
+    schedule) from sending every admin a duplicate email for the same day.
+    Each plant now claims a ReportSendLog row for
+    (DAILY, plant_key, today's ISO date) BEFORE building/sending that
+    plant's report - `get_or_create()`'s own unique-constraint-backed
+    behavior makes the claim itself safe against two near-simultaneous
+    calls, not just a plain "check then send". A plant whose row already
+    existed is skipped (not an error, not counted in `plants_sent`) rather
+    than re-sent. If building/sending then genuinely fails, the just-claimed
+    row is deleted again before moving on - a real failure must still be
+    retryable (by the next scheduled trigger, or a manual one) rather than
+    permanently burning that day's slot the way an unconditional claim
+    would."""
     admin_emails = _admin_emails()
     today = timezone.localdate()
 
@@ -525,6 +542,15 @@ def send_daily_consumption_reports() -> dict:
 
     sent = 0
     for plant_key, cfg in _PLANTS.items():
+        log_row, claimed = ReportSendLog.objects.get_or_create(
+            report_type=ReportSendLog.ReportType.DAILY, plant=plant_key, period_key=today.isoformat(),
+        )
+        if not claimed:
+            log.info(
+                "send_daily_consumption_reports: already sent %s report for %s today - skipping duplicate",
+                plant_key, today.isoformat(),
+            )
+            continue
         try:
             report = build_plant_report(plant_key, today=today)
             html_body, text_body = _render_report_email(report)
@@ -539,6 +565,7 @@ def send_daily_consumption_reports() -> dict:
                 plant_key, len(admin_emails),
             )
         except Exception:
+            log_row.delete()
             log.exception(
                 "send_daily_consumption_reports: failed to build/send report for plant=%s", plant_key,
             )
@@ -554,7 +581,11 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
     once, on the 1st of each month, by apps/api/routers/reports_views.py's
     trigger_monthly_report - same external-cron/shared-secret pattern as the
     daily report, a separate endpoint rather than a mode flag on the same
-    one, since the two run on genuinely different schedules."""
+    one, since the two run on genuinely different schedules.
+
+    Dedup guard: same reasoning/mechanism as send_daily_consumption_reports()'s
+    own - see that function's docstring - keyed on (MONTHLY, plant_key,
+    "YYYY-MM") instead of a date."""
     admin_emails = _admin_emails()
     today = timezone.localdate()
     if year is None or month is None:
@@ -569,6 +600,15 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
 
     sent = 0
     for plant_key, cfg in _PLANTS.items():
+        log_row, claimed = ReportSendLog.objects.get_or_create(
+            report_type=ReportSendLog.ReportType.MONTHLY, plant=plant_key, period_key=month_str,
+        )
+        if not claimed:
+            log.info(
+                "send_monthly_consumption_reports: already sent %s report for %s - skipping duplicate",
+                plant_key, month_str,
+            )
+            continue
         try:
             report = build_plant_monthly_report(plant_key, year=year, month=month)
             html_body, text_body = _render_monthly_report_email(report)
@@ -583,6 +623,7 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
                 plant_key, month_str, len(admin_emails),
             )
         except Exception:
+            log_row.delete()
             log.exception(
                 "send_monthly_consumption_reports: failed to build/send report for plant=%s month=%s", plant_key, month_str,
             )

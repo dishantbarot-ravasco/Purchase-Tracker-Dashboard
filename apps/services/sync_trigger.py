@@ -48,12 +48,19 @@ a race window two near-simultaneous trigger requests could both slip
 through. This lock is what actually prevents a duplicate sync from being
 queued twice, not django-q2's own dedup (django-q2 has none).
 
-Known gap, accepted for this pass - flag if it needs to change:
-- match_<plant> commands write no SyncRun row of their own and have no
-  internal error handling (unlike the sync_* commands, which always record
-  a SyncRun even on failure). A match failure here is caught and logged via
-  Python logging (logs/app.log), but there is nothing in `SyncRun` itself
-  to show a match step failed - only that the syncs before it succeeded.
+Superseded (corrected during a full-codebase audit, 2026-09-10): this used
+to say match_<plant> commands write no SyncRun row of their own and have no
+internal error handling, so a match failure was invisible in `SyncRun`
+itself. That's no longer true and was already stale by the time it was
+found - match_hrs.py/match_achhad.py/match_vapi.py each document their own
+"found and fixed 2026-09-04" for exactly this: every one of them now wraps
+run_full_match() in its own try/except and always writes a
+SyncRun.Source.MATCH row (SUCCESS/FAILED, with error_detail on failure),
+exiting non-zero on failure - the same pattern every sync_* command already
+used. This file's own _run_pipeline()'s try/except around each
+call_command(cmd_name) still logs and alerts on a match failure regardless
+of this correction; nothing about that behavior changed, only this stale
+paragraph did.
 """
 from __future__ import annotations
 

@@ -48,6 +48,7 @@ from datetime import timedelta
 
 import bcrypt
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidToken
@@ -98,19 +99,30 @@ def _dummy_verify() -> None:
 def _register_failed_attempt(user: PTUser) -> None:
     """Increment PTUser.failed_login_attempts; lock the account for
     _LOCKOUT_DURATION and reset the counter once it reaches
-    _MAX_FAILED_ATTEMPTS. A plain .update() (not user.save()) so this never
-    clobbers a concurrent request's own field changes to the same row - the
-    in-memory `user` object passed in is only read here, never written back
-    to the caller."""
+    _MAX_FAILED_ATTEMPTS. select_for_update() + one wrapping transaction
+    (not a plain `.update()` off the in-memory `user.failed_login_attempts`)
+    - fixes a real non-atomic read-modify-write race found during a
+    full-codebase audit (2026-09-10): the old code computed
+    `user.failed_login_attempts + 1` from the caller's in-memory object, so
+    concurrent wrong-password attempts against the same account (e.g. a
+    scripted parallel brute-force rather than serial guesses) could each
+    read the same stale count and each write back the same incremented
+    value, undercounting attempts and delaying or potentially avoiding the
+    5-attempt lockout. Locking the row for the duration of the whole
+    check-and-increment closes that - the in-memory `user` object passed in
+    is still only ever read for its pk, never trusted for its counter."""
     from apps.services.security_alerts import notify_admins_account_locked, record_failed_login_and_maybe_alert
 
-    attempts = user.failed_login_attempts + 1
-    updates = {"failed_login_attempts": attempts}
-    just_locked = attempts >= _MAX_FAILED_ATTEMPTS
-    if just_locked:
-        updates["locked_until"] = timezone.now() + _LOCKOUT_DURATION
-        updates["failed_login_attempts"] = 0
-    PTUser.objects.filter(pk=user.pk).update(**updates)
+    with transaction.atomic():
+        locked_user = PTUser.objects.select_for_update().get(pk=user.pk)
+        attempts = locked_user.failed_login_attempts + 1
+        just_locked = attempts >= _MAX_FAILED_ATTEMPTS
+        if just_locked:
+            locked_user.locked_until = timezone.now() + _LOCKOUT_DURATION
+            locked_user.failed_login_attempts = 0
+        else:
+            locked_user.failed_login_attempts = attempts
+        locked_user.save(update_fields=["failed_login_attempts", "locked_until"])
 
     # See apps/services/security_alerts.py's module docstring - both are
     # best-effort/never-propagating, deliberately called after the DB write
@@ -239,10 +251,28 @@ class PTCookieJWTAuthentication(PTJWTAuthentication):
             try:
                 validated = self.get_validated_token(cookie_val.encode("utf-8"))
                 return self.get_user(validated), validated
-            except Exception:
+            except (InvalidToken, AuthenticationFailed):
                 # Invalid/expired cookie - fall through to Bearer header,
-                # don't raise (a bad cookie shouldn't block Bearer-based calls).
+                # don't raise (a bad cookie shouldn't block Bearer-based
+                # calls). Narrowed from a bare `except Exception` during a
+                # full-codebase audit (2026-09-10): catching every exception
+                # here meant a genuine bug or transient failure inside
+                # get_user() (e.g. a DB error) was silently treated as "bad
+                # cookie" and logged only at DEBUG (typically off in
+                # production - see config/settings.py's LOGGING), then fell
+                # through to a Bearer-header attempt that fails too (browsers
+                # never send one), producing an unexplained 401 with no
+                # trace of the real error anywhere in logs/app.log.
                 logger.debug("Cookie JWT invalid or expired - trying Bearer header")
+            except Exception:
+                # A genuinely unexpected failure (not a normal invalid/
+                # expired token) - log it loudly so it's actually visible in
+                # logs/app.log, then still fall through to Bearer rather
+                # than raising, same reasoning as above: this must never be
+                # the thing that turns an ordinary bad/missing cookie into a
+                # hard error for browser clients that never send a Bearer
+                # header anyway.
+                logger.warning("Cookie JWT authentication failed unexpectedly", exc_info=True)
 
         return super().authenticate(request)
 

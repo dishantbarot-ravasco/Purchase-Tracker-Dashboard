@@ -100,6 +100,14 @@ function renderRodtepLedgerBody(body, data) {
 }
 
 async function openRodtepScriptDetail(scriptNo) {
+  // Stale-response guard - same fix/reasoning as openImportPoModal()'s/
+  // openMaterialModal()'s modalRequestId checks (charts.js): clicking one
+  // script row then a different one before the first row's own await below
+  // resolves could otherwise let the first (now-stale) response land after
+  // the second and silently overwrite the modal with the wrong script's
+  // data. Found missing here during a full-codebase audit and fixed to
+  // match the existing pattern.
+  const myModalRequestId = ++modalRequestId;
   const body = document.getElementById('modalBody');
   body.innerHTML = '<div class="modal-head"><div><h2>Script ' + escapeHtml(scriptNo) + '</h2>' +
     '<div class="modal-meta">Loading...</div></div><span class="close-btn">&times;</span></div>';
@@ -108,10 +116,12 @@ async function openRodtepScriptDetail(scriptNo) {
   try {
     detail = await apiImports('/rodtep/' + encodeURIComponent(scriptNo));
   } catch (e) {
+    if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
     body.innerHTML = '<div class="modal-head"><div><h2>Script ' + escapeHtml(scriptNo) + '</h2></div><span class="close-btn">&times;</span></div>' +
       '<div class="field-block full-width">' + escapeHtml(e.message || 'Failed to load.') + '</div>';
     return;
   }
+  if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
 
   const canEdit = CURRENT_USER && (CURRENT_USER.role === 'admin' || CURRENT_USER.role === 'editor');
   const entriesHtml = detail.entries.length ? detail.entries.map(e =>

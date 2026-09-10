@@ -58,6 +58,7 @@ import logging
 
 import bcrypt
 from django.conf import settings
+from django.db import transaction
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -216,6 +217,44 @@ def create_user(request):
 _DELETE_USER_ALLOWED_EMAIL = "dishant.barot@ravasco.com"
 
 
+def _assert_not_last_active_admin(exclude_pk: int) -> None:
+    """Raises ValidationError (400) if removing/deactivating/deleting the
+    user identified by `exclude_pk` would leave zero active admin accounts.
+
+    Found and fixed during a full-codebase audit (2026-09-10): the original
+    version of this check queried
+    `PTUser.objects.filter(role=admin, is_active=True).exclude(pk=exclude_pk).exists()`
+    with no locking at all - a plain read, then a separate `.save()`/
+    `.delete()` elsewhere. With exactly two active admins A and B, two
+    concurrent requests (e.g. an admin with two open tabs, or two admins
+    acting on each other at the same moment) - one deactivating/deleting A
+    while excluding A from its own count (sees B, passes), the other doing
+    the same for B while excluding B (sees A, passes) - could both succeed,
+    leaving zero active admins with no way back in short of a direct DB
+    edit. The two transactions' own "exclude self" queries never overlap
+    (excluding different rows), so a naive `select_for_update()` scoped
+    the same way wouldn't have fixed it either - the exact rows each
+    transaction excludes must never be the point of the lock.
+
+    Fix: lock (`select_for_update()`) EVERY currently-active admin row,
+    not just "every active admin other than this one" - forcing any two
+    concurrent callers of this function to contend for the same lock,
+    however different their own excluded target is. The second caller then
+    only proceeds once the first transaction has committed, and re-reads
+    the now-current state before deciding. Must be called from inside an
+    already-open `transaction.atomic()` block (see this function's two call
+    sites in update_user() below) - `select_for_update()` outside a
+    transaction raises a TransactionManagementError."""
+    locked_admin_ids = list(
+        PTUser.objects.select_for_update()
+        .filter(role=PTUser.Role.ADMIN, is_active=True)
+        .values_list("pk", flat=True)
+    )
+    other_active_admins_remain = any(pk != exclude_pk for pk in locked_admin_ids)
+    if not other_active_admins_remain:
+        raise ValidationError({"detail": "Cannot remove, deactivate, or delete the last active admin account."})
+
+
 @api_view(["PATCH", "DELETE"])
 @permission_classes([IsAdmin])
 @throttle_classes([AdminWriteThrottle])
@@ -240,14 +279,14 @@ def update_user(request, user_id):
     if request.method == "DELETE":
         if request.user.email.lower() != _DELETE_USER_ALLOWED_EMAIL:
             raise PermissionDenied("Only dishant.barot@ravasco.com can delete a user account.")
-        if user.role == PTUser.Role.ADMIN and user.is_active:
-            other_active_admins = (
-                PTUser.objects.filter(role=PTUser.Role.ADMIN, is_active=True).exclude(pk=user.pk).exists()
-            )
-            if not other_active_admins:
-                raise ValidationError({"detail": "Cannot delete the last active admin account."})
         email = user.email
-        user.delete()
+        # transaction.atomic() + _assert_not_last_active_admin()'s own
+        # select_for_update() - see that function's docstring for the real
+        # concurrent-request race this closes.
+        with transaction.atomic():
+            if user.role == PTUser.Role.ADMIN and user.is_active:
+                _assert_not_last_active_admin(user.pk)
+            user.delete()
         logger.info("users_views: admin %s deleted PTUser %s", request.user.email, email)
         log_pt_action(
             request, PTAuditLog.ACTION_USER_DELETED, actor=request.user,
@@ -280,12 +319,6 @@ def update_user(request, user_id):
 
     was_active_admin = user.role == PTUser.Role.ADMIN and user.is_active
     stays_active_admin = new_role == PTUser.Role.ADMIN and new_is_active
-    if was_active_admin and not stays_active_admin:
-        other_active_admins = (
-            PTUser.objects.filter(role=PTUser.Role.ADMIN, is_active=True).exclude(pk=user.pk).exists()
-        )
-        if not other_active_admins:
-            raise ValidationError({"detail": "Cannot remove or deactivate the last active admin account."})
 
     user.role = new_role
     user.is_active = new_is_active
@@ -302,7 +335,16 @@ def update_user(request, user_id):
         user.plants = []
     elif "plants" in data and data["plants"] is not None:
         user.plants = _clean_plants(data["plants"])
-    user.save()
+
+    # transaction.atomic() + _assert_not_last_active_admin()'s own
+    # select_for_update() - see that function's docstring for the real
+    # concurrent-request race this closes (found during a full-codebase
+    # audit, 2026-09-10). The check and the save must be inside the same
+    # transaction, or a second request could still slip in between them.
+    with transaction.atomic():
+        if was_active_admin and not stays_active_admin:
+            _assert_not_last_active_admin(user.pk)
+        user.save()
 
     logger.info("users_views: admin %s updated PTUser %s", request.user.email, user.email)
 

@@ -428,6 +428,11 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None, category_referenc
                 "qtyMismatched": getattr(m, "qty_mismatched", None),
                 "rateMismatched": getattr(m, "rate_mismatched", None),
                 "dataMismatch": getattr(m, "data_mismatch", None),
+                # Added alongside the fix for the UOM-normalization gap this
+                # field closes (found during a full-codebase audit,
+                # 2026-09-10) - see HRSMirStockMatch's own field comment and
+                # match_mir_entry_stock()'s docstring in matching_core.py.
+                "uomMismatch": getattr(m, "uom_mismatch", None),
             }
             for m in lot.mir_matches.all()
         ],

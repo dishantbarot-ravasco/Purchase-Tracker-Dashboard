@@ -109,37 +109,46 @@ def verify_otp(email: str, code: str) -> bool:
 
     key = email.strip().lower()
 
-    try:
-        entry = OTPCode.objects.get(email=key)
-    except OTPCode.DoesNotExist:
-        log.debug("verify_otp: no OTP found for %s", key)
-        return False
+    # select_for_update() + one wrapping transaction - fixes a real
+    # non-atomic read-modify-write race found during a full-codebase audit
+    # (2026-09-10): `entry.attempts += 1` followed by a separate `.save()`
+    # let two concurrent verify attempts against the same email both read
+    # the same stale `attempts` value and both write back the same
+    # incremented count, silently undercounting guesses and letting a
+    # scripted parallel brute-force outlast _MAX_ATTEMPTS. Locking the row
+    # for the duration of the whole check-and-increment closes that.
+    with transaction.atomic():
+        try:
+            entry = OTPCode.objects.select_for_update().get(email=key)
+        except OTPCode.DoesNotExist:
+            log.debug("verify_otp: no OTP found for %s", key)
+            return False
 
-    now = timezone.now()
+        now = timezone.now()
 
-    if now > entry.expires_at:
+        if now > entry.expires_at:
+            entry.delete()
+            log.debug("verify_otp: OTP expired for %s", key)
+            return False
+
+        # Increment the attempt counter before checking the code, not after -
+        # so a request that crashes/times out mid-bcrypt-check still counts
+        # against the limit rather than being retried for free.
+        entry.attempts += 1
+
+        if entry.attempts > _MAX_ATTEMPTS:
+            entry.delete()
+            log.warning("verify_otp: too many attempts for %s - OTP invalidated", key)
+            return False
+
+        # bcrypt comparison (constant-time by construction - no separate
+        # constant-time wrapper needed here).
+        if not _check_code(code.strip(), entry.code_hash):
+            entry.save(update_fields=["attempts"])
+            log.debug("verify_otp: wrong code for %s (attempt %d)", key, entry.attempts)
+            return False
+
+        # Success - consume the OTP immediately so it can't be replayed.
         entry.delete()
-        log.debug("verify_otp: OTP expired for %s", key)
-        return False
-
-    # Increment the attempt counter before checking the code, not after -
-    # so a request that crashes/times out mid-bcrypt-check still counts
-    # against the limit rather than being retried for free.
-    entry.attempts += 1
-
-    if entry.attempts > _MAX_ATTEMPTS:
-        entry.delete()
-        log.warning("verify_otp: too many attempts for %s - OTP invalidated", key)
-        return False
-
-    # bcrypt comparison (constant-time by construction - no separate
-    # constant-time wrapper needed here).
-    if not _check_code(code.strip(), entry.code_hash):
-        entry.save(update_fields=["attempts"])
-        log.debug("verify_otp: wrong code for %s (attempt %d)", key, entry.attempts)
-        return False
-
-    # Success - consume the OTP immediately so it can't be replayed.
-    entry.delete()
-    log.info("verify_otp: success for %s", key)
-    return True
+        log.info("verify_otp: success for %s", key)
+        return True

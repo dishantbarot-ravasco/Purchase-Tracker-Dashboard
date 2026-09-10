@@ -54,12 +54,12 @@ def _make_po_line_item(po, description="SBR 1502", qty=Decimal("1000"), net_pric
 def _make_mir_entry(
     party_name="Rubamin Private Limited", po_number_raw="3000001104",
     material_description="SBR 1502", qty=Decimal("1000"), rate=Decimal("100.00"),
-    mir_date=datetime.date(2026, 5, 1), source_row_ref="7",
+    mir_date=datetime.date(2026, 5, 1), source_row_ref="7", uom="KG",
 ):
     return HRSMIREntry.objects.create(
         month="May-26", mir_no="MIR001", mir_date=mir_date, party_name=party_name,
         po_number_raw=po_number_raw, material_description=material_description,
-        qty=qty, uom="KG", rate=rate, net=qty * rate, taxable_value=qty * rate,
+        qty=qty, uom=uom, rate=rate, net=qty * rate, taxable_value=qty * rate,
         invoice_final_value=qty * rate, source_row_ref=source_row_ref, is_active=True,
     )
 
@@ -67,12 +67,13 @@ def _make_mir_entry(
 def _make_stock_lot(
     description="SBR 1502", party_name="Rubamin Private Limited - Vadodara",
     basic_rate=Decimal("100.00"), received=Decimal("0"), received_date=None, sap_item_code="H1",
+    uom="KG",
 ):
     return HRSRMLot.objects.create(
         description=description, sap_item_code=sap_item_code, party_name=party_name,
         basic_rate=basic_rate, received=received, todays_stock=Decimal("5000"),
         received_date=received_date, natural_key=f"hrs:{sap_item_code}:{description}",
-        is_active=True,
+        is_active=True, uom=uom,
     )
 
 
@@ -177,3 +178,44 @@ class TestMirStockMatching:
         run_full_match()
 
         assert HRSMirStockMatch.objects.filter(mir_entry=mir_entry).count() == 1
+
+    def test_rate_and_qty_are_unit_converted_before_comparing_not_raw(self):
+        """Regression test for a real bug found during a full-codebase audit
+        (2026-09-10): this function used to compare MIR's rate/qty directly
+        against the Stock lot's own rate/received with no unit conversion at
+        all - a material logged in MIR as MT against a Stock lot recorded in
+        KG would report a ~1000x 'rate mismatch' that's actually just a unit
+        artifact. 1.5 MT at Rs.40,000/MT is the same delivery as 1500 KG at
+        Rs.40/KG - once correctly converted to a common base unit, this must
+        NOT be flagged as a rate or qty mismatch."""
+        mir_entry = _make_mir_entry(
+            mir_date=datetime.date(2026, 5, 1), qty=Decimal("1.5"), uom="MT", rate=Decimal("40000.00"),
+        )
+        _make_stock_lot(
+            received_date=datetime.date(2026, 5, 1), received=Decimal("1500"), uom="KG", basic_rate=Decimal("40.00"),
+        )
+
+        run_full_match()
+
+        match = HRSMirStockMatch.objects.get(mir_entry=mir_entry)
+        assert match.uom_mismatch is False
+        assert match.rate_mismatched is False
+        assert match.qty_mismatched is False
+        assert match.is_flagged is False
+
+    def test_incompatible_units_are_flagged_as_uom_mismatch_not_a_nonsense_percentage(self):
+        """A mass unit against a count unit (e.g. KG vs PCS) can never be
+        converted - must be reported as uom_mismatch, with qty/rate diffs
+        left None, rather than comparing raw numbers from unrelated unit
+        families."""
+        mir_entry = _make_mir_entry(mir_date=datetime.date(2026, 5, 1), qty=Decimal("1000"), uom="KG")
+        _make_stock_lot(received_date=datetime.date(2026, 5, 1), received=Decimal("1000"), uom="PCS")
+
+        run_full_match()
+
+        match = HRSMirStockMatch.objects.get(mir_entry=mir_entry)
+        assert match.uom_mismatch is True
+        assert match.rate_diff_pct is None
+        assert match.qty_diff_pct is None
+        assert match.rate_mismatched is False
+        assert match.data_mismatch is True

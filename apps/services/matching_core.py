@@ -914,28 +914,49 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry):
             qty_mismatched = False
             value_diff = None
             value_flagged = False
+            uom_mismatch = False
             if material_matched and date_matched:
+                # Fix (found during a full-codebase audit, 2026-09-10): this
+                # branch used to compare mir_entry.rate/qty directly against
+                # the Stock lot's own rate/received with no unit conversion
+                # at all, unlike PO<->MIR (_score_components/_diffs_and_flag
+                # above) which always runs both sides through _uom_adjust()
+                # first. A material logged in MIR as MT against a Stock lot
+                # recorded in KG would report a ~1000x "rate mismatch" that's
+                # actually just a unit-mismatch artifact, not a real
+                # discrepancy. Normalizing here the same way PO<->MIR already
+                # does closes that gap - uom_mismatch=True (different,
+                # non-convertible unit families) skips the qty/rate
+                # comparisons entirely rather than reporting a nonsense
+                # percentage, same convention as _diffs_and_flag's own
+                # uom_mismatch handling. Value is a currency amount, not a
+                # per-unit figure, so it needs no unit conversion here.
+                lot_uom = getattr(lot, "uom", None)
+                mir_qty_adj, lot_qty_adj, mir_rate_adj, lot_rate_adj, uom_mismatch = _uom_adjust(
+                    mir_entry.qty, mir_entry.uom, lot.received, lot_uom, mir_entry.rate, getattr(lot, config.stock_rate_field),
+                )
                 # Rate is only meaningful against the ONE Stock snapshot we
                 # can confirm represents the same delivery MIR recorded -
                 # see this function's own docstring for why comparing it
                 # against every material-matched lot (regardless of date)
                 # mostly measured commodity price drift over months, not
                 # real discrepancies.
-                rate_diff = _diff_pct(mir_entry.rate, getattr(lot, config.stock_rate_field))
-                rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
+                if not uom_mismatch:
+                    rate_diff = _diff_pct(mir_rate_adj, lot_rate_adj)
+                    rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
 
-                if lot.received:
-                    qty_diff = _diff_pct(mir_entry.qty, lot.received)
-                    qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct
+                    if lot.received:
+                        qty_diff = _diff_pct(mir_qty_adj, lot_qty_adj)
+                        qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct
 
-                    lot_rate = getattr(lot, config.stock_rate_field)
-                    received_value = lot.received * lot_rate if lot_rate is not None else None
-                    mir_value = config.mir_value(mir_entry)
-                    value_diff = _diff_pct(mir_value, received_value)
-                    value_flagged = (
-                        mir_value is not None and received_value is not None
-                        and abs(mir_value - received_value) > config.value_flag_epsilon
-                    )
+                        lot_rate = getattr(lot, config.stock_rate_field)
+                        received_value = lot.received * lot_rate if lot_rate is not None else None
+                        mir_value = config.mir_value(mir_entry)
+                        value_diff = _diff_pct(mir_value, received_value)
+                        value_flagged = (
+                            mir_value is not None and received_value is not None
+                            and abs(mir_value - received_value) > config.value_flag_epsilon
+                        )
             defaults = dict(
                 qty_diff_pct=qty_diff,
                 rate_diff_pct=rate_diff,
@@ -945,7 +966,8 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry):
                 date_matched=date_matched,
                 qty_mismatched=qty_mismatched,
                 rate_mismatched=rate_mismatched,
-                data_mismatch=value_flagged,
+                data_mismatch=value_flagged or uom_mismatch,
+                uom_mismatch=uom_mismatch,
             )
         else:
             # Unchanged pre-extension shape (no plant left uses this branch

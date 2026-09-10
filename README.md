@@ -170,6 +170,40 @@ lock everyone else out of login with "Request was throttled" even with
 correct credentials - see CLAUDE.md's "Auth & security architecture") came
 out of getting this far.
 
+**A full-codebase audit (2026-09-10)** - the first pass to deliberately go
+looking for bugs across every layer at once, rather than finding them
+incidentally while building a feature - found and fixed six more real ones;
+see CLAUDE.md's "Full-codebase audit" section for the complete writeup with
+regression tests for each:
+- **MIR<->Stock matching compared rate/qty with no unit conversion at all**
+  (unlike PO<->MIR, which always normalized units first) - a material
+  logged in MIR as MT against a Stock lot recorded in KG would report a
+  ~1000x "rate mismatch" that was actually just a unit-mismatch artifact,
+  not a real discrepancy. The most consequential fix in this pass, since it
+  could have been silently over-flagging real MIR<->Stock pairs on live
+  data for any plant/material combination where the two sheets record
+  different units.
+- **Two of the four PO/RoDTEP detail-modal openers were missing the
+  stale-response guard** the other two already got fixed with on
+  2026-09-04 - clicking one row then a different one fast enough could
+  silently show the wrong row's data in the modal.
+- **A TOCTOU race in the "can't remove/deactivate/delete the last active
+  admin" check** - two concurrent requests acting on two different admins
+  at the same moment could both pass their own "is there another active
+  admin?" check and leave zero active admins with no way back in short of
+  direct DB access.
+- **Three non-atomic brute-force/session counters** (failed login attempts,
+  OTP verification attempts, and the "log out everywhere" token-version
+  bump) could each undercount or drop an increment under real concurrent
+  load, weakening (not eliminating) their own lockout/revocation guarantees.
+- **A follow-up fix the same day**: neither the Daily nor Monthly Raw Material
+  Consumption report had any guard against the external scheduler
+  double-firing its trigger endpoint - a duplicate cron hit meant a
+  duplicate email to every admin. Fixed with a dedup log table, after
+  confirming with the project owner that the third scheduled email (Plant
+  Data Correction, which has no fixed cadence by design) should be left
+  without this guard.
+
 ## Frontend pages
 
 Four protected pages share one top nav (see CLAUDE.md's "Frontend pages and the shared top nav"

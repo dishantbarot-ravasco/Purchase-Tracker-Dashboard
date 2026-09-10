@@ -505,6 +505,17 @@ class HRSMirStockMatch(models.Model):
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
+    # Found missing during a full-codebase audit (2026-09-10): unlike
+    # *POMirMatch (which always ran qty/rate through match_core.py's
+    # _uom_adjust() before comparing), match_mir_entry_stock() compared
+    # MIR's qty/rate directly against the Stock lot's own qty/rate with no
+    # unit conversion at all - a material logged in MIR as MT against a
+    # Stock lot recorded in KG would report a ~1000x "rate mismatch" that's
+    # actually just a unit-mismatch artifact, not a real discrepancy. Same
+    # meaning as *POMirMatch's own uom_mismatch: True when qty/rate's units
+    # belong to different families - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    uom_mismatch = models.BooleanField(default=False)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -926,6 +937,17 @@ class RTPAchhadMirStockMatch(models.Model):
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
+    # Found missing during a full-codebase audit (2026-09-10): unlike
+    # *POMirMatch (which always ran qty/rate through match_core.py's
+    # _uom_adjust() before comparing), match_mir_entry_stock() compared
+    # MIR's qty/rate directly against the Stock lot's own qty/rate with no
+    # unit conversion at all - a material logged in MIR as MT against a
+    # Stock lot recorded in KG would report a ~1000x "rate mismatch" that's
+    # actually just a unit-mismatch artifact, not a real discrepancy. Same
+    # meaning as *POMirMatch's own uom_mismatch: True when qty/rate's units
+    # belong to different families - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    uom_mismatch = models.BooleanField(default=False)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -1347,6 +1369,17 @@ class RTPVapiMirStockMatch(models.Model):
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
+    # Found missing during a full-codebase audit (2026-09-10): unlike
+    # *POMirMatch (which always ran qty/rate through match_core.py's
+    # _uom_adjust() before comparing), match_mir_entry_stock() compared
+    # MIR's qty/rate directly against the Stock lot's own qty/rate with no
+    # unit conversion at all - a material logged in MIR as MT against a
+    # Stock lot recorded in KG would report a ~1000x "rate mismatch" that's
+    # actually just a unit-mismatch artifact, not a real discrepancy. Same
+    # meaning as *POMirMatch's own uom_mismatch: True when qty/rate's units
+    # belong to different families - qty_diff_pct/rate_diff_pct are None in
+    # that case (not a nonsense percentage), this flag is the real signal.
+    uom_mismatch = models.BooleanField(default=False)
 
     is_flagged = models.BooleanField(default=False)
     dismissed_by_override = models.BooleanField(default=False)
@@ -2360,6 +2393,53 @@ class RevokedRefreshToken(models.Model):
 
     def __str__(self):
         return f"revoked jti={self.jti}"
+
+
+class ReportSendLog(models.Model):
+    """Dedup guard for the Daily/Monthly Raw Material Consumption reports
+    (apps/services/consumption_report.py) - added 2026-09-10 after a
+    full-codebase audit flagged that neither report had any protection
+    against the external cron-job.org scheduler double-firing its trigger
+    endpoint (a network retry, or a misconfigured overlapping schedule)
+    would previously re-send every admin a duplicate email for the same
+    day/month, with nothing to stop it.
+
+    One row per (report_type, plant, period_key) actually sent - the unique
+    constraint below is the actual guard: send_daily_consumption_reports()/
+    send_monthly_consumption_reports() try to create a row for each plant
+    BEFORE sending that plant's email, and skip sending (not an error, just
+    a no-op) if the row already existed. `period_key` is the daily report's
+    ISO date (e.g. "2026-09-10") or the monthly report's "YYYY-MM" - kept as
+    a single opaque string column rather than separate date/year/month
+    columns since the two report types never share a period shape and
+    nothing here needs to query by date range.
+
+    Deliberately NOT applied to the Plant Data Correction (mismatch) report
+    (apps/services/plant_mismatch_report.py) - project owner's explicit
+    decision (2026-09-10): that report has no fixed cadence by design ("no
+    built-in cadence; set whatever interval you want on the external
+    scheduler" - see CLAUDE.md's "Outgoing email inventory"), so a
+    once-per-day lock could block an intentional same-day re-trigger. Only
+    the two reports with a real fixed cadence (once a day, once a month)
+    get this guard."""
+
+    class ReportType(models.TextChoices):
+        DAILY = "daily", "Daily Consumption Report"
+        MONTHLY = "monthly", "Monthly Consumption Report"
+
+    report_type = models.CharField(max_length=10, choices=ReportType.choices)
+    plant = models.CharField(max_length=20)
+    period_key = models.CharField(max_length=20, help_text="Daily report: ISO date. Monthly report: 'YYYY-MM'.")
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "pt_report_send_log"
+        constraints = [
+            models.UniqueConstraint(fields=["report_type", "plant", "period_key"], name="uniq_report_send_per_period")
+        ]
+
+    def __str__(self):
+        return f"{self.report_type}:{self.plant}:{self.period_key}"
 
 
 class TrustedDevice(models.Model):

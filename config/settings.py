@@ -418,12 +418,25 @@ SIMPLE_JWT = {
     # REFRESH_TOKEN_LIFETIME even after an explicit logout, since nothing
     # revoked it server-side - PTTokenRefreshSerializer.validate() already
     # had the rotate/blacklist logic (apps/api/auth_serializers.py) but it
-    # was dead code until these two flags were turned on. Requires
-    # rest_framework_simplejwt.token_blacklist in INSTALLED_APPS (added
-    # alongside this) - every successful /api/auth/token/refresh now issues
-    # a new refresh token and blacklists the one just spent, and
-    # apps/api/routers/device_views.py's logout_view blacklists the current
-    # one directly on logout.
+    # was dead code until these two flags were turned on. Every successful
+    # /api/auth/token/refresh now issues a new refresh token and revokes the
+    # one just spent, and apps/api/routers/device_views.py's logout_view
+    # revokes the current one directly on logout.
+    #
+    # Comment corrected during a full-codebase audit (2026-09-10): this used
+    # to say these flags require rest_framework_simplejwt.token_blacklist in
+    # INSTALLED_APPS - that was never true here and INSTALLED_APPS below
+    # correctly does NOT include it. Revocation is backed by our own
+    # apps/core/models.py's RevokedRefreshToken table instead (written via
+    # apps/services/token_revocation.py's revoke_refresh_jti()/
+    # is_refresh_jti_revoked()) precisely BECAUSE token_blacklist's own
+    # OutstandingToken model FKs to AUTH_USER_MODEL (Django's default
+    # auth.User, which this app deliberately never uses for real accounts -
+    # see CLAUDE.md's own note on why) - enabling that app crashes
+    # device_verify with `"OutstandingToken.user" must be a "User" instance`
+    # the moment a PTUser is passed to RefreshToken.for_user(). Do NOT add
+    # rest_framework_simplejwt.token_blacklist to INSTALLED_APPS to try to
+    # make this stale comment true - it reproduces that exact crash.
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": True,
     "AUTH_HEADER_TYPES": ("Bearer",),

@@ -100,6 +100,31 @@ class TestUsersPlants:
         user = PTUser.objects.get(email="newadmin@ravasco.com")
         assert user.plants == []
 
+    def test_cannot_deactivate_the_last_active_admin(self):
+        """PATCH /api/auth/users/<id> {"isActive": false} on the only active
+        admin must 400, same protection DELETE already has (see
+        test_delete_user.py) - this path had no test coverage at all before
+        this (found during a full-codebase audit, 2026-09-10)."""
+        response = self.client.patch(f"/api/auth/users/{self.admin.user_id}", {"isActive": False}, format="json")
+        assert response.status_code == 400
+        self.admin.refresh_from_db()
+        assert self.admin.is_active is True
+
+    def test_cannot_demote_the_last_active_admin_to_a_non_admin_role(self):
+        """Same protection, the other way it can be triggered: changing role
+        away from admin (not just isActive) on the only active admin."""
+        response = self.client.patch(f"/api/auth/users/{self.admin.user_id}", {"role": "editor"}, format="json")
+        assert response.status_code == 400
+        self.admin.refresh_from_db()
+        assert self.admin.role == "admin"
+
+    def test_can_deactivate_an_admin_when_another_active_admin_remains(self):
+        other_admin = make_user(email="other-admin@ravasco.com", role="admin")
+        response = self.client.patch(f"/api/auth/users/{other_admin.user_id}", {"isActive": False}, format="json")
+        assert response.status_code == 200
+        other_admin.refresh_from_db()
+        assert other_admin.is_active is False
+
     def test_update_user_forces_empty_plants_when_role_changed_to_admin(self):
         """Promoting an existing plant-scoped editor to admin must clear
         `plants` too, not leave a stale, now-meaningless restriction on the

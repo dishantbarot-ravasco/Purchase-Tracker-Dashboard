@@ -13,6 +13,7 @@ from apps.api.tests.factories import make_user
 from apps.core.models import (
     HRSRMLot,
     HRSRMSnapshot,
+    ReportSendLog,
     RTPAchhadRMDailyMovement,
     RTPAchhadRMLot,
     RTPAchhadRMSnapshot,
@@ -208,6 +209,51 @@ class TestSendDailyConsumptionReports:
         assert any("HRS" in s for s in subjects)
         assert any("RTP-Achhad" in s for s in subjects)
         assert any("RTP-Vapi" in s for s in subjects)
+
+    def test_calling_twice_the_same_day_does_not_resend(self, mailoutbox):
+        """Regression test for the dedup guard added during a full-codebase
+        audit (2026-09-10) - if the external scheduler ever double-fires
+        trigger_daily_report (a network retry, a misconfigured overlapping
+        schedule), a second call for the same day must be a no-op, not a
+        second round of duplicate emails to every admin."""
+        make_user(email="admin-dedup@ravasco.com", role="admin")
+        HRSRMLot.objects.create(description="Silica", basic_rate=Decimal("60"), todays_stock=Decimal("40"))
+
+        first = send_daily_consumption_reports()
+        assert first["plants_sent"] == 3
+        assert len(mailoutbox) == 3
+
+        second = send_daily_consumption_reports()
+        assert second["plants_sent"] == 0
+        assert len(mailoutbox) == 3, "a second same-day call must not send any more emails"
+        assert ReportSendLog.objects.filter(report_type=ReportSendLog.ReportType.DAILY).count() == 3
+
+    def test_a_failed_build_does_not_permanently_block_retry(self, mailoutbox, monkeypatch):
+        """The dedup guard claims a ReportSendLog row BEFORE building/sending
+        (to close the race window against a double-fire) - but a genuine
+        build/send failure must release that claim again, or a transient
+        failure would silently block every future attempt for that plant/day
+        with no way to recover short of a manual DB edit."""
+        import apps.services.consumption_report as consumption_report_module
+
+        make_user(email="admin-retry@ravasco.com", role="admin")
+
+        def _boom(plant_key, today=None):
+            if plant_key == "hrs":
+                raise RuntimeError("simulated build failure")
+            return {"label": plant_key, "date": (today or TODAY).isoformat(), "rows": []}
+
+        monkeypatch.setattr(consumption_report_module, "build_plant_report", _boom)
+
+        first = send_daily_consumption_reports()
+        assert first["plants_sent"] == 2  # achhad + vapi sent, hrs failed
+        assert not ReportSendLog.objects.filter(
+            report_type=ReportSendLog.ReportType.DAILY, plant="hrs", period_key=TODAY.isoformat(),
+        ).exists(), "a failed plant's claim must be released, not left behind"
+
+        monkeypatch.undo()
+        second = send_daily_consumption_reports()
+        assert second["plants_sent"] == 1, "hrs must be retryable after the earlier failure; achhad/vapi stay deduped"
 
     def test_email_body_groups_materials_under_category_headings(self, mailoutbox):
         make_user(email="admin5@ravasco.com", role="admin")
@@ -406,6 +452,26 @@ class TestSendMonthlyConsumptionReports:
         assert result["plants_sent"] == 3
         assert len(mailoutbox) == 3
         assert all("(Monthly)" in m.subject and "August 2026" in m.subject for m in mailoutbox)
+
+    def test_calling_twice_for_the_same_month_does_not_resend(self, mailoutbox):
+        """Same dedup guard as the daily report's own regression test - keyed
+        on 'YYYY-MM' instead of a date, see ReportSendLog's own docstring."""
+        make_user(email="admin-dedup-monthly@ravasco.com", role="admin")
+        HRSRMLot.objects.create(description="Silica", basic_rate=Decimal("60"), todays_stock=Decimal("40"))
+
+        first = send_monthly_consumption_reports(year=2026, month=8)
+        assert first["plants_sent"] == 3
+        assert len(mailoutbox) == 3
+
+        second = send_monthly_consumption_reports(year=2026, month=8)
+        assert second["plants_sent"] == 0
+        assert len(mailoutbox) == 3, "a second call for the same month must not send any more emails"
+
+        # A different month must still send normally - the dedup key is
+        # scoped per-period, not a blanket "already ran once" flag.
+        third = send_monthly_consumption_reports(year=2026, month=9)
+        assert third["plants_sent"] == 3
+        assert len(mailoutbox) == 6
 
     def test_email_body_groups_materials_under_category_headings(self, mailoutbox):
         make_user(email="admin7@ravasco.com", role="admin")

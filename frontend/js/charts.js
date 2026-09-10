@@ -22,12 +22,16 @@ let modalCharts = [];
 function destroyPageCharts() { pageCharts.forEach(c => { try { c.destroy(); } catch (e) { console.warn('Chart.destroy() failed:', e); } }); pageCharts = []; }
 function destroyModalCharts() { modalCharts.forEach(c => { try { c.destroy(); } catch (e) { console.warn('Chart.destroy() failed:', e); } }); modalCharts = []; }
 
-// Bumped by every openImportPoModal()/openMaterialModal() call, and captured
-// as each call's own `myModalRequestId`. Both functions re-check this after
-// every await before touching #modalBody - without it, clicking row A then
-// quickly row B before A's fetch resolves can let A's response land after
-// B's and silently overwrite the modal (now showing B's title/backdrop)
-// with A's stale data. Bug found and fixed 2026-09-04.
+// Bumped by every openPoModal()/openImportPoModal()/openMaterialModal()/
+// openRodtepScriptDetail() call, and captured as each call's own
+// `myModalRequestId`. Each function re-checks this after every await before
+// touching #modalBody - without it, clicking row A then quickly row B
+// before A's fetch resolves can let A's response land after B's and
+// silently overwrite the modal (now showing B's title/backdrop) with A's
+// stale data. Bug found and fixed for openImportPoModal()/openMaterialModal()
+// 2026-09-04; openPoModal()/openRodtepScriptDetail() were missed at the time
+// and got the same fix during a later full-codebase audit - if you add a
+// fifth modal-opening function, apply this guard there too.
 let modalRequestId = 0;
 
 

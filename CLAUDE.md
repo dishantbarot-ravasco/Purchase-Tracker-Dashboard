@@ -1521,22 +1521,159 @@ had no MIR-derived fields at all; the three previously-`disabled: true` "Awaitin
   dismiss endpoint lives under the cross-plant `/api/imports/...` router with `plant` as a path
   segment, not under a per-plant `apiPrefix` the way domestic's `matches/po-mir/<id>/dismiss` does.
 
+## Full-codebase audit (2026-09-10)
+
+The first pass to deliberately go looking for bugs across every layer at once (models/migrations,
+auth/admin backend, matching engines, sync pipeline/parsers, outgoing email, frontend JS), rather
+than finding them incidentally while building a feature. Six parallel reviews, each scoped to one
+subsystem and told to read this file first so it wouldn't re-flag already-documented, deliberate
+design decisions as bugs. Every real finding below was independently verified by reading the actual
+code (not trusted on the reviewing pass's word alone) before being fixed, and every fix has a
+regression test proving it - `uv run pytest` was green (581 passed) after all of them, and
+`manage.py check` / `makemigrations --check --dry-run` were clean throughout.
+
+**1. MIR<->Stock matching compared rate/qty with no unit conversion at all — the most consequential
+finding.** `apps/services/matching_core.py`'s `match_mir_entry_stock()` compared `mir_entry.rate`/
+`qty` directly against the Stock lot's own `basic_rate`/`received` with no call to `_uom_adjust()`
+at all — unlike PO<->MIR (`_score_components()`/`_diffs_and_flag()`, both just above it in the same
+file), which has always normalized both sides to a common base unit first (fix 2.C, documented
+earlier in this file). A material logged in MIR as MT against a Stock lot recorded in KG would
+report a ~1000x "rate mismatch" that's actually just a unit-mismatch artifact, not a real
+discrepancy — and both `HRSMIREntry`/`HRSRMLot` (and the Achhad/Vapi equivalents) carry independent
+`uom` fields with no guarantee they agree for a given material, so this wasn't a hypothetical edge
+case. None of the three `*MirStockMatch` models had a `uom_mismatch` field at all (unlike every
+`*POMirMatch`/`*ImportPOMirMatch` model, which already has one) — confirming this wasn't a
+deliberately-scoped-out concern with a field just not wired up, it was an outright gap.
+
+Fixed by adding `uom_mismatch` to `HRSMirStockMatch`/`RTPAchhadMirStockMatch`/
+`RTPVapiMirStockMatch` (migration `0044`, same meaning as the existing `*POMirMatch` field: qty/rate
+diffs are `None`, not a nonsense percentage, when the two units belong to different, non-convertible
+families) and calling `_uom_adjust()` in `match_mir_entry_stock()` before comparing rate/qty, exactly
+the way PO<->MIR already does — value stays uncompared-for-units since it's a currency amount, not a
+per-unit figure. Surfaced on the API as `uomMismatch` in `_domestic_base.py`'s `mirStockMatches`
+list (not yet rendered as a frontend badge — the fix closes the actual data-correctness bug; adding
+a UI badge for it is a natural small follow-up, not done in this pass to keep the fix itself
+minimal and reviewable). Regression tests:
+`apps/services/tests/test_run_full_match_pipeline.py`'s
+`test_rate_and_qty_are_unit_converted_before_comparing_not_raw`/
+`test_incompatible_units_are_flagged_as_uom_mismatch_not_a_nonsense_percentage`.
+
+**2. Two of the four PO/RoDTEP detail-modal openers were missing the stale-response guard the
+other two got fixed with on 2026-09-04.** This file already documents `modalRequestId` (see "Inline
+'Edit Everywhere'" above) as the fix for `openImportPoModal()`/`openMaterialModal()`'s own race
+(clicking row A then row B before A's fetch resolves could let A's stale response overwrite the
+modal after B's). `openPoModal()` (`po-modal.js`) and `openRodtepScriptDetail()` (`rodtep-panel.js`)
+were never given the same guard when it was first applied — confirmed by grep: `modalRequestId` was
+referenced only in `material-modal.js`/`import-po.js`, nowhere else, even though `charts.js`'s own
+comment defining the counter claimed it was used by "every" modal-opener. Fixed by applying the
+identical `const myModalRequestId = ++modalRequestId` / `if (myModalRequestId !== modalRequestId)
+return;` pattern to both functions, and corrected `charts.js`'s comment to name all four functions
+and note a fifth needs the same treatment if one is ever added.
+
+**3. A TOCTOU race in the "can't remove/deactivate/delete the last active admin" check.**
+`users_views.py`'s `update_user()` (both the PATCH branch's role/isActive change and the DELETE
+branch added for the hardcoded-admin delete feature) used to do a plain read
+(`PTUser.objects.filter(role=admin, is_active=True).exclude(pk=target).exists()`) with no locking,
+followed by a completely separate `.save()`/`.delete()`. With exactly two active admins A and B, two
+concurrent requests — one acting on A while excluding A from its own count (sees B, passes), the
+other acting on B while excluding B (sees A, passes) — could both succeed, since each transaction's
+own "exclude self" query never locks the same row the other transaction is about to act on (they
+exclude *different* rows, so a naive `select_for_update()` scoped the same way wouldn't have fixed
+it either). Fixed with `_assert_not_last_active_admin()` — locks **every** currently-active admin
+row via `select_for_update()`, not just "every active admin other than this one," so any two
+concurrent callers always contend for the same lock regardless of which admin each one excludes,
+wrapped in `transaction.atomic()` around the whole check-and-mutate in both branches. Regression
+test: `apps/api/tests/test_last_admin_race.py` (a real two-thread test against a genuine separate
+DB connection per thread — `@pytest.mark.django_db(transaction=True)`, since a row lock is only
+meaningful across two actually-separate transactions, which the default single-wrapping-transaction
+`django_db` fixture would never exercise) — proves exactly one of two concurrent deactivation
+attempts against two different admins succeeds, never both. The PATCH path's own last-admin
+protection (`test_users_plants.py`) had no test coverage at all before this pass, on top of the race
+itself.
+
+**4. Three non-atomic brute-force/session counters.** `auth_backend.py`'s
+`_register_failed_attempt()` and `otp_service.py`'s `verify_otp()` both computed a new counter value
+from an in-memory Python object (`user.failed_login_attempts + 1`, `entry.attempts += 1`) and wrote
+it back separately, rather than locking the row for the duration of the read-check-write. Concurrent
+requests against the same account/OTP (e.g. a scripted parallel brute-force rather than serial
+guesses) could each read the same stale count and each write the same single increment, undercounting
+attempts and weakening (not eliminating — the lockout/invalidation still fires eventually) the
+5-attempt guarantees. Fixed both with `select_for_update()` + `transaction.atomic()` around the whole
+check. `token_revocation.py`'s `revoke_all_sessions()` had the same shape for `PTUser.token_version`
+(milder consequence — a lost bump doesn't break the revocation itself, just possibly leaves it based
+on a stale starting count) — fixed with an `F("token_version") + 1` in-DB expression instead, since
+this one didn't need a decision to be made based on the read value the way the other two did.
+
+**5. Two stale doc/comment drifts, corrected in place** (no behavior change, just true-again
+comments): `config/settings.py`'s `SIMPLE_JWT` comment used to claim `ROTATE_REFRESH_TOKENS`/
+`BLACKLIST_AFTER_ROTATION` require `rest_framework_simplejwt.token_blacklist` in `INSTALLED_APPS` —
+never true here, and a live footgun, since enabling that app for real reproduces the exact
+`OutstandingToken.user must be a "User" instance` crash this file already documents elsewhere (see
+"A real bug, found and fixed, 2026-09-04" above) — corrected to describe the actual
+`RevokedRefreshToken`-based mechanism. `apps/services/sync_trigger.py`'s module docstring used to say
+match commands "write no SyncRun row of their own and have no internal error handling" — also
+already false by the time this audit found it (`match_hrs.py`/`match_achhad.py`/`match_vapi.py` each
+document their own 2026-09-04 fix for exactly this) — corrected to point at those three files
+instead of re-describing a gap that no longer exists.
+
+**6. This file's own "Known gaps" section had drifted too** — see the `style-src 'unsafe-inline'`
+entry immediately below, which claimed a fix already shipped 2026-09-08 was "still not dropped."
+Left as a lesson in place rather than silently deleted: a "Known gaps" list is exactly the kind of
+section that quietly goes stale as fixes land elsewhere in the file without this list being
+revisited — check the section/file a gap entry points at directly before trusting the entry's own
+claim, the same way this audit did.
+
+**7. `PTCookieJWTAuthentication.authenticate()`'s exception handling was narrowed** (not a redesign,
+just a tightened catch) — it used to catch bare `Exception` around cookie JWT validation, silently
+treating a genuine bug (e.g. a DB error inside `get_user()`) the same as an ordinary invalid/expired
+cookie, logged only at `DEBUG`. Narrowed to catch `(InvalidToken, AuthenticationFailed)`
+specifically at `DEBUG`, with a separate `except Exception` that logs at `WARNING` with a full
+traceback before still falling through to the Bearer-header attempt (raising outright here would
+incorrectly turn an ordinary bad cookie into a hard error for browser clients that never send a
+Bearer header anyway) — the behavior for a genuinely bad cookie is unchanged, an actually-unexpected
+failure is just no longer invisible in `logs/app.log`.
+
+**8. Dedup guard added for the two scheduled reports with a real fixed cadence** (follow-up the same
+day, after asking the project owner how the third report should behave — see below). Neither
+`send_daily_consumption_reports()` nor `send_monthly_consumption_reports()`
+(`apps/services/consumption_report.py`) had any protection against the external cron-job.org
+scheduler double-firing its trigger endpoint (a network retry, or a misconfigured overlapping
+schedule) — every admin would get a duplicate email for the same day/month with nothing to stop it.
+Fixed with `ReportSendLog` (migration `0045`, own model docstring has the full design) — one row per
+`(report_type, plant, period_key)` actually sent, unique-constrained; each plant claims its row via
+`get_or_create()` **before** building/sending (closes the actual race, not just a "check then send"
+that a double-fire could still slip through), and releases the claim again (deletes the row) if
+building/sending then genuinely raises, so a real transient failure stays retryable rather than
+permanently burning that day's/month's slot. **Deliberately NOT applied to the Plant Data Correction
+(mismatch) report** (`send_plant_mismatch_reports`, `apps/services/plant_mismatch_report.py`) — asked
+the project owner directly rather than guessing, since that report has no fixed cadence by design
+("no built-in cadence; set whatever interval you want on the external scheduler" — see "Outgoing
+email inventory" above); a once-per-day lock could block an intentional same-day re-trigger. Answer:
+leave it exactly as-is, only the daily/monthly reports (which do have a real fixed cadence) get the
+guard. Regression tests: `apps/services/tests/test_consumption_report.py`'s
+`test_calling_twice_the_same_day_does_not_resend`/`test_calling_twice_for_the_same_month_does_not_resend`/
+`test_a_failed_build_does_not_permanently_block_retry`.
+
+**Everything else each review checked came back clean** — no migration drift, no per-plant field
+mismatches beyond CLAUDE.md's own documented ones, no injection/XSS findings, the `_MAX_DIFF_PCT`
+clamp and `sync_utils.unchanged()`'s `ROUND_HALF_UP` quantization both applied consistently
+everywhere they should be, and the internal report-trigger endpoints' shared-secret check already
+uses `hmac.compare_digest()` (constant-time), not a timing-unsafe `==`.
+
 ## Known gaps (confirm still true before treating as blocking)
 
-- **`style-src 'unsafe-inline'` in `config/security_headers.py`'s CSP — still not dropped** (see
-  that file's own "CSP notes" docstring). A pre-Render-deploy readiness review (2026-09-07) flagged
-  this again; explicitly deferred rather than fixed in that pass, on the project owner's own
-  decision, because dropping it means moving all 105+ `style="..."` attributes (14 HTML/JS files)
-  and 22 `.style.<property>` assignments (8 JS files, confirmed by grep that session) into CSS
-  classes/data-attributes — real refactor risk across every page, and this environment has no
-  browser/Node tooling to visually verify the result afterward (see
-  `pt_dashboard_no_browser_tooling` memory). Low-priority at 6-user internal-tool scale. **If this
-  is picked up later: do it with a real browser open to click through every page (dashboard, admin,
-  materials, login, search) afterward** — same verification standard the 2026-09-05 script-src
-  removal already held itself to (see "Security hardening pass" above), don't skip it just because
-  the script-src removal turned out to need no nonce/hash machinery — style-src's inline values are
-  dynamic (computed per-row/per-status), unlike the static inline `<script>` blocks that pass
-  removed, so this is a strictly bigger job.
+- ~~**`style-src 'unsafe-inline'` in `config/security_headers.py`'s CSP — still not dropped**~~ —
+  **built, 2026-09-08.** This bullet was already stale by the time a full-codebase audit
+  (2026-09-10) found the drift: `config/security_headers.py`'s own "CSP notes" docstring documents
+  this was removed the same day it's dated, and `_build_csp()`'s actual output
+  (`"style-src 'self' https://fonts.googleapis.com"`) confirms no `'unsafe-inline'` is present —
+  confirmed directly against the live code, not just the docstring's own claim. See that file's
+  docstring for exactly what replaced every inline `style="..."` attribute (brand.css utility
+  classes for static values, `data-*` attributes + a small JS pass for the genuinely dynamic ones —
+  `shared.js`'s `applyDynamicStyles()`/`admin-page.js`'s `renderBarList()`) and every page's inline
+  `<style>` block (extracted to its own `css/<page>-page.css` file). If a "Known gaps" entry here
+  ever looks stale again, check the file/section it points at directly before trusting this list —
+  this one had drifted for at least a few days before being caught.
 - ~~**Import PO parsing for RTP-Vapi's own BOE/customs-shaped CSV**~~ — **built**, 2026-09-04, see
   roadmap item 3 above. All three plants' Import CSVs are parsed and live now.
 - **Licenses (Advance Authorisation tracking)** — deferred to v2, see the roadmap section above.

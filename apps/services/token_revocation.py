@@ -15,6 +15,7 @@ apps/api/routers/device_views.py's logout_view (revoke the current refresh
 token's jti directly on logout).
 """
 
+from django.db.models import F
 from django.utils import timezone
 
 from apps.core.models import PTUser, RevokedRefreshToken, TrustedDevice
@@ -57,6 +58,18 @@ def revoke_all_sessions(user: PTUser) -> None:
     TrustedDevice row for this account) so a fresh sign-in on any device,
     including ones that were previously trusted, goes through the email-OTP
     challenge again rather than silently re-trusting a device that might be
-    the very thing prompting this call (e.g. a lost laptop)."""
-    PTUser.objects.filter(pk=user.pk).update(token_version=user.token_version + 1)
+    the very thing prompting this call (e.g. a lost laptop).
+
+    Uses an F() expression (an in-DB `token_version = token_version + 1`,
+    not Python computing `user.token_version + 1` from a possibly-stale
+    in-memory value) - found and fixed during a full-codebase audit
+    (2026-09-10): two concurrent calls (e.g. an admin's "logout everywhere"
+    landing at the same moment as the user's own self-service one) could
+    otherwise both read the same starting token_version and both write the
+    same single increment, one bump getting silently lost. Milder than the
+    similar races fixed in auth_backend.py/otp_service.py the same day - a
+    lost bump here doesn't break the actual revocation (this call's own
+    increment always applies, just possibly landing on a stale base), but
+    an F() expression removes the race entirely rather than tolerating it."""
+    PTUser.objects.filter(pk=user.pk).update(token_version=F("token_version") + 1)
     TrustedDevice.objects.filter(user=user).delete()
