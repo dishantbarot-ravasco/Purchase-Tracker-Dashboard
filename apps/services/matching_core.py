@@ -444,6 +444,111 @@ def _best_candidate(config: _MatchConfig, pool: list, item: _Matchable):
     return best_entry, best_score, best_coverage
 
 
+# ── Multi-shipment aggregation (fix 2.F) ────────────────────────────────────
+# A PO line item's ordered quantity is sometimes fulfilled across several
+# separate MIR rows (multiple truckloads/invoices for the same order)
+# instead of one. Comparing the PO's full ordered qty against a single
+# best-scoring MIR row then reports a false "quantity mismatch" even when
+# the rows reconcile exactly in aggregate. Confirmed real case: HRS PO
+# 3000001079 (Malaya Trade Impex, Natural Rubber ISNR 20) - 200,000 KG
+# ordered, fulfilled across 6 separate MIR rows (34,000 x5 + 30,000 =
+# 200,000 KG exactly), but the old single-row comparison picked one 34,000 KG
+# row and reported an 83% "mismatch".
+#
+# Grouping key is vendor + material/PO-number identification (the pool
+# passed in is already filtered to this - see _identification_pool()) PLUS
+# rate: multiple MIR rows are only treated as this order's split shipments
+# when their rate is close to the PO line's own rate, within
+# _SHIPMENT_RATE_TOLERANCE_PCT. A genuinely different, concurrently-open PO
+# to the same vendor for the same material usually differs in rate (price
+# moves over time) - confirmed empirically against real HRS/Achhad/Vapi data
+# this resolves the large majority of overlapping-PO cases. A vendor holding
+# a flat/contract price for the same material across two real concurrent POs
+# is a real, smaller residual risk this alone cannot separate (confirmed on
+# real data too - e.g. a recurring Zinc Oxide order at a flat rate) -
+# _SHIPMENT_GROUP_MAX_OVERSHOOT_PCT below is the deliberately blunt guard
+# against that, not a full fix (a full fix would need a genuine
+# ambiguous-group review queue, not attempted here).
+_SHIPMENT_RATE_TOLERANCE_PCT = Decimal("2")
+
+# Safety valve against the residual flat-rate-vendor ambiguity above: if the
+# grouped rows' total quantity overshoots the PO's own ordered quantity by
+# more than this margin, that's a signal the group likely mixes in a
+# different, concurrently-open PO's deliveries to the same vendor/material/
+# rate rather than a legitimate over-delivery on this one PO. When
+# triggered, aggregation is skipped entirely and matching falls back to
+# picking a single best row (today's behavior) for this item - this
+# function never guesses which rows belong to which PO.
+_SHIPMENT_GROUP_MAX_OVERSHOOT_PCT = Decimal("50")
+
+
+class _ShipmentGroup(NamedTuple):
+    """Result of a successful multi-shipment grouping (see
+    _shipment_group()). `entries` is every MIR row folded into the
+    aggregate (always 2+ - a single-row "group" isn't worth the label, see
+    _shipment_group()'s own early return). `qty` is the summed quantity,
+    already converted to the same base unit item.uom's family uses (i.e.
+    directly comparable to the qty_a side _uom_adjust() would produce for
+    this item). `rate` is the value-weighted average rate across the group
+    (None if any member's value was unavailable to weight by). `value` is
+    the summed net value (None under the same condition as `rate`)."""
+
+    entries: list
+    qty: Decimal
+    rate: Decimal | None
+    value: Decimal | None
+
+
+def _shipment_group(config: _MatchConfig, item: _Matchable, pool: list) -> Optional[_ShipmentGroup]:
+    """Finds the subset of `pool` (already identification-passed) whose rate
+    is close enough to `item`'s own rate to plausibly be split shipments of
+    the SAME order, then aggregates their quantity/value. Returns None when
+    aggregation doesn't apply - fewer than 2 rate-compatible rows (nothing
+    to aggregate; callers fall back to _best_candidate()'s single-row
+    behavior), or the group's summed quantity overshoots the PO's ordered
+    quantity by more than _SHIPMENT_GROUP_MAX_OVERSHOOT_PCT (see that
+    constant's own comment)."""
+    if item.rate is None or item.qty is None:
+        return None
+
+    same_rate: list[tuple[object, Decimal]] = []  # (mir, qty already in item's base unit)
+    item_qty_base: Decimal | None = None
+    for mir in pool:
+        qty_a, qty_b, rate_a, rate_b, uom_mismatch = _uom_adjust(item.qty, item.uom, mir.qty, mir.uom, item.rate, mir.rate)
+        if uom_mismatch or qty_a is None or qty_b is None or rate_a is None or rate_b is None:
+            continue
+        rate_diff = _diff_pct(rate_a, rate_b)
+        if rate_diff is not None and rate_diff <= _SHIPMENT_RATE_TOLERANCE_PCT:
+            same_rate.append((mir, qty_b))
+            item_qty_base = qty_a  # identical every iteration once uom is recognized - item.uom alone determines it
+
+    if len(same_rate) < 2 or item_qty_base is None:
+        return None
+
+    total_qty = Decimal("0")
+    total_value = Decimal("0")
+    value_complete = True
+    for mir, qty_b in same_rate:
+        total_qty += qty_b
+        mir_value = config.mir_value(mir)
+        if mir_value is None:
+            value_complete = False
+        else:
+            total_value += mir_value
+
+    overshoot_cap = item_qty_base * (Decimal("1") + _SHIPMENT_GROUP_MAX_OVERSHOOT_PCT / Decimal("100"))
+    if total_qty > overshoot_cap:
+        return None
+
+    effective_rate = (total_value / total_qty) if value_complete and total_qty else None
+    return _ShipmentGroup(
+        entries=[m for m, _ in same_rate],
+        qty=total_qty,
+        rate=effective_rate,
+        value=total_value if value_complete else None,
+    )
+
+
 def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | None]:
     """Import line items are priced in the PO's own currency, but MIR's
     rate/taxable_value/net are always INR - comparing them raw understates a
@@ -538,7 +643,10 @@ def _tax_type_mismatch(tax_type: str | None, mir) -> bool:
     return False  # tax_type text doesn't recognizably say either - don't guess
 
 
-def _diffs_and_flag(config: _MatchConfig, item: _Matchable, mir):
+def _diffs_and_flag(
+    config: _MatchConfig, item: _Matchable, mir, *,
+    qty_override: Decimal | None = None, rate_override: Decimal | None = None, value_override: Decimal | None = None,
+):
     """Returns (qty_diff_pct, rate_diff_pct, value_diff_pct, is_flagged,
     uom_mismatch, severity, qty_mismatched, rate_mismatched, data_mismatch,
     tax_type_mismatch, taxable_value_diff_pct, final_value_diff_pct,
@@ -578,9 +686,29 @@ def _diffs_and_flag(config: _MatchConfig, item: _Matchable, mir):
     when the ABSOLUTE currency difference exceeds config.value_flag_epsilon,
     since each is derived (qty x rate, plus tax-split rounding) and a rupee
     or two of rounding isn't a real discrepancy the way any nonzero qty/rate
-    diff is."""
+    diff is.
+
+    Fix 2.F (multi-shipment aggregation): qty_override/rate_override/
+    value_override, when given by a caller that found a _shipment_group()
+    for this item, replace the qty/rate/net-value comparison with the
+    group's summed/weighted-average figures instead of `mir`'s own
+    single-row fields - this is what actually fixes the false quantity/rate
+    mismatch a multi-shipment PO would otherwise report. Every other
+    financial-check field below (Taxable Value, Final/Invoice Value, GST
+    type) still compares against `mir` alone - those are only ever
+    meaningful against a single-line-item PO to begin with (see
+    _po_matchable()'s docstring on why), and aggregating them is out of
+    scope for this fix. uom_mismatch is forced False in this path -
+    _shipment_group() already excludes any candidate that didn't cleanly
+    UOM-convert against the PO line item, so there's nothing left here to
+    flag as incompatible."""
+    aggregated = qty_override is not None or rate_override is not None or value_override is not None
     qty_a, qty_b, rate_a, rate_b, uom_mismatch = _uom_adjust(item.qty, item.uom, mir.qty, mir.uom, item.rate, mir.rate)
-    if uom_mismatch:
+    if aggregated:
+        uom_mismatch = False
+        qty_diff = _diff_pct(qty_a, qty_override) if qty_override is not None else None
+        rate_diff = _diff_pct(rate_a, rate_override) if rate_override is not None else None
+    elif uom_mismatch:
         qty_diff, rate_diff = None, None
     else:
         qty_diff = _diff_pct(qty_a, qty_b)
@@ -589,7 +717,7 @@ def _diffs_and_flag(config: _MatchConfig, item: _Matchable, mir):
     def _value_flagged(a, b):
         return a is not None and b is not None and abs(a - b) > config.value_flag_epsilon
 
-    mir_value = config.mir_value(mir)
+    mir_value = value_override if value_override is not None else config.mir_value(mir)
     value_diff = _diff_pct(item.value, mir_value)
     value_flagged = _value_flagged(item.value, mir_value)
 
@@ -678,6 +806,24 @@ def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po:
     )
 
 
+def _pick_match(config: _MatchConfig, item: _Matchable, pool: list):
+    """Picks what to match a line item against, preferring a multi-shipment
+    group (_shipment_group()) over a single best row when one applies.
+    Returns (primary_entry, score, coverage, group) - `group` is None for an
+    ordinary single-row match (unchanged pre-2.F behavior), or the
+    _ShipmentGroup when aggregation applies. `primary_entry` is always a
+    single MIR row (the group's own best-scoring member, when grouped) -
+    used as the stored mir_entry FK and for every financial-check field
+    _diffs_and_flag() doesn't aggregate (see that function's own docstring
+    on fix 2.F)."""
+    group = _shipment_group(config, item, pool)
+    if group is not None:
+        primary, score, coverage = _best_candidate(config, group.entries, item)
+        return primary, score, coverage, group
+    best_entry, best_score, coverage = _best_candidate(config, pool, item)
+    return best_entry, best_score, coverage, None
+
+
 def match_po_mir_line_item(config: _MatchConfig, po_line_item):
     """Finds the best MIR match for one domestic PO line item, in isolation
     (no knowledge of other line items' claims - see module docstring), and
@@ -689,7 +835,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
     item = _po_matchable(po_line_item, is_single_item_po)
     candidates = _candidate_mir_entries(config, po.vendor_name)
     pool, id_flags = _identification_pool(config, candidates, item, po.po_number)
-    best_entry, best_score, coverage = _best_candidate(config, pool, item)
+    best_entry, best_score, coverage, group = _pick_match(config, item, pool)
 
     if best_entry is None:
         config.po_mir_match_model.objects.filter(po_line_item=po_line_item).delete()
@@ -697,12 +843,13 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
 
     material_matched, po_number_matched = id_flags[best_entry.id]
     tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+    qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
     (
         qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-    ) = _diffs_and_flag(config, item, best_entry)
+    ) = _diffs_and_flag(config, item, best_entry, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
     match, _ = config.po_mir_match_model.objects.update_or_create(
         po_line_item=po_line_item,
         defaults=dict(
@@ -755,7 +902,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
     item = _import_matchable(config, import_line_item, is_single_item_po)
     candidates = _candidate_mir_entries(config, po.vendor_name)
     pool, id_flags = _identification_pool(config, candidates, item, po.po_number)
-    best_entry, best_score, coverage = _best_candidate(config, pool, item)
+    best_entry, best_score, coverage, group = _pick_match(config, item, pool)
 
     if best_entry is None:
         config.import_po_mir_match_model.objects.filter(po_line_item=import_line_item).delete()
@@ -763,12 +910,13 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
 
     material_matched, po_number_matched = id_flags[best_entry.id]
     tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+    qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
     (
         qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-    ) = _diffs_and_flag(config, item, best_entry)
+    ) = _diffs_and_flag(config, item, best_entry, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
     defaults = dict(
         mir_entry=best_entry,
         tier=tier,
@@ -1004,6 +1152,15 @@ def run_full_match(config: _MatchConfig) -> dict:
     claim per MIR row per run (confirmed safe against real data - see
     matching_core.py's module docstring).
 
+    Fix 2.F (multi-shipment aggregation): when a line item has a valid
+    _shipment_group(), that item contributes exactly ONE pair to `pairs` -
+    not one per pool row - representing the whole group at once, scored by
+    its own best-scoring (primary) member. Winning that pair claims every
+    MIR row in the group together, atomically, rather than one row at a
+    time - a group can never be half-claimed by this item and half up for
+    grabs by another. An item without a valid group is entirely unaffected,
+    same per-row pairs as before fix 2.F existed.
+
     Safe to call repeatedly (idempotent upserts) - intended to run after
     each sync, and synchronously after any "Edit Everywhere" field edit that
     feeds matching.
@@ -1028,16 +1185,22 @@ def run_full_match(config: _MatchConfig) -> dict:
 
     items_by_key: dict[tuple[str, int], _Matchable] = {}
     id_flags_by_key: dict[tuple[str, int, int], tuple[bool, bool]] = {}  # (kind, item_id, mir_id) -> (material_matched, po_number_matched)
-    pairs = []  # (score, "po"|"import", item_key, mir_entry, coverage)
+    pairs = []  # (score, "po"|"import", item_key, mir_entry (primary), coverage, group_or_None)
     for item in po_items:
         po = item.purchase_order
         matchable = _po_matchable(item, item_counts[item.purchase_order_id] == 1)
         items_by_key[("po", item.id)] = matchable
         candidates = _candidate_mir_entries(config, po.vendor_name)
         pool, id_flags = _identification_pool(config, candidates, matchable, po.po_number)
-        for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
-            id_flags_by_key[("po", item.id, mir.id)] = id_flags[mir.id]
-            pairs.append((score, "po", item.id, mir, coverage))
+        group = _shipment_group(config, matchable, pool)
+        if group is not None:
+            primary, score, coverage = _best_candidate(config, group.entries, matchable)
+            id_flags_by_key[("po", item.id, primary.id)] = id_flags[primary.id]
+            pairs.append((score, "po", item.id, primary, coverage, group))
+        else:
+            for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
+                id_flags_by_key[("po", item.id, mir.id)] = id_flags[mir.id]
+                pairs.append((score, "po", item.id, mir, coverage, None))
 
     for item in import_items:
         po = item.purchase_order
@@ -1045,19 +1208,29 @@ def run_full_match(config: _MatchConfig) -> dict:
         items_by_key[("import", item.id)] = matchable
         candidates = _candidate_mir_entries(config, po.vendor_name)
         pool, id_flags = _identification_pool(config, candidates, matchable, po.po_number)
-        for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
-            id_flags_by_key[("import", item.id, mir.id)] = id_flags[mir.id]
-            pairs.append((score, "import", item.id, mir, coverage))
+        group = _shipment_group(config, matchable, pool)
+        if group is not None:
+            primary, score, coverage = _best_candidate(config, group.entries, matchable)
+            id_flags_by_key[("import", item.id, primary.id)] = id_flags[primary.id]
+            pairs.append((score, "import", item.id, primary, coverage, group))
+        else:
+            for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
+                id_flags_by_key[("import", item.id, mir.id)] = id_flags[mir.id]
+                pairs.append((score, "import", item.id, mir, coverage, None))
 
     pairs.sort(key=lambda p: p[0], reverse=True)
     claimed_mir_ids: set[int] = set()
-    assigned: dict[tuple[str, int], tuple] = {}  # (kind, item.id) -> (mir, score, coverage)
-    for score, kind, item_id, mir, coverage in pairs:
+    assigned: dict[tuple[str, int], tuple] = {}  # (kind, item.id) -> (mir, score, coverage, group_or_None)
+    for score, kind, item_id, mir, coverage, group in pairs:
         key = (kind, item_id)
-        if key in assigned or mir.id in claimed_mir_ids:
+        # A grouped pair claims every member MIR row atomically - it can
+        # never be half-claimed by this item and half still up for grabs by
+        # another (see this function's own docstring, fix 2.F).
+        member_ids = {m.id for m in group.entries} if group is not None else {mir.id}
+        if key in assigned or (member_ids & claimed_mir_ids):
             continue
-        assigned[key] = (mir, score, coverage)
-        claimed_mir_ids.add(mir.id)
+        assigned[key] = (mir, score, coverage, group)
+        claimed_mir_ids.update(member_ids)
 
     po_matched = 0
     for item in po_items:
@@ -1065,16 +1238,17 @@ def run_full_match(config: _MatchConfig) -> dict:
         if result is None:
             config.po_mir_match_model.objects.filter(po_line_item=item).delete()
             continue
-        mir, score, coverage = result
+        mir, score, coverage, group = result
         matchable = items_by_key[("po", item.id)]
         material_matched, po_number_matched = id_flags_by_key[("po", item.id, mir.id)]
         tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+        qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
         (
             qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-        ) = _diffs_and_flag(config, matchable, mir)
+        ) = _diffs_and_flag(config, matchable, mir, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
         config.po_mir_match_model.objects.update_or_create(
             po_line_item=item,
             defaults=dict(
@@ -1109,16 +1283,17 @@ def run_full_match(config: _MatchConfig) -> dict:
         if result is None:
             config.import_po_mir_match_model.objects.filter(po_line_item=item).delete()
             continue
-        mir, score, coverage = result
+        mir, score, coverage, group = result
         matchable = items_by_key[("import", item.id)]
         material_matched, po_number_matched = id_flags_by_key[("import", item.id, mir.id)]
         tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+        qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
         (
             qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-        ) = _diffs_and_flag(config, matchable, mir)
+        ) = _diffs_and_flag(config, matchable, mir, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
         defaults = dict(
             mir_entry=mir,
             tier=tier,

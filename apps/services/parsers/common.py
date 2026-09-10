@@ -176,8 +176,24 @@ def normalize_material(name: str) -> str:
 
 def tokenize(text: str) -> list[str]:
     """Splits a normalized material description into words, for the token-
-    overlap component of the PO<->MIR weighted match score."""
-    return [t for t in normalize_material(text).split(" ") if t]
+    overlap component of the PO<->MIR weighted match score.
+
+    Also splits at letter<->digit boundaries within a single alnum run (e.g.
+    "180p" and "g260a"), so a code written with vs. without an internal space
+    ("180 P" on one side, "180P" on the other) still tokenizes to a shared
+    token. Confirmed real gap in Achhad PO-vs-MIR material descriptions
+    (Match Accuracy Programme): e.g. PO "AKSIL 180P" vs MIR "Aksil 180 P"
+    scored 0.167 Jaccard overlap purely from this, not genuine vocabulary
+    mismatch. Deliberately NOT applied inside normalize_material() itself -
+    that function's output is also used as an exact-match join key elsewhere
+    (MaterialCategoryReference.normalized_description, MIR<->Stock identity
+    matching in matching_core.py/stock_identity.py) where changing the
+    normalization would silently break an existing exact-match comparison
+    against already-stored values. This split only ever feeds token-overlap
+    scoring, never an equality check, so it's confined here."""
+    normalized = normalize_material(text)
+    split_at_alnum_boundaries = re.sub(r"(?<=[a-z])(?=[0-9])|(?<=[0-9])(?=[a-z])", " ", normalized)
+    return [t for t in split_at_alnum_boundaries.split(" ") if t]
 
 
 # Match Accuracy Programme, fix 2.C: built from the actual distinct `uom`

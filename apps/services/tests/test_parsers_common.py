@@ -181,6 +181,32 @@ class TestTokenize:
         """An empty string tokenizes to an empty list, not [""]."""
         assert tokenize("") == []
 
+    def test_splits_letter_digit_boundary_within_a_run(self):
+        """A code written with no internal space ("180P") tokenizes the same
+        as the same code written with one ("180 P") - real Achhad PO-vs-MIR
+        gap (PO "AKSIL 180P" vs MIR "Aksil 180 P")."""
+        assert tokenize("180P") == ["180", "p"]
+        assert tokenize("180 P") == ["180", "p"]
+
+    def test_splits_digit_letter_boundary_within_a_run(self):
+        """Same boundary, opposite direction ("g260a" vs "g 260 a")."""
+        assert tokenize("G260A") == ["g", "260", "a"]
+
+    def test_real_achhad_pair_now_shares_a_token(self):
+        """PRECIPITATED SILICA AKSIL 180P (PO) vs Aksil 180 P (MIR) - real
+        pair that scored 0.167 Jaccard before this fix purely from the
+        180P/180 P split, not vocabulary difference."""
+        po_tokens = set(tokenize("PRECIPITATED SILICA AKSIL 180P"))
+        mir_tokens = set(tokenize("Aksil 180 P"))
+        assert {"aksil", "180", "p"} <= po_tokens
+        assert mir_tokens == {"aksil", "180", "p"}
+
+    def test_pure_letters_or_pure_digits_are_unaffected(self):
+        """A token with no internal letter/digit boundary doesn't get split
+        up further than plain word-splitting already does."""
+        assert tokenize("Sulphur") == ["sulphur"]
+        assert tokenize("20000") == ["20000"]
+
 
 # ── to_code_str(): SAP-code-shaped cells that openpyxl reads back as floats ────
 

@@ -31,6 +31,7 @@ from apps.services.matching_core import (
     _import_total_value_inr,
     _material_matches,
     _po_number_matches,
+    _shipment_group,
     _tax_type_mismatch,
     _token_overlap,
     _uom_adjust,
@@ -541,6 +542,154 @@ class TestDiffsAndFlagValueEpsilon:
         mir = _FakeMir("Zinc Oxide", Decimal("700"), "KG", Decimal("50"), Decimal("35000.00"))  # 30% off
         _qty_diff, _rate_diff, _value_diff, _is_flagged, _uom_mismatch, severity, *_rest = _diffs_and_flag(config, item, mir)
         assert severity == "material"
+
+
+class TestShipmentGroup:
+    """_shipment_group() - fix 2.F, multi-shipment aggregation. A PO line
+    item's ordered qty sometimes arrives across several separate MIR rows
+    (multiple truckloads/invoices for the same order) instead of one -
+    comparing the full ordered qty against a single row then reports a false
+    quantity mismatch even when the rows reconcile exactly in aggregate."""
+
+    def test_no_group_when_only_one_rate_compatible_row(self):
+        """A single matching row isn't a "group" - nothing to aggregate,
+        callers should fall back to _best_candidate()'s ordinary behavior."""
+        config = _test_config()
+        item = _Matchable("Natural Rubber ISNR 20", Decimal("200000"), "KG", Decimal("150"), Decimal("30000000.00"))
+        pool = [_FakeMir("Natural Rubber ISNR 20", Decimal("34000"), "KG", Decimal("150"), Decimal("5100000.00"))]
+        assert _shipment_group(config, item, pool) is None
+
+    def test_real_hrs_multi_shipment_case_reconciles_exactly(self):
+        """HRS PO 3000001079 (Malaya Trade Impex, Natural Rubber ISNR 20) -
+        200,000 KG ordered, fulfilled across 6 real MIR rows
+        (34,000 x5 + 30,000 = 200,000 KG exactly, same rate throughout) -
+        the confirmed real bug this fix targets."""
+        config = _test_config()
+        item = _Matchable("Natural Rubber ISNR 20", Decimal("200000"), "KG", Decimal("150"), Decimal("30000000.00"))
+        qtys = [Decimal("34000")] * 5 + [Decimal("30000")]
+        pool = [_FakeMir("Natural Rubber ISNR 20", q, "KG", Decimal("150"), q * Decimal("150")) for q in qtys]
+        group = _shipment_group(config, item, pool)
+        assert group is not None
+        assert len(group.entries) == 6
+        assert group.qty == Decimal("200000")
+        assert group.rate == Decimal("150")
+        assert group.value == Decimal("30000000.00")
+
+    def test_rate_outside_tolerance_excluded_from_group(self):
+        """A row priced well outside _SHIPMENT_RATE_TOLERANCE_PCT of the PO's
+        own rate is a plausibly DIFFERENT order (price moved over time), not
+        a split shipment of this one - excluded from the group entirely."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("1000"), "KG", Decimal("292"), Decimal("292000.00"))
+        same_rate = [
+            _FakeMir("Zinc Oxide", Decimal("500"), "KG", Decimal("292"), Decimal("146000.00")),
+            _FakeMir("Zinc Oxide", Decimal("500"), "KG", Decimal("292"), Decimal("146000.00")),
+        ]
+        different_rate = _FakeMir("Zinc Oxide", Decimal("1000"), "KG", Decimal("312"), Decimal("312000.00"))
+        group = _shipment_group(config, item, [*same_rate, different_rate])
+        assert group is not None
+        assert len(group.entries) == 2
+        assert group.qty == Decimal("1000")
+
+    def test_overshoot_beyond_cap_skips_aggregation(self):
+        """A group whose summed quantity wildly exceeds the PO's own ordered
+        quantity is a signal the rows likely mix in a different,
+        concurrently-open PO to the same vendor/material/rate (confirmed a
+        real, if smaller, risk on real data - flat-rate contract vendors) -
+        aggregation is skipped entirely rather than guessing."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("1000"), "KG", Decimal("292"), Decimal("292000.00"))
+        # Sums to 3000 KG against a 1000 KG order - 200% overshoot, well past
+        # the 50% cap.
+        pool = [_FakeMir("Zinc Oxide", Decimal("1500"), "KG", Decimal("292"), Decimal("438000.00")) for _ in range(2)]
+        assert _shipment_group(config, item, pool) is None
+
+    def test_within_overshoot_cap_still_aggregates(self):
+        """A modest over-delivery (within the cap) is a legitimate case for
+        aggregation, not treated as ambiguous."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("1000"), "KG", Decimal("292"), Decimal("292000.00"))
+        # Sums to 1400 KG against a 1000 KG order - 40% overshoot, under the
+        # 50% cap.
+        pool = [_FakeMir("Zinc Oxide", Decimal("700"), "KG", Decimal("292"), Decimal("204400.00")) for _ in range(2)]
+        group = _shipment_group(config, item, pool)
+        assert group is not None
+        assert group.qty == Decimal("1400")
+
+    def test_missing_item_rate_or_qty_never_aggregates(self):
+        """No PO-side rate/qty to anchor the rate-tolerance/overshoot checks
+        against - aggregation can't safely apply."""
+        config = _test_config()
+        pool = [_FakeMir("Zinc Oxide", Decimal("500"), "KG", Decimal("292"), Decimal("146000.00")) for _ in range(2)]
+        no_rate = _Matchable("Zinc Oxide", Decimal("1000"), "KG", None, Decimal("292000.00"))
+        no_qty = _Matchable("Zinc Oxide", None, "KG", Decimal("292"), Decimal("292000.00"))
+        assert _shipment_group(config, no_rate, pool) is None
+        assert _shipment_group(config, no_qty, pool) is None
+
+    def test_uom_incompatible_rows_are_excluded_from_grouping(self):
+        """A row in a non-convertible unit family never enters the group -
+        _uom_adjust() already treats it as not comparable at all."""
+        config = _test_config()
+        item = _Matchable("Reclaim Rubber", Decimal("1000"), "KG", Decimal("50"), Decimal("50000.00"))
+        pool = [
+            _FakeMir("Reclaim Rubber", Decimal("500"), "KG", Decimal("50"), Decimal("25000.00")),
+            _FakeMir("Reclaim Rubber", Decimal("500"), "NOS", Decimal("50"), Decimal("25000.00")),  # incompatible family
+        ]
+        assert _shipment_group(config, item, pool) is None  # only 1 compatible row left - not a group
+
+
+class TestDiffsAndFlagAggregation:
+    """_diffs_and_flag()'s qty_override/rate_override/value_override
+    parameters - what actually clears the false mismatch once
+    _shipment_group() has found a group (fix 2.F)."""
+
+    def test_end_to_end_multi_shipment_group_clears_false_qty_mismatch(self):
+        """The real HRS PO 3000001079 shape, run through the full
+        _shipment_group() -> _diffs_and_flag() pipeline: comparing the PO's
+        200,000 KG against any single 34,000/30,000 KG row would report an
+        80%+ false mismatch (see the old single-row behavior this replaces);
+        aggregating clears it because the rows genuinely reconcile."""
+        config = _test_config()
+        item = _Matchable("Natural Rubber ISNR 20", Decimal("200000"), "KG", Decimal("150"), Decimal("30000000.00"))
+        qtys = [Decimal("34000")] * 5 + [Decimal("30000")]
+        pool = [_FakeMir("Natural Rubber ISNR 20", q, "KG", Decimal("150"), q * Decimal("150")) for q in qtys]
+        group = _shipment_group(config, item, pool)
+        assert group is not None
+        (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+         taxable_value_diff, final_value_diff, *_rest) = _diffs_and_flag(
+            config, item, pool[0], qty_override=group.qty, rate_override=group.rate, value_override=group.value,
+        )
+        assert qty_mismatched is False
+        assert rate_mismatched is False
+        assert is_flagged is False
+        assert qty_diff == Decimal("0")
+
+    def test_without_override_the_same_pool_would_have_falsely_flagged(self):
+        """Confirms the bug this fix targets actually existed - the
+        single-row comparison (no override) on the very same data reports a
+        real (false) quantity mismatch."""
+        config = _test_config()
+        item = _Matchable("Natural Rubber ISNR 20", Decimal("200000"), "KG", Decimal("150"), Decimal("30000000.00"))
+        single_row = _FakeMir("Natural Rubber ISNR 20", Decimal("34000"), "KG", Decimal("150"), Decimal("5100000.00"))
+        (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
+         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
+         taxable_value_diff, final_value_diff, *_new_fields) = _diffs_and_flag(config, item, single_row)
+        assert qty_mismatched is True
+        assert is_flagged is True
+
+    def test_override_forces_uom_mismatch_false(self):
+        """A caller only ever passes an override after _shipment_group()
+        already excluded uom-incompatible rows - uom_mismatch must read
+        False in this path, not whatever the arbitrarily-chosen `mir`
+        argument's own uom happens to produce."""
+        config = _test_config()
+        item = _Matchable("Reclaim Rubber", Decimal("1000"), "KG", Decimal("50"), Decimal("50000.00"))
+        mir = _FakeMir("Reclaim Rubber", Decimal("500"), "NOS", Decimal("50"), Decimal("25000.00"))  # incompatible family
+        (_qty_diff, _rate_diff, _value_diff, _is_flagged, uom_mismatch, *_rest) = _diffs_and_flag(
+            config, item, mir, qty_override=Decimal("1000"), rate_override=Decimal("50"), value_override=Decimal("50000.00"),
+        )
+        assert uom_mismatch is False
 
 
 class TestTaxTypeMismatch:
