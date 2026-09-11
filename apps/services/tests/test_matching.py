@@ -23,6 +23,7 @@ from apps.services.matching import FLAG_DIFF_PCT, MATCH_THRESHOLD
 from apps.services.matching_core import (
     _MatchConfig,
     _Matchable,
+    _VENDOR_SIMILARITY_THRESHOLD,
     _closeness,
     _diff_pct,
     _diffs_and_flag,
@@ -198,6 +199,86 @@ class TestVendorMatches:
         containment alone would be too permissive a gate."""
         assert _vendor_matches("ab", "abcdef") is False
         assert _vendor_matches("", "anything") is False
+
+
+# ── _vendor_matches(): short-name equality + typo tolerance (added 2026-09-11) ──
+# Three real failure classes found by replaying every live Drive file through
+# the matcher (all three plants, 242 distinct real vendor names). Each rule
+# below was collision-tested against all 242 names before being written: the
+# combined change makes exactly 14 new vendor pairs match, every one of them
+# the same real company, and zero of them a group company (see
+# TestVendorMatchesGroupCompanySafety below for why that last point matters).
+
+class TestVendorMatchesShortNameEquality:
+    def test_three_letter_vendor_matches_itself(self):
+        """Real case, 20 unmatched Vapi line items: PO CSV says "SRF Ltd",
+        MIR says "SRF Limited". Both normalize to "srf" - identical - but the
+        old length floor (>=4) rejected them purely for being 3 characters
+        long, so every SRF delivery read as "PO Not Found". Exact equality is
+        checked before the floor now, since two identical normalized names
+        cannot be a false "containment" no matter how short they are."""
+        assert _vendor_matches("srf", "srf") is True
+        assert _vendor_matches("grp", "grp") is True
+
+    def test_short_name_still_cannot_match_by_containment(self):
+        """The floor is only lifted for EXACT equality - a short name must
+        still never match merely by being contained inside a longer one, which
+        is the permissiveness the floor exists to prevent. "srf" must not
+        match "srfindustries"."""
+        assert _vendor_matches("srf", "srfindustries") is False
+        assert _vendor_matches("ab", "abcdef") is False
+
+
+class TestVendorMatchesTypoTolerance:
+    def test_single_character_typo_still_matches(self):
+        """Real cases found across all three plants - one mistyped character
+        in the MIR file blocked the whole vendor's matching:
+          "JMF Performance" (PO) vs "JMF Perfomance" (MIR)  - missing 'r'
+          "Rachana Plasticizers" (PO) vs "Rachna ..." (MIR) - missing 'a'
+          "Gujarat Bondchem" (MIR) vs "Gujrat ..." (PO)     - missing 'a'
+        A similarity fallback catches these generically, so a NEW typo on a
+        different vendor tomorrow is handled without a code change."""
+        assert _vendor_matches("jmfperformancematerial", "jmfperfomancematerial") is True
+        assert _vendor_matches("rachanaplasticizer", "rachnaplasticizer") is True
+        assert _vendor_matches("gujaratbondchem", "gujratbondchem") is True
+        assert _vendor_matches("mkmarketing", "mkmarkating") is True
+
+    def test_genuinely_different_vendors_stay_rejected(self):
+        """The real reason the similarity threshold is 0.90 and not lower.
+        These are the closest-scoring GENUINELY DIFFERENT vendor pairs in the
+        live data - all sit at 0.857 or below, and all must stay rejected. A
+        vendor gate that merged any of these would silently attribute one
+        supplier's deliveries to another, which is precisely the failure the
+        hard gate exists to prevent."""
+        assert _vendor_matches("bpchemical", "lbgchemical") is False           # 0.857
+        assert _vendor_matches("eemoenterprise", "msenterprise") is False      # 0.846
+        assert _vendor_matches("maduratechnicaltextile", "sanrheatechnicaltextile") is False  # 0.844
+        assert _vendor_matches("jayamindustrie", "yashoindustrie") is False    # 0.786
+        assert _vendor_matches("btpolymer", "starpolymer") is False            # 0.800
+
+    def test_threshold_constant_is_pinned(self):
+        """Guard, not a tautology: the gap between the lowest real typo pair
+        that must match (0.909, "M K Marketing" vs "M.K.Markating") and the
+        highest genuinely-different pair that must not (0.857, "Bp Chemicals"
+        vs "LBG Chemicals") is only ~5 points. Anyone lowering this constant
+        to catch one more spelling variant needs to re-run the collision check
+        against every real vendor name first - this assert is here to make
+        that a deliberate, visible decision rather than a quiet edit."""
+        assert _VENDOR_SIMILARITY_THRESHOLD == 0.90
+
+
+class TestVendorMatchesGroupCompanySafety:
+    def test_group_company_never_merges_with_a_real_vendor(self):
+        """Ravasco Transmission & Packing (Vapi/Achhad) and Hindustan Rubbers
+        (Silvassa) are the company's OWN plants. Their MIR rows are inter-plant
+        jobwork/ex-work transfers with no PO raised at all (confirmed in the
+        live data: 776 such rows across the three MIR files, of which all but
+        30 have no PO number). They must never be merged into a real supplier's
+        vendor gate - doing so would attribute an internal stock transfer to a
+        third-party purchase order."""
+        assert _vendor_matches("ravascotransmissionpacking", "yogleelasulphuragchemindustrie") is False
+        assert _vendor_matches("hindustanrubber", "jayamindustrie") is False
+        assert _vendor_matches("hindustanrubbersilvassa", "shreejirubtech") is False
 
 
 # ── _po_number_matches(): Tier-1 PO<->MIR shortcut (exact/substring, case-insensitive) ──

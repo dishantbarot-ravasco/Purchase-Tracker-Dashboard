@@ -86,6 +86,8 @@ into stock across multiple lots over time), unaffected by fix 2.B.
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from difflib import SequenceMatcher
+from functools import lru_cache
 from typing import Callable, NamedTuple, Optional
 
 from django.db import transaction
@@ -230,20 +232,86 @@ def _token_overlap(a: str, b: str) -> Decimal:
     return Decimal(len(ta & tb)) / Decimal(len(ta | tb))
 
 
+# Minimum similarity for the typo fallback in _vendor_matches() below.
+#
+# 0.90 is an empirically-fitted value, not a round number picked by feel -
+# re-derive it against real data before changing it. Measured across all 242
+# distinct vendor names in the live PO CSVs and MIR sheets of all three
+# plants (2026-09-11):
+#   - Lowest-scoring pair that IS the same supplier and must match:
+#       "M K Marketing" vs "M.K.Markating"            -> 0.909
+#   - Highest-scoring pair that is NOT the same supplier and must not match:
+#       "Bp Chemicals" vs "LBG Chemicals"             -> 0.857
+#       "Eemo Enterprise" vs "MS Enterprises"         -> 0.846
+#       "Madura Technical" vs "Sanrhea Technical..."  -> 0.844
+# The usable window is therefore only (0.857, 0.909]; 0.90 sits inside it
+# with a little headroom on the side that matters (a false merge silently
+# attributes one supplier's deliveries to another, while a missed merge just
+# shows up as the already-visible "PO Not Found").
+#
+# Two real same-supplier pairs deliberately fall BELOW this threshold and are
+# not rescued by it - "MADURA INDL TEXTILES LTD" (0.850, an abbreviation, see
+# VENDOR_ALIASES in parsers/common.py) and "PW TEAM ELINA KALINICHENKO" vs
+# "PW Team Eline Kalina Kalinichenko" (0.885, reordered/renamed words). They
+# are left unmatched rather than lowering the threshold past "Bp Chemicals" /
+# "LBG Chemicals", which is the line this constant exists to stay above.
+_VENDOR_SIMILARITY_THRESHOLD = 0.90
+
+
+@lru_cache(maxsize=4096)
+def _vendor_similarity(a: str, b: str) -> float:
+    """Cached SequenceMatcher ratio. run_full_match() compares every PO line
+    item against every MIR row for its vendor, so the same handful of
+    normalized name pairs recur thousands of times per run - there are only
+    ~240 distinct vendor names across all three plants, so this cache turns
+    an O(line items x MIR rows) similarity cost into O(distinct name pairs)."""
+    return SequenceMatcher(None, a, b).ratio()
+
+
 def _vendor_matches(a: str, b: str) -> bool:
-    """Containment, not equality - HRS's Stock sheet appends a city suffix
-    to its party_name that neither MIR nor the PO CSV carry (confirmed:
-    'Rubamin Private Limited' in MIR/PO vs 'Rubamin Private Limited -
-    Vadodara' in Stock, both normalizing to 'rubamin...' with no exact
-    match). The shorter normalized name appearing inside the longer one
-    catches this without loosening the gate into a fuzzy/scored check -
-    vendor stays a hard yes/no, just not a strict string equality.
-    A length floor avoids a short normalized name trivially matching
-    everything (e.g. an empty or near-empty normalization)."""
-    if not a or not b or len(a) < 4 or len(b) < 4:
+    """The hard vendor gate. Three ways to pass, in increasing looseness -
+    vendor stays a yes/no decision, it is never blended into the score.
+
+    1. EXACT equality, at any length. Checked before the length floor
+       because two identical normalized names cannot be a false containment
+       however short they are. Real case: PO CSV "SRF Ltd" and MIR "SRF
+       Limited" both normalize to "srf", and the floor alone used to reject
+       them for being 3 characters long - so NO SRF delivery could ever
+       match, whatever else lined up. Same for "GRP Limited" / "GRP LTD."
+       -> "grp". (Opening the gate is necessary but not always sufficient:
+       SRF's own MIR rows name materials by product code - "EP315B5/158" -
+       against verbose PO descriptions, so most still fail the material
+       threshold afterwards and need the MIR PO-number column instead.)
+
+    2. CONTAINMENT (floor: both sides >= 4 chars). HRS's Stock sheet appends
+       a city suffix its MIR/PO data doesn't carry - 'Rubamin Private
+       Limited' vs 'Rubamin Private Limited - Vadodara', both normalizing to
+       'rubamin...' with no exact match. The floor stays at 4 for this case
+       specifically: a 3-character name appearing INSIDE a longer one is a
+       real false-positive risk ("srf" inside "srfindustries"), unlike two
+       short names being equal.
+
+    3. SIMILARITY >= _VENDOR_SIMILARITY_THRESHOLD (added 2026-09-11). Catches
+       single-character typos in the MIR file, which were blocking every
+       delivery from the affected vendor: "JMF Perfomance" (missing r),
+       "Rachna Plasticizers" (missing a), "Gujrat Bondchem" (missing a),
+       "M.K.Markating". Deliberately a GENERIC rule rather than a lookup
+       table, so the next typo - on a vendor nobody has mistyped yet - is
+       absorbed without a code change. See that constant's own comment for
+       why the threshold cannot safely go lower, and VENDOR_ALIASES in
+       parsers/common.py for the narrow cases this still cannot reach.
+
+    Callers pass values already through normalize_vendor_for_matching()."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(a) < 4 or len(b) < 4:
         return False
     shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    return shorter in longer
+    if shorter in longer:
+        return True
+    return _vendor_similarity(a, b) >= _VENDOR_SIMILARITY_THRESHOLD
 
 
 # Fix 2.E: token-boundary PO-number matching, not a plain substring test.

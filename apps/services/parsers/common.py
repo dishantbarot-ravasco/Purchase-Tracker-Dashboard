@@ -204,14 +204,83 @@ def normalize_vendor_for_matching(name: str) -> str:
         non-alphanumeric runs first, before the final alphanumeric-only
         join), not to the whole concatenated string, so it can only ever
         drop one real trailing "s" per word, never eat into an unrelated
-        part of a longer joined name."""
+        part of a longer joined name.
+      - A standalone "private" left behind when the name reads "Private
+        Ltd" rather than "Private Limited" (added 2026-09-11). The shared
+        _LEGAL_SUFFIX_RE matches the PHRASE "private limited" and the word
+        "ltd" separately, so "Shreeji Rubtech Private Ltd" normalized to
+        "shreejirubtechprivate" and stopped containment-matching MIR's
+        "SHREEJI RUBTECH PVT. LTD. (GUJARAT)" -> "shreejirubtechgujarat".
+        This strip is applied HERE and not by adding "private" to
+        _LEGAL_SUFFIX_RE itself, because normalize_vendor() shares that
+        pattern and its output is a persisted natural key - see
+        normalize_vendor()'s own docstring for the snapshot-forking
+        incident that would cause.
+
+    Finally, VENDOR_ALIASES (below) is applied as a last-resort lookup for
+    the handful of real variants none of the generic rules above can reach.
+    """
+    n = _normalize_vendor_for_matching_base(name)
+    return VENDOR_ALIASES.get(n, n)
+
+
+def _normalize_vendor_for_matching_base(name: str) -> str:
+    """normalize_vendor_for_matching() minus the VENDOR_ALIASES lookup.
+    Split out only so VENDOR_ALIASES can be built from readable vendor
+    names at import time without recursing into its own lookup."""
     if not name:
         return ""
     n = _LEGAL_SUFFIX_RE.sub("", name.lower())
     n = re.sub(r"\band\b", " ", n)
+    n = re.sub(r"\bprivate\b", " ", n)
     words = [w for w in re.split(r"[^a-z0-9]+", n) if w]
     words = [w[:-1] if len(w) > 3 and w.endswith("s") else w for w in words]
     return "".join(words)
+
+
+# Explicit vendor-name equivalences for the PO<->MIR/MIR<->Stock vendor gate
+# ONLY - never for a persisted identity key (same rule as
+# normalize_vendor_for_matching() itself, which is the only caller).
+#
+# **Keep this map small, and add to it only as a last resort.** The generic
+# rules above, plus matching_core.py's own exact-equality and 0.90-similarity
+# fallback in _vendor_matches(), already absorb the large majority of real
+# spelling drift between the PO CSV and the MIR sheets - including typos on
+# vendors nobody has seen yet, which is the whole point of preferring a
+# generic rule to a lookup table. An entry here only earns its place when the
+# two spellings are NOT reachable generically: an abbreviation or a genuinely
+# different word, not a mistyped character.
+#
+# Bar for adding an entry:
+#   1. Confirm the two names are the same legal supplier, not two suppliers
+#      with similar names (e.g. "Bp Chemicals" and "LBG Chemicals" score 0.857
+#      similar and are different companies - that near-miss is exactly why
+#      _VENDOR_SIMILARITY_THRESHOLD sits at 0.90 and not lower).
+#   2. Neither side may be a group company. Ravasco Transmission & Packing
+#      (Vapi/Achhad) and Hindustan Rubbers (Silvassa) are the company's own
+#      plants; their MIR rows are inter-plant jobwork/ex-work transfers with
+#      no PO raised at all, so folding one onto a real supplier would
+#      attribute an internal transfer to a third-party purchase order.
+#      Enforced by test_alias_map_never_targets_a_group_company.
+#   3. Prefer fixing the spelling at source. Every entry here is a standing
+#      workaround for a data-entry inconsistency that will keep producing new
+#      variants until the two files draw vendor names from the same master.
+#
+# Written as readable names and normalized at import time, so a reader can
+# see what each entry actually means.
+_VENDOR_ALIAS_SOURCE = {
+    # "INDL" is an abbreviation of "Industrial", not a typo - it scores only
+    # 0.850 similarity (below the 0.90 threshold) and no generic folding rule
+    # can expand an abbreviation safely. Confirmed same supplier: the PO CSV
+    # writes "Madura Industrial Textiles Ltd" on HRS/Achhad/Vapi POs, Vapi's
+    # MIR writes "MADURA INDL TEXTILES LTD".
+    "MADURA INDL TEXTILES LTD": "Madura Industrial Textiles Ltd",
+}
+
+VENDOR_ALIASES: dict[str, str] = {
+    _normalize_vendor_for_matching_base(variant): _normalize_vendor_for_matching_base(canonical)
+    for variant, canonical in _VENDOR_ALIAS_SOURCE.items()
+}
 
 
 def normalize_material(name: str) -> str:

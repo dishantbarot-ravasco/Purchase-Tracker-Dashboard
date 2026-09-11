@@ -16,6 +16,7 @@ from apps.services.parsers.common import (
     normalize_material,
     normalize_uom,
     normalize_vendor,
+    VENDOR_ALIASES,
     normalize_vendor_for_matching,
     to_code_str,
     to_date,
@@ -212,6 +213,90 @@ class TestNormalizeVendorForMatching:
         normalize_vendor(), only under normalize_vendor_for_matching()."""
         assert normalize_vendor("Shreeji Minerals & Chemical Co") == "shreejimineralschemical"
         assert normalize_vendor_for_matching("Shreeji Minerals & Chemical Co") == "shreejimineralchemical"
+
+    def test_strips_standalone_private_not_only_the_private_limited_phrase(self):
+        """Real case, 3 unmatched Vapi line items: the shared legal-suffix
+        pattern matches the PHRASE "private limited" and the word "ltd", but
+        not a bare "Private" sitting in front of "Ltd". So "Shreeji Rubtech
+        Private Ltd" (PO) kept a stray "private" in its normalized form and
+        stopped containment-matching "SHREEJI RUBTECH PVT. LTD. (GUJARAT)"
+        (MIR), which folds to "shreejirubtechgujarat"."""
+        assert normalize_vendor_for_matching("Shreeji Rubtech Private Ltd") == "shreejirubtech"
+        po_side = normalize_vendor_for_matching("Shreeji Rubtech Private Ltd")
+        mir_side = normalize_vendor_for_matching("SHREEJI RUBTECH PVT. LTD. (GUJARAT)")
+        assert po_side in mir_side
+
+    def test_standalone_private_strip_does_not_touch_normalize_vendor(self):
+        """THE critical regression guard for this change. The standalone
+        "private" strip is deliberately NOT added to the shared
+        _LEGAL_SUFFIX_RE, because normalize_vendor() uses that same pattern
+        and its output is a PERSISTED key - stock_identity.py's
+        lot_natural_key() upserts stock lots on it. Changing it would make
+        every existing lot for any vendor with a bare "Private" in its name
+        look brand-new on the next sync and fork its snapshot history, which
+        is the exact incident normalize_vendor()'s own docstring warns
+        about. normalize_vendor() must keep the "private"."""
+        assert normalize_vendor("Shreeji Rubtech Private Ltd") == "shreejirubtechprivate"
+        assert normalize_vendor_for_matching("Shreeji Rubtech Private Ltd") == "shreejirubtech"
+
+
+# ── VENDOR_ALIASES: the small, explicit escape hatch ──────────────────────────
+# Deliberately last-resort. The generic rules above (legal-suffix folding,
+# "and"/plural folding, standalone "private", plus matching_core.py's own
+# exact-equality and 0.90 similarity fallback) handle the large majority of
+# real spelling drift WITHOUT a per-vendor entry, so that a typo introduced
+# on some other vendor next month is caught with no code change. This map is
+# only for variants those rules provably cannot reach - see its own comment
+# in common.py for the bar an entry has to clear.
+
+class TestVendorAliases:
+    def test_known_abbreviation_resolves_to_the_canonical_name(self):
+        """"MADURA INDL TEXTILES LTD" (MIR) vs "Madura Industrial Textiles
+        Ltd" (PO). "INDL" is an abbreviation, not a typo - it scores only
+        0.850 similarity, below the 0.90 threshold, and no generic folding
+        rule can expand it safely. This is exactly the case the alias map
+        exists for."""
+        assert (
+            normalize_vendor_for_matching("MADURA INDL TEXTILES LTD")
+            == normalize_vendor_for_matching("Madura Industrial Textiles Ltd")
+        )
+
+    def test_alias_applies_regardless_of_casing_and_punctuation(self):
+        """An alias is stored and looked up in normalized form, so the same
+        entry covers every casing/punctuation variant of that name without
+        needing one row per spelling."""
+        assert (
+            normalize_vendor_for_matching("madura indl. textiles, ltd.")
+            == normalize_vendor_for_matching("Madura Industrial Textiles Ltd")
+        )
+
+    def test_alias_map_never_targets_a_group_company(self):
+        """Hard safety rule. Ravasco Transmission & Packing and Hindustan
+        Rubbers are the company's own plants; their MIR rows are inter-plant
+        jobwork transfers with no PO. An alias that folded a real supplier
+        onto one of them (or vice versa) would attribute an internal transfer
+        to a third-party PO. This asserts the property of the map itself
+        rather than of any one entry, so a future addition can't quietly
+        break it."""
+        banned = ("ravasco", "hindustanrubber")
+        for variant, canonical in VENDOR_ALIASES.items():
+            for name in (variant, canonical):
+                assert not any(b in name for b in banned), f"alias touches a group company: {variant!r} -> {canonical!r}"
+
+    def test_alias_entries_are_stored_pre_normalized(self):
+        """Both sides of every entry must already be in normalized form,
+        otherwise the lookup in normalize_vendor_for_matching() silently
+        never fires. Cheap structural guard against a malformed addition."""
+        for variant, canonical in VENDOR_ALIASES.items():
+            assert variant == variant.lower() and variant.isalnum(), f"alias key not normalized: {variant!r}"
+            assert canonical == canonical.lower() and canonical.isalnum(), f"alias value not normalized: {canonical!r}"
+
+    def test_alias_targets_are_not_themselves_aliased(self):
+        """No chains: a canonical name must not itself be a key in the map,
+        since the lookup only resolves one hop and a chain would resolve
+        inconsistently depending on which spelling came in first."""
+        for canonical in VENDOR_ALIASES.values():
+            assert canonical not in VENDOR_ALIASES, f"alias chain via {canonical!r}"
 
 
 # ── normalize_material(): lowercases/collapses punctuation for description matching ──
