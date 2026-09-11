@@ -1105,10 +1105,20 @@ class RTPVapiMIREntry(models.Model):
 
     po_number_raw = models.CharField(
         max_length=100, blank=True,
-        help_text="MIR's own 'SAP P.O' field - empty on every row confirmed this session, kept for "
-                   "forward compatibility (see the RTP-Vapi section header comment). Same reliability "
-                   "caveat as HRSMIREntry.po_number_raw when it does start being populated: a tier-1 "
-                   "shortcut only, never a sole join key.",
+        help_text="Sourced from the MIR sheet's 'PURCHASE ORDER' column (added 2026-09-11 at the "
+                   "project owner's request specifically for better PO<->MIR matching - column K, "
+                   "inserted after 'STATE', shifting every later column right by one - see "
+                   "vapi_mir.py's module docstring). Before this the sheet had no populated PO-number "
+                   "column at all (the separate, still-present 'SAP P.O' field - see sap_po_number - "
+                   "was 100% blank on every row checked). Same reliability caveat as "
+                   "HRSMIREntry.po_number_raw: a tier-1 shortcut only, never a sole join key.",
+    )
+    sap_po_number = models.CharField(
+        max_length=100, blank=True,
+        help_text="MIR's own 'SAP P.O' field (column D) - empty on every row confirmed 2026-09-10, "
+                   "kept for forward compatibility. Not the same column as po_number_raw (which reads "
+                   "the newer, actually-populated 'PURCHASE ORDER' column added 2026-09-11) - don't "
+                   "conflate the two.",
     )
     sap_grn_number = models.CharField(max_length=50, blank=True)
     park_invoice_no = models.CharField(max_length=50, blank=True)

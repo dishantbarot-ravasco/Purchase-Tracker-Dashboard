@@ -36,7 +36,7 @@ from apps.services.parsers.vapi_mir import HeaderMismatch, parse_vapi_mir_xlsx
 from apps.services.sync_utils import unchanged
 
 _FIELDS = [
-    "month", "mir_no", "mir_date", "po_number_raw", "sap_grn_number", "park_invoice_no",
+    "month", "mir_no", "mir_date", "po_number_raw", "sap_po_number", "sap_grn_number", "park_invoice_no",
     "post", "post_no_correction", "party_name", "state", "invoice_no", "invoice_date",
     "material_description", "item_code", "qty", "uom", "rate", "taxable_value",
     "others_with_gst", "gst_rate_pct", "igst_amt", "cgst_amt", "sgst_amt",

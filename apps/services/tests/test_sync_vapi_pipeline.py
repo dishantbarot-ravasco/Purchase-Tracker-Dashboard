@@ -103,36 +103,37 @@ _MIR_ROW_A = ("Vapi Polymers Pvt Ltd", "NBR 3345", 800, 150.00)
 _MIR_ROW_B = ("Kedar Metals Pvt Ltd", "Zinc Oxide", 300, 205.00)
 
 
-def _write_mir_row(ws, row_idx, party_name, material_description, qty, rate):
+def _write_mir_row(ws, row_idx, party_name, material_description, qty, rate, po_number="1000001500"):
     ws[f"A{row_idx}"] = "May-26"
     ws[f"B{row_idx}"] = "MIR01/01"
     ws[f"C{row_idx}"] = "2026-05-01"
-    ws[f"D{row_idx}"] = ""  # SAP P.O - ~100% blank on real data
+    ws[f"D{row_idx}"] = ""  # SAP P.O - ~100% blank on real data (sap_po_number)
     ws[f"E{row_idx}"] = "GRN001"
     ws[f"F{row_idx}"] = ""
     ws[f"G{row_idx}"] = ""
     ws[f"H{row_idx}"] = ""
     ws[f"I{row_idx}"] = party_name
     ws[f"J{row_idx}"] = "Gujarat"
-    ws[f"K{row_idx}"] = "INV001"
-    ws[f"L{row_idx}"] = "2026-05-01"
-    ws[f"M{row_idx}"] = material_description
-    ws[f"N{row_idx}"] = "IC001"
-    ws[f"O{row_idx}"] = qty
-    ws[f"P{row_idx}"] = "KG"
-    ws[f"Q{row_idx}"] = rate
-    ws[f"R{row_idx}"] = qty * rate
-    ws[f"S{row_idx}"] = 0
-    ws[f"T{row_idx}"] = 18.00  # gst_rate_pct - whole percentage, not a fraction
-    ws[f"U{row_idx}"] = qty * rate * 0.18
-    ws[f"V{row_idx}"] = 0
+    ws[f"K{row_idx}"] = po_number  # PURCHASE ORDER - added 2026-09-11, the actually-populated PO-number column (po_number_raw)
+    ws[f"L{row_idx}"] = "INV001"
+    ws[f"M{row_idx}"] = "2026-05-01"
+    ws[f"N{row_idx}"] = material_description
+    ws[f"O{row_idx}"] = "IC001"
+    ws[f"P{row_idx}"] = qty
+    ws[f"Q{row_idx}"] = "KG"
+    ws[f"R{row_idx}"] = rate
+    ws[f"S{row_idx}"] = qty * rate
+    ws[f"T{row_idx}"] = 0
+    ws[f"U{row_idx}"] = 18.00  # gst_rate_pct - whole percentage, not a fraction
+    ws[f"V{row_idx}"] = qty * rate * 0.18
     ws[f"W{row_idx}"] = 0
     ws[f"X{row_idx}"] = 0
     ws[f"Y{row_idx}"] = 0
-    ws[f"Z{row_idx}"] = qty * rate * 1.18
-    ws[f"AA{row_idx}"] = "Raw Material"
-    ws[f"AB{row_idx}"] = "2026-05-02"
-    ws[f"AC{row_idx}"] = "2026-05-03"
+    ws[f"Z{row_idx}"] = 0
+    ws[f"AA{row_idx}"] = qty * rate * 1.18
+    ws[f"AB{row_idx}"] = "Raw Material"
+    ws[f"AC{row_idx}"] = "2026-05-02"
+    ws[f"AD{row_idx}"] = "2026-05-03"
 
 
 def _build_mir_workbook(rows) -> bytes:
@@ -172,6 +173,19 @@ class TestSyncVapiMir:
 
         entry = RTPVapiMIREntry.objects.get(source_row_ref=str(MIR_DATA_START_ROW))
         assert entry.gst_rate_pct == Decimal("18.00")
+
+    def test_new_purchase_order_column_populates_po_number_raw(self, tmp_path):
+        """Header change 2026-09-11: the new 'PURCHASE ORDER' column (K,
+        added at the project owner's request for better matching) feeds
+        po_number_raw; the original, still-100%-blank 'SAP P.O' column (D)
+        is now captured separately as sap_po_number, not conflated with it."""
+        fixture_path = tmp_path / "mir.xlsx"
+        fixture_path.write_bytes(_build_mir_workbook([_MIR_ROW_A]))
+        call_command("sync_vapi_mir", file=str(fixture_path))
+
+        entry = RTPVapiMIREntry.objects.get(source_row_ref=str(MIR_DATA_START_ROW))
+        assert entry.po_number_raw == "1000001500"
+        assert entry.sap_po_number == ""
 
     def test_a_row_no_longer_in_the_sheet_is_deactivated_not_deleted(self, tmp_path):
         fixture_path = tmp_path / "mir.xlsx"
