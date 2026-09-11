@@ -174,7 +174,13 @@ class TestTriggerMismatchReport:
         assert response.status_code == 403
 
     def test_correct_secret_runs_and_returns_ok(self, settings):
+        # MISMATCH_REPORT_PLANT_HEADS_ENABLED defaults to False as of
+        # 2026-09-11 (see send_plant_mismatch_reports()'s own docstring) -
+        # this test exercises the real-delivery path, so it needs the
+        # killswitch explicitly on; test_disabled_by_default_returns_ok_
+        # without_sending below covers the actual default.
         settings.REPORT_CRON_SECRET = "the-real-secret"
+        settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED = True
         response = APIClient().get("/api/internal/send-mismatch-report", {"secret": "the-real-secret"})
         assert response.status_code == 200
         body = response.json()
@@ -182,6 +188,29 @@ class TestTriggerMismatchReport:
         # No mismatches seeded in this test - every plant is skipped, not an error.
         assert body["plants_sent"] == 0
         assert body["plants_skipped_no_mismatches"] == 3
+
+    def test_disabled_by_default_returns_ok_without_sending(self, settings):
+        """MISMATCH_REPORT_PLANT_HEADS_ENABLED's actual default (False) -
+        the endpoint still returns 200/ok, just with plant_heads_disabled
+        instead of a real send count."""
+        settings.REPORT_CRON_SECRET = "the-real-secret"
+        assert settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED is False
+        response = APIClient().get("/api/internal/send-mismatch-report", {"secret": "the-real-secret"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "ok"
+        assert body["plants_sent"] == 0
+        assert body["plant_heads_disabled"] is True
+
+    def test_test_recipient_bypasses_the_disabled_default(self, settings, mailoutbox):
+        settings.REPORT_CRON_SECRET = "the-real-secret"
+        assert settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED is False
+        response = APIClient().get(
+            "/api/internal/send-mismatch-report",
+            {"secret": "the-real-secret", "test_recipient": "dishant.barot@ravasco.com"},
+        )
+        assert response.status_code == 200
+        assert response.json().get("plant_heads_disabled") is not True
 
     def test_no_login_session_required(self):
         client = APIClient()

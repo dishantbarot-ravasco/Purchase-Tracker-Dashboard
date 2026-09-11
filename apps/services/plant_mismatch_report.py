@@ -291,10 +291,28 @@ def send_plant_mismatch_reports(*, test_recipient: str | None = None) -> dict:
     admin's inbox) - real content, per-plant, still built and sent
     separately (not one combined email), just addressed differently.
 
+    Real plant-head/admin delivery (i.e. NOT a test_recipient call) is
+    gated by settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED (added
+    2026-09-11, project owner: "remove the data mismatch email module to
+    plant heads completely or comment in for a while till i get maching
+    logic coorect") - defaults to False while the matching engine is still
+    being tuned, so real plant heads don't get a mix of genuine and
+    false-positive mismatches. When disabled, no report is built or sent to
+    anyone (not even the admin CC) and the result carries
+    plant_heads_disabled=True instead of a real send count - flip
+    MISMATCH_REPORT_PLANT_HEADS_ENABLED back to true (env var, no code
+    change) once matching is trusted again. test_recipient calls are NEVER
+    gated by this - they already never reach a real plant head or admin.
+
     Best-effort per plant: one plant's report failing to build/send must
     not block the other two - same convention as
     send_daily_consumption_reports()/send_monthly_consumption_reports()."""
     today = timezone.localdate()
+
+    if not test_recipient and not settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED:
+        log.info("send_plant_mismatch_reports: skipped - MISMATCH_REPORT_PLANT_HEADS_ENABLED is False")
+        return {"date": today.isoformat(), "plants_sent": 0, "plants_skipped_no_mismatches": 0, "plant_heads_disabled": True}
+
     admin_emails = [] if test_recipient else _admin_emails()
     sent = 0
     skipped_empty = 0

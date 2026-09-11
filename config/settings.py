@@ -408,6 +408,22 @@ SAFECUBE_API_KEY = os.environ.get("SAFECUBE_API_KEY", "")
 # rather than failing open - see each view's own docstring.
 REPORT_CRON_SECRET = os.environ.get("REPORT_CRON_SECRET", "")
 
+# Temporary killswitch (added 2026-09-11, project owner: "remove the data
+# mismatch email module to plant heads completely or comment in for a while
+# till i get matching logic correct") - the matching engine's qty/rate
+# mismatch flags are still being actively tuned (see CLAUDE.md's "Match
+# accuracy" / recent aggregation-fix notes), so the per-plant-head Data
+# Correction email (apps/services/plant_mismatch_report.py) would currently
+# hand real plant heads a mix of genuine and false-positive mismatches.
+# Defaults to DISABLED (real plant-head/admin delivery is skipped) until
+# explicitly turned back on via this env var - no code change needed to
+# re-enable, just set MISMATCH_REPORT_PLANT_HEADS_ENABLED=true in Render's
+# environment once the matching logic is trusted again. The test_recipient
+# override (send_plant_mismatch_reports(test_recipient=...)) is NEVER
+# gated by this - it already never reaches a real plant head or admin, and
+# stays available for verifying the pipeline while matching is tuned.
+MISMATCH_REPORT_PLANT_HEADS_ENABLED = os.environ.get("MISMATCH_REPORT_PLANT_HEADS_ENABLED", "false").lower() == "true"
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
     # 30 days - backs the persistent 'remember me' pt_refresh cookie.

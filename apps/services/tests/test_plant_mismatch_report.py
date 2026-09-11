@@ -104,6 +104,16 @@ class TestBuildPlantMismatchReportHRS:
 
 @pytest.mark.django_db
 class TestSendPlantMismatchReports:
+    # Real plant-head/admin delivery defaults to disabled as of 2026-09-11
+    # (see send_plant_mismatch_reports()'s own docstring on
+    # MISMATCH_REPORT_PLANT_HEADS_ENABLED) - every test in this class that
+    # exercises a REAL send (no test_recipient) needs it explicitly turned
+    # on; TestMismatchReportPlantHeadsKillswitch below tests the disabled
+    # default and the test_recipient bypass directly.
+    @pytest.fixture(autouse=True)
+    def _enable_plant_head_delivery(self, settings):
+        settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED = True
+
     def test_plant_with_nothing_flagged_is_skipped_entirely(self, mailoutbox):
         result = send_plant_mismatch_reports()
         assert result["plants_sent"] == 0
@@ -192,3 +202,52 @@ class TestSendPlantMismatchReports:
         html_body = mail.alternatives[0][0]
         assert "MIR Number" in html_body
         assert "Month" in html_body
+
+
+@pytest.mark.django_db
+class TestMismatchReportPlantHeadsKillswitch:
+    """MISMATCH_REPORT_PLANT_HEADS_ENABLED (added 2026-09-11) - real plant-
+    head/admin delivery defaults to disabled while the matching engine is
+    still being tuned. See send_plant_mismatch_reports()'s own docstring."""
+
+    def test_disabled_by_default_sends_nothing_even_with_real_mismatches(self, settings, mailoutbox):
+        assert settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED is False  # the actual default, not just this test's setup
+        make_user(email="admin4@ravasco.com", role="admin")
+        _make_po_mir_match(po_number="PO-30", qty_mismatched=True)
+
+        result = send_plant_mismatch_reports()
+
+        assert result["plant_heads_disabled"] is True
+        assert result["plants_sent"] == 0
+        assert len(mailoutbox) == 0
+
+    def test_test_recipient_still_works_while_disabled(self, settings, mailoutbox):
+        """The killswitch must never block the test_recipient path - it's
+        how the pipeline gets verified while matching is being tuned, and
+        it already never reaches a real plant head or admin."""
+        assert settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED is False
+        _make_po_mir_match(po_number="PO-31", qty_mismatched=True)
+
+        result = send_plant_mismatch_reports(test_recipient="dishant.barot@ravasco.com")
+
+        assert result["plants_sent"] == 1
+        assert "plant_heads_disabled" not in result
+        [mail] = mailoutbox
+        assert mail.to == ["dishant.barot@ravasco.com"]
+        assert mail.cc == []
+
+    def test_re_enabling_restores_real_delivery(self, settings, mailoutbox):
+        """Confirms the toggle is genuinely reversible with no code change -
+        just flipping the setting back on restores the exact same real-send
+        behavior TestSendPlantMismatchReports already covers."""
+        settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED = True
+        make_user(email="admin5@ravasco.com", role="admin")
+        _make_po_mir_match(po_number="PO-32", rate_mismatched=True)
+
+        result = send_plant_mismatch_reports()
+
+        assert result["plants_sent"] == 1
+        assert "plant_heads_disabled" not in result
+        [mail] = mailoutbox
+        assert mail.to == ["avijit.ghosh@ravasco.com"]
+        assert mail.cc == ["admin5@ravasco.com"]
