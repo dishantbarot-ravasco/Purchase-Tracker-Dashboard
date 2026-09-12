@@ -46,12 +46,20 @@ plain to_str() too.
 
 import datetime
 import io
+import re
 from dataclasses import dataclass
 
 import openpyxl
 from openpyxl.utils import column_index_from_string
 
-from apps.services.parsers.common import stream_rows, to_code_str, to_date, to_decimal, to_str
+from apps.services.parsers.common import (
+    repair_month_swapped_date,
+    stream_rows,
+    to_code_str,
+    to_date,
+    to_decimal,
+    to_str,
+)
 
 # ── Column/row layout constants ─────────────────────────────────────────────
 
@@ -128,6 +136,45 @@ def _month_label(cell) -> str:
     return v.strftime("%b-%y")
 
 
+# ── Transposed-date repair (MIR DATE column, 2026-09-12) ────────────────────
+
+_MIR_NO_MONTH_RE = re.compile(r"/\s*(\d{1,2})\s*$")
+
+
+def _mir_no_month(mir_no: str) -> int | None:
+    """The month encoded in a MIR number - 'MIR01/04' is April's first MIR.
+    Every real MIR number in this file carries it, and it is written by hand
+    as text, so it survives the Excel date-format damage the DATE column
+    suffers (see _repair_mir_date())."""
+    match = _MIR_NO_MONTH_RE.search(mir_no or "")
+    if not match:
+        return None
+    month = int(match.group(1))
+    return month if 1 <= month <= 12 else None
+
+
+def _repair_mir_date(value, mir_no: str):
+    """Undoes a day/month transposition in the DATE column using the month
+    the MIR number states independently.
+
+    Measured on the live file (2026-09-12): 267 of 782 real date cells are
+    stored by Excel itself with day and month swapped - a row numbered
+    'MIR01/04' (April) carries the datetime 2026-01-04, and the whole of
+    April reads as 1-30 January. The sheet was typed "01-04-2026" into cells
+    formatted month-first, so Excel committed the wrong date to the file.
+    openpyxl returns a genuine datetime and there is nothing to_date() can
+    do about it; only a second, independent record of the month can.
+
+    This matters well beyond cosmetics: matching now gates candidates on
+    whether a receipt could chronologically belong to an order
+    (matching_core.py's _date_verdict()), and a third of this plant's
+    receipts carrying a date three months off would reject real matches
+    wholesale. See repair_month_swapped_date() for the conditions under
+    which a value is left alone - a legitimately cross-month row is never
+    rewritten."""
+    return repair_month_swapped_date(to_date(value), _mir_no_month(mir_no))
+
+
 # ── Public entry point ───────────────────────────────────────────────────────
 
 def parse_vapi_mir_xlsx(file_bytes: bytes) -> list[ParsedVapiMirEntry]:
@@ -158,11 +205,12 @@ def parse_vapi_mir_xlsx(file_bytes: bytes) -> list[ParsedVapiMirEntry]:
         if not party_name:
             continue  # a blank Party Name means an empty row, same convention as HRS's/Achhad's parsers
 
+        mir_no = to_str(c["B"].value)
         entries.append(
             ParsedVapiMirEntry(
                 month=_month_label(c["A"]),
-                mir_no=to_str(c["B"].value),
-                mir_date=to_date(c["C"].value),
+                mir_no=mir_no,
+                mir_date=_repair_mir_date(c["C"].value, mir_no),
                 sap_po_number=to_code_str(c["D"].value),  # ~100% blank on real data - kept for forward compatibility, not used for matching
                 po_number_raw=to_code_str(c["K"].value),  # NEW 2026-09-11 - the actually-populated PO-number column, used for matching
                 sap_grn_number=to_code_str(c["E"].value),

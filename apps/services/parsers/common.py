@@ -387,3 +387,107 @@ def to_code_str(value) -> str:
     if isinstance(value, float) and value.is_integer():
         return str(int(value))
     return to_str(value)
+
+
+# ── PO-number hygiene (PO<->MIR matching, 2026-09-12) ───────────────────────
+# MIR's PO-number column is hand-typed free text. Before it can be used as a
+# decisive join key (see matching_core.py's PO-number contradiction gate), the
+# values that are NOT a PO number at all have to be separated from the ones
+# that are - a sentinel like "VERBAL" or a stray "36" must never be allowed to
+# either match a PO or, worse, contradict one.
+
+# Literal non-PO markers seen in the real MIR PO columns (RTP-Vapi's
+# 'PURCHASE ORDER' column, 2026-09-12: "VERBAL" appears on real rows meaning
+# "ordered by phone, no PO raised"). Compared case-insensitively after strip.
+_NON_PO_SENTINELS = {
+    "VERBAL", "VERBAL PO", "VERBAL ORDER", "NA", "N.A.", "N/A", "NIL", "NONE",
+    "-", "--", "TBD", "OPEN", "DIRECT", "CASH", "URGENT",
+}
+
+# A PO reference has to look like one. Real PO numbers across all three plants
+# take exactly two shapes: a 10-digit SAP numeral (3000001155, 1100000913,
+# 1000001703) or the legacy slashed form (HRS/HO/26-27/003). Anything shorter
+# is data-entry noise - confirmed against the live Vapi MIR PO column, which
+# carries bare values like "36" and "100000" alongside real PO numbers.
+# All-digit values are held to a stricter 8-digit floor than mixed ones,
+# precisely because a short bare number is the shape junk takes here.
+_PO_MIN_DIGITS = 8
+_PO_MIN_MIXED_LEN = 7
+_PO_SHAPED_RE = re.compile(r"^(?=.*\d)[A-Za-z0-9][A-Za-z0-9/\-& .,;]+$")
+
+
+def is_usable_po_reference(value: str) -> bool:
+    """True when `value` can be trusted as naming a real purchase order.
+
+    Deliberately conservative: this function's False answer is what keeps a
+    junk cell from being treated as evidence *against* a match (the
+    contradiction gate in matching_core.py), so the cost of wrongly
+    returning True is much higher than the cost of wrongly returning False.
+    An unusable value simply falls back to material-based identification,
+    exactly as if the cell were blank."""
+    s = (value or "").strip()
+    if not s or s.upper() in _NON_PO_SENTINELS:
+        return False
+    if not _PO_SHAPED_RE.match(s):
+        return False
+    if s.isdigit():
+        return len(s) >= _PO_MIN_DIGITS
+    return len(s) >= _PO_MIN_MIXED_LEN
+
+
+# Trailing parenthetical annotations a human added to a PO number in the
+# master CSV - e.g. "3000001104 (Changed Purchase Order)", "1000001445
+# (Rev 01)", "1000001488 (Changed Purchase Order, supersedes original)".
+# All 22 real cases across the three plants (2026-09-12) are a single
+# trailing "( ... )" group, so the pattern is anchored to the end rather
+# than stripping parentheses anywhere in the string.
+_PO_ANNOTATION_RE = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def clean_po_number(value: str) -> str:
+    """Strips a trailing human annotation from a PO number, leaving the bare
+    order number ("3000001104 (Changed Purchase Order)" -> "3000001104").
+
+    Used for MATCHING only, never as a persisted natural key - the stored
+    po_number must keep whatever the master CSV says, or a sync would fork
+    every annotated order into a second row (same rule, same reason, as
+    normalize_vendor() vs normalize_vendor_for_matching())."""
+    s = (value or "").strip()
+    if not s:
+        return ""
+    cleaned = _PO_ANNOTATION_RE.sub("", s).strip()
+    return cleaned or s
+
+
+def repair_month_swapped_date(value: datetime.date | None, expected_month: int | None) -> datetime.date | None:
+    """Repairs a date whose day and month were transposed, using a month the
+    caller knows independently.
+
+    Real defect this exists for (confirmed 2026-09-12 against the live RTP
+    VAPI MIR file): 267 of its 782 real date cells are stored by Excel
+    itself with day and month swapped - a row whose MIR number is
+    'MIR01/04' (April) carries the datetime 2026-01-04. The sheet was typed
+    as "01-04-2026" into cells formatted US month-first, so Excel committed
+    the wrong date to the file; openpyxl hands back a genuine datetime and
+    there is nothing a date *parser* can do about it. The MIR number's own
+    '/MM' suffix is an independent record of the real month, which makes the
+    repair deterministic rather than a guess.
+
+    Only rewrites when all three conditions hold, so a legitimately
+    cross-month row is never touched:
+      - the stored month disagrees with `expected_month`, AND
+      - the stored DAY equals `expected_month` (i.e. the two are exactly
+        transposed, not merely different), AND
+      - the resulting date is real (guards e.g. day 31 of a 30-day month).
+    Returns `value` unchanged in every other case, including when either
+    input is missing."""
+    if value is None or not expected_month or not 1 <= expected_month <= 12:
+        return value
+    if value.month == expected_month or value.day != expected_month:
+        return value
+    if value.month > 12:
+        return value
+    try:
+        return datetime.date(value.year, value.day, value.month)
+    except ValueError:
+        return value

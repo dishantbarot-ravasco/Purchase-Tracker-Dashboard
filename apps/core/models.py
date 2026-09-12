@@ -1188,7 +1188,23 @@ class RTPVapiRMLot(models.Model):
     )
     description = models.CharField(max_length=500)
     category = models.CharField(max_length=100, blank=True)
-    sub_category = models.CharField(max_length=100, blank=True)
+    sub_category = models.CharField(
+        max_length=100, blank=True,
+        help_text="No longer sourced from the Stock sheet. Column E held 'Sub Category' until "
+                  "2026-09-12, when the Vapi plant renamed it to 'Batch No.' and repurposed its "
+                  "contents - see batch_no. Existing values are the last real sub-categories the "
+                  "sheet carried and are left in place (this field is audit/Edit-Everywhere only, "
+                  "never displayed - the materials API shows MaterialCategoryReference's canonical "
+                  "subcategory instead), but nothing writes to it now.",
+    )
+    batch_no = models.CharField(
+        max_length=100, blank=True,
+        help_text="Stock sheet's 'Batch No.' column (E), which replaced 'Sub Category' in place on "
+                  "2026-09-12 - same column position, new meaning. Real values are vendor/lot batch "
+                  "codes ('HRS-25', '230626GIFL2590') or a literal '-' placeholder; 166 of 168 live "
+                  "rows are populated. Vapi only - HRS's Stock sheet still has a genuine "
+                  "'Sub Category' at E, and Achhad's sheet has neither column.",
+    )
     uom = models.CharField(max_length=20, blank=True)
 
     opening_stock = models.DecimalField(max_digits=14, decimal_places=3, default=0)

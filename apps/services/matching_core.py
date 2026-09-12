@@ -60,6 +60,60 @@ now two separate, differently-purposed passes instead of one blended score:
   "PO Not Found" outcome - still represented as no match row (see
   match_po_mir_line_item()'s docstring), not a stored enum value.
 
+**Evidence-tiered matching (2026-09-12)** refines the above rather than
+replacing it. Identification still means "vendor, plus one of {material, PO
+number}"; what changed is that evidence the source data already carried was
+being ignored, and that the winner among several candidates was picked the
+wrong way. Measured on all three plants' live data before the change:
+
+  - 6 of 86 HRS matches and 11 of 103 Achhad matches were bound to a MIR row
+    whose own PO-number column named a DIFFERENT order of ours. They arrived
+    in swapped pairs (Achhad 1100000820 holding 1100000785's receipt and vice
+    versa) because two orders for the same material at the same rate score
+    identically on money, so the financial tie-break was effectively a coin
+    toss while the PO number sat unread.
+  - 18 of 86 HRS, 6 of 103 Achhad and 24 of 103 Vapi matches had the MIR row
+    dated BEFORE the PO was raised - one by 169 days. No date was consulted
+    anywhere in scoring.
+
+Three changes close those, in the order they apply:
+
+  1. HARD NEGATIVE GATES, alongside the existing vendor gate.
+     _po_number_contradicts() drops a candidate whose MIR row names another
+     order we hold - a receipt that says in writing which order it belongs to
+     cannot be overruled by material text. _date_verdict() drops a candidate
+     that cannot chronologically belong to this order, unless the PO number
+     agrees, in which case the date is the suspect field and is only
+     discounted (source dates are demonstrably less reliable than PO numbers
+     here - a third of the live Vapi MIR file's date cells had day and month
+     transposed; see repair_month_swapped_date()). Both gates only ever fire
+     on positive evidence of conflict: an unrecognized PO reference or a
+     missing date is treated as no information, never as information against.
+
+  2. EVIDENCE TIERS instead of one blended score. A candidate is ranked first
+     by WHAT KIND of evidence identifies it - PO number, then material with
+     strong financial agreement, then material with plausible financial
+     agreement, then material alone - and only within a tier by financial
+     closeness. See _pair_weight() for why this has to be lexicographic: a
+     material-only candidate scoring 1.0 must never outrank a PO-number
+     confirmed one scoring 0.6, which is exactly what the old single score
+     allowed. Material similarity itself is now IDF-weighted with explicit
+     grade-code comparison (_MaterialScorer), so "Aluminium Trihydrate 4600N"
+     no longer reads as a 0.6 match for "...4200N".
+
+  3. OPTIMAL ASSIGNMENT instead of greedy (_assign_pairs()). Greedy claiming
+     is what turned a single bad pairing into a cascade - a wrong pair takes a
+     row, the line item that row belongs to is pushed to its second choice,
+     which displaces a third. Maximizing total evidence across every line item
+     at once removes the cascade, and still leaves a line item unmatched
+     rather than forcing it onto a row worth more elsewhere, so "PO Not Found"
+     stays an honest outcome.
+
+Net effect on live data: HRS 86 -> 94 matched with PO-number-confirmed
+matches up 59 -> 77; Achhad 103 -> 109 with confirmations up 85 -> 103; Vapi
+unchanged at 103 but with 0 impossible dates instead of 24. Contradicted
+matches go to zero on every plant.
+
 Exclusive MIR claiming (fix 2.B): confirmed against real data (31-39% of
 current matches shared a MIR row across multiple line items, traced back to
 the old tier-1 next() bug and to cross-PO Tier-2 collisions - not legitimate
@@ -83,6 +137,7 @@ deliberate many-to-many relationship (the same material/vendor is received
 into stock across multiple lots over time), unaffected by fix 2.B.
 """
 
+import math
 import re
 from dataclasses import dataclass
 from decimal import Decimal
@@ -93,7 +148,14 @@ from typing import Callable, NamedTuple, Optional
 from django.db import transaction
 from django.utils import timezone
 
-from apps.services.parsers.common import normalize_material, normalize_uom, normalize_vendor_for_matching, tokenize
+from apps.services.parsers.common import (
+    clean_po_number,
+    is_usable_po_reference,
+    normalize_material,
+    normalize_uom,
+    normalize_vendor_for_matching,
+    tokenize,
+)
 
 TIER_PO_NUMBER = "po_number"
 # TIER_MATERIAL replaces the old TIER_WEIGHTED label (2026-09-07 redesign -
@@ -184,6 +246,19 @@ class _MatchConfig:
     # defaults dict - required, since RTPAchhadMirStockMatch/
     # RTPVapiMirStockMatch have no columns for the extra fields.
     stock_extended_fields: bool = False
+
+    # ── Date-plausibility gate (2026-09-12 redesign, see module docstring) ──
+    # A MIR row records goods physically received against an order, so it
+    # cannot predate the order by more than the time it takes paperwork to
+    # catch up, and cannot follow it by more than the order stays open.
+    # Both bounds are measured, not guessed: across all three plants' real
+    # matched data the MEDIAN PO->MIR lag is 5-8 days, and every match
+    # outside the window below was independently wrong on other evidence
+    # too. The grace side is deliberately generous - a MIR clerk back-dating
+    # a receipt into the previous week is routine; a receipt two weeks
+    # before the order exists is not.
+    date_grace_days: int = 7
+    date_horizon_days: int = 270
 
 
 # ── Internal scoring/gating helpers ─────────────────────────────────────────
@@ -362,32 +437,328 @@ def _candidate_mir_entries(config: _MatchConfig, vendor_name: str) -> list:
     return [c for c in candidates if _vendor_matches(normalize_vendor_for_matching(c.party_name), vendor)]
 
 
-def _material_matches(config: _MatchConfig, description: str, mir_description: str) -> bool:
-    """Identification's material factor: token overlap at/above
-    config.material_match_threshold counts as a match - a boolean gate now,
-    not a scored factor (see module docstring's 2026-09-07 redesign)."""
-    return _token_overlap(description, mir_description) >= config.material_match_threshold
+# ── IDF-weighted material similarity (2026-09-12) ───────────────────────
+# Plain Jaccard (_token_overlap) treats every token as equally informative,
+# which is exactly backwards for these descriptions. In "ALUMINIUM TRIHYDRATE
+# 4600N" the words "aluminium" and "trihydrate" appear on dozens of rows and
+# say almost nothing about WHICH row this is; "4600n" appears on a handful and
+# says nearly everything. Jaccard scored PO "ALUMINIUM TRIHYDRATE 4600N"
+# against MIR "Aluminium Trihydrate 4200N" at 0.6 - a confident match to the
+# wrong grade of the same chemical (real HRS case, PO 3000001088).
+#
+# Two corrections, both measured against real data:
+#   1. Weight each token by inverse document frequency over the plant's own
+#      corpus, so rare grade/product codes dominate common chemical nouns.
+#   2. Treat digit-bearing tokens as GRADE CODES and compare them explicitly:
+#      sharing one is strong positive evidence, while each side having a
+#      grade code and sharing none is strong NEGATIVE evidence ("4200N" vs
+#      "4600N", "Aksil 180 G" vs "Aksil 180 P"). Jaccard can only ever treat
+#      a disagreeing code as a slightly smaller intersection.
 
 
-def _identification_pool(config: _MatchConfig, candidates: list, item: "_Matchable", po_number: str) -> tuple[list, dict]:
+class _MaterialScorer:
+    """IDF-weighted material similarity over one plant's own description
+    corpus. Built once per matching pass (the corpus is that plant's MIR +
+    PO descriptions - 1-2k short strings, a few milliseconds to tokenize)
+    rather than cached across passes, so it can never go stale against a
+    freshly-synced MIR table."""
+
+    # A shared grade code lifts the score by this much (capped at 1.0);
+    # grade codes present on both sides but agreeing on none scale it down
+    # by _GRADE_PENALTY. Both are deliberately blunt - the point is to make
+    # a grade disagreement decisive, not to fine-tune a ranking.
+    _GRADE_BONUS = Decimal("0.25")
+    _GRADE_PENALTY = Decimal("0.45")
+
+    def __init__(self, corpus):
+        df: dict[str, int] = {}
+        n = 0
+        for text in corpus:
+            tokens = set(tokenize(text or ""))
+            if not tokens:
+                continue
+            n += 1
+            for t in tokens:
+                df[t] = df.get(t, 0) + 1
+        self._n = max(1, n)
+        self._df = df
+        # Smoothed IDF, the same +1 smoothing scikit-learn uses - a token
+        # seen on every row still carries weight 1.0 rather than collapsing
+        # to 0, so two descriptions built entirely from common words still
+        # score above 0.
+        self._default = math.log(self._n + 1) + 1.0
+
+    def _weight(self, token: str) -> float:
+        dfreq = self._df.get(token)
+        if dfreq is None:
+            return self._default
+        return math.log((self._n + 1) / (dfreq + 1)) + 1.0
+
+    def similarity(self, a: str, b: str) -> Decimal:
+        """Weighted Jaccard in [0, 1], adjusted for grade-code agreement."""
+        ta, tb = set(tokenize(a or "")), set(tokenize(b or ""))
+        if not ta or not tb:
+            return Decimal("0")
+        denominator = sum(self._weight(t) for t in ta | tb)
+        if denominator <= 0:
+            return Decimal("0")
+        numerator = sum(self._weight(t) for t in ta & tb)
+        score = Decimal(str(numerator / denominator))
+
+        codes_a = {t for t in ta if any(ch.isdigit() for ch in t)}
+        codes_b = {t for t in tb if any(ch.isdigit() for ch in t)}
+        if codes_a and codes_b:
+            if codes_a & codes_b:
+                score = min(Decimal("1"), score + self._GRADE_BONUS)
+            else:
+                score *= self._GRADE_PENALTY
+        return score
+
+
+def _material_scorer(config: _MatchConfig) -> "_MaterialScorer":
+    """Builds the scorer from this plant's own MIR and PO descriptions. IDF
+    is only meaningful relative to a corpus, and the corpus that matters
+    here is the vocabulary these two files actually use."""
+    corpus = list(
+        config.mir_model.objects.filter(is_active=True).values_list("material_description", flat=True)
+    )
+    corpus += list(config.po_item_model.objects.values_list("description", flat=True))
+    corpus += list(config.import_item_model.objects.values_list("description", flat=True))
+    return _MaterialScorer(corpus)
+
+
+def _material_matches(config: _MatchConfig, description: str, mir_description: str, scorer=None) -> bool:
+    """Identification's material factor: similarity at/above
+    config.material_match_threshold counts as a match - a boolean gate, not
+    a scored factor (see module docstring's 2026-09-07 redesign).
+
+    `scorer` is the IDF-weighted comparison (2026-09-12). It is optional
+    only so a caller with no corpus to build one from falls back to the
+    original unweighted Jaccard rather than failing; every real caller
+    passes one."""
+    if scorer is None:
+        return _token_overlap(description, mir_description) >= config.material_match_threshold
+    return scorer.similarity(description, mir_description) >= config.material_match_threshold
+
+
+# ── Hard negative gates (2026-09-12 redesign) ───────────────────────────
+
+def _po_number_contradicts(po_number: str, mir_po_number_raw: str, known_po_numbers) -> bool:
+    """The PO-number CONTRADICTION gate: True when the MIR row names a
+    purchase order that is demonstrably not this one.
+
+    Before this existed, MIR's PO-number column was used only as positive
+    evidence - it could confirm a match, but a MIR row that explicitly named
+    a DIFFERENT order was still free to be matched on material alone. On
+    real data that was not a corner case: 6 of 86 HRS matches and 11 of 103
+    Achhad matches were bound to a MIR row whose own PO column named another
+    order in the same plant. Worse, they came in SWAPPED PAIRS - Achhad PO
+    1100000820 held the MIR row labelled 1100000785 while 1100000785 held
+    the one labelled 1100000820 - because the two are the same material at
+    the same rate, the financial tie-breaker cannot tell them apart, and the
+    one field that could was being ignored.
+
+    The gate only fires when the named order is one we actually hold
+    (`known_po_numbers`). A MIR row naming an order that predates this
+    system's PO coverage, or carrying a mistyped number, must fall back to
+    material identification rather than being excluded from everything - an
+    unrecognized reference is treated as no evidence, never as evidence
+    against. Values that are not PO-shaped at all never reach that decision
+    (see is_usable_po_reference())."""
+    raw = (mir_po_number_raw or "").strip()
+    if not raw or not is_usable_po_reference(raw):
+        return False
+    if _po_number_matches(po_number, raw):
+        return False
+    return any(_po_number_matches(known, raw) for known in known_po_numbers)
+
+
+# Returned by _date_verdict() when the two dates cannot describe the same
+# order at all. Deliberately distinct from 0, which means "one side has no
+# date, so this factor carries no information either way".
+DATE_IMPOSSIBLE = Decimal("-1")
+
+
+def _date_verdict(config: _MatchConfig, po_created_date, mir_date) -> Decimal:
+    """Chronological plausibility of a receipt against an order, as a 0..1
+    weight - or DATE_IMPOSSIBLE when the pair cannot describe the same order
+    at all (outside config.date_grace_days / date_horizon_days).
+
+    Goods cannot be received against an order that does not exist yet. On
+    real data 18 of 86 HRS matches, 6 of 103 Achhad and 24 of 103 Vapi had
+    the MIR row dated BEFORE the PO was raised - one HRS match by 169 days.
+    Nothing in the scoring looked at a date at all, so none of that was
+    visible.
+
+    A receipt dated slightly before the order is tolerated but discounted
+    (0.6) rather than rejected - back-dating a receipt into the previous
+    week is ordinary practice. Beyond that the pair is impossible. After the
+    order, plausibility decays linearly out to the horizon but never below
+    0.15, so a slow delivery ranks below a prompt one without being
+    excluded."""
+    if po_created_date is None or mir_date is None:
+        return Decimal("0")
+    lag_days = (mir_date - po_created_date).days
+    if lag_days < -config.date_grace_days or lag_days > config.date_horizon_days:
+        return DATE_IMPOSSIBLE
+    if lag_days < 0:
+        return Decimal("0.6")
+    decayed = Decimal("1") - (Decimal(lag_days) / Decimal(config.date_horizon_days)) * Decimal("0.85")
+    return max(Decimal("0.15"), decayed)
+
+
+# Evidence tiers (2026-09-12). A candidate's tier records WHAT KIND of
+# evidence identifies it, and tiers are compared before any numeric score -
+# see _pair_weight() for why that ordering has to be lexicographic rather
+# than a weighted blend.
+TIER_RANK_PO_NUMBER = 3      # MIR names this exact order
+TIER_RANK_MATERIAL_STRONG = 2  # material agrees and the money agrees closely
+TIER_RANK_MATERIAL_OK = 1      # material agrees and the money is plausible
+TIER_RANK_MATERIAL_ONLY = 0    # material agrees, nothing else corroborates
+
+# Financial-score cut points separating the three material-only tiers.
+_STRONG_FINANCIAL_SCORE = Decimal("0.9")
+_OK_FINANCIAL_SCORE = Decimal("0.5")
+
+# Tier separation in _pair_weight(). Any weight difference within a tier is
+# at most 100 (the scaled score term), so a whole tier step of 1000 is
+# strictly larger than every possible within-tier difference - that is what
+# makes the ordering genuinely lexicographic rather than merely weighted.
+_TIER_STEP = Decimal("1000")
+
+
+class _Candidate(NamedTuple):
+    """One identification-passing (line item, MIR row) pair and the evidence
+    behind it. `tier_rank` is the evidence class; `score` is financial
+    closeness; `date_weight` is chronological plausibility. Kept together so
+    the assignment step can rank pairs without recomputing any of it."""
+
+    mir: object
+    tier_rank: int
+    score: Decimal
+    coverage: Decimal
+    date_weight: Decimal
+    material_matched: bool
+    po_number_matched: bool
+
+
+def _pair_weight(candidate: "_Candidate") -> Decimal:
+    """Ranking weight for one candidate pair: evidence tier first, then
+    financial closeness, material similarity's contribution having already
+    been spent on deciding the tier.
+
+    Why tiers dominate rather than blend. The old design ranked every
+    candidate by one financial score, so a material-only candidate scoring
+    1.0 outranked a PO-number-confirmed candidate scoring 0.6 - and in a
+    global assignment it claimed that MIR row first, pushing the correctly
+    identified line item onto its second choice. That is the mechanism
+    behind the swapped pairs documented in _po_number_contradicts(): two
+    orders for the same material at the same rate both score 1.0
+    financially, so the tie-break was effectively arbitrary while the PO
+    number sat there unread. A PO number written on the receipt is
+    categorically better evidence than "the numbers look about right", and
+    no amount of financial closeness should be able to outrank it."""
+    within_tier = (
+        Decimal("0.75") * candidate.score + Decimal("0.25") * max(candidate.date_weight, Decimal("0"))
+    ) * Decimal("100")
+    return Decimal(candidate.tier_rank) * _TIER_STEP + within_tier
+
+
+def known_po_numbers(config: _MatchConfig) -> frozenset:
+    """Every PO number this plant holds, domestic and import, in both the
+    stored and annotation-stripped form.
+
+    Used by the contradiction gate to tell "MIR names a different order of
+    ours" (decisive) from "MIR names something we have never heard of"
+    (no information). The annotation-stripped form matters because the
+    master CSV sometimes carries a human note in the number itself -
+    "3000001104 (Changed Purchase Order)" - which MIR would never write;
+    without the stripped alias, every such order looks unknown and its own
+    receipts could be claimed by a different line item."""
+    numbers = set()
+    for model in (config.po_item_model, config.import_item_model):
+        for raw in model.objects.values_list("purchase_order__po_number", flat=True).distinct():
+            if not raw:
+                continue
+            numbers.add(raw)
+            cleaned = clean_po_number(raw)
+            if cleaned:
+                numbers.add(cleaned)
+    return frozenset(numbers)
+
+
+def _identification_pool(
+    config: _MatchConfig,
+    candidates: list,
+    item: "_Matchable",
+    po_number: str,
+    *,
+    scorer=None,
+    po_created_date=None,
+    known_pos=frozenset(),
+) -> tuple[list, dict]:
     """Vendor is already satisfied by `candidates` (the hard gate ran in
-    _candidate_mir_entries). Filters to candidates where at least one of
-    {material, PO number} also matches - "vendor mandatory plus one of the
-    other two" (project owner, 2026-09-07), not a plain unweighted 2-of-3
-    (which would let material+PO-number win with no vendor match at all).
-    Returns (pool, id_flags_by_mir_id) - id_flags_by_mir_id lets callers
-    record which identification field(s) actually fired for the winning
-    candidate (material_matched/po_number_matched), for transparency on the
-    stored match row."""
+    _candidate_mir_entries). Applies the two hard NEGATIVE gates added
+    2026-09-12, then keeps the candidates where at least one of {material,
+    PO number} positively identifies the row - "vendor mandatory plus one of
+    the other two" (project owner, 2026-09-07), not a plain unweighted
+    2-of-3 (which would let material+PO-number win with no vendor match at
+    all).
+
+    Order of the two negative gates matters:
+      1. _po_number_contradicts() - MIR names one of our other orders. Kills
+         the candidate outright; no other evidence can overrule a receipt
+         that says in writing which order it belongs to.
+      2. _date_verdict() == DATE_IMPOSSIBLE - the receipt cannot belong to
+         this order chronologically. Kills the candidate UNLESS the PO
+         number matches, in which case the written PO number wins and the
+         date is merely discounted. Source dates are demonstrably less
+         reliable than PO numbers here (267 of the live Vapi MIR file's 782
+         date cells had day and month transposed - see
+         repair_month_swapped_date()), so a date must never be allowed to
+         veto an explicit, agreeing PO number.
+
+    Returns (pool, candidates_by_mir_id) - the second value carries a
+    _Candidate per surviving row, so callers can record which identification
+    field fired (material_matched/po_number_matched) and rank pairs without
+    recomputing the evidence."""
     pool = []
-    id_flags: dict[int, tuple[bool, bool]] = {}
+    found: dict[int, _Candidate] = {}
     for c in candidates:
-        material_matched = _material_matches(config, item.description, c.material_description)
         po_number_matched = _po_number_matches(po_number, c.po_number_raw)
-        if material_matched or po_number_matched:
-            pool.append(c)
-            id_flags[c.id] = (material_matched, po_number_matched)
-    return pool, id_flags
+        if not po_number_matched and _po_number_contradicts(po_number, c.po_number_raw, known_pos):
+            continue
+        date_weight = _date_verdict(config, po_created_date, getattr(c, "mir_date", None))
+        if date_weight == DATE_IMPOSSIBLE:
+            if not po_number_matched:
+                continue
+            date_weight = Decimal("0")
+
+        material_matched = _material_matches(config, item.description, c.material_description, scorer)
+        if not (material_matched or po_number_matched):
+            continue
+
+        score, coverage, _uom = _score(config, item, c)
+        if po_number_matched:
+            tier_rank = TIER_RANK_PO_NUMBER
+        elif score >= _STRONG_FINANCIAL_SCORE:
+            tier_rank = TIER_RANK_MATERIAL_STRONG
+        elif score >= _OK_FINANCIAL_SCORE:
+            tier_rank = TIER_RANK_MATERIAL_OK
+        else:
+            tier_rank = TIER_RANK_MATERIAL_ONLY
+
+        pool.append(c)
+        found[c.id] = _Candidate(
+            mir=c,
+            tier_rank=tier_rank,
+            score=score,
+            coverage=coverage,
+            date_weight=date_weight,
+            material_matched=material_matched,
+            po_number_matched=po_number_matched,
+        )
+    return pool, found
 
 
 class _Matchable(NamedTuple):
@@ -484,18 +855,123 @@ def _score(config: _MatchConfig, item: _Matchable, mir) -> tuple[Decimal, Decima
     return score, coverage, uom_mismatch
 
 
-def _scored_pairs_above_threshold(config: _MatchConfig, pool: list, item: _Matchable):
-    """Yields (mir_entry, score, field_coverage) for every candidate in
-    `pool` - `pool` is already identification-filtered (see
-    _identification_pool()), so every entry here is a legitimate candidate;
-    financial score is used only for ranking/tie-breaking and for
-    run_full_match()'s exclusive-claim sort, not as an accept/reject
-    threshold (see module docstring's 2026-09-07 redesign - an
-    identification-passing candidate is never rejected for a low financial
-    score)."""
-    for mir in pool:
-        score, coverage, _uom_mismatch = _score(config, item, mir)
-        yield mir, score, coverage
+# ── Global assignment (2026-09-12: optimal, not greedy) ──────────────────
+# Exclusive MIR claiming (fix 2.B) decides which line item gets which MIR row
+# when several compete for the same one. It used to decide greedily: sort every
+# pair by score descending, walk the list, take a pair whenever its MIR row is
+# still free. Greedy is only correct when taking the locally best pair can
+# never make the rest of the assignment worse, and here it demonstrably can - a
+# strong-scoring but wrongly-identified pair claims a row, the line item that
+# row actually belongs to is pushed onto its second choice, which displaces a
+# third, and so on. That cascade is visible in the real data as swapped pairs
+# (see _po_number_contradicts()).
+#
+# _assign_pairs() instead finds the assignment maximizing TOTAL evidence weight
+# across every line item at once, so claiming a row is allowed only when it
+# does not cost more elsewhere than it gains here. Max-weight bipartite
+# matching by successive augmenting paths, each chosen for maximum gain: a path
+# alternates line item -> MIR row (gaining that pair's weight) and MIR row ->
+# its current holder (losing what the holder gives up), ending at an unclaimed
+# row. Longest-path search is SPFA (queue-driven Bellman-Ford) because
+# displacement arcs are negative; augmenting along maximum-gain paths keeps the
+# matching extreme for its size, which is what rules out the positive-gain
+# cycles that would otherwise make that search diverge.
+#
+# Augmentation stops as soon as the best remaining path would not increase
+# total weight, so a line item is left unmatched rather than forced onto a row
+# worth more to someone else - "PO Not Found" stays an honest outcome.
+#
+# Cost: the graph is sparse (a line item reaches only its own identification
+# pool - a handful of rows, not the whole MIR table), so this is milliseconds
+# at real plant volumes.
+
+def _assign_pairs(edges: dict) -> dict:
+    """Max-weight bipartite matching.
+
+    `edges` maps a left key (a line item) to [(right key, weight), ...].
+    Returns {left key: right key} for the assignment maximizing summed
+    weight. Weights must be positive - _pair_weight() guarantees that, and
+    it is what lets augmentation stop at the first non-improving path
+    instead of being forced to a maximum-cardinality matching."""
+    adjacency = {left: pairs for left, pairs in edges.items() if pairs}
+    if not adjacency:
+        return {}
+
+    weight_of = {}
+    for left, pairs in adjacency.items():
+        for right, weight in pairs:
+            key = (left, right)
+            if weight > weight_of.get(key, Decimal("-1")):
+                weight_of[key] = weight
+
+    match_left: dict = {}   # line item -> MIR row
+    match_right: dict = {}  # MIR row -> line item
+
+    # Deterministic order: two runs over identical data must produce an
+    # identical assignment, or the review screen churns for no reason.
+    left_order = sorted(adjacency, key=lambda k: (-max(w for _, w in adjacency[k]), str(k)))
+
+    for source in left_order:
+        # best_gain[left] - highest total weight change achievable on a path
+        # that arrives at `left` with `left` free to take a new row.
+        best_gain = {source: Decimal("0")}
+        came_from_left: dict = {}         # MIR row -> the line item that reached it
+        came_from_right = {source: None}  # line item -> the row it was displaced from
+        queue = [source]
+        queued = {source}
+        # A path may end two ways, and both have to be searched: on an
+        # unclaimed row, or on a line item that was displaced and simply
+        # stays unmatched. Missing the second one loses real improvements -
+        # when the only way to free a row is for its current holder to give
+        # it up and take nothing, a search that insists on ending at a free
+        # row finds no path at all and leaves total weight on the table.
+        end_kind, end_key, end_gain = None, None, Decimal("0")
+
+        while queue:
+            left = queue.pop(0)
+            queued.discard(left)
+            reached_gain = best_gain[left]
+            for right, weight in adjacency.get(left, ()):
+                gain_at_row = reached_gain + weight
+                holder = match_right.get(right)
+                if holder is None:
+                    if gain_at_row > end_gain:
+                        end_kind, end_key, end_gain = "row", right, gain_at_row
+                        came_from_left[right] = left
+                    continue
+                if holder == left:
+                    continue
+                # Displace the holder: it gives up what this row was worth to it.
+                gain_at_holder = gain_at_row - weight_of[(holder, right)]
+                if holder in best_gain and gain_at_holder <= best_gain[holder]:
+                    continue
+                best_gain[holder] = gain_at_holder
+                came_from_left[right] = left
+                came_from_right[holder] = right
+                if gain_at_holder > end_gain:
+                    end_kind, end_key, end_gain = "left", holder, gain_at_holder
+                if holder not in queued:
+                    queued.add(holder)
+                    queue.append(holder)
+
+        if end_kind is None or end_gain <= 0:
+            continue  # nothing this line item can take without costing more elsewhere
+
+        # Flip the alternating path back to the source: each row on it moves
+        # to the line item that reached it, and that line item releases the
+        # row it was displaced from, which is the next row on the path.
+        if end_kind == "row":
+            row = end_key
+        else:
+            match_left.pop(end_key, None)  # displaced holder ends unmatched
+            row = came_from_right.get(end_key)
+        while row is not None:
+            left = came_from_left[row]
+            match_left[left] = row
+            match_right[row] = left
+            row = came_from_right.get(left)
+
+    return match_left
 
 
 def _best_candidate(config: _MatchConfig, pool: list, item: _Matchable):
@@ -874,22 +1350,37 @@ def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po:
     )
 
 
-def _pick_match(config: _MatchConfig, item: _Matchable, pool: list):
+def _best_by_evidence(found: dict, entries: list):
+    """Highest-_pair_weight candidate among `entries` - evidence tier first,
+    financial closeness only as the within-tier tie-break (2026-09-12).
+    Replaces ranking by financial score alone, which let a material-only
+    candidate outrank a PO-number-confirmed one; see _pair_weight()."""
+    best = None
+    for entry in entries:
+        candidate = found.get(entry.id)
+        if candidate is None:
+            continue
+        if best is None or _pair_weight(candidate) > _pair_weight(best):
+            best = candidate
+    return best
+
+
+def _pick_match(config: _MatchConfig, item: _Matchable, pool: list, found: dict):
     """Picks what to match a line item against, preferring a multi-shipment
     group (_shipment_group()) over a single best row when one applies.
     Returns (primary_entry, score, coverage, group) - `group` is None for an
     ordinary single-row match (unchanged pre-2.F behavior), or the
     _ShipmentGroup when aggregation applies. `primary_entry` is always a
-    single MIR row (the group's own best-scoring member, when grouped) -
+    single MIR row (the group's best candidate by evidence, when grouped) -
     used as the stored mir_entry FK and for every financial-check field
     _diffs_and_flag() doesn't aggregate (see that function's own docstring
     on fix 2.F)."""
     group = _shipment_group(config, item, pool)
-    if group is not None:
-        primary, score, coverage = _best_candidate(config, group.entries, item)
-        return primary, score, coverage, group
-    best_entry, best_score, coverage = _best_candidate(config, pool, item)
-    return best_entry, best_score, coverage, None
+    entries = group.entries if group is not None else pool
+    best = _best_by_evidence(found, entries)
+    if best is None:
+        return None, Decimal("0"), Decimal("0"), None
+    return best.mir, best.score, best.coverage, group
 
 
 def match_po_mir_line_item(config: _MatchConfig, po_line_item):
@@ -902,14 +1393,20 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
     is_single_item_po = po.items.count() == 1
     item = _po_matchable(po_line_item, is_single_item_po)
     candidates = _candidate_mir_entries(config, po.vendor_name)
-    pool, id_flags = _identification_pool(config, candidates, item, po.po_number)
-    best_entry, best_score, coverage, group = _pick_match(config, item, pool)
+    pool, found = _identification_pool(
+        config, candidates, item, po.po_number,
+        scorer=_material_scorer(config),
+        po_created_date=po.po_created_date,
+        known_pos=known_po_numbers(config),
+    )
+    best_entry, best_score, coverage, group = _pick_match(config, item, pool, found)
 
     if best_entry is None:
         config.po_mir_match_model.objects.filter(po_line_item=po_line_item).delete()
         return None
 
-    material_matched, po_number_matched = id_flags[best_entry.id]
+    material_matched = found[best_entry.id].material_matched
+    po_number_matched = found[best_entry.id].po_number_matched
     tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
     qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
     (
@@ -969,14 +1466,20 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
     is_single_item_po = po.items.count() == 1
     item = _import_matchable(config, import_line_item, is_single_item_po)
     candidates = _candidate_mir_entries(config, po.vendor_name)
-    pool, id_flags = _identification_pool(config, candidates, item, po.po_number)
-    best_entry, best_score, coverage, group = _pick_match(config, item, pool)
+    pool, found = _identification_pool(
+        config, candidates, item, po.po_number,
+        scorer=_material_scorer(config),
+        po_created_date=po.po_created_date,
+        known_pos=known_po_numbers(config),
+    )
+    best_entry, best_score, coverage, group = _pick_match(config, item, pool, found)
 
     if best_entry is None:
         config.import_po_mir_match_model.objects.filter(po_line_item=import_line_item).delete()
         return None
 
-    material_matched, po_number_matched = id_flags[best_entry.id]
+    material_matched = found[best_entry.id].material_matched
+    po_number_matched = found[best_entry.id].po_number_matched
     tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
     qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
     (
@@ -1251,54 +1754,82 @@ def run_full_match(config: _MatchConfig) -> dict:
     for item in import_items:
         import_item_counts[item.purchase_order_id] = import_item_counts.get(item.purchase_order_id, 0) + 1
 
+    # Built once for the whole pass rather than per line item: the IDF
+    # corpus is a property of the plant's vocabulary, and the known-PO set a
+    # property of its order book - neither varies row to row, and both are a
+    # query each.
+    scorer = _material_scorer(config)
+    known_pos = known_po_numbers(config)
+
     items_by_key: dict[tuple[str, int], _Matchable] = {}
-    id_flags_by_key: dict[tuple[str, int, int], tuple[bool, bool]] = {}  # (kind, item_id, mir_id) -> (material_matched, po_number_matched)
-    pairs = []  # (score, "po"|"import", item_key, mir_entry (primary), coverage, group_or_None)
-    for item in po_items:
-        po = item.purchase_order
-        matchable = _po_matchable(item, item_counts[item.purchase_order_id] == 1)
-        items_by_key[("po", item.id)] = matchable
+    candidates_by_key: dict[tuple[str, int, int], _Candidate] = {}  # (kind, item_id, mir_id) -> evidence
+    groups_by_key: dict[tuple[str, int], object] = {}  # (kind, item_id) -> _ShipmentGroup
+    # edges feeds _assign_pairs(): line item -> [(MIR row id, weight), ...].
+    # A multi-shipment group contributes exactly ONE edge for the whole group
+    # (keyed on its primary row), so winning it claims every member row
+    # together - a group can never be half-claimed (fix 2.F).
+    edges: dict[tuple[str, int], list] = {}
+    group_members: dict[tuple[str, int, int], set] = {}
+
+    def collect(kind, item, matchable, po):
+        items_by_key[(kind, item.id)] = matchable
         candidates = _candidate_mir_entries(config, po.vendor_name)
-        pool, id_flags = _identification_pool(config, candidates, matchable, po.po_number)
+        pool, found = _identification_pool(
+            config, candidates, matchable, po.po_number,
+            scorer=scorer, po_created_date=po.po_created_date, known_pos=known_pos,
+        )
+        for mir_id, candidate in found.items():
+            candidates_by_key[(kind, item.id, mir_id)] = candidate
         group = _shipment_group(config, matchable, pool)
+        key = (kind, item.id)
         if group is not None:
-            primary, score, coverage = _best_candidate(config, group.entries, matchable)
-            id_flags_by_key[("po", item.id, primary.id)] = id_flags[primary.id]
-            pairs.append((score, "po", item.id, primary, coverage, group))
-        else:
-            for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
-                id_flags_by_key[("po", item.id, mir.id)] = id_flags[mir.id]
-                pairs.append((score, "po", item.id, mir, coverage, None))
+            primary = _best_by_evidence(found, group.entries)
+            if primary is None:
+                return
+            groups_by_key[key] = group
+            group_members[(kind, item.id, primary.mir.id)] = {m.id for m in group.entries}
+            edges[key] = [(primary.mir.id, _pair_weight(primary))]
+            return
+        if pool:
+            edges[key] = [(candidate.mir.id, _pair_weight(candidate)) for candidate in found.values()]
+
+    for item in po_items:
+        collect("po", item, _po_matchable(item, item_counts[item.purchase_order_id] == 1), item.purchase_order)
 
     for item in import_items:
-        po = item.purchase_order
-        matchable = _import_matchable(config, item, import_item_counts[item.purchase_order_id] == 1)
-        items_by_key[("import", item.id)] = matchable
-        candidates = _candidate_mir_entries(config, po.vendor_name)
-        pool, id_flags = _identification_pool(config, candidates, matchable, po.po_number)
-        group = _shipment_group(config, matchable, pool)
-        if group is not None:
-            primary, score, coverage = _best_candidate(config, group.entries, matchable)
-            id_flags_by_key[("import", item.id, primary.id)] = id_flags[primary.id]
-            pairs.append((score, "import", item.id, primary, coverage, group))
-        else:
-            for mir, score, coverage in _scored_pairs_above_threshold(config, pool, matchable):
-                id_flags_by_key[("import", item.id, mir.id)] = id_flags[mir.id]
-                pairs.append((score, "import", item.id, mir, coverage, None))
+        collect(
+            "import", item,
+            _import_matchable(config, item, import_item_counts[item.purchase_order_id] == 1),
+            item.purchase_order,
+        )
 
-    pairs.sort(key=lambda p: p[0], reverse=True)
-    claimed_mir_ids: set[int] = set()
+    # A grouped edge stands for several MIR rows at once, which plain
+    # bipartite matching cannot express - so groups are settled first, in
+    # descending weight, and their member rows are withdrawn from the pool
+    # the optimal assignment then runs over. Groups are a small minority of
+    # real line items and never compete with each other for the same rows in
+    # practice; keeping them out of the optimization is what lets the rest of
+    # the assignment be genuinely optimal rather than approximately so.
     assigned: dict[tuple[str, int], tuple] = {}  # (kind, item.id) -> (mir, score, coverage, group_or_None)
-    for score, kind, item_id, mir, coverage, group in pairs:
-        key = (kind, item_id)
-        # A grouped pair claims every member MIR row atomically - it can
-        # never be half-claimed by this item and half still up for grabs by
-        # another (see this function's own docstring, fix 2.F).
-        member_ids = {m.id for m in group.entries} if group is not None else {mir.id}
-        if key in assigned or (member_ids & claimed_mir_ids):
+    claimed_mir_ids: set[int] = set()
+    grouped_keys = sorted(groups_by_key, key=lambda k: (-edges[k][0][1], str(k)))
+    for key in grouped_keys:
+        primary_id = edges[key][0][0]
+        members = group_members[(key[0], key[1], primary_id)]
+        if members & claimed_mir_ids:
             continue
-        assigned[key] = (mir, score, coverage, group)
-        claimed_mir_ids.update(member_ids)
+        candidate = candidates_by_key[(key[0], key[1], primary_id)]
+        assigned[key] = (candidate.mir, candidate.score, candidate.coverage, groups_by_key[key])
+        claimed_mir_ids.update(members)
+
+    ungrouped_edges = {
+        key: [(mir_id, weight) for mir_id, weight in pairs if mir_id not in claimed_mir_ids]
+        for key, pairs in edges.items()
+        if key not in groups_by_key
+    }
+    for key, mir_id in _assign_pairs(ungrouped_edges).items():
+        candidate = candidates_by_key[(key[0], key[1], mir_id)]
+        assigned[key] = (candidate.mir, candidate.score, candidate.coverage, None)
 
     po_matched = 0
     for item in po_items:
@@ -1308,7 +1839,8 @@ def run_full_match(config: _MatchConfig) -> dict:
             continue
         mir, score, coverage, group = result
         matchable = items_by_key[("po", item.id)]
-        material_matched, po_number_matched = id_flags_by_key[("po", item.id, mir.id)]
+        evidence = candidates_by_key[("po", item.id, mir.id)]
+        material_matched, po_number_matched = evidence.material_matched, evidence.po_number_matched
         tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
         qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
         (
@@ -1353,7 +1885,8 @@ def run_full_match(config: _MatchConfig) -> dict:
             continue
         mir, score, coverage, group = result
         matchable = items_by_key[("import", item.id)]
-        material_matched, po_number_matched = id_flags_by_key[("import", item.id, mir.id)]
+        evidence = candidates_by_key[("import", item.id, mir.id)]
+        material_matched, po_number_matched = evidence.material_matched, evidence.po_number_matched
         tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
         qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
         (

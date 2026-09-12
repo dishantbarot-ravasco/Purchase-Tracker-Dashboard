@@ -13,7 +13,10 @@ import datetime
 from decimal import Decimal
 
 from apps.services.parsers.common import (
+    clean_po_number,
+    is_usable_po_reference,
     normalize_material,
+    repair_month_swapped_date,
     normalize_uom,
     normalize_vendor,
     VENDOR_ALIASES,
@@ -415,3 +418,94 @@ class TestNormalizeUom:
         mass_family, _ = normalize_uom("KG")
         count_family, _ = normalize_uom("NOS")
         assert mass_family != count_family
+
+
+# ── PO-number hygiene + transposed-date repair (2026-09-12) ─────────────────
+# All three exist to serve PO<->MIR matching's hard gates, where a wrong
+# answer is worse than no answer - see matching_core.py's
+# _po_number_contradicts() and _date_verdict().
+
+class TestIsUsablePoReference:
+    def test_real_sap_po_number_is_usable(self):
+        assert is_usable_po_reference("1000001703") is True
+        assert is_usable_po_reference("3000001155") is True
+
+    def test_legacy_slashed_po_number_is_usable(self):
+        assert is_usable_po_reference("HRS/HO/26-27/003") is True
+
+    def test_documented_multi_po_shape_is_usable(self):
+        """MIR sometimes names two orders in one cell - a real shape
+        _po_number_matches() already handles."""
+        assert is_usable_po_reference("003 & 004") is True
+
+    def test_float_shaped_value_is_usable(self):
+        """openpyxl hands some PO cells back as floats; the trailing '.0'
+        is handled downstream by _po_tokens(), so this must not reject it."""
+        assert is_usable_po_reference("3000001081.0") is True
+
+    def test_verbal_sentinel_is_not_a_po_reference(self):
+        """Real value on live Vapi MIR rows, meaning no PO was raised. Read
+        as a PO reference it would wrongly exclude a legitimate candidate."""
+        assert is_usable_po_reference("VERBAL") is False
+
+    def test_blank_and_placeholder_values_are_not_po_references(self):
+        for value in ("", "   ", "NA", "N/A", "-", "NIL", "None", None):
+            assert is_usable_po_reference(value) is False
+
+    def test_short_bare_number_is_not_a_po_reference(self):
+        """Junk in the live Vapi PO column takes exactly this shape - a
+        short bare number that is not any order's real 10-digit id."""
+        assert is_usable_po_reference("36") is False
+        assert is_usable_po_reference("100000") is False
+
+    def test_value_with_no_digits_is_not_a_po_reference(self):
+        assert is_usable_po_reference("PENDING") is False
+
+
+class TestCleanPoNumber:
+    def test_strips_trailing_annotation(self):
+        """Real master-CSV values - the annotation is a human note, never
+        something MIR would write."""
+        assert clean_po_number("3000001104 (Changed Purchase Order)") == "3000001104"
+        assert clean_po_number("1000001445 (Rev 01)") == "1000001445"
+        assert clean_po_number("1000001488 (Changed Purchase Order, supersedes original)") == "1000001488"
+
+    def test_leaves_a_clean_number_alone(self):
+        assert clean_po_number("1100000913") == "1100000913"
+        assert clean_po_number("HRS/HO/26-27/003") == "HRS/HO/26-27/003"
+
+    def test_blank_stays_blank(self):
+        assert clean_po_number("") == ""
+        assert clean_po_number(None) == ""
+
+    def test_never_returns_empty_for_an_all_annotation_value(self):
+        """Stripping must not erase the value entirely - a caller uses the
+        result as a lookup key, and an empty key matches nothing."""
+        assert clean_po_number("(Changed Purchase Order)") == "(Changed Purchase Order)"
+
+
+class TestRepairMonthSwappedDate:
+    def test_repairs_a_transposed_date(self):
+        """The live-file defect: 'MIR01/04' (April) carrying 2026-01-04."""
+        assert repair_month_swapped_date(datetime.date(2026, 1, 4), 4) == datetime.date(2026, 4, 1)
+
+    def test_leaves_an_already_correct_date_alone(self):
+        assert repair_month_swapped_date(datetime.date(2026, 4, 1), 4) == datetime.date(2026, 4, 1)
+
+    def test_leaves_a_genuinely_cross_month_date_alone(self):
+        """A May invoice recorded in June's MIR batch is real, not a
+        transposition - the day does not equal the expected month, so there
+        is nothing to transpose."""
+        assert repair_month_swapped_date(datetime.date(2026, 5, 14), 6) == datetime.date(2026, 5, 14)
+
+    def test_missing_inputs_are_passed_through(self):
+        assert repair_month_swapped_date(None, 4) is None
+        assert repair_month_swapped_date(datetime.date(2026, 1, 4), None) == datetime.date(2026, 1, 4)
+
+    def test_out_of_range_month_is_ignored(self):
+        assert repair_month_swapped_date(datetime.date(2026, 1, 4), 13) == datetime.date(2026, 1, 4)
+
+    def test_impossible_swap_is_left_alone(self):
+        """Swapping 2026-02-31 would not be a real date - the original is
+        kept rather than raising."""
+        assert repair_month_swapped_date(datetime.date(2026, 2, 28), 28) == datetime.date(2026, 2, 28)

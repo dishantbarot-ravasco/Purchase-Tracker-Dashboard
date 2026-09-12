@@ -17,17 +17,25 @@ FLAG_DIFF_PCT/MATCH_THRESHOLD stay imported from matching.py (HRS) - each
 plant still owns its own module-level constants, per matching_core.py's own
 docstring, even though all three currently use the same values.
 """
+import datetime
 from decimal import Decimal
 
 from apps.services.matching import FLAG_DIFF_PCT, MATCH_THRESHOLD
 from apps.services.matching_core import (
+    DATE_IMPOSSIBLE,
+    _Candidate,
     _MatchConfig,
     _Matchable,
+    _MaterialScorer,
     _VENDOR_SIMILARITY_THRESHOLD,
+    _assign_pairs,
     _closeness,
+    _date_verdict,
     _diff_pct,
     _diffs_and_flag,
     _identification_pool,
+    _pair_weight,
+    _po_number_contradicts,
     _import_matchable,
     _import_total_value_inr,
     _material_matches,
@@ -339,10 +347,25 @@ class TestPoNumberMatches:
 # material-or-PO-number requirement directly.
 
 class _FakeCandidate:
-    def __init__(self, id, material_description, po_number_raw):
+    """A stand-in MIR row. Carries the financial/date fields too, because
+    _identification_pool() now scores each surviving candidate to assign it
+    an evidence tier (2026-09-12 redesign) rather than only gating it - the
+    defaults mirror the _Matchable these tests pair it with, so a candidate
+    is financially identical unless a test deliberately says otherwise."""
+
+    def __init__(
+        self, id, material_description, po_number_raw,
+        qty=Decimal("100"), uom="KG", rate=Decimal("50"), net=Decimal("5000.00"), mir_date=None,
+    ):
         self.id = id
         self.material_description = material_description
         self.po_number_raw = po_number_raw
+        self.qty = qty
+        self.uom = uom
+        self.rate = rate
+        self.net = net
+        self.taxable_value = net
+        self.mir_date = mir_date
 
 
 class TestMaterialMatches:
@@ -368,9 +391,9 @@ class TestIdentificationPool:
         config = _test_config()
         item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         candidates = [_FakeCandidate(1, "Sulphur Powder", "UNRELATED-PO")]
-        pool, id_flags = _identification_pool(config, candidates, item, "3000001075")
+        pool, found = _identification_pool(config, candidates, item, "3000001075")
         assert pool == candidates
-        assert id_flags[1] == (True, False)
+        assert (found[1].material_matched, found[1].po_number_matched) == (True, False)
 
     def test_po_number_only_match_is_included(self):
         """A candidate whose material description doesn't overlap at all but
@@ -380,9 +403,9 @@ class TestIdentificationPool:
         config = _test_config()
         item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         candidates = [_FakeCandidate(1, "Completely Different Material", "3000001075")]
-        pool, id_flags = _identification_pool(config, candidates, item, "3000001075")
+        pool, found = _identification_pool(config, candidates, item, "3000001075")
         assert pool == candidates
-        assert id_flags[1] == (False, True)
+        assert (found[1].material_matched, found[1].po_number_matched) == (False, True)
 
     def test_neither_matching_is_excluded(self):
         """A candidate with no material overlap and no PO-number hit fails
@@ -392,9 +415,9 @@ class TestIdentificationPool:
         config = _test_config()
         item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         candidates = [_FakeCandidate(1, "Completely Different Material", "UNRELATED-PO")]
-        pool, id_flags = _identification_pool(config, candidates, item, "3000001075")
+        pool, found = _identification_pool(config, candidates, item, "3000001075")
         assert pool == []
-        assert id_flags == {}
+        assert found == {}
 
 
 class TestTaxTypeMismatchDirect:
@@ -922,3 +945,230 @@ class TestImportMatchable:
         item = _FakeImportLineItem(po, tax_type="")
         matchable = _import_matchable(config, item, is_single_item_po=True)
         assert matchable.tax_type is None
+
+
+# ── 2026-09-12 redesign: hard negative gates, evidence tiers, assignment ──────
+# The three defects these close, all measured against live plant data:
+#   - a MIR row naming another of our orders could still be matched here
+#     (6 of 86 HRS matches, 11 of 103 Achhad, arriving in swapped pairs);
+#   - a receipt dated before the order existed was matched anyway (18/86 HRS,
+#     6/103 Achhad, 24/103 Vapi - one by 169 days);
+#   - greedy assignment let a high financial score beat a written PO number.
+
+class TestPoNumberContradicts:
+    def test_mir_naming_another_known_order_contradicts(self):
+        """The gate this exists for: MIR says 1100000785, we are asking on
+        behalf of 1100000820, and 1100000785 is an order we hold."""
+        known = frozenset({"1100000820", "1100000785"})
+        assert _po_number_contradicts("1100000820", "1100000785", known) is True
+
+    def test_mir_naming_this_order_does_not_contradict(self):
+        known = frozenset({"1100000820", "1100000785"})
+        assert _po_number_contradicts("1100000820", "1100000820", known) is False
+
+    def test_unknown_reference_is_not_evidence_against(self):
+        """A MIR row naming an order outside our coverage (one raised before
+        this system held POs, or a mistyped number) must fall back to
+        material identification - absence of knowledge is not contradiction."""
+        known = frozenset({"1100000820"})
+        assert _po_number_contradicts("1100000820", "1100000111", known) is False
+
+    def test_non_po_sentinel_never_contradicts(self):
+        """"VERBAL" on a real Vapi MIR row means no PO was raised at all.
+        Treating it as a PO reference would wrongly exclude the candidate."""
+        known = frozenset({"1000001703"})
+        assert _po_number_contradicts("1000001703", "VERBAL", known) is False
+
+    def test_blank_never_contradicts(self):
+        assert _po_number_contradicts("1100000820", "", frozenset({"1100000820"})) is False
+
+
+class TestDateVerdict:
+    def test_receipt_after_order_is_plausible(self):
+        config = _test_config()
+        assert _date_verdict(config, datetime.date(2026, 4, 1), datetime.date(2026, 4, 8)) > 0
+
+    def test_receipt_long_before_order_is_impossible(self):
+        """A MIR row dated months before its PO cannot be that PO's receipt.
+        Real HRS case: a match whose MIR predated the PO by 169 days."""
+        config = _test_config()
+        assert _date_verdict(config, datetime.date(2026, 6, 22), datetime.date(2026, 4, 23)) == DATE_IMPOSSIBLE
+
+    def test_slight_back_dating_is_tolerated_not_rejected(self):
+        """A receipt back-dated a few days into the previous week is routine
+        paperwork, not an impossible pair - discounted, never excluded."""
+        config = _test_config()
+        verdict = _date_verdict(config, datetime.date(2026, 4, 10), datetime.date(2026, 4, 6))
+        assert verdict == Decimal("0.6")
+
+    def test_beyond_horizon_is_impossible(self):
+        config = _test_config()
+        assert _date_verdict(config, datetime.date(2026, 4, 1), datetime.date(2027, 4, 1)) == DATE_IMPOSSIBLE
+
+    def test_missing_date_carries_no_information(self):
+        """Distinct from DATE_IMPOSSIBLE: a blank date must neither support
+        nor veto a candidate."""
+        config = _test_config()
+        assert _date_verdict(config, None, datetime.date(2026, 4, 1)) == Decimal("0")
+        assert _date_verdict(config, datetime.date(2026, 4, 1), None) == Decimal("0")
+
+    def test_prompt_delivery_outranks_slow_one(self):
+        config = _test_config()
+        prompt = _date_verdict(config, datetime.date(2026, 4, 1), datetime.date(2026, 4, 5))
+        slow = _date_verdict(config, datetime.date(2026, 4, 1), datetime.date(2026, 9, 5))
+        assert prompt > slow > 0
+
+
+class TestMaterialScorer:
+    def test_disagreeing_grade_codes_sink_the_score(self):
+        """The real HRS failure: plain Jaccard scored "ALUMINIUM TRIHYDRATE
+        4600N" against "Aluminium Trihydrate 4200N" at 0.6 - a confident
+        match to the wrong grade of the same chemical, because the one token
+        that distinguishes them counted no more than "aluminium"."""
+        scorer = _MaterialScorer([
+            "ALUMINIUM TRIHYDRATE 4600N", "Aluminium Trihydrate 4200N",
+            "Aluminium Trihydrate 2600N", "Carbon Black N330",
+        ])
+        same = scorer.similarity("ALUMINIUM TRIHYDRATE 4600N", "Aluminium Trihydrate 4600N")
+        different = scorer.similarity("ALUMINIUM TRIHYDRATE 4600N", "Aluminium Trihydrate 4200N")
+        assert same == Decimal("1")
+        assert different < Decimal("0.3")  # below the default identification threshold
+        assert different < _token_overlap("ALUMINIUM TRIHYDRATE 4600N", "Aluminium Trihydrate 4200N")
+
+    def test_rare_token_outweighs_common_ones(self):
+        """IDF's whole point: agreeing on the rare grade code is worth more
+        than agreeing on the chemical family every row shares."""
+        corpus = ["Synthetic Rubber SBR 1502"] * 8 + ["Synthetic Rubber IR 2200"]
+        scorer = _MaterialScorer(corpus)
+        assert scorer.similarity("Synthetic Rubber IR 2200", "Synthetic Rubber IR 2200") == Decimal("1")
+        assert scorer.similarity("Synthetic Rubber IR 2200", "Synthetic Rubber SBR 1502") < Decimal("0.3")
+
+    def test_blank_description_scores_zero(self):
+        scorer = _MaterialScorer(["Sulphur Powder"])
+        assert scorer.similarity("", "Sulphur Powder") == Decimal("0")
+        assert scorer.similarity("Sulphur Powder", "") == Decimal("0")
+
+
+def _candidate(tier_rank, score, date_weight=Decimal("1")):
+    return _Candidate(
+        mir=None, tier_rank=tier_rank, score=Decimal(score), coverage=Decimal("1"),
+        date_weight=date_weight, material_matched=True, po_number_matched=False,
+    )
+
+
+class TestPairWeight:
+    def test_po_number_evidence_outranks_any_financial_score(self):
+        """The ordering that has to hold, and did not before: a PO-number
+        confirmed candidate scoring poorly on money still beats a
+        material-only candidate scoring perfectly. Two orders for the same
+        material at the same rate both score 1.0 financially - the PO number
+        is the only thing that can tell them apart."""
+        from apps.services.matching_core import TIER_RANK_MATERIAL_STRONG, TIER_RANK_PO_NUMBER
+        confirmed = _candidate(TIER_RANK_PO_NUMBER, "0.0")
+        financially_perfect = _candidate(TIER_RANK_MATERIAL_STRONG, "1.0")
+        assert _pair_weight(confirmed) > _pair_weight(financially_perfect)
+
+    def test_within_a_tier_financial_closeness_decides(self):
+        from apps.services.matching_core import TIER_RANK_MATERIAL_STRONG
+        better = _candidate(TIER_RANK_MATERIAL_STRONG, "0.99")
+        worse = _candidate(TIER_RANK_MATERIAL_STRONG, "0.91")
+        assert _pair_weight(better) > _pair_weight(worse)
+
+    def test_within_a_tier_date_breaks_a_financial_tie(self):
+        from apps.services.matching_core import TIER_RANK_MATERIAL_STRONG
+        prompt = _candidate(TIER_RANK_MATERIAL_STRONG, "0.95", date_weight=Decimal("1"))
+        stale = _candidate(TIER_RANK_MATERIAL_STRONG, "0.95", date_weight=Decimal("0.2"))
+        assert _pair_weight(prompt) > _pair_weight(stale)
+
+
+class TestAssignPairs:
+    def test_no_mir_row_is_claimed_twice(self):
+        edges = {"a": [("m1", Decimal("10"))], "b": [("m1", Decimal("9"))]}
+        assigned = _assign_pairs(edges)
+        assert len(set(assigned.values())) == len(assigned)
+
+    def test_maximizes_total_evidence_not_the_first_grab(self):
+        """The swap this fixes. Greedy takes a->m1 (12, the single biggest
+        pair) and leaves b unmatched for 12 total; the optimum gives m1 to b
+        and m2 to a for 10 + 11 = 21."""
+        edges = {
+            "a": [("m1", Decimal("12")), ("m2", Decimal("11"))],
+            "b": [("m1", Decimal("10"))],
+        }
+        assert _assign_pairs(edges) == {"a": "m2", "b": "m1"}
+
+    def test_a_holder_may_be_displaced_into_being_unmatched(self):
+        """Freeing a row sometimes means its holder takes nothing at all -
+        worth doing whenever the total rises. Here b (8) gained by taking m1
+        from a (6), and a has nowhere else to go."""
+        edges = {
+            "a": [("m1", Decimal("6")), ("m2", Decimal("23"))],
+            "b": [("m1", Decimal("8"))],
+            "c": [("m2", Decimal("50"))],
+        }
+        assigned = _assign_pairs(edges)
+        assert assigned == {"a": "m1", "c": "m2"} or assigned == {"b": "m1", "c": "m2"}
+        total = sum(dict(edges[k])[v] for k, v in assigned.items())
+        assert total == Decimal("58")
+
+    def test_leaves_a_line_item_unmatched_rather_than_forcing_a_worse_total(self):
+        """"PO Not Found" stays an honest outcome - nothing is forced onto a
+        row that is worth more to another line item."""
+        edges = {"a": [("m1", Decimal("100"))], "b": [("m1", Decimal("1"))]}
+        assert _assign_pairs(edges) == {"a": "m1"}
+
+    def test_is_deterministic(self):
+        edges = {
+            "a": [("m1", Decimal("5")), ("m2", Decimal("5"))],
+            "b": [("m1", Decimal("5")), ("m2", Decimal("5"))],
+        }
+        assert _assign_pairs(edges) == _assign_pairs(edges)
+
+    def test_empty_input(self):
+        assert _assign_pairs({}) == {}
+
+
+class TestIdentificationNegativeGates:
+    def test_contradicting_candidate_is_excluded(self):
+        """Even with a perfect material match, a MIR row that names another
+        of our orders is not this line item's row."""
+        config = _test_config()
+        item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        candidates = [_FakeCandidate(1, "Sulphur Powder", "3000001099")]
+        pool, found = _identification_pool(
+            config, candidates, item, "3000001075",
+            known_pos=frozenset({"3000001075", "3000001099"}),
+        )
+        assert pool == []
+        assert found == {}
+
+    def test_impossible_date_excludes_a_material_only_candidate(self):
+        config = _test_config()
+        item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        candidates = [_FakeCandidate(1, "Sulphur Powder", "", mir_date=datetime.date(2026, 1, 5))]
+        pool, found = _identification_pool(
+            config, candidates, item, "3000001075", po_created_date=datetime.date(2026, 6, 1),
+        )
+        assert pool == []
+
+    def test_matching_po_number_survives_an_impossible_date(self):
+        """A written PO number outranks a date. Source dates here are
+        demonstrably less reliable than PO numbers - a third of the live Vapi
+        MIR file's date cells had day and month transposed - so a date must
+        never veto an explicit, agreeing PO number."""
+        config = _test_config()
+        item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        candidates = [_FakeCandidate(1, "Unrelated", "3000001075", mir_date=datetime.date(2026, 1, 5))]
+        pool, found = _identification_pool(
+            config, candidates, item, "3000001075", po_created_date=datetime.date(2026, 6, 1),
+        )
+        assert pool == candidates
+        assert found[1].po_number_matched is True
+
+    def test_po_number_candidate_gets_the_top_evidence_tier(self):
+        from apps.services.matching_core import TIER_RANK_PO_NUMBER
+        config = _test_config()
+        item = _Matchable("Sulphur Powder", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        candidates = [_FakeCandidate(1, "Unrelated", "3000001075")]
+        _pool, found = _identification_pool(config, candidates, item, "3000001075")
+        assert found[1].tier_rank == TIER_RANK_PO_NUMBER

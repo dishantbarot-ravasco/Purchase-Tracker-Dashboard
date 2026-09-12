@@ -38,7 +38,7 @@ from apps.services.stock_identity import OccurrenceCounter
 from apps.services.sync_utils import unchanged
 
 _FIELDS = [
-    "sr_no", "plant_tag", "description", "category", "sub_category", "uom",
+    "sr_no", "plant_tag", "description", "category", "batch_no", "uom",
     "opening_stock", "received", "issued", "todays_stock", "basic_rate", "value",
     "received_date", "supplier_name", "billing_on_plant", "material_location", "hsn_code",
 ]

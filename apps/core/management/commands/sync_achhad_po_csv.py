@@ -26,6 +26,7 @@ from django.utils import timezone
 from apps.core.models import DataQualityFlag, RTPAchhadDomesticPOLineItem, RTPAchhadDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
+from apps.services.sync_utils import orphaned_orders
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
@@ -76,6 +77,7 @@ class Command(BaseCommand):
                         rows_changed += 1
 
             self._sync_data_quality_flags()
+            self._report_orphans(orders)
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_achhad_po_csv: {rows_seen} POs seen, {rows_changed} created/updated "
@@ -160,6 +162,23 @@ class Command(BaseCommand):
             for item in parsed.items
         ])
         return True
+
+    def _report_orphans(self, parsed_orders) -> None:
+        """Warn about stored orders the master CSV no longer lists - almost
+        always an upstream rename this sync cannot see (see
+        orphaned_orders()). Reported, never deleted: each one still carries
+        line items that compete for MIR rows, so they are worth acting on,
+        but deleting a purchase order is irreversible and a withdrawn order
+        is indistinguishable from a renamed one at this layer."""
+        orphans = orphaned_orders(RTPAchhadDomesticPurchaseOrder, parsed_orders)
+        if not orphans:
+            return
+        shown = ", ".join(sorted(orphans)[:5])
+        more = f" (+{len(orphans) - 5} more)" if len(orphans) > 5 else ""
+        self.stdout.write(self.style.WARNING(
+            f"sync_achhad_po_csv: {len(orphans)} stored PO(s) are no longer in the master CSV "
+            f"and are still matching against MIR: {shown}{more}"
+        ))
 
     def _sync_data_quality_flags(self) -> None:
         """See sync_po_csv.py's own _sync_data_quality_flags - Match

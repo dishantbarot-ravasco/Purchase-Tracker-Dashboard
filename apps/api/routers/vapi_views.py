@@ -36,9 +36,12 @@ _CONFIG = _base._PlantConfig(
     stock_lot_model=RTPVapiRMLot,
     stock_snapshot_model=RTPVapiRMSnapshot,
     run_full_match=run_full_match,
-    # Same category/sub_category/uom/basic_rate shape as HRS's, plus its own
-    # real vendor column (supplier_name, not party_name).
-    material_editable_fields=frozenset({"description", "category", "sub_category", "uom", "basic_rate", "supplier_name"}),
+    # Same category/uom/basic_rate shape as HRS's, plus its own real vendor
+    # column (supplier_name, not party_name). `batch_no` sits where HRS has
+    # `sub_category` - the Vapi Stock sheet renamed that column in place on
+    # 2026-09-12 (see RTPVapiRMLot.batch_no); sub_category is no longer
+    # sourced, so it is no longer offered for correction either.
+    material_editable_fields=frozenset({"description", "category", "batch_no", "uom", "basic_rate", "supplier_name"}),
     material_decimal_fields=frozenset({"basic_rate"}),
     material_rematch_trigger_fields=frozenset({"description", "supplier_name", "basic_rate"}),
     lot_rate_field="basic_rate",

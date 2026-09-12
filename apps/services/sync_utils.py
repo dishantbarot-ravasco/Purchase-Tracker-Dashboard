@@ -42,3 +42,31 @@ def unchanged(model_cls, existing, parsed, fields: list[str]) -> bool:
         if existing_val != parsed_val:
             return False
     return True
+
+
+def orphaned_orders(order_model, parsed_orders):
+    """Purchase orders stored from an earlier revision of the master CSV that
+    the CSV no longer contains.
+
+    These accumulate silently. The PO sync upserts on po_number as a natural
+    key and never deletes, so when a PO is RENAMED upstream - which happens
+    whenever an annotation is added or removed, e.g. "3000001104 (Changed
+    Purchase Order)" later cleaned back to "3000001104" - the old spelling is
+    left behind forever as a second order carrying the same line items.
+    Confirmed 2026-09-12 against the live files: 6 such orders for HRS, 5 for
+    Achhad, 11 for Vapi, every one of them a rename rather than a genuine
+    deletion.
+
+    They are not harmless. Each ghost brings duplicate line items that
+    compete for the same MIR rows as the real order's, and (because an
+    annotated number is several tokens long) the ghost can never be confirmed
+    by MIR's PO-number column - so it can only ever be matched on material,
+    which is exactly the weak evidence the matcher is now designed to rank
+    last.
+
+    Returned, never deleted here: removing a purchase order is destructive
+    and irreversible, and a legitimately withdrawn order looks identical to a
+    rename from this side. The caller reports the count, and an operator
+    decides."""
+    live = {order.po_number for order in parsed_orders}
+    return list(order_model.objects.exclude(po_number__in=live).values_list("po_number", flat=True))

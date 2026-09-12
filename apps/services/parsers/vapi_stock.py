@@ -5,10 +5,20 @@ into RTPVapiRMLot.
 
 Exact header (row 6; data from row 7), verified against the live file this
 session:
-A SR NO. | B PLANT | C Description | D Category | E Sub Category | F UOM |
+A SR NO. | B PLANT | C Description | D Category | E Batch No. | F UOM |
 G Opening Stock | H REC | I ISSUE | J Today Stock | K Basic Rate | L Value |
 M Rec. DT. | N Supplier Name | O BILLING ON PLANT | P MATERIAL LOCATION |
 Q HSN CODE
+
+**Column E renamed 2026-09-12**: it read 'Sub Category' until the Vapi
+plant renamed it to 'Batch No.' in place - same position, new meaning, every
+other column A-Q unchanged. Confirmed against the live file: the values are
+now vendor/lot batch codes ('HRS-25', 'RTP-HRS-26', '230626GIFL2590') or a
+literal '-' placeholder, on 166 of 168 data rows. This parser therefore
+stops populating sub_category entirely rather than silently filing batch
+codes under a sub-category label - see RTPVapiRMLot.sub_category/batch_no.
+The rename is Vapi-only; HRS's Stock sheet still has a real 'Sub Category'
+at E (parsers/stock.py is untouched) and Achhad's sheet has neither column.
 
 Rows 1-5 are a document-control title block (company name/address, Document
 No./Issue No./Revision No./Effective Date), not part of the table - the
@@ -45,7 +55,7 @@ HEADER_ROW = 6
 DATA_START_ROW = 7
 
 EXPECTED_HEADERS = {
-    "A": "SR NO.", "B": "PLANT", "C": "Description", "D": "Category", "E": "Sub Category",
+    "A": "SR NO.", "B": "PLANT", "C": "Description", "D": "Category", "E": "Batch No.",
     "F": "UOM", "G": "Opening\nStock", "H": "REC", "I": "ISSUE", "J": "Today\nStock",
     "K": "Basic Rate", "L": "Value", "M": "Rec. DT.", "N": "Supplier Name",
     "O": "BILLING ON PLANT", "P": "MATERIAL LOCATION", "Q": "HSN CODE",
@@ -60,7 +70,7 @@ class ParsedVapiStockLot:
     plant_tag: str
     description: str
     category: str
-    sub_category: str
+    batch_no: str
     uom: str
     opening_stock: object
     received: object
@@ -123,7 +133,7 @@ def parse_vapi_stock_xlsx(file_bytes: bytes) -> list[ParsedVapiStockLot]:
                 plant_tag=to_str(c["B"].value),  # this sheet is a shared multi-plant ledger (RTP-1/HRS/RTP-2 rows all seen live), not Vapi-exclusive
                 description=description,
                 category=to_str(c["D"].value),
-                sub_category=to_str(c["E"].value),
+                batch_no=to_str(c["E"].value),
                 uom=to_str(c["F"].value),
                 opening_stock=to_decimal(c["G"].value) or 0,
                 received=to_decimal(c["H"].value) or 0,
