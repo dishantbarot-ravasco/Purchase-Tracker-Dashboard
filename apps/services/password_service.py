@@ -19,10 +19,11 @@ send_password_change_otp(user) -> None  (OTP emailed on a background thread,
 from __future__ import annotations
 
 import logging
-import threading
 
 from django.conf import settings
 from django.core.mail import send_mail
+
+from apps.services.device_service import _dispatch_email
 
 from apps.services.email_service import render_email
 from apps.services.otp_service import generate_otp
@@ -68,4 +69,19 @@ def send_password_change_otp(user) -> None:
         except Exception:
             log.exception("send_password_change_otp: failed to send OTP email to %s", user.email)
 
-    threading.Thread(target=_send, daemon=True).start()
+    # Routed through device_service._dispatch_email() as of 2026-09-15,
+    # rather than this module spawning its own thread. Three things were
+    # wrong with the raw thread it replaces:
+    #
+    #   1. daemon=True. A worker restart mid-send silently killed this email -
+    #      the exact failure _dispatch_email()'s non-daemon pool exists to
+    #      avoid, and which its sibling OTP (send_device_otp) was already
+    #      protected from. Two OTP emails in the same app, two different
+    #      shutdown behaviours, for no reason anyone chose.
+    #   2. Unbounded: one fresh OS thread per request, with nothing capping it.
+    #   3. No inline-under-pytest branch, so this path alone behaved
+    #      differently under test than every other email in the app.
+    #
+    # priority=True: like the login OTP, a human is sitting and waiting on
+    # this code.
+    _dispatch_email(_send, priority=True)
