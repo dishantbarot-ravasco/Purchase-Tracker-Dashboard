@@ -30,9 +30,9 @@ import html
 def render_email(
     greeting: str,
     body_paragraphs: list,
-    highlight_value: str = None,
+    highlight_value: str | None = None,
     highlight_label: str = "One-Time Password",
-    after_highlight_paragraphs: list = None,
+    after_highlight_paragraphs: list | None = None,
     closing: str = "Regards,",
     signature: str = "Ravasco Transmission and Packing Pvt Ltd.",
 ) -> tuple:

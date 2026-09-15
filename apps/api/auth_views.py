@@ -78,8 +78,13 @@ class PTLoginView(TokenObtainPairView):
             from apps.services.device_service import set_access_cookie, set_refresh_cookie
 
             set_access_cookie(response, response.data["access_token"])
-            if response.data.get("refresh"):
-                set_refresh_cookie(response, response.data["refresh"])
+            # The refresh token is no longer returned in the body (see
+            # auth_serializers.py), so it is read off the private
+            # `_refresh` key the serializer passes through for exactly
+            # this purpose and never serialized - the cookie is the only
+            # way it ever leaves the server.
+            if response.data.get("_refresh"):
+                set_refresh_cookie(response, response.data.pop("_refresh"))
 
             from django.utils import timezone
 

@@ -1755,6 +1755,246 @@ a specific new file after this fix, check its exact header row/column layout aga
 `parsers/rodtep.py`'s `EXPECTED_HEADERS` next - `error_detail` on the `SyncRun` row now names the
 file and the mismatch directly instead of failing silently for everything.
 
+## Second full-codebase audit (2026-09-15) - eight-area remediation pass
+
+A follow-up to the 2026-09-10 audit, run as a rated review across eight areas
+(code quality, security, speed, UI/UX, usability, architecture, testing/CI,
+maintainability) and then a remediation pass through them in that order. Every
+fix below has a regression test, and **every one of those tests was verified by
+reverting the fix and confirming the test fails** - not just by watching it pass
+once. `uv run pytest` was green at each area boundary (688 at the start, 767 at
+the end); `ruff check .`, `manage.py check` and `makemigrations --check` were
+clean throughout.
+
+**1. A live production timezone bug, found by the linter on its first run.**
+Four sites computed "today" with `datetime.date.today()`, which resolves in the
+SERVER process's timezone. Render runs containers in UTC; `TIME_ZONE` is
+`Asia/Kolkata`. So every day between 00:00 and 05:29 IST, the server's own date
+was still yesterday: `imports_views.py`'s `deliveryDateStatus` reported
+"On Order" for POs that had already become Overdue, and
+`_domestic_base.py`/`stock_consumption.py`'s consumption windows started a day
+late. Invisible in local dev, which already runs on IST - the divergence only
+ever appears on the UTC deployment. All four now use `timezone.localdate()`.
+Regression tests: `apps/api/tests/test_local_date_timezone.py`, including a
+**source guard** that scans app code for any new naive `date.today()`/
+`datetime.now()` call, so this cannot come back via a new call site.
+
+**2. Ruff added as a real gate, deliberately narrow.** The default ruleset
+reports ~1,000 findings here, almost all style (572 `FURB157` alone). Mass-
+`--fix`ing that across 20k lines is exactly the sweeping untestable churn that
+breaks a working app, so `[tool.ruff.lint]` in `pyproject.toml` selects only
+rule families that catch a real defect (`F`, `E4/E7/E9`, `B`, `DTZ`, `RUF013`,
+`PLE`) and was **driven to zero by hand**, making `ruff check .` a genuine
+red/green CI gate from day one rather than a score to watch drift. Also fixed:
+two `zip()` calls without explicit `strict=` in the consumption math (the
+pairwise idiom - `strict=False` is the correct explicit choice there, not
+`True`), two unused imports, two unused variables, two ambiguous `l` names,
+three implicit-`Optional` hints, one `assert False`.
+
+**3. A password change did not evict any session.** Both password-setting paths
+(`password_views.confirm_password_change`, `users_views.update_user`) saved a
+new hash and stopped - neither touched `PTUser.token_version`, the only thing
+that invalidates an already-issued JWT. A stolen access token therefore stayed
+valid for its full 12h, and the sliding 30-day `pt_refresh` cookie could renew
+indefinitely. Since the overwhelmingly common reason to change a password is
+suspected compromise, the remedy did not work against the case it exists for.
+Fixed with a new `revoke_all_tokens()` in `token_revocation.py`, **split out
+from `revoke_all_sessions()` on purpose**: the latter also deletes every
+`TrustedDevice` row, which is right for a "log out everywhere" panic button but
+wrong for a routine rotation (a `pt_device` cookie only ever skips the OTP step,
+never the password, so it is worthless to an attacker once the password
+changes - wiping it would re-challenge every colleague on every device for no
+security gain). The self-service path re-issues fresh cookies for the caller in
+the same response, so changing your own password does not sign you out of the
+browser you changed it in. Regression tests:
+`apps/api/tests/test_password_change_revokes_sessions.py` (9, including the
+device-trust distinction and that a REJECTED change revokes nothing).
+
+**4. CSV formula injection in the stock-snapshot export.** Material
+descriptions, categories and vendor names were written to the export verbatim,
+and those strings come from Drive spreadsheets plant staff edit by hand. A cell
+beginning `=`, `+`, `-` or `@` executes as a formula the moment the download is
+opened - and "open this in Excel" is the entire purpose of the export, so the
+payload reaches its execution context by design. Fixed with `csv_safe()` and a
+`SafeCsvWriter` wrapper, **deliberately a wrapper rather than a per-column
+call** so a column added later is protected by construction. Non-string values
+pass through untouched, which matters: quoting a Decimal would turn every
+quantity in the export into text Excel refuses to sum. Regression tests:
+`apps/api/tests/test_csv_formula_injection.py` (24, both directions).
+
+**5. Three more security fixes.** Google OAuth ignored the account lockout
+(`PTUserBackend` refuses a locked account; `google_callback()` checked only
+`is_active`, so five failed passwords locked the password door and left the
+Google door open). `exceptions.py` returned `str(exc)` for a `KeyError`, leaking
+internal dict key names AND reporting a genuine server bug to the caller as a
+400 - `KeyError` was removed from `_DESCRIBABLE_EXCEPTIONS` and now falls
+through to the generic 500 (still logged with a traceback, still reaching
+Sentry). The refresh token was returned in the `login`/`device-verify` JSON
+bodies, contradicting `PTTokenRefreshView`'s own documented policy and handing a
+30-day credential to any script on the page at the exact moment of
+authentication - removed; it now travels only as the httpOnly cookie, passed to
+the view under a private `_refresh` key the view pops. Tests:
+`test_oauth_lockout_and_error_leak.py`, `test_refresh_token_never_in_body.py`.
+
+**6. Config/deployment hardening.** `DJANGO_ALLOWED_HOSTS` was `.onrender.com`,
+which matches every other Render customer's hostname - pinned to this service's
+own. The qcluster worker had its own `generateValue: true` for
+`JWT_SIGNING_KEY`, producing a DIFFERENT key from the web service - the exact
+bug shape already fixed for `DJANGO_SECRET_KEY` (see that key's comment in
+`render.yaml`); now `fromService`. Harmless today only because the worker never
+mints or verifies a token. `dev_smoke_test.sqlite3.bak_pre_vendorgate` was
+tracked in git carrying 4 real `pt_users` rows (bcrypt hashes + emails) and a
+trusted-device row - `.gitignore`'s `*.sqlite3` never matched the `.bak_`
+suffix; untracked, and the pattern widened to `*.sqlite3.*`. **Note the file
+remains in git HISTORY** - rewriting that was not done (disruptive, and the
+accounts are dev/test only), but rotate those credentials if any was ever
+reused elsewhere. The hardcoded `dishant.barot@ravasco.com` delete-user gate
+now reads `DELETE_USER_ALLOWED_EMAIL` with the same value as its default, so the
+restriction survives a personnel change without a code change and redeploy.
+
+**7. The matching engine was quadratic - 11.5x faster, byte-identical output.**
+Two full-table SELECTs sat inside per-row loops: `_candidate_mir_entries()`
+loaded the ENTIRE MIR table once per PO line item, and `match_mir_entry_stock()`
+loaded the ENTIRE Stock table once per active MIR entry. A stale-row cleanup
+DELETE also fired once per MIR entry, almost always matching nothing. Measured
+against the real dev database on HRS - the SMALLEST plant (120 domestic line
+items, 474 active MIR rows, 195 stock lots):
+
+```
+before:  2,035 queries,  9.36 s
+after:     972 queries,  0.81 s
+```
+
+The shape mattered more than the numbers: cost grew with the PRODUCT of two
+independently growing tables, in a pipeline that runs 12x a day across 3
+plants, so ten times the data meant roughly a hundred times the work. Fixed
+with `_MirCandidateIndex` and `_StockLotPool` (fetch once per pass, memoize the
+vendor gate per distinct normalized vendor, pre-normalize each row's vendor
+string once) threaded through `run_full_match()`, plus a batched cleanup.
+**All three are pure caching - no scoring, gating or ordering logic changed**,
+and the single-item entry points keep their exact previous behavior via
+optional parameters (they are re-exported by name from `matching.py` /
+`matching_achhad.py` / `matching_vapi.py` and may be called for one row).
+Verified by dumping every resulting match row before and after against the real
+dev DB - 86 PO-MIR rows x 17 fields, 145 MIR-Stock rows x 10 fields - and
+diffing: **byte-identical**. Regression test:
+`apps/services/tests/test_matching_query_scaling.py`, which deliberately does
+NOT assert a magic query number (that just gets bumped later) - it runs the same
+pipeline against two dataset sizes and asserts the count barely moves, so any
+reintroduced N+1 fails by construction.
+
+**8. The CSV export now streams.** The DB side was already careful
+(`.iterator(chunk_size=2000)`), but every rendered row accumulated in a
+`StringIO` until the last one, so peak memory tracked the FULL export size - on
+a table that grows by one row per active lot per day forever, across three
+plants, where "export everything" is the default request since both date params
+are optional. Now a `StreamingHttpResponse` over a generator (peak memory: one
+row). **Behavioral note:** a streaming response has no `Content-Length`, so
+browsers show an indeterminate progress bar, and `.content` no longer exists on
+the response object - any test or client reading an export must use
+`.streaming_content` (the frontend uses `window.open()`, so it is unaffected).
+
+**9. Accessibility - the app had none of the four basics.** Zero `aria-live`
+regions in an app built on async sync/filter/save; 50 generated `<input>`/
+`<select>` controls with no accessible name of any kind (several identified
+only by the column above them, all sharing the placeholder "Search..."); no
+`role="dialog"`/`aria-modal`/focus trap/Escape on any of the seven modals; 109
+`<th>` with no `scope`. (Credit where due: div-based buttons/tabs ALREADY had
+keyboard activation and `:focus-visible` rings - that part was done.) Added to
+`shared.js`: `openModalA11y()`/`closeModalA11y()` (dialog semantics,
+`aria-labelledby` from the modal's own heading, focus moved in and **restored to
+the opener** on close, Tab/Shift+Tab wrapped, Escape to close, listeners torn
+down), `announce()` (one shared polite live region, clearing first so a repeated
+message is re-announced), and `applyAccessibleNames()` driven by a
+**MutationObserver** rather than per-render calls - same reasoning as
+`SafeCsvWriter`: make it structural, not a discipline a future render site has
+to remember. Also: skip links + `role="main"` on all five pages (annotating the
+EXISTING container rather than introducing a `<main>` wrapper, so no layout
+risk), and `.sr-only` in `brand.css` using the clip-rect technique, NOT
+`display:none` (which would remove the live region from the accessibility tree
+and silence it).
+
+**A real bug caught while verifying #9**: the labelling pass originally
+debounced with `requestAnimationFrame`, which browsers do not fire at all while
+a tab is hidden - so a render in a background tab would stay unlabelled until
+the tab was fronted. Found because the verification browser pane was itself
+hidden and the pass simply never ran. Switched to `setTimeout`; nothing here
+touches layout, so there was never a reason to wait for a frame.
+
+Verification for this area was a real browser (a temporary static harness
+loading the actual `shared.js`/`charts.js`, driven through the Browser pane) -
+22 behavioral assertions covering every item above, all passing. There is no
+Node in this development environment, so `node --check` was not available; the
+harness covered both syntax and behavior instead.
+
+**10. The Admin Panel told users the wrong password minimum.** `admin.html`'s
+placeholder said "Min. 8 characters" and `admin-page.js` validated at 8 client-
+side, while the server has enforced 10 since the 2026-09-05 hardening pass. An
+admin typing a 9-character password passed the form's own check and then got a
+400 contradicting what the form had just told them. The self-service change
+form correctly said 10, so two forms in the same app disagreed - and
+`users_views.py`'s own module docstring said 8 as well, a third copy. All
+corrected. Because this is drift rather than a typo (the number lives in five
+places across three languages, and a unit test on the validator would never
+catch it - the validator was never wrong), the guard is cross-file:
+`apps/api/tests/test_password_policy_is_stated_consistently.py` reads the real
+minimum out of `_validate_password_strength()` by probing it, then asserts every
+placeholder, client-side check, error message and the `create_pt_user` CLI copy
+agree with it.
+
+**11. Five CSS custom properties were defined with DIFFERENT values in both
+brand.css and style.css.** `index.html` is the only page loading both, and it
+loads `style.css` second, so `style.css` silently won every shared name -
+including for `brand.css`'s OWN rules. `brand.css` owns the shared top nav
+(`.topnav`/`.nav-tabs`/`.nav-user`) and referenced those names 16 times, so
+**the navigation bar that is supposed to be identical everywhere rendered in a
+different blue, green, purple and shadow on the dashboard than on home / admin /
+search-po / review**. Confirmed in a real browser by resolving the computed
+values both ways, not inferred from the CSS. This was a REPEAT - `style.css`'s
+own comment already recorded an earlier instance (`--navy`, `#0f1b2d` vs
+`#1A2535`) that was fixed in place with nothing to stop the next one. Fixed by
+renaming `style.css`'s copies to `--dash-*`, values byte-for-byte unchanged, so
+every rule in that file keeps its exact colour and the only visible change is
+the nav on `index.html` now matching the other four pages. Guard:
+`apps/api/tests/test_css_token_collisions.py` - which **found a fifth collision
+(`--red`) that a manual grep sweep had missed**, which is precisely why it is a
+test and not a one-time cleanup.
+
+**12. Testing/CI.** Measured coverage for the first time: **92%** across
+`apps/` + `config/` (751 tests at that point). That corrected an assumption from
+the review - `middleware.py` (95%) and `security_headers.py` (96%) are in fact
+exercised, just never *asserted* about. Coverage is not assertion, and both
+carry a property that fails silently, so
+`apps/api/tests/test_security_headers_and_csrf_scope.py` now pins the CSP's
+actual contents (no `unsafe-inline` in `script-src` or `style-src`, no wildcard
+origin, the jsdelivr allowance the charts depend on) and
+`AdminOnlyCsrfMiddleware`'s scope in both directions. **One of those tests was
+initially wrong and was replaced**: asserting that `POST /admin/login/` without
+a token returns 403 passed even with `ADMIN_PATH_PREFIX` deliberately broken,
+because Django's admin login view carries its own `@csrf_protect` decorator - it
+was testing Django, not this middleware. Replaced with a direct `process_view()`
+test that fails in both directions (widened to cover `/api/`, or narrowed off
+`/admin/`). CI gained `ruff check .`, a `--cov-fail-under=90` ratchet (set below
+the measured 92% so ordinary refactors do not fail it), and ESLint.
+
+**ESLint is the one item in this pass that was NOT verified locally** - there is
+no Node in this development environment - so its first CI run establishes the
+baseline. `no-undef` is deliberately OFF and `.eslintrc.json` records why: all
+14 frontend files share one global scope by design, so ESLint cannot resolve
+cross-file calls without an exhaustive hand-maintained globals list that would
+itself drift into a second source of truth.
+
+**Deliberately NOT done in this pass** (each would buy little and carries the
+only real breakage risk on the list): API pagination, which would mean moving
+every client-side filter in `po-list.js`/`materials.js`/`import-po.js`
+server-side - a rewrite of the app's most-used surface; a JS bundler/ES modules,
+which the no-build-step decision rules out on purpose; consolidating the 48
+per-plant model classes, which CLAUDE.md's own "Per-plant models" section
+argues against for good reasons; and a blanket `ruff --fix` across 20k lines.
+The email path also still uses a raw `threading.Thread` per message while
+django-q2 sits right there - worth revisiting, but it is a behavior change to
+the login-critical OTP path, not a mechanical fix.
+
 ## Known gaps (confirm still true before treating as blocking)
 
 - ~~**`style-src 'unsafe-inline'` in `config/security_headers.py`'s CSP — still not dropped**~~ —
@@ -1834,8 +2074,25 @@ file and the mismatch directly instead of failing silently for everything.
   If a new read OR write endpoint is added, gate both role (`IsAuthenticated`/`IsEditor`/`IsAdmin`)
   and plant (`user_can_access_plant()`/`user_can_edit_plant()`) the same way — don't leave a new
   endpoint unscoped by plant just because it's "only a read."
-- **No automated tests for the Drive-sync/parse/matching pipeline itself** — still explicitly
-  deferred; verification there stays manual/smoke-level (real parser runs against real files, real
+- **ESLint has never been executed** (added 2026-09-15). There is no Node in the development
+  environment it was configured in, so `.eslintrc.json` is unproven — the first CI run on a
+  branch establishes its baseline. If it reports findings, fix them or narrow a rule with a
+  recorded reason; don't delete the step to get a green build.
+- **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git HISTORY** (untracked going
+  forward as of 2026-09-15). It carried 4 dev/test `pt_users` rows with bcrypt hashes. History
+  rewriting was deliberately not attempted; if any of those passwords was ever reused on a real
+  account, rotate it.
+- **Email still bypasses the task queue.** `device_service._dispatch_email()` spawns a raw
+  `threading.Thread` per message (`daemon=False`) even though django-q2 is installed and running
+  a real worker. Unbounded thread creation on a login burst, and the process can't exit until
+  sends finish. Left alone in the 2026-09-15 pass on purpose: it is a behavior change to the
+  login-critical OTP delivery path, not a mechanical fix, and wants its own testing.
+- **No automated tests for the Drive-sync/parse/matching pipeline itself** — narrower again as
+  of 2026-09-15: `run_full_match()` now has real DB-backed coverage via
+  `apps/services/tests/test_matching_query_scaling.py` (which seeds real PO/MIR/Stock rows and
+  runs the actual pipeline), and overall coverage is measured at 92% with a CI floor. What
+  remains genuinely untested is the **Drive API calls and the `sync_*` management commands'
+  own file-fetching**; verification there stays manual/smoke-level (real parser runs against real files, real
   sync/match runs against a real Postgres, direct inspection of the rendered dashboard). This is
   narrower than it used to read: the auth flow, inline-edit endpoints, dismiss/override endpoints,
   password reset, and the `stockMatched` field all now have real integration test coverage

@@ -97,7 +97,7 @@ def device_verify(request):
     jwt_data = {
         "status": "ok",
         "access_token": str(refresh.access_token),
-        "refresh": str(refresh),
+        # See auth_serializers.py for why `refresh` is not in this body.
         "user_id": user.user_id,
         "role": user.role,
         "full_name": user.full_name or "",
@@ -111,7 +111,9 @@ def device_verify(request):
     from apps.services.device_service import set_access_cookie, set_refresh_cookie
 
     set_access_cookie(response, jwt_data["access_token"])
-    set_refresh_cookie(response, jwt_data["refresh"])
+    # From the token object directly - `refresh` is no longer in jwt_data
+    # (it must never reach a JS-readable body); the cookie is its only carrier.
+    set_refresh_cookie(response, str(refresh))
 
     send_new_device_notification(user, request)
     notify_admins_new_device_login(user, request)

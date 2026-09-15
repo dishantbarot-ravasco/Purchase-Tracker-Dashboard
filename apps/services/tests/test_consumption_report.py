@@ -144,7 +144,7 @@ class TestBuildPlantReportAchhad:
         choice: fall back to that period-to-date figure as a rough estimate
         rather than showing nothing, flagged isEstimate so it's never
         confused with a confirmed same-day figure."""
-        lot = RTPAchhadRMLot.objects.create(
+        _lot = RTPAchhadRMLot.objects.create(
             description="Neoprene", rate=Decimal("300"), todays_stock=Decimal("50"), issued=Decimal("62"),
         )
         # No RTPAchhadRMDailyMovement row for TODAY at all - day-matrix blank.

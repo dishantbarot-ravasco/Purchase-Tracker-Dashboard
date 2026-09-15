@@ -188,7 +188,7 @@ function changePasswordModalHtml() {
           '<p class="uf-hint mt-0">Enter the 6-digit code sent to your email. It expires in 10 minutes.</p>' +
           '<div class="uf-row">' +
             '<label class="uf-label">Verification Code</label>' +
-            '<input id="cpwOtp" type="text" inputmode="numeric" maxlength="6" class="uf-input" placeholder="123456">' +
+            '<input id="cpwOtp" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" class="uf-input" placeholder="123456">' +
           '</div>' +
           '<p class="uf-hint"><span class="row-link" id="cpwResend">Resend code</span></p>' +
         '</div>' +
@@ -335,6 +335,138 @@ function applyDynamicStyles(root) {
     el.removeAttribute('data-height-px');
   });
 }
+
+// ── Accessible names for generated form controls ─────────────────────────
+// Added 2026-09-15 (audit pass). The dashboard's primary interaction is
+// filtering, and every one of its ~50 generated <input>/<select> controls was
+// completely unlabelled: no <label>, no aria-label, no title. Several are
+// visually identified only by the table column they sit under, and the
+// text ones share the single placeholder "Search..." - so a screen reader
+// announced a row of controls as "edit text, Search..." repeated five times,
+// with nothing to distinguish which column each one narrowed.
+//
+// A post-render pass rather than ~50 hand-edited template strings, for the
+// same reason applyDynamicStyles() above is one: these controls are rebuilt
+// by innerHTML on every filter keystroke and re-render, across a dozen
+// files, and a per-site attribute is one more thing each future render site
+// has to remember. Deriving the name from the data-* key the markup ALREADY
+// carries to identify its column means a new filter column is labelled
+// automatically, and a mislabelled one is impossible - the key is the same
+// value the filter logic itself reads.
+//
+// Deliberately does not touch a control that already has an aria-label or a
+// real <label for>: an explicit name written at a call site always wins.
+
+// data-cf (Domestic PO), data-icf (Import PO), data-mcf (Materials) all use
+// the same column keys the filter logic reads. One map, since a key means
+// the same thing in every table it appears in.
+const FILTER_COLUMN_LABELS = {
+  poNumber: 'PO number', vendor: 'vendor', country: 'country of origin',
+  stage: 'shipment stage', status: 'status', progress: 'progress',
+  material: 'material', category: 'category', subCategory: 'sub category',
+  createdFrom: 'created on or after', createdTo: 'created on or before',
+  deliveryFrom: 'delivery date on or after', deliveryTo: 'delivery date on or before',
+};
+
+// Standalone controls that are not column filters - named individually
+// because their meaning comes from surrounding page copy, not a column.
+const CONTROL_LABELS = {
+  fromDate: 'Show purchase orders created on or after',
+  toDate: 'Show purchase orders created on or before',
+  importFromDate: 'Show import purchase orders created on or after',
+  importToDate: 'Show import purchase orders created on or before',
+  exportFromDate: 'Export snapshots from date',
+  exportToDate: 'Export snapshots to date',
+  categoryFilterSelect: 'Filter purchase orders by material category',
+  subCategoryFilterSelect: 'Filter purchase orders by material sub category',
+  flagsFilterSelect: 'Filter purchase orders by data quality flag',
+  importCategoryFilterSelect: 'Filter import purchase orders by material category',
+  importSubCategoryFilterSelect: 'Filter import purchase orders by material sub category',
+  importFlagsFilterSelect: 'Filter import purchase orders by data quality flag',
+  matCatSelect: 'Filter materials by category',
+  matSubCatSelect: 'Filter materials by sub category',
+  matFlagsSelect: 'Filter materials by data quality flag',
+  rodtepUsageScript: 'RoDTEP scrip',
+  rodtepUsageBoe: 'Bill of Entry number',
+  rodtepUsagePo: 'Purchase order number',
+  rodtepUsageDate: 'Usage date',
+  rodtepUsageAmount: 'Amount used',
+  cpwOtp: 'Verification code from your email',
+  cpwNew: 'New password',
+  cpwConfirm: 'Confirm new password',
+};
+
+function applyAccessibleNames(root) {
+  if (!root || !root.querySelectorAll) return;
+
+  root.querySelectorAll('[data-cf], [data-icf], [data-mcf]').forEach(el => {
+    if (el.hasAttribute('aria-label') || el.labels && el.labels.length) return;
+    const key = el.dataset.cf || el.dataset.icf || el.dataset.mcf;
+    const column = FILTER_COLUMN_LABELS[key];
+    if (column) el.setAttribute('aria-label', 'Filter by ' + column);
+  });
+
+  root.querySelectorAll('input[id], select[id], textarea[id]').forEach(el => {
+    if (el.hasAttribute('aria-label') || el.labels && el.labels.length) return;
+    const name = CONTROL_LABELS[el.id];
+    if (name) el.setAttribute('aria-label', name);
+  });
+
+  // Data tables: associate every header cell with its column/row. 109 <th>
+  // elements across the app carried no scope at all, so assistive tech had
+  // to guess the association in tables that are genuinely wide (the PO list
+  // has 8 columns) - exactly where announcing "Vendor: Rubamin" instead of a
+  // bare "Rubamin" is the difference between a usable and an unusable table.
+  root.querySelectorAll('th:not([scope])').forEach(th => {
+    // A header in the first column of a body row describes that ROW; one in
+    // a <thead> (or the first row) describes its COLUMN.
+    const inHead = !!th.closest('thead');
+    th.setAttribute('scope', inHead ? 'col' : (th.cellIndex === 0 ? 'row' : 'col'));
+  });
+}
+
+// Run applyAccessibleNames() automatically on anything the app renders.
+//
+// Deliberately a MutationObserver rather than a call at each render site.
+// applyDynamicStyles() above has exactly 2 call sites and is easy to place;
+// these controls are rebuilt by a dozen different render functions across
+// po-list.js / import-po.js / materials.js / the modals / the panels, on
+// every filter keystroke. A per-site call would be forgotten on exactly the
+// site added six months from now - the same reasoning behind SafeCsvWriter
+// on the backend: make the correct behavior structural, not a discipline.
+//
+// Cost is kept negligible:
+//   - childList/subtree only, NOT attributes - so setting an aria-label
+//     cannot retrigger the observer (no feedback loop).
+//   - coalesced into one pass per tick, so a render that appends 200 rows
+//     one-by-one still results in a single labelling pass.
+//   - the pass itself is a handful of querySelectorAll calls that skip any
+//     control already named.
+//
+// setTimeout, NOT requestAnimationFrame, for the debounce. rAF is the more
+// natural choice for DOM work and was the first implementation, but browsers
+// do not fire it at all while a tab is hidden or backgrounded - so a render
+// that happened in a background tab would leave its controls unlabelled
+// until the tab was next brought to the front. Caught for real while
+// verifying this code in a hidden browser pane, where the rAF version simply
+// never ran. Nothing here touches layout, so there is no reason to wait for
+// a frame anyway.
+(function observeForAccessibleNames() {
+  if (typeof MutationObserver === 'undefined' || !document.body) return;
+  let queued = false;
+  const observer = new MutationObserver(() => {
+    if (queued) return;
+    queued = true;
+    window.setTimeout(() => {
+      queued = false;
+      applyAccessibleNames(document.body);
+    }, 0);
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  // Label whatever is already on the page at load (static markup in the
+  // page's own HTML, before any JS render has run).
+  applyAccessibleNames(document.body);
+})();
 
 // ── Keyboard activation for div-based "buttons"/tabs ─────────────────────
 // A lot of this app's clickable UI (KPI cards, the 3-level tab bars, modal
@@ -831,6 +963,13 @@ async function savePoField(fieldsUrl, itemId, field, value, reason) {
     err.status = res.status;
     throw err;
   }
+  // Inline "Edit Everywhere" saves update a cell in place with no visual
+  // confirmation beyond the value itself changing - which a screen-reader
+  // user does not see. Announce the outcome so a save is distinguishable
+  // from a no-op. Field name only, never the value: a correction can carry
+  // a vendor GSTIN or email, and a live region is read aloud wherever the
+  // user happens to be, including in a shared office.
+  if (typeof announce === 'function') announce(field + ' saved.');
   return data;
 }
 
@@ -1050,4 +1189,183 @@ function wireEditIcons(container, fieldsUrl, switchToTab, onSaved) {
     };
   });
   wireOverrideBox(container);
+}
+
+// ── Modal accessibility ─────────────────────────────────────────────────
+// Added 2026-09-15 (audit pass). Before this, every modal in the app was a
+// plain <div> that got a CSS class: no dialog semantics, no focus
+// management, and no way to close it from the keyboard. Concretely, a
+// keyboard or screen-reader user could open a PO detail modal and then
+// Tab straight out of it into the page behind - which is still fully
+// interactive underneath - with nothing announcing that a dialog had opened
+// at all. There was also no Escape handler anywhere, so the only way to
+// close any modal was to physically click the × or the backdrop.
+//
+// One shared implementation rather than six: the PO, Import PO, Material,
+// RoDTEP, Advance License and Export panels all reuse the same
+// #modalBackdrop element (see each opener's own comment), so they get this
+// for free by calling openModalA11y() right after .classList.add('open').
+// admin.html's separate #uf-overlay user form calls it too.
+//
+// Deliberately additive - it sets ARIA attributes and manages focus, and
+// changes no layout, styling or existing click behavior. A page that never
+// calls it behaves exactly as before.
+
+let _modalPreviouslyFocused = null;
+let _modalKeydownHandler = null;
+let _modalContentObserver = null;
+
+/** Elements that can hold keyboard focus, in DOM order. Excludes anything
+ *  hidden or explicitly removed from the tab order. */
+function focusableWithin(container) {
+  const selector = [
+    'a[href]', 'button:not([disabled])', 'input:not([disabled])',
+    'select:not([disabled])', 'textarea:not([disabled])', '[tabindex]:not([tabindex="-1"])',
+  ].join(',');
+  return Array.from(container.querySelectorAll(selector))
+    .filter(el => !el.hasAttribute('hidden') && el.offsetParent !== null);
+}
+
+/**
+ * Make an opened modal behave like a real dialog.
+ * @param {HTMLElement} backdrop  the overlay element (already shown)
+ * @param {HTMLElement} [dialog]  the inner panel; defaults to the first
+ *                                .modal/.uf-modal inside the backdrop
+ */
+function _labelAndFocusModal(panel) {
+  // Label the dialog by its own heading when it has one, so a screen reader
+  // announces "PO 3000001088, dialog" rather than just "dialog".
+  const heading = panel.querySelector('h2, h3');
+  if (heading) {
+    if (!heading.id) heading.id = 'modal-title-' + Math.random().toString(36).slice(2, 9);
+    panel.setAttribute('aria-labelledby', heading.id);
+  }
+
+  // Move focus to the first real control. Only ever does so while focus is
+  // still on the panel itself - the placeholder state set on open - so a
+  // late content render can never yank focus away from something the user
+  // has already tabbed to or typed in.
+  const focusables = focusableWithin(panel);
+  if (focusables.length && document.activeElement === panel) {
+    focusables[0].focus();
+    return true;
+  }
+  return focusables.length > 0;
+}
+
+function openModalA11y(backdrop, dialog) {
+  if (!backdrop) return;
+  const panel = dialog || backdrop.querySelector('.modal, .uf-modal') || backdrop;
+
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.removeAttribute('aria-labelledby');
+
+  // Remember where focus came from so closing can put it back - without
+  // this, closing a modal drops focus to <body> and a keyboard user has to
+  // Tab from the top of the page to get back to the row they opened.
+  _modalPreviouslyFocused = document.activeElement;
+
+  // Move focus INTO the dialog immediately, so the dialog is never left
+  // without focus even for a moment. The panel itself is the landing spot
+  // when it has no controls yet (made programmatically focusable, not
+  // tab-reachable); _labelAndFocusModal() promotes focus to a real control
+  // as soon as one exists.
+  panel.setAttribute('tabindex', '-1');
+  panel.focus();
+  const ready = _labelAndFocusModal(panel);
+
+  // Content usually arrives AFTER this call. Confirmed against the real app
+  // (2026-09-15): every opener assigns `backdrop.classList.add('open')` and
+  // calls this, and only then sets `modalBody.innerHTML` - so at this point
+  // the panel is typically still empty, with no heading to label from and no
+  // control to focus. A harness with pre-rendered content hides this
+  // completely, which is exactly how it was missed until the modal was opened
+  // against live data.
+  //
+  // Rather than reordering seven call sites (the right insertion point
+  // differs per file, and a future eighth opener would have to remember),
+  // watch the panel and apply both as soon as content lands. One-shot: it
+  // disconnects the moment it succeeds, and unconditionally on close, so no
+  // observer outlives its modal.
+  if (_modalContentObserver) { _modalContentObserver.disconnect(); _modalContentObserver = null; }
+  if (!ready && typeof MutationObserver !== 'undefined') {
+    _modalContentObserver = new MutationObserver(() => {
+      if (_labelAndFocusModal(panel)) {
+        _modalContentObserver.disconnect();
+        _modalContentObserver = null;
+      }
+    });
+    _modalContentObserver.observe(panel, { childList: true, subtree: true });
+  }
+
+  // Escape to close, and Tab cycling confined to the dialog.
+  _modalKeydownHandler = function (e) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      if (typeof closeModal === 'function') closeModal();
+      else { backdrop.classList.remove('open'); closeModalA11y(); }
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const items = focusableWithin(panel);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    // Wrap at both ends so focus can never leave the dialog for the inert
+    // page behind it.
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
+  };
+  document.addEventListener('keydown', _modalKeydownHandler, true);
+}
+
+/** Tear down what openModalA11y() installed. Safe to call when no modal is
+ *  open (every close path calls it, including ones that never opened one). */
+function closeModalA11y() {
+  if (_modalContentObserver) {
+    _modalContentObserver.disconnect();
+    _modalContentObserver = null;
+  }
+  if (_modalKeydownHandler) {
+    document.removeEventListener('keydown', _modalKeydownHandler, true);
+    _modalKeydownHandler = null;
+  }
+  // Restore focus to whatever opened the modal, if it is still in the
+  // document (a row can legitimately be re-rendered away while open).
+  if (_modalPreviouslyFocused && document.contains(_modalPreviouslyFocused)) {
+    try { _modalPreviouslyFocused.focus(); } catch (e) { /* best-effort */ }
+  }
+  _modalPreviouslyFocused = null;
+}
+
+// ── Screen-reader announcements ─────────────────────────────────────────
+// This app changes a lot of content without navigating: filtering a PO
+// table, a sync finishing, a field correction saving, an export starting.
+// None of it was announced - there was not a single aria-live region in the
+// codebase - so a screen-reader user got silence and no way to tell whether
+// an action had done anything. announce() writes into one shared polite
+// live region, created on demand.
+function announce(message) {
+  if (!message) return;
+  let region = document.getElementById('sr-live-region');
+  if (!region) {
+    region = document.createElement('div');
+    region.id = 'sr-live-region';
+    region.setAttribute('role', 'status');
+    // polite, not assertive: these are progress/result confirmations, not
+    // emergencies - assertive would interrupt the user mid-sentence.
+    region.setAttribute('aria-live', 'polite');
+    region.setAttribute('aria-atomic', 'true');
+    region.className = 'sr-only';
+    document.body.appendChild(region);
+  }
+  // Clearing first guarantees a repeat of the SAME message is re-announced -
+  // otherwise "Sync complete" twice in a row is silent the second time,
+  // because the text node did not change.
+  region.textContent = '';
+  window.setTimeout(() => { region.textContent = message; }, 50);
 }

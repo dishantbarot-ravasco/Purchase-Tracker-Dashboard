@@ -12,7 +12,6 @@ import pytest
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import PTUser
 
 
 @pytest.mark.django_db

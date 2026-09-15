@@ -141,7 +141,13 @@ def to_date(value) -> datetime.date | None:
         return None
     for fmt in _DATE_FORMATS:
         try:
-            return datetime.datetime.strptime(s, fmt).date()
+            # noqa DTZ007 is deliberate: this parses a DATE STRING out of a
+            # spreadsheet cell ("15/09/2026") and immediately takes .date().
+            # There is no instant-in-time being represented, so attaching a
+            # tzinfo would invent a timezone the source data never had - unlike
+            # the `date.today()` sites fixed 2026-09-15, which genuinely meant
+            # "now, in the plant's timezone" and had to become timezone.localdate().
+            return datetime.datetime.strptime(s, fmt).date()  # noqa: DTZ007
         except ValueError:
             continue
     if s.isdigit() and int(s) in _EXCEL_SERIAL_RANGE:

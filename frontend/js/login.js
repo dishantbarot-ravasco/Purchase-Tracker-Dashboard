@@ -218,6 +218,11 @@ const OAUTH_ERROR_MESSAGES = {
   email_failed: 'Could not send the verification email. Please try again or contact an administrator.',
   start_failed: 'Could not start Google sign-in right now. Please try again.',
   login_failed: 'Something went wrong completing sign-in. Please try again.',
+  // Google sign-in now honours the same 5-failed-password lockout the password
+  // form does (2026-09-15) - previously Google was an open second door on a
+  // locked account. Wording mirrors the lockout duration in
+  // apps/api/auth_backend.py's _LOCKOUT_DURATION; keep the two in step.
+  account_locked: 'This account is temporarily locked after too many failed sign-in attempts. Please try again in 15 minutes, or contact an administrator.',
 };
 
 (async function handleOAuthRedirect() {

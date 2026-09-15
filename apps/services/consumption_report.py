@@ -211,7 +211,7 @@ def _month_issued_rows(cfg: dict, month_start: datetime.date, month_end: datetim
             .annotate(total_issued=Sum("issued"))
             .filter(total_issued__gt=0)
         )
-        lots_by_id = {l.id: l for l in cfg["lot_model"].objects.filter(id__in=[t["stock_lot_id"] for t in totals])}
+        lots_by_id = {lot.id: lot for lot in cfg["lot_model"].objects.filter(id__in=[t["stock_lot_id"] for t in totals])}
         rows = [(lots_by_id[t["stock_lot_id"]], t["total_issued"], False) for t in totals if t["stock_lot_id"] in lots_by_id]
 
         if allow_fallback:
@@ -231,7 +231,7 @@ def _month_issued_rows(cfg: dict, month_start: datetime.date, month_end: datetim
         .annotate(total_issued=Sum("issued"))
         .filter(total_issued__gt=0)
     )
-    lots_by_id = {l.id: l for l in cfg["lot_model"].objects.filter(id__in=[t["stock_lot_id"] for t in totals])}
+    lots_by_id = {lot.id: lot for lot in cfg["lot_model"].objects.filter(id__in=[t["stock_lot_id"] for t in totals])}
     return [(lots_by_id[t["stock_lot_id"]], t["total_issued"], False) for t in totals if t["stock_lot_id"] in lots_by_id]
 
 

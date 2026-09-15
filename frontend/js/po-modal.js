@@ -150,6 +150,13 @@ async function openPoModal(compositeKey) {
   const backdrop = document.getElementById('modalBackdrop');
   const body = document.getElementById('modalBody');
   backdrop.classList.add('open');
+  // Dialog semantics + focus trap + Escape-to-close (shared.js).
+  // Safe to call before this modal's content is assigned: openModalA11y()
+  // watches the panel and applies the heading label + initial focus as soon
+  // as content lands. (An earlier version of this comment claimed the call
+  // had to come after the content - it does not, and in this file it does
+  // not; that mismatch is what the late-content handling now covers.)
+  openModalA11y(backdrop);
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
   poModalTab = poModalTab || 'overview';
   body.innerHTML =

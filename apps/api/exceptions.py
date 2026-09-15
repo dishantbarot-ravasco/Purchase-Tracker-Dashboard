@@ -29,7 +29,24 @@ logger = logging.getLogger(__name__)
 # the client instead of flattening it into the generic 500 message below.
 # Audit any new addition for that before including it (none of these embed
 # secrets, file paths, or raw SQL).
-_DESCRIBABLE_EXCEPTIONS = (ValueError, KeyError, DjangoValidationError, ObjectDoesNotExist)
+_DESCRIBABLE_EXCEPTIONS = (ValueError, DjangoValidationError, ObjectDoesNotExist)
+
+# KeyError was REMOVED from the tuple above (2026-09-15, audit pass). It is
+# the one entry that is almost never raised deliberately with a message meant
+# for a user: in practice it comes from an internal dict lookup missing a key,
+# and `str(KeyError("_internal_plant_cfg"))` renders as the bare key name. That
+# handed a caller a fragment of internal data-structure naming AND, worse,
+# reported a genuine server-side bug to the client as a 400 - telling the user
+# they sent something wrong when they did not, and mis-classifying the failure
+# for anyone reading response-code metrics.
+#
+# A KeyError now falls through to the generic 500 branch, which is the honest
+# classification. It is still logged with a full traceback by
+# logger.exception() below and still reaches Sentry via the LoggingIntegration
+# (config/settings.py, event_level=ERROR), so nothing is lost operationally -
+# only the leak to the client goes away. If a service-layer caller genuinely
+# wants to describe a missing key to a user, raise ValueError with a written
+# message, the way every other deliberate case here already does.
 
 
 def _describe_integrity_error(exc):

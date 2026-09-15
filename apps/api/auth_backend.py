@@ -138,7 +138,7 @@ class PTUserBackend:
     Django calls each backend in AUTHENTICATION_BACKENDS order and stops at
     the first non-None result."""
 
-    def authenticate(self, request, email: str = None, password: str = None):
+    def authenticate(self, request, email: str | None = None, password: str | None = None):
         if not email or not password:
             return None
 

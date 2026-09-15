@@ -431,10 +431,113 @@ def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
 
 # ── Shared scoring building blocks ──────────────────────────────────────────
 
-def _candidate_mir_entries(config: _MatchConfig, vendor_name: str) -> list:
-    vendor = normalize_vendor_for_matching(vendor_name)
-    candidates = list(config.mir_model.objects.filter(is_active=True, party_name__isnull=False).exclude(party_name=""))
-    return [c for c in candidates if _vendor_matches(normalize_vendor_for_matching(c.party_name), vendor)]
+class _MirCandidateIndex:
+    """One plant's vendor-gated MIR pool, fetched once and reused.
+
+    PERFORMANCE FIX, 2026-09-15 (audit pass). `_candidate_mir_entries()` used
+    to run `list(mir_model.objects.filter(...))` - a FULL MIR TABLE LOAD - on
+    every single call, and `run_full_match()` calls it once per PO line item.
+    Measured on HRS, the SMALLEST plant (120 domestic line items, 474 active
+    MIR rows, 195 stock lots): 2,035 SQL queries and 9.36 seconds for one
+    match run, of which 121 were this same full-table SELECT repeated
+    verbatim. Cost scaled as O(line items x MIR rows) in both queries and
+    Python work, against a dataset that only grows and a pipeline that runs
+    12x a day across 3 plants - so 10x the data meant roughly 100x the work.
+
+    Two changes, both pure caching - no scoring, ordering, or gating logic is
+    altered:
+
+      1. The queryset is materialized ONCE per index instead of per line item.
+      2. Each MIR row's normalized vendor string is computed once at build
+         time instead of once per (line item, MIR row) comparison, and the
+         vendor-gate result is memoized per normalized PO vendor - real order
+         books have far fewer distinct vendors than line items, so the gate
+         runs once per distinct vendor rather than once per item.
+
+    Row ORDER is preserved exactly: `_rows` keeps the queryset's own order and
+    every filtered list is built by iterating it in that order, because
+    downstream `_assign_pairs()`/`_best_by_evidence()` tie-breaking can depend
+    on it. Reusing one fetch actually makes order MORE stable across a run
+    than re-querying did.
+
+    Lifetime is deliberately one matching pass, never a module-level cache:
+    the pool must never outlive a sync that just rewrote the MIR table. The
+    single-item entry points (`match_po_mir_line_item()`,
+    `match_import_po_mir_line_item()`) build a throwaway index per call, which
+    is exactly the one query they already issued - so their cost is unchanged.
+    """
+
+    def __init__(self, config: _MatchConfig):
+        self._rows = list(
+            config.mir_model.objects.filter(is_active=True, party_name__isnull=False).exclude(party_name="")
+        )
+        # Parallel list, same order as _rows - avoids re-normalizing the same
+        # party_name string once per line item.
+        self._normalized_vendors = [normalize_vendor_for_matching(r.party_name) for r in self._rows]
+        self._by_vendor: dict[str, list] = {}
+
+    def candidates_for(self, vendor_name: str) -> list:
+        vendor = normalize_vendor_for_matching(vendor_name)
+        cached = self._by_vendor.get(vendor)
+        if cached is None:
+            cached = [
+                row
+                for row, row_vendor in zip(self._rows, self._normalized_vendors, strict=True)
+                if _vendor_matches(row_vendor, vendor)
+            ]
+            self._by_vendor[vendor] = cached
+        # A copy, not the cached list itself: callers pass this straight into
+        # _identification_pool() and downstream code is free to treat its own
+        # pool as owned. Handing out the shared list would let one line item's
+        # incidental mutation silently corrupt every later item on the same
+        # vendor - a whole class of bug this cache would otherwise introduce
+        # for no benefit, since the copy is cheap next to the query it avoids.
+        return list(cached)
+
+
+class _StockLotPool:
+    """One plant's active Stock lots, fetched once and reused across a run.
+
+    PERFORMANCE FIX, 2026-09-15 (audit pass) - the MIR-side twin of
+    _MirCandidateIndex, for the other half of the same problem.
+    `match_mir_entry_stock()` ran
+    `stock_lot_model.objects.filter(is_active=True)...` - a FULL STOCK TABLE
+    LOAD - on every call, and `run_full_match()` calls it once per active MIR
+    entry. Measured on HRS, the smallest plant: that single SELECT executed
+    473 times in one run (once per active MIR row), the largest single
+    contributor to the run's 2,035 queries.
+
+    Caches the materialized rows plus each row's normalized vendor string, so
+    the per-MIR-entry work drops to the comparisons themselves. `description`
+    is deliberately NOT pre-normalized here: `normalize_material()` is applied
+    to the MIR side per entry anyway and the equality test below reads more
+    obviously correct against the raw field, so pre-normalizing it would trade
+    a real clarity cost for a marginal gain.
+
+    Same lifetime rule as _MirCandidateIndex: one matching pass, never
+    module-level - a stale stock pool would silently match against lots a
+    just-completed sync has already deactivated."""
+
+    def __init__(self, config: _MatchConfig):
+        lots = config.stock_lot_model.objects.filter(is_active=True).exclude(description="")
+        if config.stock_vendor_field:
+            lots = lots.exclude(**{config.stock_vendor_field: ""})
+        self.rows = list(lots)
+        self.normalized_vendors = (
+            [normalize_vendor_for_matching(getattr(r, config.stock_vendor_field)) for r in self.rows]
+            if config.stock_vendor_field
+            else [None] * len(self.rows)
+        )
+
+
+def _candidate_mir_entries(config: _MatchConfig, vendor_name: str, index: "_MirCandidateIndex | None" = None) -> list:
+    """Vendor-gated MIR rows for one PO's vendor.
+
+    `index` is an optional pre-built `_MirCandidateIndex` - pass it from a
+    batch loop to avoid re-querying the whole MIR table per line item (see
+    that class's docstring). Omitting it preserves the original one-query
+    behavior exactly, which is what the single-item callers want."""
+    return (index or _MirCandidateIndex(config)).candidates_for(vendor_name)
 
 
 # ── IDF-weighted material similarity (2026-09-12) ───────────────────────
@@ -1521,7 +1624,8 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
     return match
 
 
-def match_mir_entry_stock(config: _MatchConfig, mir_entry):
+def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool | None" = None,
+                          kept_ids: "set | None" = None):
     """Finds every Stock lot that identifies against one MIR entry and
     upserts config.mir_stock_match_model for each - a many-to-many
     relationship on purpose (the same material/vendor is received into stock
@@ -1601,13 +1705,17 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry):
     if not mir_material or (config.stock_vendor_field and not mir_vendor):
         return []
 
-    lots = config.stock_lot_model.objects.filter(is_active=True).exclude(description="")
-    if config.stock_vendor_field:
-        lots = lots.exclude(**{config.stock_vendor_field: ""})
+    # `pool` lets a batch caller (run_full_match) share ONE fetch across every
+    # MIR entry instead of re-loading the whole Stock table per entry - see
+    # _StockLotPool's docstring. Omitting it rebuilds the pool for this call
+    # only, which is exactly the single query this function always issued, so
+    # the single-entry callers (matching.py / matching_achhad.py /
+    # matching_vapi.py re-export this by name) are unchanged.
+    pool = pool or _StockLotPool(config)
 
     candidates = []  # (lot, material_matched, date_matched)
-    for lot in lots:
-        if config.stock_vendor_field and not _vendor_matches(normalize_vendor_for_matching(getattr(lot, config.stock_vendor_field)), mir_vendor):
+    for lot, lot_vendor in zip(pool.rows, pool.normalized_vendors, strict=True):
+        if config.stock_vendor_field and not _vendor_matches(lot_vendor, mir_vendor):
             continue
         material_matched = normalize_material(lot.description) == mir_material
         if not material_matched:
@@ -1705,7 +1813,20 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry):
         matches.append(match)
         matched_lot_ids.add(lot.id)
 
-    config.mir_stock_match_model.objects.filter(mir_entry=mir_entry).exclude(stock_lot_id__in=matched_lot_ids).delete()
+    if kept_ids is None:
+        # Standalone call - clean up this entry's own stale rows immediately,
+        # exactly as before.
+        config.mir_stock_match_model.objects.filter(mir_entry=mir_entry).exclude(stock_lot_id__in=matched_lot_ids).delete()
+    else:
+        # Batch call - record which rows survive and let run_full_match() do
+        # ONE bulk delete for the whole pass (2026-09-15, audit pass). This
+        # DELETE used to fire once per MIR entry, 474 times in a single HRS
+        # run, and the overwhelming majority matched nothing at all: an entry
+        # with no stock match has no stale rows to clean. Collecting PKs and
+        # deleting the difference once is exactly equivalent - the rows kept
+        # are precisely those just upserted here, which is what the per-entry
+        # `.exclude(stock_lot_id__in=matched_lot_ids)` expressed row by row.
+        kept_ids.update(m.pk for m in matches)
     return matches
 
 
@@ -1760,6 +1881,12 @@ def run_full_match(config: _MatchConfig) -> dict:
     # query each.
     scorer = _material_scorer(config)
     known_pos = known_po_numbers(config)
+    # Same "built once for the whole pass" reasoning as the two above - the
+    # vendor-gated MIR pool is a property of the plant's MIR table, not of any
+    # one line item. Before this existed, collect() re-queried the ENTIRE MIR
+    # table once per line item; see _MirCandidateIndex's docstring for the
+    # measured cost.
+    mir_index = _MirCandidateIndex(config)
 
     items_by_key: dict[tuple[str, int], _Matchable] = {}
     candidates_by_key: dict[tuple[str, int, int], _Candidate] = {}  # (kind, item_id, mir_id) -> evidence
@@ -1773,7 +1900,7 @@ def run_full_match(config: _MatchConfig) -> dict:
 
     def collect(kind, item, matchable, po):
         items_by_key[(kind, item.id)] = matchable
-        candidates = _candidate_mir_entries(config, po.vendor_name)
+        candidates = _candidate_mir_entries(config, po.vendor_name, index=mir_index)
         pool, found = _identification_pool(
             config, candidates, matchable, po.po_number,
             scorer=scorer, po_created_date=po.po_created_date, known_pos=known_pos,
@@ -1934,9 +2061,26 @@ def run_full_match(config: _MatchConfig) -> dict:
     config.mir_stock_match_model.objects.filter(mir_entry__is_active=False).delete()
 
     mir_matched = 0
+    # One shared Stock fetch for the whole loop instead of one per MIR entry -
+    # this single change removed 473 of this run's queries on HRS alone.
+    stock_pool = _StockLotPool(config)
+    # Stale-row cleanup, batched (see match_mir_entry_stock's `kept_ids`).
+    # Snapshotting the PKs that exist BEFORE the pass and deleting
+    # (existing - kept) afterwards - rather than excluding the kept set in SQL -
+    # keeps the final IN clause proportional to the number of genuinely stale
+    # rows (normally a handful) instead of to every row in the table.
+    existing_stock_match_ids = set(
+        config.mir_stock_match_model.objects
+        .filter(mir_entry__is_active=True)
+        .values_list("pk", flat=True)
+    )
+    kept_stock_match_ids: set = set()
     for entry in config.mir_model.objects.filter(is_active=True):
-        if match_mir_entry_stock(config, entry):
+        if match_mir_entry_stock(config, entry, pool=stock_pool, kept_ids=kept_stock_match_ids):
             mir_matched += 1
+    stale_stock_match_ids = existing_stock_match_ids - kept_stock_match_ids
+    if stale_stock_match_ids:
+        config.mir_stock_match_model.objects.filter(pk__in=stale_stock_match_ids).delete()
 
     return {
         "po_line_items_matched": po_matched,

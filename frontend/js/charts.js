@@ -72,7 +72,14 @@ const centerTextPlugin = {
   },
 };
 
-function closeModal() { document.getElementById('modalBackdrop').classList.remove('open'); destroyModalCharts(); }
+function closeModal() {
+  document.getElementById('modalBackdrop').classList.remove('open');
+  destroyModalCharts();
+  // Removes the Escape/Tab-trap listeners and returns focus to whatever
+  // opened the modal - see shared.js's openModalA11y(). Guarded because
+  // charts.js also loads on pages that never call openModalA11y().
+  if (typeof closeModalA11y === 'function') closeModalA11y();
+}
 
 // Every modal's own "×" close button used to carry a literal
 // onclick="closeModal()" HTML attribute (po-modal.js/import-po.js/

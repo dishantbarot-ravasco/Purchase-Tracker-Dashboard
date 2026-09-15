@@ -27,6 +27,12 @@
   <link rel="stylesheet" href="css/review-page.css">
 </head>
 <body>
+  <!-- Skip link (2026-09-15, audit pass). Every page puts a multi-tab nav
+       before its content, so a keyboard or screen-reader user had to Tab
+       through the whole nav on every single page load to reach the actual
+       dashboard. Visually hidden until focused (.sr-only-focusable in
+       brand.css), so nothing changes for a mouse user. -->
+  <a class="sr-only sr-only-focusable skip-link" href="#main-content">Skip to main content</a>
 
   <nav class="topnav">
     <a href="home.html" class="nav-brand">
@@ -41,7 +47,7 @@
     <div class="nav-user" id="navUser"></div>
   </nav>
 
-  <div class="page-wrap">
+  <div class="page-wrap" id="main-content" role="main" tabindex="-1">
     <div class="section-title">Review Matches</div>
     <div class="review-wrap">
       <div class="review-progress" id="reviewProgress">Loading...</div>

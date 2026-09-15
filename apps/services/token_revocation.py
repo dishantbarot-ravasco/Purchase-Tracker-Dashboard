@@ -50,6 +50,36 @@ def is_refresh_jti_revoked(jti: str) -> bool:
     return RevokedRefreshToken.objects.filter(jti=jti).exists()
 
 
+def revoke_all_tokens(user: PTUser) -> None:
+    """Invalidate every access AND refresh token already issued to `user`,
+    WITHOUT touching device trust - see PTUser.token_version's own docstring
+    for why bumping this one counter is enough.
+
+    Split out of revoke_all_sessions() (2026-09-15, audit pass) because a
+    password change and a "log out everywhere" panic button want genuinely
+    different blast radii, and conflating them was blocking the password fix:
+
+      - A password change MUST kill live tokens. Before this, an attacker
+        holding a stolen session kept working access for up to the access
+        token's 12h lifetime and, via the sliding 30-day refresh cookie,
+        effectively indefinitely - even after the victim changed their
+        password specifically because they suspected compromise. That is the
+        single behavior most users assume a password change already has.
+
+      - A password change must NOT wipe device trust. A pt_device cookie only
+        ever skips the email-OTP step; it never substitutes for the password
+        itself, so an attacker who kept one still cannot sign in once the
+        password changes. Deleting every trusted device on each routine
+        rotation would re-challenge every colleague on every device and train
+        people to click through OTP emails without reading them - a real
+        security cost, paid for no real gain.
+
+    revoke_all_sessions() below is still the right call for an actual
+    compromise ("log out everywhere", admin-driven session kill), where
+    re-challenging every device IS the point."""
+    PTUser.objects.filter(pk=user.pk).update(token_version=F("token_version") + 1)
+
+
 def revoke_all_sessions(user: PTUser) -> None:
     """"Log out everywhere" for `user` - see PTUser.token_version's own
     docstring for why bumping this one counter instantly invalidates every
@@ -71,5 +101,5 @@ def revoke_all_sessions(user: PTUser) -> None:
     lost bump here doesn't break the actual revocation (this call's own
     increment always applies, just possibly landing on a stale base), but
     an F() expression removes the race entirely rather than tolerating it."""
-    PTUser.objects.filter(pk=user.pk).update(token_version=F("token_version") + 1)
+    revoke_all_tokens(user)
     TrustedDevice.objects.filter(user=user).delete()

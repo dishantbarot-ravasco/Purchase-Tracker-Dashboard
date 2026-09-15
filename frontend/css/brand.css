@@ -650,3 +650,48 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   font-family: var(--font-head); font-size: 11px; text-transform: uppercase;
   letter-spacing: .06em; color: var(--text-muted); margin-bottom: 4px;
 }
+
+/* ── Screen-reader-only text ────────────────────────────────────────────
+   Added 2026-09-15 (audit pass) for shared.js's announce() live region and
+   for visually-hidden labels on icon-only controls.
+
+   The clip-rect + 1px box technique, NOT display:none or visibility:hidden:
+   those two remove the element from the accessibility tree entirely, which
+   would make the live region silent - exactly the opposite of the point.
+   white-space:nowrap stops long announcements wrapping into layout, and
+   the negative margin keeps the 1px box from nudging anything.
+
+   .sr-only-focusable reveals itself on keyboard focus - for skip links,
+   which must be invisible until someone Tabs to them. */
+.sr-only {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.sr-only-focusable:focus,
+.sr-only-focusable:focus-visible {
+  position: static !important;
+  width: auto; height: auto;
+  margin: 0; overflow: visible;
+  clip: auto; white-space: normal;
+}
+
+/* Skip link - invisible until a keyboard user Tabs to it, then pinned to the
+   top-left over the nav so it is unmistakably the focused control. Uses the
+   brand's own tokens rather than hardcoded colors so it follows dark mode. */
+.skip-link:focus,
+.skip-link:focus-visible {
+  top: 8px; left: 8px;
+  z-index: 200;
+  padding: 10px 16px;
+  background: var(--navy-solid);
+  color: var(--on-accent);
+  border-radius: 8px;
+  box-shadow: var(--shadow-md);
+  text-decoration: none;
+  font-weight: 600;
+}

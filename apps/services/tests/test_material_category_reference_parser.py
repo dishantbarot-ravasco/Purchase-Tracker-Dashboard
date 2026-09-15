@@ -2,6 +2,8 @@
 Unit tests for apps/services/parsers/material_category_reference.py - pure,
 dependency-free parsing (no DB), same convention as test_parsers_common.py.
 """
+import pytest
+
 from apps.services.parsers.material_category_reference import (
     EXPECTED_HEADER,
     HeaderMismatch,
@@ -45,7 +47,7 @@ class TestParseMaterialCategoryReferenceCsv:
     def test_header_mismatch_raises(self):
         try:
             parse_material_category_reference_csv("Wrong,Header\nfoo,bar\n")
-            assert False, "expected HeaderMismatch"
+            pytest.fail("expected HeaderMismatch")
         except HeaderMismatch:
             pass
 
