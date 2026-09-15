@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import secrets
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -92,18 +94,110 @@ def _get_device_name(request) -> str:
 
 # ── Email dispatch helper ────────────────────────────────────────────────────
 
-def _dispatch_email(send_fn) -> None:
-    """Run send_fn() on a background thread in production, inline under the
-    test runner (mirrors config/settings.py's "pytest" in sys.modules checks
-    elsewhere - avoids a real race between a backgrounded send and a test
-    asserting against mail.outbox right after the request returns). Checks
-    sys.modules rather than `'test' in sys.argv`, since this app's test
-    runner is pytest, not `manage.py test` - see settings.py's CACHES block
-    for the full reasoning."""
+# ── Email dispatch pools (bounded, 2026-09-15) ──────────────────────────
+# This used to be `threading.Thread(target=send_fn, daemon=False).start()`
+# per email - one fresh OS thread for every message, with nothing capping how
+# many could exist at once. Twenty colleagues signing in from new devices at
+# 9am is sixty threads (each login sends an OTP, a new-device notice, and an
+# admin alert), every one of them holding an SMTP socket for up to
+# EMAIL_TIMEOUT seconds. Bounded pools fix that: a burst now queues instead
+# of multiplying threads.
+#
+# WHY NOT django-q2, which is installed and has a real worker running?
+# Because that would make LOGIN depend on the qcluster worker being alive and
+# responsive. Today the send happens inside the web process, so signing in is
+# self-contained; queued, a worker that is down or backed up means nobody can
+# sign in from a new device at all. The broker also polls, adding seconds to
+# a code someone is watching the screen for, and django-q2 pickles its tasks
+# while these are closures over local state. Trading a login outage for
+# architectural tidiness is a bad deal. The fire-and-forget reports already
+# run on the worker, which is the right home for THAT kind of mail.
+#
+# TWO POOLS, not one, for the same reason: an OTP must never wait behind a
+# backlog of admin alerts. Having deliberately kept OTP out of the task queue
+# to protect its latency, letting it queue behind bulk mail in-process would
+# give that latency straight back. The priority lane is reserved for mail a
+# human is actively waiting on.
+#
+# Sizes are env-tunable so a real-world backlog can be widened without a code
+# change and redeploy. Defaults are deliberately small: each worker holds one
+# SMTP connection, and this is an internal app with tens of users, not
+# thousands.
+_OTP_POOL_WORKERS = max(1, int(os.environ.get("EMAIL_OTP_POOL_WORKERS") or "4"))
+_BULK_POOL_WORKERS = max(1, int(os.environ.get("EMAIL_BULK_POOL_WORKERS") or "4"))
+
+_pool_lock = threading.Lock()
+_otp_pool = None
+_bulk_pool = None
+
+
+def _email_pool(priority: bool):
+    """Lazily create the pools, so importing this module never spawns a
+    thread - which matters for management commands and for the test runner,
+    neither of which should pay for an email pool they will not use."""
+    global _otp_pool, _bulk_pool
+    with _pool_lock:
+        if priority:
+            if _otp_pool is None:
+                _otp_pool = ThreadPoolExecutor(
+                    max_workers=_OTP_POOL_WORKERS, thread_name_prefix="pt-email-otp",
+                )
+            return _otp_pool
+        if _bulk_pool is None:
+            _bulk_pool = ThreadPoolExecutor(
+                max_workers=_BULK_POOL_WORKERS, thread_name_prefix="pt-email-bulk",
+            )
+        return _bulk_pool
+
+
+def _log_email_failure(future) -> None:
+    """Every _send() closure already swallows its own delivery errors, so this
+    only fires on something genuinely unexpected (a bug in the closure itself).
+    Without it that exception would be captured in the Future and silently
+    discarded - strictly worse than the old raw Thread, which at least printed
+    a traceback to stderr."""
+    exc = future.exception()
+    if exc is not None:
+        log.error("email dispatch task raised unexpectedly: %s", exc, exc_info=exc)
+
+
+def _dispatch_email(send_fn, *, priority: bool = False) -> None:
+    """Run send_fn() on a bounded background pool in production, inline under
+    the test runner.
+
+    `priority=True` is for mail a user is actively waiting on (a login or
+    password-change OTP) and routes to the dedicated lane described above.
+    Everything else - notifications, admin alerts - is fire-and-forget and
+    belongs on the bulk lane.
+
+    The inline-under-pytest branch is unchanged and load-bearing (mirrors
+    config/settings.py's own "pytest" in sys.modules checks): it avoids a real
+    race between a backgrounded send and a test asserting against mail.outbox
+    right after the request returns. sys.modules rather than `'test' in
+    sys.argv`, since this app's runner is pytest, not `manage.py test`.
+
+    ThreadPoolExecutor's workers are non-daemon and Python joins them at
+    interpreter exit, so the old `daemon=False` intent is preserved: a clean
+    worker shutdown still lets an in-flight OTP finish rather than killing it
+    mid-send."""
     if "pytest" in sys.modules:
         send_fn()
-    else:
-        threading.Thread(target=send_fn, daemon=False).start()
+        return
+    try:
+        future = _email_pool(priority).submit(send_fn)
+    except RuntimeError:
+        # The pool refuses new work once the interpreter is tearing down.
+        # Fall back to sending inline rather than dropping the message: this
+        # is the path a shutdown-time OTP takes, and a slow send during
+        # shutdown is far better than a user left holding a code that was
+        # never sent.
+        log.warning("email pool unavailable (shutting down?) - sending inline")
+        try:
+            send_fn()
+        except Exception as exc:
+            log.error("inline email fallback failed: %s", exc)
+        return
+    future.add_done_callback(_log_email_failure)
 
 
 # ── JWT cookie helpers ───────────────────────────────────────────────────────
@@ -246,9 +340,10 @@ def send_device_otp(user) -> str:
             if settings.DEBUG:
                 print(f"\n{'=' * 50}\nLogin OTP for {user.email}: {otp}\n{'=' * 50}\n")
 
-    # daemon=False so a worker restart mid-send doesn't silently kill the
-    # OTP email instead of letting it finish (bounded by EMAIL_TIMEOUT=10s).
-    _dispatch_email(_send)
+    # priority=True - this is the one email a user is actively sitting and
+    # waiting for, so it gets the dedicated lane and can never queue behind a
+    # backlog of admin alerts. See _dispatch_email()'s own docstring.
+    _dispatch_email(_send, priority=True)
 
     return otp
 

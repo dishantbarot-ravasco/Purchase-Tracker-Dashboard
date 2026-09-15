@@ -1995,6 +1995,71 @@ The email path also still uses a raw `threading.Thread` per message while
 django-q2 sits right there - worth revisiting, but it is a behavior change to
 the login-critical OTP path, not a mechanical fix.
 
+## Bounded email dispatch pools (2026-09-15, audit follow-up)
+
+Closes the "Email still bypasses the task queue" gap listed below - but
+deliberately NOT by moving to the task queue. Reasoning matters more than the
+change here, because the obvious fix is the wrong one.
+
+**The defect.** `device_service._dispatch_email()` ran
+`threading.Thread(target=send_fn, daemon=False).start()` per message: a fresh
+OS thread for every email, with nothing capping how many could exist at once.
+One login sends three (OTP, new-device notice, admin alert), so twenty
+colleagues signing in from new devices at 9am meant sixty threads, each holding
+an SMTP socket for up to `EMAIL_TIMEOUT` (10s).
+
+`password_service.send_password_change_otp()` was worse and had gone unnoticed:
+it bypassed the shared helper entirely and spawned its own thread with
+`daemon=True`, so a worker restart mid-send silently killed that OTP - exactly
+the failure `_dispatch_email`'s non-daemon behaviour exists to prevent, and
+which the *login* OTP was already protected from. Two OTP emails in one app
+with two different shutdown behaviours, chosen by nobody. It also had no
+inline-under-pytest branch, so that one path behaved differently under test
+than every other email in the app.
+
+**Why NOT django-q2**, which is installed and already running a real worker:
+because it would make **login depend on the qcluster worker being alive and
+responsive**. Today the send happens inside the web process, so signing in is
+self-contained; queued, a worker that is down or backed up means nobody can
+sign in from a new device at all. The ORM broker also polls, adding seconds to
+a code someone is watching the screen for, and django-q2 pickles its tasks
+while these sends are closures over local state (subject/body/user), which are
+not picklable without refactoring every one to a module-level function. Trading
+a login outage for architectural tidiness is a bad deal. The scheduled reports
+already run on the worker, which is the right home for that kind of mail.
+
+**The fix: two bounded `ThreadPoolExecutor`s.** Two rather than one, for the
+same reason the queue was rejected - an OTP must never wait behind a backlog of
+admin alerts. Having deliberately kept OTP out of the task queue to protect its
+latency, letting it queue behind bulk mail in-process would hand that latency
+straight back. `_dispatch_email(fn, priority=True)` routes the two
+user-is-waiting emails (login OTP, password-change OTP) to a dedicated lane;
+everything else - notifications, admin alerts, security alerts - stays on the
+bulk lane. Sizes are env-tunable (`EMAIL_OTP_POOL_WORKERS`/
+`EMAIL_BULK_POOL_WORKERS`, both default 4) so a real backlog can be widened
+without a code change.
+
+`password_service` now routes through the same helper, inheriting the bound,
+the non-daemon shutdown behaviour, and the inline-under-pytest branch.
+
+**Preserved deliberately:** the inline-under-pytest branch (load-bearing - every
+existing test asserting against `mail.outbox` right after a request depends on
+it); the non-daemon shutdown semantics (`ThreadPoolExecutor` workers are
+non-daemon and Python joins them at interpreter exit, so a clean worker
+shutdown still lets an in-flight OTP finish); and a fallback that sends
+**inline** rather than dropping the message when the pool refuses new work at
+interpreter shutdown - a user holding a code that was never sent is the one
+outcome worth avoiding at any cost.
+
+**Measured, not assumed.** Dispatching 40 emails: 8 threads created, not 40
+(the cap), with all 40 still delivered. With the bulk lane deliberately jammed
+by 40 stalled sends, OTP start latency stayed at ~2ms - where a single shared
+lane would have made it wait ~4s. Regression tests:
+`apps/services/tests/test_email_dispatch_pool.py` (11), each verified by
+reverting the fix three separate ways (unbounded thread per email, single
+shared lane, password_service spawning its own thread again) and confirming the
+relevant tests fail.
+
 ## Known gaps (confirm still true before treating as blocking)
 
 - ~~**`style-src 'unsafe-inline'` in `config/security_headers.py`'s CSP — still not dropped**~~ —
@@ -2082,11 +2147,11 @@ the login-critical OTP path, not a mechanical fix.
   forward as of 2026-09-15). It carried 4 dev/test `pt_users` rows with bcrypt hashes. History
   rewriting was deliberately not attempted; if any of those passwords was ever reused on a real
   account, rotate it.
-- **Email still bypasses the task queue.** `device_service._dispatch_email()` spawns a raw
-  `threading.Thread` per message (`daemon=False`) even though django-q2 is installed and running
-  a real worker. Unbounded thread creation on a login burst, and the process can't exit until
-  sends finish. Left alone in the 2026-09-15 pass on purpose: it is a behavior change to the
-  login-critical OTP delivery path, not a mechanical fix, and wants its own testing.
+- ~~**Email still bypasses the task queue.**~~ - **addressed 2026-09-15**, see "Bounded email
+  dispatch pools" above. Resolved by BOUNDING the threads (two lanes, OTP isolated from bulk),
+  not by moving to django-q2 - that was considered and rejected on purpose, because it would make
+  login depend on the qcluster worker being alive. Read that section before "finishing the job" by
+  queueing these; the reasoning against it is the point, not an omission.
 - **No automated tests for the Drive-sync/parse/matching pipeline itself** — narrower again as
   of 2026-09-15: `run_full_match()` now has real DB-backed coverage via
   `apps/services/tests/test_matching_query_scaling.py` (which seeds real PO/MIR/Stock rows and
