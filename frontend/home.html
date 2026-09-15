@@ -36,6 +36,12 @@
   <link rel="stylesheet" href="css/home-page.css">
 </head>
 <body>
+  <!-- Skip link (2026-09-15, audit pass). Every page puts a multi-tab nav
+       before its content, so a keyboard or screen-reader user had to Tab
+       through the whole nav on every single page load to reach the actual
+       dashboard. Visually hidden until focused (.sr-only-focusable in
+       brand.css), so nothing changes for a mouse user. -->
+  <a class="sr-only sr-only-focusable skip-link" href="#main-content">Skip to main content</a>
 
   <!-- Top Nav -->
   <nav class="topnav">
@@ -52,7 +58,7 @@
   </nav>
 
   <!-- Hero -->
-  <div class="hero">
+  <div class="hero" id="main-content" role="main" tabindex="-1">
     <img src="img/hero.png" alt="" class="hero-img">
     <div class="hero-overlay"></div>
     <div class="hero-content">

@@ -1,0 +1,69 @@
+{
+  "//": [
+    "Added 2026-09-15 (audit pass). CI previously gated frontend JS with",
+    "`node --check` alone - a pure syntax check that catches an unclosed brace",
+    "and nothing else. 7,300 lines of browser JS had no other automated check.",
+    "",
+    "Deliberately narrow, same principle as pyproject.toml's ruff config: only",
+    "rules that catch a REAL defect. No stylistic rules at all (no indent,",
+    "quotes or semicolon rules) - this codebase already has a consistent house",
+    "style, and reformatting 7,300 lines would bury every real finding.",
+    "",
+    "no-undef is deliberately OFF, and that is a considered decision, not an",
+    "oversight. This app has no bundler and no ES modules by design (see",
+    "CLAUDE.md): all 14 files are plain <script> tags sharing ONE global scope,",
+    "so shared.js calling closeModal() (defined in charts.js) is correct code.",
+    "ESLint cannot see across files in this arrangement, so no-undef would",
+    "either flag hundreds of legitimate cross-file calls, or require an",
+    "exhaustive hand-maintained `globals` list - which would itself drift and",
+    "become a second source of truth for what every file exports. Neither is",
+    "worth it. The rules that remain are all intra-file and fire reliably.",
+    "",
+    "NOTE: this config has not been executed locally - there is no Node in the",
+    "development environment it was written in, so the first CI run is what",
+    "establishes the baseline. If it reports findings, fix them (or narrow a",
+    "rule with a recorded reason); do not silence the step."
+  ],
+  "root": true,
+  "env": {
+    "browser": true,
+    "es2022": true
+  },
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "script"
+  },
+  "rules": {
+    "no-redeclare": "error",
+    "no-dupe-keys": "error",
+    "no-dupe-args": "error",
+    "no-dupe-class-members": "error",
+    "no-duplicate-case": "error",
+    "no-unreachable": "error",
+    "no-fallthrough": "error",
+    "no-self-assign": "error",
+    "no-self-compare": "error",
+    "no-sparse-arrays": "error",
+    "no-unsafe-negation": "error",
+    "no-unsafe-finally": "error",
+    "no-cond-assign": "error",
+    "no-func-assign": "error",
+    "no-import-assign": "error",
+    "no-obj-calls": "error",
+    "use-isnan": "error",
+    "valid-typeof": "error",
+    "getter-return": "error",
+    "no-async-promise-executor": "error",
+    "no-compare-neg-zero": "error",
+    "require-atomic-updates": "off",
+    "no-empty": [
+      "error",
+      {
+        "allowEmptyCatch": true
+      }
+    ]
+  },
+  "globals": {
+    "Chart": "readonly"
+  }
+}

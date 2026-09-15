@@ -27,10 +27,63 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-cov>=7.1.0",
     "pytest-django>=4.9",
+    "ruff>=0.16.7",
 ]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
 python_files = "test_*.py"
 addopts = "--reuse-db"
+
+# ── Ruff (added 2026-09-15, audit pass) ───────────────────────────────────
+# DELIBERATELY NARROW. Ruff's default/broad ruleset reports ~1,000 findings
+# on this codebase, almost all pure style (572 FURB157 "verbose Decimal
+# constructor", 157 RUF012, 83 unsorted-import). Mass-`--fix`ing that across
+# 20k lines is exactly the kind of sweeping, untestable churn that breaks a
+# working app, so the selection below is restricted to rules that catch a
+# REAL DEFECT rather than a preference. Everything here was reviewed and
+# driven to zero by hand, so `ruff check` is a genuine red/green CI gate
+# from day one - it is not an advisory score to watch drift upward.
+#
+# This paid for itself immediately: DTZ011 found a live production bug -
+# four `datetime.date.today()` calls returning the SERVER's date (UTC on
+# Render) instead of the plant's (Asia/Kolkata), so Import POs read
+# "On Order" instead of "Overdue" for the 5.5 hours from 00:00-05:29 IST
+# every day. Invisible in local dev, which already runs on IST. See
+# apps/api/tests/test_local_date_timezone.py.
+#
+# Adding a rule later is fine - drive it to zero in the same commit that
+# selects it. Do NOT add a rule and leave existing violations behind; a
+# lint gate with a known-failing baseline stops being a gate.
+[tool.ruff]
+target-version = "py312"
+line-length = 140
+extend-exclude = ["*/migrations/*", ".venv", "staticfiles"]
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes - undefined names, unused imports/variables. Real bugs.
+    "E4",    # import shadowing/placement errors (not the whole E block: E501
+    "E7",    # line-length and E2 whitespace rules are pure formatting).
+    "E9",    # syntax/IO errors that stop the file running at all.
+    "B",     # bugbear - mutable default args, zip() truncation, assert False.
+    "DTZ",   # naive datetime/date in a USE_TZ app. The rule that found the bug.
+    "RUF013",# implicit Optional in a signature - type-hint correctness.
+    "PLE",   # pylint ERRORS only (not refactor/convention/warning tiers).
+]
+ignore = [
+    "B008",  # function-call-in-default-argument: DRF/Django idiom throughout.
+    "B904",  # raise-without-from inside except: the API deliberately flattens
+             # exception chains at its boundary (see apps/api/exceptions.py) -
+             # re-raising `from exc` would leak internal context into responses.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests pin their own clock on purpose (a fixed date is the point of a
+# deterministic test), so the timezone rules that matter in application code
+# are noise here. Application code has NO such exemption - that is enforced
+# independently by test_local_date_timezone.py's source guard, which scans
+# for naive calls even if this lint config is ever loosened.
+"**/tests/*" = ["DTZ"]

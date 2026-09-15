@@ -12,6 +12,32 @@ RTP-Achhad) reuse the existing .view-tab classes rather than a new
 component - see frontend/js/main.js's PLANTS/renderPlantTabs(). Add the
 remaining blocks back if/when Vapi or auth land.
 */
+/* ── Dashboard-scoped palette tokens (renamed 2026-09-15, audit pass) ────
+   --blue/--green/--purple/--shadow/--red used to be defined here under those bare
+   names, which ALSO exist in brand.css with genuinely different values
+   (#2563eb vs #1D64C7, #16a34a vs #1A7A4A, #7c3aed vs #6B46C1, and a
+   different shadow entirely). index.html is the only page that loads both
+   stylesheets, and it loads this one second - so this file's values silently
+   won there, including for brand.css's OWN rules.
+
+   The visible consequence: brand.css owns the shared top nav (.topnav /
+   .nav-tabs / .nav-user - see its header comment) and references these
+   tokens 16 times, so the nav that is supposed to look identical on every
+   page rendered in a different blue/green/purple, with a different shadow,
+   on the dashboard than on home / admin / search-po / review. Confirmed in a
+   real browser by resolving the computed values both ways, not inferred from
+   the CSS. style.css:19's own comment already recorded an earlier instance of
+   exactly this drift (--navy, #0f1b2d vs #1A2535) - it was a recurring
+   failure mode, not a one-off.
+
+   Renaming this file's copies to --dash-* fixes it with the smallest
+   possible blast radius: every rule in THIS file keeps the exact colour it
+   already had (the values below are unchanged, only the names), and the only
+   thing that changes on screen is that the shared nav on index.html now
+   matches the other four pages - which is the bug. brand.css is untouched.
+
+   If you add a palette token here, check brand.css for the same name first.
+   apps/api/tests/test_css_token_collisions.py fails the build on a new one. */
 :root {
   color-scheme: light;
   /* Harmonized with brand.css's own --navy/--navy-solid/--navy-mid (this
@@ -58,17 +84,17 @@ remaining blocks back if/when Vapi or auth land.
   --gold-accent-soft: var(--gold-dim);
   --gold-accent-border: var(--gold-border);
   --gold-accent-text: var(--gold-text);
-  --blue: #2563eb;
+  --dash-blue: #2563eb;
   --blue-soft: #eff4ff;
-  --red: #dc2626;
+  --dash-red: #dc2626;
   --red-soft: #fef2f2;
   --amber: #d97706;
   --amber-soft: #fffbeb;
-  --green: #16a34a;
+  --dash-green: #16a34a;
   --green-soft: #f0fdf4;
   --indigo: #6366f1;
   --indigo-soft: #e0e7ff;
-  --purple: #7c3aed;
+  --dash-purple: #7c3aed;
   --purple-soft: #f3e8ff;
   --gray: #64748b;
   --gray-mid-soft: #eef1f5;
@@ -91,7 +117,7 @@ remaining blocks back if/when Vapi or auth land.
   --red-border-lt: #fecaca;
   --blue-border-lt: #dbeafe;
   --mono: ui-monospace, SFMono-Regular, 'Roboto Mono', Menlo, Consolas, monospace;
-  --shadow: 0 1px 3px rgba(15,23,42,0.07), 0 3px 10px rgba(15,23,42,0.07);
+  --dash-shadow: 0 1px 3px rgba(15,23,42,0.07), 0 3px 10px rgba(15,23,42,0.07);
 }
 * { box-sizing: border-box; min-width: 0; }
 html, body { width:100%; overflow-x:hidden; }
@@ -119,7 +145,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    just another static status label. */
 .badge.syncing { background:var(--indigo-soft); color:var(--indigo-text); animation: badge-pulse 1.4s ease-in-out infinite; }
 @keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
-.refresh-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--navy-solid); background:var(--navy-solid); color:var(--on-accent); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; box-shadow:var(--shadow); }
+.refresh-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--navy-solid); background:var(--navy-solid); color:var(--on-accent); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; box-shadow:var(--dash-shadow); }
 .refresh-btn:hover { background:var(--navy-hover); }
 .refresh-btn[disabled] { opacity:.5; cursor:default; }
 
@@ -153,7 +179,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .sub-tab { padding:6px 14px; font-size:12.5px; border-radius:7px; cursor:pointer; background:var(--gray-soft); color:var(--slate-soft); font-weight:600; }
 .sub-tab.active { background:var(--navy-solid); color:var(--on-accent); }
 
-.load-banner { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:48px 20px; text-align:center; color:var(--slate-soft); font-size:14px; margin-bottom:18px; box-shadow:var(--shadow); }
+.load-banner { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:48px 20px; text-align:center; color:var(--slate-soft); font-size:14px; margin-bottom:18px; box-shadow:var(--dash-shadow); }
 .spinner { display:inline-block; width:22px; height:22px; border:3px solid var(--border); border-top-color:var(--gold-accent); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:12px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .noaccess { background:var(--amber-soft); border:1px solid var(--amber-border); border-radius:12px; padding:20px 22px; color:var(--amber-text); font-size:13.5px; }
@@ -167,7 +193,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
   outline: 2px solid var(--gold-accent); outline-offset: 2px;
 }
 
-.filter-row { display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 15px; box-shadow:var(--shadow); }
+.filter-row { display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 15px; box-shadow:var(--dash-shadow); }
 .filter-row label { font-size:12px; color:var(--slate-soft); font-weight:600; }
 .filter-row input[type=date], .filter-row input[type=text] { padding:6px 9px; border:1px solid var(--border-strong); border-radius:7px; font-size:12.5px; }
 .filter-row button { padding:6px 13px; border-radius:7px; border:1px solid var(--border-strong); background:var(--card); cursor:pointer; font-size:12px; font-weight:600; color:var(--slate); }
@@ -218,7 +244,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    page mismatch), and a wrapped row with fewer cards just ends where its
    last card ends - no reserved-but-empty cells, nothing to look unbalanced. */
 .kpi-grid { display:flex; flex-wrap:wrap; gap:14px; margin-bottom:20px; }
-.kpi-card { flex:0 1 190px; position:relative; background:var(--card); border:1px solid var(--border); border-left:5px solid var(--border-strong); border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--shadow); }
+.kpi-card { flex:0 1 190px; position:relative; background:var(--card); border:1px solid var(--border); border-left:5px solid var(--border-strong); border-radius:13px; padding:16px 18px; cursor:pointer; transition: box-shadow .15s, transform .15s; box-shadow:var(--dash-shadow); }
 /* Colored flag icon (top-right corner of the card) - see main.js's
    flagIconHtml()/KPI_FLAG_COLORS. Red = qty/rate discrepancy (money or
    quantity problem), amber = delivery-timing group (Overdue/Pending/Date
@@ -279,26 +305,26 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .days-left-cell { display:inline-flex; align-items:center; gap:6px; }
 .days-left-value { font-variant-numeric: tabular-nums; }
 .conf-dot { width:8px; height:8px; border-radius:50%; margin-left:0; flex:none; }
-.conf-dot-high { background:var(--green); }
+.conf-dot-high { background:var(--dash-green); }
 .conf-dot-medium { background:var(--amber); }
 .conf-dot-low { background:var(--gray); }
 
 .kpi-card.unknown { border-left-color:var(--gray); }
 .kpi-card.unknown .val { color:var(--gray); }
-.kpi-card.overdue { border-left-color:var(--red); }
-.kpi-card.overdue .val { color:var(--red); }
-.kpi-card.received { border-left-color:var(--green); }
-.kpi-card.received .val { color:var(--green); }
-.kpi-card.partial { border-left-color:var(--blue); }
-.kpi-card.partial .val { color:var(--blue); }
+.kpi-card.overdue { border-left-color:var(--dash-red); }
+.kpi-card.overdue .val { color:var(--dash-red); }
+.kpi-card.received { border-left-color:var(--dash-green); }
+.kpi-card.received .val { color:var(--dash-green); }
+.kpi-card.partial { border-left-color:var(--dash-blue); }
+.kpi-card.partial .val { color:var(--dash-blue); }
 .kpi-card.pending { border-left-color:var(--amber); }
 .kpi-card.pending .val { color:var(--amber); }
 /* Quantity/Rate-Value Discrepancy cards - a filled red background, not just
    a red left-border like .overdue, so they read as the two cards needing
    action first (see the legend panel). Ported verbatim from the reference
    artifact's .kpi-card.critical - deliberately distinct from .overdue. */
-.kpi-card.critical { border-left-color:var(--red); background:var(--red-soft); }
-.kpi-card.critical .val { color:var(--red); }
+.kpi-card.critical { border-left-color:var(--dash-red); background:var(--red-soft); }
+.kpi-card.critical .val { color:var(--dash-red); }
 /* Data Quality Flags - deliberately neutral (no .val color override, stays
    the default navy), not red: these are process/paperwork notes, not
    money-or-quantity problems that need action first - see CLAUDE.md's
@@ -307,7 +333,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 /* ── Charts ──────────────────────────────────────────────────────────── */
 .chart-row { display:grid; grid-template-columns: minmax(320px, 1.4fr) minmax(280px, 1fr); gap:16px; margin-bottom:20px; }
 @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
-.chart-panel { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px 14px; box-shadow:var(--shadow); }
+.chart-panel { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px 14px; box-shadow:var(--dash-shadow); }
 .chart-panel h4 { margin:0 0 4px; font-size:12.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; display:flex; align-items:center; gap:7px; }
 .chart-panel h4::before { content:''; width:4px; height:14px; border-radius:2px; background:var(--gold-accent); display:inline-block; }
 .chart-box { position:relative; height:250px; margin-top:14px; }
@@ -356,7 +382,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    for all three (frontend/js/main.js) - only the collapsed 5-row preview
    uses this card layout. */
 .top5-list { display:flex; flex-direction:column; gap:8px; margin-bottom:6px; }
-.top5-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap:12px; align-items:center; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 14px; font-size:12.5px; box-shadow:var(--shadow); }
+.top5-row { display:grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap:12px; align-items:center; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 14px; font-size:12.5px; box-shadow:var(--dash-shadow); }
 @media (max-width: 1100px) { .top5-row { font-size:12px; } }
 
 /* Row tint scaled by discrepancy magnitude (see flags.js's rowTintClass()) -
@@ -410,7 +436,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    within; a long "View all" list otherwise scrolled its header away with
    the rows, which made cross-referencing columns on a big PO/materials list
    annoying. */
-.table-wrap { border-radius:10px; overflow-x:auto; overflow-y:auto; max-height:70vh; border:1px solid var(--border); box-shadow:var(--shadow); background:var(--card); }
+.table-wrap { border-radius:10px; overflow-x:auto; overflow-y:auto; max-height:70vh; border:1px solid var(--border); box-shadow:var(--dash-shadow); background:var(--card); }
 .table-wrap table { border:none; }
 /* Sticky header - both <thead> rows when a column-filter row is present
    (frontend/js/main.js's colFilterRow), stacked via an approximate but
@@ -523,7 +549,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 
 .legend-toggle { display:inline-block; margin:2px 0 14px; font-size:12.5px; color:var(--gold-accent-text); cursor:pointer; font-weight:600; }
 .legend-toggle:hover { text-decoration:underline; }
-.legend-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px 20px; margin-bottom:16px; box-shadow:var(--shadow); }
+.legend-box { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px 20px; margin-bottom:16px; box-shadow:var(--dash-shadow); }
 .legend-box h4 { margin:0 0 4px; font-size:13px; color:var(--navy); font-weight:800; }
 .legend-sub { font-size:12px; color:var(--slate-soft); margin-bottom:12px; }
 .legend-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
@@ -544,7 +570,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 /* Shared empty-state icon+message - see shared.js's emptyStateHtml(). */
 .empty-state-icon { width:40px; height:40px; margin:0 auto 14px; color:var(--gray); opacity:.7; }
 .empty-state-icon svg { width:100%; height:100%; }
-.empty-state-icon-error { color:var(--red); opacity:.85; }
+.empty-state-icon-error { color:var(--dash-red); opacity:.85; }
 .empty-state-msg { max-width:420px; margin:0 auto; line-height:1.6; }
 
 /* ── Modal (PO / material detail) ───────────────────────────────────── */
@@ -604,7 +630,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    placeholder KPI cards (grayed out, not clickable - no MIR-equivalent data
    source exists for imports yet). Domestic's dashboard has no equivalent. */
 .kpi-card.kpi-disabled { cursor:default; opacity:.55; }
-.kpi-card.kpi-disabled:hover { transform:none; box-shadow:var(--shadow); }
+.kpi-card.kpi-disabled:hover { transform:none; box-shadow:var(--dash-shadow); }
 .kpi-card .val.val-text { font-family:-apple-system,BlinkMacSystemFont,sans-serif; font-size:13px; font-weight:700; line-height:1.3; }
 
 /* Inline "Edit Everywhere" pencil markup - shared by the Domestic PO modal
@@ -653,8 +679,8 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .override-box button:hover { background:var(--navy-hover); }
 .override-box button:disabled { opacity:.5; cursor:default; }
 .override-status { font-size:12px; margin-top:8px; font-weight:600; }
-.override-status.ok { color:var(--green); }
-.override-status.err { color:var(--red); }
+.override-status.ok { color:var(--dash-green); }
+.override-status.err { color:var(--dash-red); }
 .ov-selected-field { background:var(--gold-accent-soft); border:1px solid var(--gold-accent-border); border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:10px; color:var(--gold-accent-text); font-weight:600; }
 .ov-hint { font-size:12.5px; color:var(--slate-soft); font-style:italic; margin-bottom:10px; }
 .ov-disclaimer { font-size:11.5px; color:var(--slate-soft); margin-top:10px; padding-top:10px; border-top:1px dashed var(--border); }
@@ -669,9 +695,9 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 
 .mini-stepper { display:flex; align-items:center; gap:0; }
 .mini-stepper .step-dot { width:9px; height:9px; border-radius:50%; background:var(--border-strong); flex:none; }
-.mini-stepper .step-dot.done { background:var(--green); }
+.mini-stepper .step-dot.done { background:var(--dash-green); }
 .mini-stepper .step-line { width:16px; height:2px; background:var(--border-strong); flex:none; }
-.mini-stepper .step-line.done { background:var(--green); }
+.mini-stepper .step-line.done { background:var(--dash-green); }
 .mini-stepper-wrap { display:flex; flex-direction:column; gap:3px; }
 
 /* ── DARK MODE ──────────────────────────────────────────────────────────
@@ -712,7 +738,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
     --amber-border: rgba(217,119,6,.4);
     --red-border-lt: rgba(220,38,38,.4);
     --blue-border-lt: rgba(37,99,235,.4);
-    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
+    --dash-shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
   }
 }
 :root[data-theme="dark"] {
@@ -744,6 +770,6 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
   --amber-border: rgba(217,119,6,.4);
   --red-border-lt: rgba(220,38,38,.4);
   --blue-border-lt: rgba(37,99,235,.4);
-  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
+  --dash-shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
 }
 .mini-stepper-labels { font-size:9px; color:var(--slate-soft); white-space:nowrap; }

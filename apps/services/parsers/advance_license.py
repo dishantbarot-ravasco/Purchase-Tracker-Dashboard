@@ -122,7 +122,7 @@ def parse_advance_license_xlsx(file_bytes: bytes) -> list[ParsedAdvanceLicense]:
     licenses_by_number: dict[str, ParsedAdvanceLicense] = {}
     license_sequence: list[str] = []
 
-    for r, c in stream_rows(ws, data_start_row, max_col):
+    for _r, c in stream_rows(ws, data_start_row, max_col):
         license_number = to_code_str(c[1].value)
         if not license_number:
             continue

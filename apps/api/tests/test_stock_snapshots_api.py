@@ -13,7 +13,6 @@ snapshot history.
 """
 
 import csv
-import datetime
 import io
 
 import pytest
@@ -25,6 +24,18 @@ from apps.core.models import HRSRMLot, HRSRMSnapshot
 DATES_URL = "/api/stock-snapshots/dates"
 SNAPSHOTS_URL = "/api/stock-snapshots"
 EXPORT_URL = "/api/stock-snapshots/export"
+
+
+def _csv_body(response):
+    """Read a CSV export response body.
+
+    The export became a StreamingHttpResponse on 2026-09-15 (see
+    _domestic_base.py's export view for why - peak memory used to track the
+    full export size, unbounded by design since both date params are
+    optional). A streaming response has `.streaming_content` (an iterator of
+    byte chunks) and deliberately NO `.content` - touching that raises
+    AttributeError - so every test reading an export goes through here."""
+    return b"".join(response.streaming_content).decode("utf-8")
 
 
 def _make_lot(**kwargs):
@@ -133,7 +144,41 @@ class TestExportStockSnapshots:
         )
 
     def _rows(self, response):
-        return list(csv.reader(io.StringIO(response.content.decode("utf-8"))))
+        return list(csv.reader(io.StringIO(_csv_body(response))))
+
+    def test_the_export_streams_rather_than_buffering_the_whole_file(self):
+        """The export must stay a StreamingHttpResponse (2026-09-15, audit
+        pass). It used to build the entire CSV in a StringIO before responding,
+        so peak memory tracked the FULL export size - and since both date
+        params are optional, "export everything" is the default request against
+        a table that grows by one row per active lot per day, forever, across
+        three plants. On a small instance that is an OOM which kills the worker
+        for every other user, caused by one person clicking Export.
+
+        Asserted structurally rather than by measuring memory: a
+        StreamingHttpResponse has `streaming_content` and raises on `.content`.
+        If someone reverts to HttpResponse, `streaming is True` fails first and
+        names the reason."""
+        from django.http import StreamingHttpResponse
+
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="stream@ravasco.com", role="admin"))
+        response = client.get(EXPORT_URL)
+
+        assert response.status_code == 200
+        assert isinstance(response, StreamingHttpResponse), (
+            "the export must stream - see this test's docstring"
+        )
+        assert response.streaming is True
+        # Content is produced lazily, one row at a time, not pre-assembled.
+        import types
+        assert isinstance(response.streaming_content, (types.GeneratorType, map, filter)) or hasattr(
+            response.streaming_content, "__iter__"
+        )
+        # And it still produces a correct, complete CSV.
+        rows = self._rows(response)
+        assert rows[0][0] == "Plant", "header row missing from the streamed body"
+        assert len(rows) >= 2, "no data rows in the streamed body"
 
     def test_viewer_is_forbidden(self):
         client = APIClient()

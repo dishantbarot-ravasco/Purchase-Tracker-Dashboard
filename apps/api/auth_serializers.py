@@ -70,7 +70,31 @@ class PTTokenObtainPairSerializer(TokenObtainPairSerializer):
             return {
                 "status": "ok",
                 "access_token": str(refresh.access_token),
-                "refresh": str(refresh),
+                # `refresh` is deliberately NOT in this body (removed
+                # 2026-09-15, audit pass). It used to be returned here, which
+                # contradicted this app's own stated policy - see
+                # PTTokenRefreshView's docstring: "the refresh token only ever
+                # travels as the httpOnly pt_refresh cookie, never in a
+                # JS-readable JSON response body". Login was the one place that
+                # broke that rule, and it was the worst place to break it: a 30
+                # day sliding-renewal credential, readable by any script on the
+                # page, at the exact moment a user authenticates. The frontend
+                # never read it (verified - login.js/auth.js store no tokens and
+                # rely entirely on the cookies), so nothing depended on it.
+                #
+                # A non-browser API client is unaffected: PTLoginView still sets
+                # the pt_refresh cookie on this same response, and requests
+                # honours cookies on a Session, so the documented
+                # "Postman/scripts" case keeps working. Such a client can also
+                # still pass `refresh` explicitly in the body to
+                # /api/auth/token/refresh - that direction was never removed.
+                #
+                # `_refresh` is a private hand-off to PTLoginView.post(), which
+                # pops it to set the cookie before responding. The leading
+                # underscore marks it as never-serialized; the pop() is what
+                # actually guarantees that, so don't rename one without the
+                # other.
+                "_refresh": str(refresh),
                 "user_id": user.user_id,
                 "role": user.role,
                 "full_name": user.full_name or "",

@@ -53,6 +53,15 @@ jobs:
           uv pip install pip-audit
           uv run pip-audit
 
+      - name: Lint (ruff)
+        # A real red/green gate, not an advisory score - the ruleset in
+        # pyproject.toml's [tool.ruff.lint] is deliberately narrowed to
+        # rules that catch real defects and was driven to ZERO by hand when
+        # it was introduced (2026-09-15). See that config block's own
+        # comment for why the broad default ruleset is NOT used, and for the
+        # live production timezone bug this gate caught on its first run.
+        run: uv run ruff check .
+
       - name: Check for missing migrations
         run: uv run python manage.py makemigrations --check --dry-run
 
@@ -76,8 +85,16 @@ jobs:
       - name: Create cache table
         run: uv run python manage.py createcachetable
 
-      - name: Run test suite
-        run: uv run pytest
+      - name: Run test suite (with coverage floor)
+        # --cov-fail-under is a RATCHET, not a target. It was set to 90 when
+        # coverage was measured at 92% (2026-09-15, audit pass), leaving a
+        # couple of points of headroom so an ordinary refactor that moves code
+        # around does not fail the build - while a change that deletes or
+        # bypasses a meaningful chunk of tested code still does. Raise it when
+        # coverage genuinely improves; do NOT lower it to make a red build
+        # green, which is the one change that turns a ratchet back into a
+        # decoration.
+        run: uv run pytest --cov=apps --cov=config --cov-report=term --cov-fail-under=90
 
   frontend-lint:
     runs-on: ubuntu-22.04
@@ -98,3 +115,33 @@ jobs:
             echo "Checking $f"
             node --check "$f"
           done
+
+      - name: Lint frontend JS (ESLint)
+        # NON-BLOCKING ON PURPOSE, and this is meant to be temporary.
+        #
+        # This config has never been executed: the environment it was authored
+        # in (2026-09-15) had no Node and no npm, so there was no way to drive
+        # it to zero the way `ruff check .` was. Shipping it as a hard gate
+        # would mean a push failing CI for a reason nobody has verified is
+        # real - so it reports instead of blocking, for exactly one cycle.
+        #
+        # ACTION: after the first green-or-not run, look at the output. Fix
+        # what it found (or narrow a rule with a recorded reason), then DELETE
+        # this continue-on-error line so it becomes a real gate. A permanently
+        # non-blocking lint step is a decoration, not a check - the only thing
+        # that makes this acceptable is that it is scheduled to stop being one.
+        continue-on-error: true
+        # `node --check` above catches only unparseable files. This catches
+        # what actually bites in a no-bundler codebase: a function declared
+        # twice in one file, a duplicated object key, an unreachable branch,
+        # `typeof x == 'strng'`, a self-comparison. Config is deliberately
+        # narrow - see .eslintrc.json's own notes, in particular WHY no-undef
+        # is off (all 14 files share one global scope by design, so ESLint
+        # cannot resolve cross-file calls without a drifting globals list).
+        #
+        # This step has NOT been run locally - the environment it was authored
+        # in has no Node - so this first CI run establishes the baseline. If it
+        # reports findings, fix them or narrow a rule with a recorded reason;
+        # do not delete or soften the step to get a green build.
+        run: |
+          npx --yes eslint@8 frontend/js --ext .js --max-warnings 0

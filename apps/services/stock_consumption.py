@@ -56,6 +56,8 @@ import datetime
 from decimal import Decimal
 from typing import NamedTuple, Optional, Sequence, Tuple
 
+from django.utils import timezone
+
 DEFAULT_WINDOW_DAYS = 30
 
 # A gap this long between two snapshots means real data is missing, not that
@@ -100,7 +102,9 @@ def _issued_cross_check(windowed, primary_avg_daily: Optional[float]) -> Optiona
     otherwise whether the two estimates agree within _AGREEMENT_TOLERANCE."""
     if not primary_avg_daily:
         return None
-    for (_, _, _, i0), (_, _, _, i1) in zip(windowed, windowed[1:]):
+    # strict=False is deliberate: this is the pairwise idiom, so the two
+    # sequences are intentionally of unequal length (strict=True would raise).
+    for (_, _, _, i0), (_, _, _, i1) in zip(windowed, windowed[1:], strict=False):
         if i0 is None or i1 is None or i1 < i0:
             return None
     history_days = (windowed[-1][0] - windowed[0][0]).days
@@ -129,7 +133,7 @@ def consumption_stats(
     """
     ordered = sorted(points, key=lambda p: p[0])
     if today is None:
-        today = ordered[-1][0] if ordered else datetime.date.today()
+        today = ordered[-1][0] if ordered else timezone.localdate()
     window_start = today - datetime.timedelta(days=window_days)
     windowed = [p for p in ordered if window_start <= p[0] <= today]
 
@@ -151,7 +155,8 @@ def consumption_stats(
     intervals_used = 0
     receipt_intervals = 0
 
-    for (d0, stock0, r0, _i0), (d1, stock1, r1, _i1) in zip(windowed, windowed[1:]):
+    # strict=False - pairwise idiom, same reasoning as above.
+    for (d0, stock0, r0, _i0), (d1, stock1, r1, _i1) in zip(windowed, windowed[1:], strict=False):
         gap = (d1 - d0).days
         if gap <= 0 or gap > _MAX_GAP_DAYS:
             continue

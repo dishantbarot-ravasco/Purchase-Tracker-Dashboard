@@ -45,7 +45,10 @@ until now. An existing user's password could previously only be reset via
 `manage.py create_pt_user` (CLI access required), which the project owner
 asked to fix so an admin never needs shell/terminal access just to help a
 locked-out colleague. update_user() below now accepts an optional
-`password` field (min 8 chars, bcrypt-hashed the same way create_user()
+`password` field (min 10 chars - see _validate_password_strength(); this
+docstring said 8 until 2026-09-15, when the same stale figure was also found
+in admin.html's placeholder and admin-page.js's client-side check, where it
+was actively misleading admins - bcrypt-hashed the same way create_user()
 hashes a new account's password) - omitted or blank means "leave the
 current password alone", never accidentally cleared. `manage.py
 create_pt_user` still exists and still works (it remains the only way to
@@ -55,6 +58,7 @@ every reset after that first account exists.
 """
 
 import logging
+import os
 
 import bcrypt
 from django.conf import settings
@@ -64,6 +68,7 @@ from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from apps.api.permissions import AdminWriteThrottle, IsAdmin, is_allowed_email_domain
+from apps.services.token_revocation import revoke_all_tokens
 from apps.core.audit_log import PTAuditLog, log_pt_action
 from apps.core.models import PTUser, TrustedDevice
 
@@ -214,7 +219,20 @@ def create_user(request):
 # irreversible (unlike deactivate, which just blocks sign-in) and every other
 # admin action in this file is available to any admin account, so this one
 # extra gate is deliberately narrower than IsAdmin alone, not a bug.
-_DELETE_USER_ALLOWED_EMAIL = "dishant.barot@ravasco.com"
+_DELETE_USER_ALLOWED_EMAIL = (
+    os.environ.get("DELETE_USER_ALLOWED_EMAIL") or "dishant.barot@ravasco.com"
+).strip().lower()
+# Moved behind an env var (2026-09-15, audit pass) WITHOUT changing the
+# default, so behavior is byte-for-byte identical unless someone deliberately
+# sets the variable. The hardcoded restriction itself stays - it is an explicit
+# project-owner decision, not an oversight (see the comment above). What
+# changed is only that it no longer REQUIRES a code change and redeploy to
+# survive an ordinary personnel event: if this person leaves, changes address,
+# or hands the responsibility over, an env var edit does it. A permission
+# pinned to one human's email inside source is a small operational landmine
+# that goes off at the worst possible moment - when that person is already
+# gone and nobody can delete a stale account. Set DELETE_USER_ALLOWED_EMAIL in
+# Render's Environment tab to move it.
 
 
 def _assert_not_last_active_admin(exclude_pk: int) -> None:
@@ -346,6 +364,27 @@ def update_user(request, user_id):
             _assert_not_last_active_admin(user.pk)
         user.save()
 
+    # An admin resetting someone's password must evict that account's live
+    # sessions too (audit pass, 2026-09-15) - before this, the reset changed
+    # only what a FUTURE sign-in would require, while any token already issued
+    # kept working: 12h on the access token, and indefinitely via the sliding
+    # 30-day pt_refresh cookie. Since the overwhelmingly common reason an admin
+    # resets a password is "this account may be compromised", that made the
+    # remedy ineffective against the exact case it was reached for.
+    #
+    # revoke_all_tokens, not revoke_all_sessions: device trust is deliberately
+    # preserved (see that function's docstring - a pt_device cookie only ever
+    # skips the OTP step, never the password, so it is worthless to an attacker
+    # once the password changes). An admin who genuinely wants to re-challenge
+    # every device still has POST /api/auth/users/<id>/logout-everywhere, which
+    # remains the deliberate nuclear option.
+    #
+    # Note this is NOT needed for the isActive=False path: PTJWTAuthentication.
+    # get_user() already rejects an inactive user on every single request, so
+    # deactivation has always taken effect immediately.
+    if password_was_reset:
+        revoke_all_tokens(user)
+
     logger.info("users_views: admin %s updated PTUser %s", request.user.email, user.email)
 
     detail_parts = []
@@ -354,7 +393,7 @@ def update_user(request, user_id):
     if new_is_active != prev_is_active:
         detail_parts.append(f"isActive: {prev_is_active} -> {new_is_active}")
     if password_was_reset:
-        detail_parts.append("password reset")
+        detail_parts.append("password reset; all sessions revoked")
     log_pt_action(
         request, PTAuditLog.ACTION_USER_UPDATED, actor=request.user,
         detail=f"updated {user.email}" + (f" ({'; '.join(detail_parts)})" if detail_parts else ""),

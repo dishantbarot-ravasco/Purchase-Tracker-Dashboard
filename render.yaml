@@ -96,8 +96,23 @@ services:
         generateValue: true
       - key: DJANGO_DEBUG
         value: "false"
+      # Pinned to this service's OWN hostname (2026-09-15, audit pass).
+      # `.onrender.com` matched EVERY Render-hosted subdomain, i.e. every other
+      # Render customer's hostname too - so Django's Host-header validation,
+      # whose entire job is rejecting a request that claims to be for a domain
+      # this app does not serve, was effectively disabled. Nothing in this app
+      # builds an absolute URL from the request host today (verified: no
+      # build_absolute_uri()/get_host() call sites anywhere), so there is no
+      # known live exploit - but ALLOWED_HOSTS is a cheap guard that only works
+      # if it is actually narrow, and the hostname below is already hardcoded a
+      # few lines down in GOOGLE_OAUTH_REDIRECT_URI anyway.
+      #
+      # If this service is ever renamed/recreated, update BOTH this value and
+      # GOOGLE_OAUTH_REDIRECT_URI to Render's newly-assigned hostname - a
+      # mismatch here surfaces as a blanket HTTP 400 "Bad Request (Invalid
+      # HTTP_HOST header)" on every request, not a subtle failure.
       - key: DJANGO_ALLOWED_HOSTS
-        value: .onrender.com
+        value: purchase-tracker-dashboard-pqgi.onrender.com
       - key: JWT_SIGNING_KEY
         generateValue: true
 
@@ -238,9 +253,24 @@ services:
       - key: DJANGO_DEBUG
         value: "false"
       - key: DJANGO_ALLOWED_HOSTS
-        value: .onrender.com
+        value: purchase-tracker-dashboard-pqgi.onrender.com
+      # Reads the WEB service's JWT_SIGNING_KEY rather than generating an
+      # independent one (2026-09-15, audit pass) - the exact bug shape already
+      # fixed for DJANGO_SECRET_KEY just above, which this had quietly kept.
+      # Two `generateValue: true` entries for the same logical key produce two
+      # DIFFERENT random values, so a JWT minted in one process cannot be
+      # verified in the other. Harmless today only because the worker never
+      # mints or validates a token - it runs sync/match pipelines and sends
+      # report emails. It stops being harmless the moment any queued task, any
+      # scheduled report, or any future worker-side endpoint needs to issue or
+      # check one, and it would fail as a confusing "signature does not match"
+      # rather than an obvious misconfiguration. Same fix, same reason: one
+      # generated value, referenced by the other service.
       - key: JWT_SIGNING_KEY
-        generateValue: true
+        fromService:
+          type: web
+          name: purchase-tracker-dashboard
+          envVarKey: JWT_SIGNING_KEY
       - key: DATABASE_URL
         fromDatabase:
           name: purchase-tracker-db

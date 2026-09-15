@@ -16,6 +16,12 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" crossorigin="anonymous" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi"></script>
 </head>
 <body>
+  <!-- Skip link (2026-09-15, audit pass). Every page puts a multi-tab nav
+       before its content, so a keyboard or screen-reader user had to Tab
+       through the whole nav on every single page load to reach the actual
+       dashboard. Visually hidden until focused (.sr-only-focusable in
+       brand.css), so nothing changes for a mouse user. -->
+  <a class="sr-only sr-only-focusable skip-link" href="#root">Skip to main content</a>
   <!-- Shared top nav (brand.css) - same on home.html/search-po.html/admin.html,
        see js/auth.js's renderNavTabs(). Everything below this is the
        dashboard's own content (js/main.js), on its own stylesheet. -->
@@ -34,7 +40,7 @@
 
   <!-- #root's entire contents are replaced by main.js once data loads - the
        spinner below is only ever seen briefly on first paint. -->
-  <div class="wrap" id="root">
+  <div class="wrap" id="root" role="main" tabindex="-1">
     <div class="load-banner"><div class="spinner"></div><div>Loading&hellip;</div></div>
   </div>
 

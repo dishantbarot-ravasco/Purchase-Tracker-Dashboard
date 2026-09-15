@@ -3,6 +3,18 @@ __pycache__/
 *.pyc
 .env
 staticfiles/
+# Covers dev_smoke_test.sqlite3 AND any suffixed backup of it - the bare
+# `*.sqlite3` glob did NOT match `dev_smoke_test.sqlite3.bak_pre_vendorgate`,
+# which was therefore tracked in git carrying 4 real pt_users rows (bcrypt
+# hashes + emails) and a trusted-device row. Untracked 2026-09-15.
 *.sqlite3
+*.sqlite3.*
 .pytest_cache/
 logs/
+_a11y_tmp/
+
+# Coverage artifacts (pytest-cov, added 2026-09-15 alongside the CI floor).
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml

@@ -401,6 +401,11 @@ const SYNC_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 async function pollSyncUntilDone(btn, targetKeys) {
   const startedAt = Date.now();
   btn.textContent = 'Syncing…';
+  // The button's own label change is the only progress signal a sighted user
+  // gets; announce() gives the same information to a screen reader, which
+  // otherwise sits in silence through a multi-minute Drive sync with no way
+  // to tell whether the click registered. See shared.js's announce().
+  if (typeof announce === 'function') announce('Sync started. This can take a few minutes.');
   while (Date.now() - startedAt < SYNC_POLL_TIMEOUT_MS) {
     await new Promise(resolve => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
     let stillRunning;
@@ -429,12 +434,14 @@ async function pollSyncUntilDone(btn, targetKeys) {
       await loadAndRender();
       btn.disabled = false;
       btn.textContent = 'Refresh Data';
+      if (typeof announce === 'function') announce('Sync complete. The dashboard has been updated.');
       return;
     }
   }
   btn.disabled = false;
   btn.textContent = 'Refresh Data';
   await loadSyncStatus();
+  if (typeof announce === 'function') announce('The sync is taking longer than expected and is still running in the background.');
   alert('The sync is taking longer than expected. It may still be running in the background - refresh in a bit to check.');
 }
 

@@ -166,6 +166,24 @@ def google_callback(request):
         log.warning("Google OAuth: email %s not registered or inactive", email)
         return HttpResponseRedirect(f"{_FRONTEND_LOGIN}?oauth_error=not_registered")
 
+    # Honour the account lockout this app's password login already enforces
+    # (added 2026-09-15, audit pass). PTUserBackend.authenticate() refuses a
+    # locked account outright; this path checked only is_active, so five failed
+    # password guesses locked the password door while leaving the Google door
+    # open. That inconsistency is the problem regardless of which behavior one
+    # argues for: an admin who sees "account locked" is entitled to believe the
+    # account cannot be signed into, and a lockout that one of two front doors
+    # silently ignores is worse than no lockout at all, because it is believed.
+    #
+    # No _dummy_verify()-style timing equalisation is needed here (unlike the
+    # password path): reaching this line already required completing a real
+    # Google OAuth round-trip for this exact verified address, so there is no
+    # account-enumeration signal left to protect - the caller demonstrably
+    # controls the mailbox.
+    if user.locked_until and user.locked_until > timezone.now():
+        log.warning("Google OAuth: account %s is locked out - refusing sign-in", email)
+        return HttpResponseRedirect(f"{_FRONTEND_LOGIN}?oauth_error=account_locked")
+
     log.info("Google OAuth: %s authenticated, checking device trust", email)
 
     if is_trusted_device(request, user.user_id):

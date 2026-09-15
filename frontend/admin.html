@@ -47,6 +47,12 @@
   <link rel="stylesheet" href="css/admin-page.css">
 </head>
 <body>
+  <!-- Skip link (2026-09-15, audit pass). Every page puts a multi-tab nav
+       before its content, so a keyboard or screen-reader user had to Tab
+       through the whole nav on every single page load to reach the actual
+       dashboard. Visually hidden until focused (.sr-only-focusable in
+       brand.css), so nothing changes for a mouse user. -->
+  <a class="sr-only sr-only-focusable skip-link" href="#pageBody">Skip to main content</a>
 
   <nav class="topnav">
     <a href="home.html" class="nav-brand">
@@ -61,7 +67,7 @@
     <div class="nav-user" id="navUser"></div>
   </nav>
 
-  <div class="page-wrap" id="pageBody">
+  <div class="page-wrap" id="pageBody" role="main" tabindex="-1">
     <div class="loading-overlay" id="loadingOverlay">
       <div class="spinner"></div><span>Loading&hellip;</span>
     </div>
@@ -201,23 +207,23 @@
         <div id="uf-err" class="uf-err"></div>
         <div class="uf-row">
           <label class="uf-label">Full Name <span class="req-mark">*</span></label>
-          <input id="uf-fullname" type="text" class="uf-input" placeholder="Dishant Barot" required>
+          <input id="uf-fullname" type="text" class="uf-input" placeholder="Dishant Barot" autocomplete="off" required>
         </div>
         <div class="uf-row">
           <label class="uf-label">Email <span class="req-mark">*</span></label>
-          <input id="uf-email" type="email" class="uf-input" placeholder="user@ravasco.com">
+          <input id="uf-email" type="email" class="uf-input" placeholder="user@ravasco.com" autocomplete="off">
         </div>
         <div class="uf-row" id="uf-pw-row">
           <label class="uf-label" id="uf-pw-label">Password <span class="req-mark">*</span></label>
           <div class="uf-input-wrap">
-            <input id="uf-password" type="password" class="uf-input" placeholder="Min. 8 characters" autocomplete="new-password">
+            <input id="uf-password" type="password" class="uf-input" placeholder="Min. 10 characters" autocomplete="new-password">
             <button type="button" class="pw-toggle" data-pw-target="uf-password" aria-label="Show password" title="Show password">&#128065;</button>
           </div>
           <p class="uf-hint" id="uf-pw-hint">Share this password with the user directly, or ask them to use "Change Password" from their own account menu afterwards.</p>
         </div>
         <div class="uf-row">
           <label class="uf-label">Designation</label>
-          <input id="uf-designation" type="text" class="uf-input" placeholder="Purchase Manager">
+          <input id="uf-designation" type="text" class="uf-input" placeholder="Purchase Manager" autocomplete="off">
         </div>
         <div class="uf-row">
           <label class="uf-label">Role <span class="req-mark">*</span></label>

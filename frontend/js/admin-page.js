@@ -333,6 +333,11 @@ function openForm(user) {
   if (edit) loadDevices(user.userId);
   document.getElementById('uf-err').classList.remove('show');
   document.getElementById('uf-overlay').classList.add('open');
+  // Dialog semantics + Escape-to-close + focus trap (shared.js).
+  // Called BEFORE the explicit .focus() below so this form keeps its
+  // existing, more useful initial focus target (Full Name) rather than
+  // whatever happens to be the first focusable control.
+  openModalA11y(document.getElementById('uf-overlay'));
   document.getElementById('uf-fullname').focus();
 }
 
@@ -390,6 +395,7 @@ async function revokeDevice(userId, deviceId) {
 
 function closeForm() {
   document.getElementById('uf-overlay').classList.remove('open');
+  if (typeof closeModalA11y === 'function') closeModalA11y();
   editingUserId = null;
 }
 
@@ -411,11 +417,15 @@ async function submitForm() {
   if (!fullName) { return showFormError('Full name is required.'); }
   if (!editingUserId) {
     if (!email) { return showFormError('Email is required.'); }
-    if (password.length < 8) { return showFormError('Password must be at least 8 characters.'); }
-  } else if (password && password.length < 8) {
+    // 10, matching users_views.py's _validate_password_strength() - this
+    // said 8 while the server enforced 10 (2026-09-15, audit pass), so an
+    // admin typing a 9-character password passed this check and then got a
+    // 400 from the server contradicting what the form had just told them.
+    if (password.length < 10) { return showFormError('Password must be at least 10 characters.'); }
+  } else if (password && password.length < 10) {
     // Blank is fine (means "don't change it") - only validate length
     // when the admin actually typed a new one.
-    return showFormError('Password must be at least 8 characters.');
+    return showFormError('Password must be at least 10 characters.');
   }
 
   const btn = document.getElementById('uf-submit');

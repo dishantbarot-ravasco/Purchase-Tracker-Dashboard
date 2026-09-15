@@ -202,7 +202,7 @@ def _item_dict(item):
         "shipmentStage": flags.shipment_stage(item),
         "qtyDiscrepancy": is_disc,
         "qtyDiscrepancyPct": disc_pct,
-        "deliveryDateStatus": flags.delivery_date_status(item, datetime.date.today()),
+        "deliveryDateStatus": flags.delivery_date_status(item, timezone.localdate()),
         "mirMatch": _mir_match_dict(item),
     }
 
@@ -231,7 +231,7 @@ def _flag_dismissal_dict(fd):
 
 def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_reference=None):
     items = list(po.items.all())
-    today = datetime.date.today()
+    today = timezone.localdate()
     item_dicts = [_item_dict(i) for i in items]
     total_incl_value = sum((i.total_inclusive_value or 0) for i in items)
     # PO-list rows show one BL/country - real POs in the live data ship as

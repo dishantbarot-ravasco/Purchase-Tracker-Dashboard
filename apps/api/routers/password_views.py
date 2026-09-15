@@ -30,10 +30,14 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import UserRateThrottle
 
+from apps.api.auth_serializers import PTTokenObtainPairSerializer
 from apps.api.routers.users_views import _hash_password, _validate_password_strength
 from apps.core.audit_log import PTAuditLog, log_pt_action
+from apps.core.models import PTUser
+from apps.services.device_service import set_access_cookie, set_refresh_cookie
 from apps.services.otp_service import verify_otp
 from apps.services.password_service import send_password_change_otp
+from apps.services.token_revocation import revoke_all_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +86,34 @@ def confirm_password_change(request):
     request.user.password_hash = _hash_password(new_password)
     request.user.save(update_fields=["password_hash"])
 
+    # Kill every token issued before this moment (audit pass, 2026-09-15).
+    # Without this, changing a password did nothing to sessions already in
+    # flight: a stolen access token stayed good for its full 12h lifetime and
+    # the sliding 30-day pt_refresh cookie could renew indefinitely, so a user
+    # who changed their password BECAUSE they suspected compromise did not
+    # actually evict the attacker. revoke_all_tokens (not revoke_all_sessions)
+    # deliberately leaves TrustedDevice rows alone - see that function's own
+    # docstring for why a routine rotation should not re-OTP every device.
+    revoke_all_tokens(request.user)
+
+    # ...including the caller's own, which is why this endpoint immediately
+    # re-issues a fresh pair against the NEW token_version and re-cookies it.
+    # Skipping this would log the user out of the very browser they just used
+    # to change their password - correct on paper, but it reads as "the change
+    # failed" and pushes people back to the login screen mid-flow. Re-reading
+    # the row from the DB is required: revoke_all_tokens() bumps the counter
+    # with an in-DB F() expression, so the in-memory request.user still holds
+    # the stale pre-bump value and would mint a token that fails on the very
+    # next request.
+    refreshed_user = PTUser.objects.get(pk=request.user.pk)
+    new_tokens = PTTokenObtainPairSerializer.get_token(refreshed_user)
+
     logger.info("password_views: user %s changed their own password", request.user.email)
     log_pt_action(
         request, PTAuditLog.ACTION_USER_UPDATED, actor=request.user,
-        detail="self-service password change (OTP-verified)",
+        detail="self-service password change (OTP-verified); all other sessions revoked",
     )
-    return Response({"status": "ok"})
+    response = Response({"status": "ok", "sessionsRevoked": True})
+    set_access_cookie(response, str(new_tokens.access_token))
+    set_refresh_cookie(response, str(new_tokens))
+    return response

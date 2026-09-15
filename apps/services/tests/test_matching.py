@@ -425,7 +425,7 @@ class TestTaxTypeMismatchDirect:
     (below) for the same behavior exercised through _diffs_and_flag()."""
 
     def test_no_gst_recorded_on_mir_is_never_a_mismatch(self):
-        config = _test_config()
+        _config = _test_config()
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("0"), Decimal("0")
         assert _tax_type_mismatch("IGST", mir) is False
