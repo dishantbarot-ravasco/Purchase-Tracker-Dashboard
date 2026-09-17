@@ -367,6 +367,55 @@ strips legal suffixes like "Pvt Ltd", lowercases, strips punctuation) and then c
 (`"Rubamin Private Limited"` vs `"Rubamin Private Limited - Vadodara"`), and exact matching produced
 **zero** MIR↔Stock matches until switched to `shorter in longer`.
 
+### Some vendors never have a PO — that is registered, not inferred
+
+`parsers/common.py`'s **`NO_PO_VENDORS`** registry lists the vendors this company never raises a
+purchase order against. `matching_core._MirCandidateIndex` drops their MIR rows from the PO↔MIR
+candidate pool at build time. Roughly **890 of ~2,460 active MIR rows** across the three plants fall
+in this bucket — a large block that previously sat in every pool forever, matched nothing, and had
+nothing anywhere saying why.
+
+**One list, shared by all three plants.** The first version was scoped per plant, on the assumption
+that a vendor bought without a PO at one plant might be properly PO'd at another. The project owner's
+list says otherwise — these are no-PO everywhere — so per-plant scoping would only give the three
+copies a way to drift apart. Reintroduce scoping if a genuine per-plant exception appears, not before.
+
+Two categories, kept separate because they have **opposite futures**:
+
+- **`INTERNAL_TRANSFER`** — the company's own plants and sister units (Ravasco Vapi/Achhad,
+  Hindustan Rubbers Silvassa/Achhad). An inter-plant jobwork/ex-work movement is not a purchase and
+  will never generate a PO. Permanent.
+- **`NO_PO_SUPPLIER`** — real third-party suppliers genuinely bought from, but without a PO being
+  raised today (Gangamani, Eternia, Harsha Impex, K-Flex, 2M Elastomers, Gurvinder Singh HUF, Forech,
+  Star Polymers, Sumitra, DS Industries, Tinna, JMF). This is a **process gap, not a fact about the
+  data model**. If one of them starts being PO'd, its entry must be removed or its orders are
+  silently excluded from reconciliation.
+
+**The registry suppresses matching, never the row.** The rows stay in the MIR table, still reconcile
+against Stock via `_StockLotPool` (an internal transfer really does land in stock), and are counted
+and labelled for the dashboard by `services/no_po_vendors.py`, surfaced as `noPoVendors` on each
+plant's `sync-status`. A silent exclusion would recreate the exact confusion the registry exists to
+end. Keep that split if you extend this.
+
+**Lookup is exact normalized equality — deliberately NOT `_vendor_matches()`.** No containment, no
+0.90-similarity arm. A false positive here removes a real supplier's receipts from reconciliation;
+a false negative merely leaves a row unmatched exactly as it already was. The containment arm makes
+the false positive easy to hit with a short name (`"mit"` is a substring of `"limited"`), and the
+similarity arm scores genuinely different companies as high as 0.857.
+
+The cost is that **a genuinely different word needs its own line**. Normalization already folds
+casing, punctuation, `&`/`and`, legal suffixes and trailing plurals, so most real variants collapse
+on their own (`"STAR POLYMER"`/`"STAR POLYMERS INC."`, `"K-Flex"`/`"Kflex"`). Only three entries exist
+purely as spellings: `"Packaging"` vs `"Packing"` for Ravasco, Vapi's `"... Pvt Ltd ACHHAD"` suffix,
+and Achhad's misspelled `"JMF Perfomance"`. `test_no_po_vendors.py` pins each of them, so a change to
+the normalization rules that splits one fails loudly instead of quietly re-admitting those rows.
+
+It is also a real false-positive guard on the matcher itself: `_vendor_matches()` scores
+`'Ravasco Transmission And Packing Pvt Ltd ACHHAD'` against `'Ravasco Transmission & Packing Pvt
+Ltd'` at **0.897** — 0.003 under the threshold is all that stopped one plant's internal transfers
+from being claimed by another plant's POs.
+
+
 ### PO ↔ MIR
 
 Per line item:
@@ -1436,6 +1485,7 @@ alongside each.
 | Unclamped `*_diff_pct` overflowing `max_digits=6` | [Decimal precision](#decimal-precision-conventions) |
 | `source_row_ref` as lot identity splicing two materials' histories | [Stable lot identity](#stable-lot-identity) |
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [PO ↔ MIR](#po--mir) |
+| Vendors with no PO looking like matcher failures for every run | [No-PO vendors](#some-vendors-never-have-a-po--that-is-registered-not-inferred) |
 | Exact vendor equality → zero MIR↔Stock matches (city suffix) | [Vendor gate](#vendor-name-is-always-a-hard-gate-never-a-scored-factor) |
 | MIR↔Stock comparing MT against KG → ~1000x phantom rate mismatch | [Unit normalisation](#units-are-normalised-before-comparing--on-both-pairings) |
 | Import USD rate compared raw against INR MIR → ~94x gap, 0 matches | [Import currency](#import-po--mir-convert-currency-first) |

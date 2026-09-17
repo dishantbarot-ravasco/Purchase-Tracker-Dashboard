@@ -151,6 +151,7 @@ from django.utils import timezone
 from apps.services.parsers.common import (
     clean_po_number,
     is_usable_po_reference,
+    is_no_po_vendor,
     normalize_material,
     normalize_uom,
     normalize_vendor_for_matching,
@@ -465,12 +466,33 @@ class _MirCandidateIndex:
     single-item entry points (`match_po_mir_line_item()`,
     `match_import_po_mir_line_item()`) build a throwaway index per call, which
     is exactly the one query they already issued - so their cost is unchanged.
+
+    NO-PO VENDORS, 2026-09-17. Rows whose party is registered in
+    parsers/common.py's NO_PO_VENDORS are dropped from the pool at build
+    time. That registry is one list shared by all three plants, so nothing
+    plant-specific is needed here. Those vendors - the company's own plants moving
+    stock between units, plus the handful of real suppliers bought from
+    without a PO being raised - have no purchase order to match against and
+    never will, so leaving them in the pool could only ever produce a wrong
+    match, never a right one. Dropping them here rather than at sync time is
+    deliberate and load-bearing: this index feeds PO<->MIR only, so the rows
+    stay fully present in the MIR table, still reconcile against Stock via
+    _StockLotPool, and are still counted and labelled for the dashboard.
+    This registry suppresses MATCHING, never the row.
+
+    The exclusion is also a real false-positive guard, not just tidiness.
+    _vendor_matches()'s 0.90-similarity arm scores 'Ravasco Transmission And
+    Packing Pvt Ltd ACHHAD' against 'Ravasco Transmission & Packing Pvt Ltd'
+    at 0.897 - just under the line today, with nothing but that 0.003 margin
+    stopping one plant's internal transfers from being claimed by another
+    plant's POs.
     """
 
     def __init__(self, config: _MatchConfig):
-        self._rows = list(
+        rows = list(
             config.mir_model.objects.filter(is_active=True, party_name__isnull=False).exclude(party_name="")
         )
+        self._rows = [r for r in rows if not is_no_po_vendor(r.party_name)]
         # Parallel list, same order as _rows - avoids re-normalizing the same
         # party_name string once per line item.
         self._normalized_vendors = [normalize_vendor_for_matching(r.party_name) for r in self._rows]

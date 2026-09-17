@@ -36,6 +36,7 @@ from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_ca
 from apps.core.models import DataQualityFlag, DomesticPOCorrection, FlagDismissal, MaterialCategoryReference, MaterialCorrection
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
+from apps.services.no_po_vendors import no_po_vendor_summary
 from apps.services.parsers.common import normalize_material
 from apps.services.stock_consumption import DEFAULT_WINDOW_DAYS, consumption_stats
 from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
@@ -1031,6 +1032,19 @@ def make_sync_status(cfg: _PlantConfig):
         resp = Response({
             "sync": latest_by_source,
             "mirEntryCount": cfg.mir_model.objects.filter(is_active=True).count(),
+            # No-PO vendors, 2026-09-17. The registry in parsers/common.py
+            # drops these vendors' MIR rows from the PO<->MIR candidate pool
+            # because there is no order for them to match and never will be
+            # (own plants' inter-unit transfers, plus a handful of real
+            # suppliers bought from without a PO). One list covers all three
+            # plants. Reported here so that exclusion is VISIBLE rather
+            # than silent - without it these rows are indistinguishable from
+            # ones the matcher merely failed on, which is the exact confusion
+            # the registry exists to end. The noPoSupplier half in
+            # particular needs watching: those are a process gap, and the day
+            # one starts being PO'd its registry entry has to go or its
+            # orders are silently excluded. See services/no_po_vendors.py.
+            "noPoVendors": no_po_vendor_summary(cfg.mir_model),
             "syncInProgress": is_sync_in_progress(cfg.key),
             "lastSnapshotDate": last_snapshot_date.isoformat() if last_snapshot_date else None,
             "snapshotGapDays": snapshot_gap_days,

@@ -289,6 +289,135 @@ VENDOR_ALIASES: dict[str, str] = {
 }
 
 
+# ── No-PO vendors (2026-09-17) ──────────────────────────────────────────────
+# Vendors whose MIR rows will NEVER have a purchase order to match against.
+# Until now the matcher had no concept of this: their rows sat in every
+# plant's vendor-gated MIR pool forever, matched nothing, and nothing in the
+# system said WHY - indistinguishable, on screen and in the accuracy numbers,
+# from a real order the matcher had simply failed to find. The knowledge
+# already existed in this file as prose (see _VENDOR_ALIAS_SOURCE's rule 2,
+# which forbids aliasing onto a group company precisely because "their MIR
+# rows are inter-plant jobwork/ex-work transfers with no PO raised at all") -
+# this registry turns that comment into behaviour.
+#
+# ONE LIST, APPLIED TO ALL THREE PLANTS. The first version of this registry
+# was scoped per plant, on the assumption that a vendor bought without a PO
+# at one plant might be properly PO'd at another. The project owner's list
+# says otherwise (2026-09-17): these vendors are no-PO everywhere, so scoping
+# them per plant would only create a way for the three copies to drift apart.
+# If a genuine per-plant exception ever appears, that is the point to
+# reintroduce scoping - not before.
+#
+# Two genuinely different reasons a vendor lands here, kept as separate
+# categories rather than one "ignore" flag, because they have opposite
+# futures:
+#
+#   INTERNAL_TRANSFER - the company's own plants and sister units. An
+#       inter-plant jobwork/ex-work movement is not a purchase and will never
+#       generate a PO, by design. This is permanent.
+#   NO_PO_SUPPLIER - a real third-party supplier that is genuinely bought
+#       from, but without a PO being raised today. This is a PROCESS gap, not
+#       a fact about the data model: any of these can start being PO'd, at
+#       which point its entry here must be removed or its orders will be
+#       silently excluded from reconciliation. Kept visible in the UI (see
+#       _domestic_base.py's sync_status) for exactly that reason - this
+#       registry suppresses MATCHING, it must never suppress the row itself.
+#
+# MATCHING IS EXACT NORMALIZED EQUALITY, NOT THE _vendor_matches() GATE.
+# This is the important design decision here, and it is deliberately stricter
+# than everywhere else vendor names are compared. A false positive in this
+# registry silently removes a real supplier's receipts from reconciliation -
+# strictly worse than a false negative, which merely leaves a row unmatched
+# exactly as it already is today. _vendor_matches()'s containment arm would
+# make that failure easy to hit with a short name ("mit" is a substring of
+# "limited"; "import" of "xyzimport"), and its 0.90-similarity arm scores
+# genuinely different companies as high as 0.857. So: add every real spelling
+# variant you actually see, one line each. That is the cost of the
+# strictness, and it is the right trade here.
+#
+# Normalization already collapses casing, punctuation, "&"/"and", legal
+# suffixes and trailing plurals, so most real variants need no extra line -
+# "STAR POLYMER"/"STAR POLYMERS INC." and "K-Flex"/"Kflex" each collapse to a
+# single key on their own. Only a genuinely different WORD needs its own
+# entry; the three that do are marked below.
+#
+# Source: project owner's list, 2026-09-17.
+
+INTERNAL_TRANSFER = "internal_transfer"
+NO_PO_SUPPLIER = "no_po_supplier"
+
+# {readable vendor name: (category, reason)}.
+_NO_PO_VENDOR_SOURCE: dict[str, tuple[str, str]] = {
+    # ── The company's own plants and sister units ──────────────────────────
+    "Ravasco Transmission & Packing Private Limited": (
+        INTERNAL_TRANSFER, "Own plant (Achhad) - inter-plant transfer, no PO raised."),
+    # "Packaging" is a different WORD from "Packing", not a spelling variant
+    # normalization can fold, so the Vapi-facing name needs its own entry.
+    "Ravasco Transmission and Packaging Pvt Ltd": (
+        INTERNAL_TRANSFER, "Own plant (Vapi) - inter-plant transfer, no PO raised."),
+    # Vapi's MIR appends the originating plant to the party name.
+    "Ravasco Transmission And Packing Pvt Ltd ACHHAD": (
+        INTERNAL_TRANSFER, "Own plant (Achhad), as written in Vapi's MIR."),
+    "Hindustan Rubbers Industries Pvt Ltd": (
+        INTERNAL_TRANSFER, "Group company (Achhad) - inter-plant transfer, no PO raised."),
+    "Hindustan Rubbers (Silvassa)": (
+        INTERNAL_TRANSFER, "Own plant (HRS) - inter-plant jobwork/ex-work transfer, no PO raised."),
+
+    # ── Real third-party suppliers bought from without a PO ────────────────
+    "Gangamani Enterprise Pvt Ltd": (NO_PO_SUPPLIER, "Bharuch - bought from without a PO being raised."),
+    "Eternia Trading Private Limited": (NO_PO_SUPPLIER, "Mumbai - bought from without a PO being raised."),
+    "K-Flex": (NO_PO_SUPPLIER, "Silli - bought from without a PO being raised."),
+    "Harsha Impex": (NO_PO_SUPPLIER, "Mumbai - bought from without a PO being raised."),
+    "2M Elastomers Private Limited": (NO_PO_SUPPLIER, "Sarigam - bought from without a PO being raised."),
+    "Gurvinder Singh HUF": (NO_PO_SUPPLIER, "Bought from without a PO being raised."),
+    "Forech Mining & Construction International LLP": (
+        NO_PO_SUPPLIER, "Bought from without a PO being raised."),
+    "Star Polymers Inc.": (NO_PO_SUPPLIER, "Bought from without a PO being raised."),
+    "Sumitra Enterprise": (NO_PO_SUPPLIER, "Bought from without a PO being raised."),
+    "DS Industries": (NO_PO_SUPPLIER, "Bought from without a PO being raised."),
+    "Tinna Rubber and Infrastructure Ltd": (NO_PO_SUPPLIER, "Bought from without a PO being raised."),
+    "JMF Performance Materials Pvt. Ltd.": (NO_PO_SUPPLIER, "Bought from without a PO being raised."),
+    # Achhad's MIR misspells it ("Perfomance", missing the r) on every one of
+    # its real rows. Elsewhere that class of typo is absorbed generically by
+    # _vendor_matches()'s similarity arm, which this registry deliberately
+    # does not use - so the misspelling needs its own line or Achhad's rows
+    # silently stay in the pool.
+    "JMF Perfomance Materials Pvt Ltd": (
+        NO_PO_SUPPLIER, "Spelling as written in Achhad's MIR - same supplier as the entry above."),
+}
+
+# {normalized vendor: (category, reason)}, built at import time so callers
+# never pay the normalization cost per MIR row.
+NO_PO_VENDORS: dict[str, tuple[str, str]] = {
+    _normalize_vendor_for_matching_base(name): entry
+    for name, entry in _NO_PO_VENDOR_SOURCE.items()
+}
+
+
+def no_po_vendor_entry(name: str) -> tuple[str, str] | None:
+    """(category, reason) when no plant raises a PO against `name`, else None.
+
+    Deliberately EXACT on the normalized name - see the section header above
+    for why this one comparison does not use matching_core's _vendor_matches()
+    gate.
+
+    Normalizes through _normalize_vendor_for_matching_base(), NOT
+    normalize_vendor_for_matching(): the VENDOR_ALIASES layer exists to fold
+    spelling drift between two files naming the SAME supplier, and letting it
+    also rewrite the key that decides "this vendor is excluded from matching"
+    would mean adding an alias could quietly widen this registry's reach. The
+    two lookups stay independent on purpose."""
+    if not name:
+        return None
+    return NO_PO_VENDORS.get(_normalize_vendor_for_matching_base(name))
+
+
+def is_no_po_vendor(name: str) -> bool:
+    """True when no plant raises a PO against `name` - see
+    no_po_vendor_entry()."""
+    return no_po_vendor_entry(name) is not None
+
+
 def normalize_material(name: str) -> str:
     """Loose normalization for material-name matching (MIR<->Stock): lowercase,
     strip punctuation/whitespace variance. Deliberately looser than vendor
