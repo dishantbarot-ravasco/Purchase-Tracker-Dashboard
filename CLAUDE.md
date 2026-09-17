@@ -172,6 +172,19 @@ differ per command. **The Import PO CSV format is likewise shared** across all t
 bill of lading, exchange rate, dual PO/BOE quantities, licence numbers) — one shared
 `parsers/import_po_csv.py`. It is only MIR and Stock that genuinely differ per plant.
 
+**`parse_po_csv()`'s header check and its row lookups must use the same normalization.** Four
+`EXPECTED_HEADER` columns (`"HSN "`, `"Delivery Date "`, `"Payment Terms "`, `"Currency "`) carry a
+trailing space because that is what the live file's header literally looked like when the parser was
+built. The header-equality check strips whitespace before comparing, so it tolerates a file that has
+since lost one of those trailing spaces — but `csv.DictReader` keys each row off the file's *actual*
+header text, not `EXPECTED_HEADER`'s. A row lookup by the literal `row["Payment Terms "]` then raised
+a bare `KeyError` the moment HRS's live master CSV had exactly this drift (2026-09-17, a routine
+resave in Excel/Sheets, invisible to anyone looking at the file), which `sync_po_csv`'s blanket
+`except Exception` turned into `sync_po_csv: failed - 'Payment Terms '` and took down that day's whole
+HRS PO sync. Every row is now re-keyed by its stripped header name once, right after validation, so
+the row lookups can never again disagree with what the header check already accepted — see
+`parse_po_csv()`'s own comment and `test_po_csv_parser.py`.
+
 ### Domestic router de-duplication
 
 The per-plant *model* decision above does **not** extend to the view layer. That part has nothing to
@@ -1484,6 +1497,7 @@ alongside each.
 | 2-decimal GST rate truncating a `0.025` fraction to `0.02` | [Decimal precision](#decimal-precision-conventions) |
 | Unclamped `*_diff_pct` overflowing `max_digits=6` | [Decimal precision](#decimal-precision-conventions) |
 | `source_row_ref` as lot identity splicing two materials' histories | [Stable lot identity](#stable-lot-identity) |
+| Header check stripping whitespace, row lookup not → `KeyError` on a resaved CSV | [Per-plant models](#per-plant-models-not-a-shared-schema--deliberate-dont-fix-it) |
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [PO ↔ MIR](#po--mir) |
 | Vendors with no PO looking like matcher failures for every run | [No-PO vendors](#some-vendors-never-have-a-po--that-is-registered-not-inferred) |
 | Exact vendor equality → zero MIR↔Stock matches (city suffix) | [Vendor gate](#vendor-name-is-always-a-hard-gate-never-a-scored-factor) |

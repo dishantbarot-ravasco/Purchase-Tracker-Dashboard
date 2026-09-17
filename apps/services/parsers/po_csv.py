@@ -106,7 +106,26 @@ def parse_po_csv(csv_text: str) -> list[ParsedPurchaseOrder]:
     orders_by_po: dict[str, ParsedPurchaseOrder] = {}
     order_sequence: list[str] = []
 
-    for row in reader:
+    for raw_row in reader:
+        # Real incident, 2026-09-17: four EXPECTED_HEADER columns carry a
+        # trailing space ("HSN ", "Delivery Date ", "Payment Terms ",
+        # "Currency ") because that's what the live file's header literally
+        # looked like when this parser was built. The check above strips
+        # whitespace before comparing, so it happily accepts a header where
+        # the live file has since lost one of those trailing spaces (a
+        # completely invisible edit if the CSV was just resaved) - but
+        # csv.DictReader still keys `raw_row` off the file's ACTUAL header
+        # text, not EXPECTED_HEADER's. Looking a field up by the literal
+        # `"Payment Terms "` then raised a bare KeyError the moment HRS's
+        # master CSV had exactly this drift, taking down that day's whole
+        # sync_po_csv run. Re-keying every row by its STRIPPED header name,
+        # once, right after the (already-stripped) validation above, means
+        # every field access below can use the same stripped key
+        # EXPECTED_HEADER and the check both agree on - so a header that
+        # passes validation can never again fail the row lookup right below
+        # it.
+        row = {k.strip(): v for k, v in raw_row.items()}
+
         po_number = to_str(row["PO Number"])
         if not po_number:
             continue
@@ -123,9 +142,9 @@ def parse_po_csv(csv_text: str) -> list[ParsedPurchaseOrder]:
                 vendor_code=to_str(row["Vendor Code"]),
                 billing_address=to_str(row["Billing Address"]),
                 ship_to=to_str(row["ShipTo"]),
-                payment_terms=to_str(row["Payment Terms "]),
+                payment_terms=to_str(row["Payment Terms"]),
                 incoterms=to_str(row["IncoTerms"]),
-                currency=to_str(row["Currency "]) or "INR",
+                currency=to_str(row["Currency"]) or "INR",
                 total_value=to_decimal(row["Total Value"]),
                 tax_type=to_str(row["Tax Type"]),
                 total_inclusive_value=to_decimal(row["Total Inclusive Value"]),
@@ -138,10 +157,10 @@ def parse_po_csv(csv_text: str) -> list[ParsedPurchaseOrder]:
             ParsedLineItem(
                 item_id=to_str(row["Item Id"]),
                 description=to_str(row["Material Description"]),
-                hsn=to_str(row["HSN "]),
+                hsn=to_str(row["HSN"]),
                 qty=to_decimal(row["QTY"]),
                 uom=to_str(row["UOM"]),
-                delivery_date=to_date(row["Delivery Date "]),
+                delivery_date=to_date(row["Delivery Date"]),
                 net_price=to_decimal(row["Net Price"]),
                 net_value=to_decimal(row["Net Value"]),
             )
