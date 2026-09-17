@@ -1,259 +1,114 @@
 # Purchase Tracker Dashboard
 
-Standalone Django service reconciling Purchase Orders, MIR (Material Inward
-Register), and Raw Material Stock for Ravasco's plants. Built to replace the
-Claude Artifact prototype of the same name, which re-fetches and re-parses
-every Drive file live on every page load with no persistence - this app
-syncs into Postgres instead, so it works for every viewer without depending
-on their own Drive session. Syncing runs on its own schedule (9 AM-8 PM IST,
-hourly) as well as manually via the admin panel - see "Status" below.
+A Django service that reconciles **Purchase Orders ↔ MIR (Material Inward Register) ↔ Raw
+Material Stock** for Ravasco's three plants — **HRS, RTP-Achhad, and RTP-Vapi**.
 
-**HRS, RTP-Achhad, and RTP-Vapi are all built.** Each plant's MIR/Stock files
-were inspected directly before writing any code for it, and each turned out
-to have a genuinely different column layout - not just relabeled columns:
-Achhad's MIR has no SAP GRN number and no vendor column in Stock at all;
-Vapi's MIR has no Net/discount columns and a 100%-blank PO-number field
-(worse than HRS's ~30% blank), and its Stock file is a real shared
-multi-plant ledger with an extra `PLANT` column plus a genuine vendor
-column HRS's own Stock file also has (see
-`apps/services/parsers/achhad_mir.py` / `achhad_stock.py` / `vapi_mir.py` /
-`vapi_stock.py` docstrings and `apps/services/matching_achhad.py` /
-`matching_vapi.py` for what each difference means for match confidence).
-Each plant got its own parsers/models/matcher/views rather than being
-force-fit into a shared shape.
+Source data lives in Google Drive (PO master CSVs, MIR and Stock xlsx files). This app syncs it
+into Postgres on a schedule, runs the reconciliation there, and stores the results — so every
+viewer opens the same pre-computed numbers instead of re-parsing Drive on each page load, and
+nobody needs their own Drive session.
 
-## Architecture
+- **Docs**: [CLAUDE.md](CLAUDE.md) for conventions, rationale, and the gotchas that have already
+  bitten this project. [ARCHITECTURE.md](ARCHITECTURE.md) for the request/auth flow diagrams.
+- **Status**: all three plants are live end-to-end (domestic POs, import POs, MIR, stock,
+  matching, dashboard), with RoDTEP scrip and Advance Licence ledgers alongside the import view.
 
-- **Django + Postgres + WhiteNoise**, same conventions as the TDS Automation
-  app: static frontend served directly from `frontend/` with no build step,
-  `apps/core` for models, `apps/api` for HTTP views, `apps/services` for
-  Drive access/parsing/matching and the auth-adjacent services.
-- **Device-aware 2FA + JWT-in-httpOnly-cookie auth**, ported from the TDS
-  Automation App's own auth architecture - see CLAUDE.md's "Auth & security
-  architecture" and ARCHITECTURE.md's auth flow diagram.
-- **Google Drive/Sheets access via a service account**, not a user OAuth
-  session, since sync jobs need to run without a human/Claude session in
-  the loop. Share the relevant Drive folders/files with the service
-  account's email. **Scheduling is built** - every plant's sync+match
-  pipeline runs on its own via a `django_q.models.Schedule` row (9 AM-8 PM
-  IST, hourly - `manage.py ensure_schedules`), on top of the still-available
-  manual/admin-triggered runs. See CLAUDE.md's "Outgoing email inventory"
-  for the 3 report emails that run on their own schedule too (an external
-  free scheduler, since Render's free plan has no built-in cron).
-- **Three independent sync sources per plant**, one management command each:
-  - HRS: `sync_po_csv`, `sync_mir`, `sync_stock`, then `match_hrs`
-  - RTP-Achhad: `sync_achhad_po_csv`, `sync_achhad_mir`, `sync_achhad_stock`,
-    then `match_achhad`
-  - RTP-Vapi: `sync_vapi_po_csv`, `sync_vapi_mir`, `sync_vapi_stock`, then
-    `match_vapi`
-- **Reconciliation runs after sync**, not live on page load - `POMirMatch`
-  and `MirStockMatch` are computed and stored, so a viewer opening the
-  dashboard reads pre-computed results, not something recalculated per view.
+## Architecture at a glance
 
-## Why the data model looks the way it does
+- **Django + DRF + Postgres + WhiteNoise**, dependencies managed with `uv`.
+- `apps/core` — models and migrations only. `apps/api` — HTTP views. `apps/services` — Drive
+  access, parsers, matching engines, and auth-adjacent services.
+- **Frontend is static HTML + vanilla JS** served straight out of `frontend/` — no bundler, no
+  build step.
+- **Per-plant models, not a shared schema.** Each plant's MIR/Stock spreadsheets have genuinely
+  different column layouts, so each plant gets its own models, parsers, matcher, and router. See
+  CLAUDE.md before "fixing" this.
+- **Drive access uses a service account**, not a user OAuth session, so syncs run unattended.
+  Human login is separate: device-aware 2FA with JWTs in httpOnly cookies.
+- **Syncing is scheduled** (django-q2, hourly 9 AM–8 PM IST) and can also be triggered from the
+  dashboard or the admin panel.
 
-Two audits (see project history) found real problems the schema is built
-around, not against:
+## How matching works
 
-- **HRS's own PO Number field in MIR is unreliable** (~30% blank, ~25% in a
-  non-standard format that won't string-match the CSV's PO Number). Vendor
-  name is used as a hard gate in matching, never a scored factor - two
-  different vendors are never the same PO. PO Number match is a free "tier
-  1" shortcut when it happens to be present and valid, not the primary key.
-- **HRS's Stock file is one row per (material, vendor lot), not one row per
-  material.** `StockLot` reflects that directly, and `MirStockMatch` joins
-  on (material, vendor) instead of material name alone - the earlier
-  Artifact prototype aggregated everything by material name only, which
-  blends different vendors' different rates into one number and can hide or
-  manufacture discrepancies that aren't real.
-- **`StockSnapshot` is a real daily row per stock lot**, not a dated copy of
-  the whole file (which is what Drive's `RM_Stock_Daily_Snapshots` /
-  `RM Stock Snapshots` folders currently do, inconsistently - only one dated
-  snapshot exists in each as of this writing). This makes "what was the rate
-  on this material two weeks ago" an actual query instead of a manual diff
-  across xlsx files.
-- **PO Item Id is not always a trustworthy join key** - audit found one code
-  (`11287940`) reused across three chemically unrelated materials from two
-  different vendors on the same PO source data. The PO<->MIR matcher never
-  relies on Item Id; it scores on material description + qty + rate +
-  total/final value, gated by vendor name.
+Each plant has its own matcher (`apps/services/matching*.py`) sharing one approach:
 
-## PO<->MIR matching
+- **Vendor name is a hard gate**, never a scored factor — two different vendors are never the same
+  PO. Names are normalised (legal suffixes stripped) and compared by containment, not equality.
+- **PO ↔ MIR** is a weighted score: material description overlap 30%, quantity 20%, rate 20%,
+  pre-tax value 30%. An exact PO-number hit is a free shortcut when present — but MIR's PO-number
+  field is unreliable (~30% blank at HRS, 100% blank at Vapi), so it is never the primary key.
+  Below a 0.55 threshold a line item is left unmatched rather than forced onto a poor candidate.
+- **MIR ↔ Stock** is gated on (material, vendor) for HRS and Vapi; Achhad's Stock sheet has no
+  vendor column at all, so it gates on material alone — a materially weaker guarantee, documented
+  as such rather than treated as equivalent.
 
-Built and verified against real Drive data - see `apps/services/matching.py` /
-`matching_achhad.py` / `matching_vapi.py`.
-
-- Vendor name: hard gate (normalized, legal suffixes stripped, matched by
-  containment rather than exact equality - see CLAUDE.md for why)
-- Material description token overlap: 30%
-- Qty closeness: 20%
-- Rate closeness: 20%
-- Pre-tax value closeness: 30%
-
-Extended from the Artifact prototype's 55/45 description+amount split - qty
-and rate are now real signals, not folded into one blended total, since a
-coincidental amount match is much less likely to fool the matcher when qty
-and rate both have to line up too. MIR<->Stock matching runs alongside it,
-gated on (material, vendor) for HRS and Vapi (both have a real vendor column
-on their Stock sheet) and material alone for Achhad (its Stock sheet has no
-vendor column) - see CLAUDE.md for the full breakdown of what's genuinely
-different between each plant's matcher and why.
-
-## Status
-
-**HRS, RTP-Achhad, and RTP-Vapi are all fully wired and verified end-to-end
-against real Drive data**, not just local test files: sync commands,
-matching, API, and the frontend's plant tabs (HRS, Silvassa / RTP-Achhad /
-RTP-Vapi) sharing one rendering path for Purchase Orders and Raw Material
-Analysis. The Google service account has real Viewer access to all three
-plants' Drive folders and every plant's `sync_*`/`match_*` commands have
-been run successfully against the live files (not just `--file` against
-downloaded copies).
-
-**Updated 2026-09-04 - the paragraph below is stale in several ways; see the corrections that
-follow it.** Import POs are now built for all three plants (not just domestic), including a real
-reconciliation layer, and a custom in-app user-management UI exists. What's still genuinely not
-built: Licenses (Advance Authorisation tracking) and scheduling (every sync/match command is still
-manual, triggered by hand or via the admin panel's sync-trigger buttons).
-
-~~Not yet built: import POs for any plant (only domestic is parsed so far -
-each plant has its own separate Imports CSV on Drive with a different
-column set), scheduling (every sync/match command is still manual), and a
-custom user-management UI (accounts are created via `manage.py
-create_pt_user` or Django Admin for now - see "Local setup" below).~~
-**Corrections (2026-09-04):**
-- **Import POs are built for HRS, RTP-Achhad, and RTP-Vapi alike.** All three plants' Imports
-  CSVs turned out to share one identical column layout (BOE number, bill of lading, exchange
-  rate, dual PO/BOE quantities, license numbers, etc.) - unlike MIR/Stock, which really do differ
-  per plant - so all three go through one shared parser
-  (`apps/services/parsers/import_po_csv.py`). Import POs also get a real reconciliation layer
-  computed at read time (`apps/services/import_flags.py`): shipment-stage rollup, PO-vs-BOE qty
-  discrepancy detection, delivery-date status, partial-delivery detection, and 7 data-quality
-  flags. See CLAUDE.md's "Known gaps" section for exactly which 3 KPI cards (the ones that would
-  need a real MIR-equivalent data source) are still disabled.
-- **There's now a real in-app user-management UI**, not just Django Admin/`manage.py
-  create_pt_user`: `frontend/admin.html`'s Users panel (create/edit/activate/deactivate/role/
-  per-plant scoping/password reset), backed by `apps/api/routers/users_views.py`. `manage.py
-  create_pt_user` remains the only way to create the very first account, before any admin exists
-  to use the panel.
-- Scheduling and Licenses (Advance Authorisation tracking) are still genuinely not built - both
-  remain correct as written above.
-
-**Superseded (2026-09-08): scheduling is now built, and several new features have shipped since
-the corrections above** - see CLAUDE.md for full detail on each, this is a summary pointer only:
-- **Sync scheduling**: every plant's sync+match pipeline runs on its own via a
-  `django_q.models.Schedule` row (`Schedule.CRON`, 9 AM-8 PM IST hourly - `manage.py
-  ensure_schedules`), not manual-only anymore. Licenses remain the one genuinely unbuilt roadmap
-  item.
-- **Data Export**: an "Export Data" button (dashboard, next to "Refresh Data", Editor/Admin only)
-  downloads the full daily RM stock snapshot history as CSV, optionally date-filtered - the one
-  place that history exists at all, since the source Stock files only ever hold today's position.
-- **Three new scheduled emails**, each triggered by an external free scheduler hitting its own
-  shared-secret-protected endpoint: a Daily and a Monthly Raw Material Consumption report (grouped
-  by category, one email per plant, to every admin), and a Plant Data Correction report (PO<->MIR
-  and MIR<->Stock quantity/rate mismatches, sent individually to each plant's own head, CC'ing
-  every admin).
-
-Every
-API endpoint now requires authentication (device-aware 2FA login, see
-CLAUDE.md). See CLAUDE.md for the full list of known gaps and the bugs
-already found and fixed along the way
-- several real ones (a Drive API v2/v3 field-name bug, a Decimal-precision
-bug in GST rate fields, a pre-tax/post-tax mismatch in the value comparison,
-a Postgres numeric-rounding mismatch that broke change-detection
-idempotency for one plant's data, `.env` parsing gotchas, an uncaught
-`decimal.InvalidOperation` in the inline field-correction endpoints, a
-stale-response race in the PO/material detail modals, and a login/OTP
-throttle that was keyed per-IP instead of per-account, so a handful of
-colleagues signing in from the same office network within a minute could
-lock everyone else out of login with "Request was throttled" even with
-correct credentials - see CLAUDE.md's "Auth & security architecture") came
-out of getting this far.
-
-**A full-codebase audit (2026-09-10)** - the first pass to deliberately go
-looking for bugs across every layer at once, rather than finding them
-incidentally while building a feature - found and fixed six more real ones;
-see CLAUDE.md's "Full-codebase audit" section for the complete writeup with
-regression tests for each:
-- **MIR<->Stock matching compared rate/qty with no unit conversion at all**
-  (unlike PO<->MIR, which always normalized units first) - a material
-  logged in MIR as MT against a Stock lot recorded in KG would report a
-  ~1000x "rate mismatch" that was actually just a unit-mismatch artifact,
-  not a real discrepancy. The most consequential fix in this pass, since it
-  could have been silently over-flagging real MIR<->Stock pairs on live
-  data for any plant/material combination where the two sheets record
-  different units.
-- **Two of the four PO/RoDTEP detail-modal openers were missing the
-  stale-response guard** the other two already got fixed with on
-  2026-09-04 - clicking one row then a different one fast enough could
-  silently show the wrong row's data in the modal.
-- **A TOCTOU race in the "can't remove/deactivate/delete the last active
-  admin" check** - two concurrent requests acting on two different admins
-  at the same moment could both pass their own "is there another active
-  admin?" check and leave zero active admins with no way back in short of
-  direct DB access.
-- **Three non-atomic brute-force/session counters** (failed login attempts,
-  OTP verification attempts, and the "log out everywhere" token-version
-  bump) could each undercount or drop an increment under real concurrent
-  load, weakening (not eliminating) their own lockout/revocation guarantees.
-- **A follow-up fix the same day**: neither the Daily nor Monthly Raw Material
-  Consumption report had any guard against the external scheduler
-  double-firing its trigger endpoint - a duplicate cron hit meant a
-  duplicate email to every admin. Fixed with a dedup log table, after
-  confirming with the project owner that the third scheduled email (Plant
-  Data Correction, which has no fixed cadence by design) should be left
-  without this guard.
-
-## Frontend pages
-
-Four protected pages share one top nav (see CLAUDE.md's "Frontend pages and the shared top nav"
-for the full breakdown): **`home.html`** (landing page, live cross-plant KPI row), **`index.html`**
-(`/`, the real PO<->MIR<->Stock reconciliation dashboard), **`search-po.html`** (look up a PO by
-number across all 3 plants at once), and **`admin.html`** (admin-only: per-plant sync status plus
-the in-app Users panel above). Every mutating write (inline field corrections, dismiss/override,
-user management) is logged: `PTAuditLog` (`pt_audit_log`) covers login/logout, and each
-correction/dismissal writes its own audit row (`DomesticPOCorrection`/`ImportPOCorrection`,
-`dismissed_by`/`dismissed_at`/`dismissed_reason` columns on the match models) - see CLAUDE.md for
-specifics. `PTUser.plants` lets an admin be scoped to specific plants for write access (empty list
-= all plants); every role can still read every plant's dashboard.
+**Every match is a suggestion, not a fact.** Accuracy has not been measured against labelled
+ground truth. Don't wire any automatic downstream action off a match without a human in the loop.
 
 ## Local setup
 
 ```bash
 uv sync
 cp .env.example .env   # fill in DB, Google service account, SMTP, and OAuth details
-                        # (see CLAUDE.md's ".env gotchas" if this repo's folder is
-                        # synced by OneDrive/similar - .env is gitignored but not
-                        # automatically excluded from that kind of cloud sync)
 uv run python manage.py migrate
-uv run python manage.py createcachetable   # one-off: creates the DatabaseCache table
+uv run python manage.py createcachetable
 
 # Bootstrap the first account - nobody can log in without at least one.
 uv run python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
 
 uv run python manage.py runserver
-# -> open http://127.0.0.1:8000/login.html
+# -> http://127.0.0.1:8000/login.html
 ```
 
-### Docker alternative
+Read `.env.example`'s comments before filling it in — the service-account JSON and Windows-path
+entries both have parsing traps that have cost real debugging time (detailed in CLAUDE.md).
 
-Gives you a real Postgres + this app running together without installing Python/uv/Postgres
-directly - useful if you'd rather not set up a local toolchain, or want dev to match Render's
-Python 3.12/gunicorn/qcluster setup exactly. Does not replace `render.yaml`'s own deploy pipeline;
-this is local-dev only.
+If this repo sits inside a OneDrive-synced folder, exclude it from sync before putting real
+secrets in `.env`. `.env` is gitignored, but OneDrive doesn't respect `.gitignore`.
+
+### Docker (optional)
+
+Runs Postgres + the app + a worker together, matching Render's Python 3.12/gunicorn/qcluster
+setup. Local dev only — it does not replace `render.yaml`'s deploy pipeline.
 
 ```bash
-cp .env.example .env   # same first step as above - fill in the same values
+cp .env.example .env
 docker compose up -d
-# docker-compose.yml points the app/worker containers at its own `db` service automatically -
-# you don't need to change PGHOST/DATABASE_URL in .env for this to work.
-
-# Bootstrap the first account, same as the non-Docker flow:
 docker compose exec app uv run python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
-# -> open http://localhost:8000/login.html
+# -> http://localhost:8000/login.html
 ```
 
-To confirm it's actually working: `docker compose logs app` should show no tracebacks, and the
-login page/dashboard should load with no 404s on `/static/...` assets (a broken `collectstatic`
-step is the most likely thing to go wrong, and shows up exactly there). See CLAUDE.md's "Docker
-(local dev)" for the underlying `Dockerfile`/`docker-entrypoint.sh` details.
+`docker-compose.yml` points the containers at its own `db` service, so no `.env` changes are
+needed. Check `docker compose logs app` for tracebacks, and confirm `/static/...` assets load —
+a broken `collectstatic` shows up exactly there.
+
+## Everyday commands
+
+```bash
+uv run pytest                         # test suite (real Postgres)
+uv run ruff check .                   # lint gate (also in CI)
+uv run python manage.py ensure_schedules
+
+# Per-plant pipeline: sync the three sources, then match.
+uv run python manage.py sync_po_csv && uv run python manage.py sync_mir \
+  && uv run python manage.py sync_stock && uv run python manage.py match_hrs
+```
+
+Achhad and Vapi use the same shape (`sync_achhad_*`/`match_achhad`, `sync_vapi_*`/`match_vapi`).
+Every `sync_*` command takes `--file <path>` to parse a local copy instead of hitting Drive. The
+full command list is in CLAUDE.md.
+
+## Pages
+
+| Page | What it is |
+| --- | --- |
+| `login.html` | Password + email OTP, or Sign in with Google |
+| `home.html` | Landing page with a live cross-plant KPI row |
+| `index.html` (`/`) | The reconciliation dashboard — Purchase Orders and Raw Material Analysis |
+| `search-po.html` | Look up a PO number across all three plants at once |
+| `review.html` | Match-accuracy review queue (Correct / Incorrect / Unsure) |
+| `admin.html` | Admin only — sync status, user management, activity overview |
+
+Roles are `admin`, `editor`, `viewer`. Writes (inline field corrections, dismissing a flag, user
+management) are role-gated and audited; `PTUser.plants` can additionally scope an account to
+specific plants, where an empty list means all of them.
