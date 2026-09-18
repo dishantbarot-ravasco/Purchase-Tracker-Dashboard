@@ -42,7 +42,7 @@ from django.utils import timezone
 from apps.core.models import DataQualityFlag, HRSDomesticPOLineItem, HRSDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
-from apps.services.sync_utils import deactivate_missing_orders, orphaned_orders
+from apps.services.sync_utils import deactivate_missing_orders
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
@@ -106,10 +106,11 @@ class Command(BaseCommand):
                 # book is never momentarily missing a renamed PO's replacement.
                 # See sync_utils.deactivate_missing_orders() for why this
                 # deactivates rather than deletes.
-                deactivated = deactivate_missing_orders(HRSDomesticPurchaseOrder, orders)
+                retired = deactivate_missing_orders(HRSDomesticPurchaseOrder, orders)
+                deactivated = len(retired)
 
             self._sync_data_quality_flags()
-            self._report_orphans(orders)
+            self._report_retired(retired)
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_po_csv: {rows_seen} POs seen, {rows_changed} created/updated, "
@@ -210,23 +211,31 @@ class Command(BaseCommand):
         ])
         return True
 
-    def _report_orphans(self, parsed_orders) -> None:
-        """Warn about stored orders the master CSV no longer lists - almost
-        always an upstream rename this sync cannot see (see
-        orphaned_orders()). Reported, never deleted: each one still carries
-        line items that compete for MIR rows, so they are worth acting on,
-        but deleting a purchase order is irreversible and a withdrawn order
-        is indistinguishable from a renamed one at this layer."""
-        orphans = orphaned_orders(HRSDomesticPurchaseOrder, parsed_orders)
-        if not orphans:
-            return
-        shown = ", ".join(sorted(orphans)[:5])
-        more = f" (+{len(orphans) - 5} more)" if len(orphans) > 5 else ""
-        self.stdout.write(self.style.WARNING(
-            f"sync_po_csv: {len(orphans)} stored PO(s) are no longer in the master CSV "
-            f"and are still matching against MIR: {shown}{more}"
-        ))
+    def _report_retired(self, retired: list) -> None:
+        """Name the orders THIS run just retired (is_active flipped off
+        because the master CSV no longer lists them).
 
+        Reports what changed, not a standing list of everything absent from
+        the CSV. The earlier version called orphaned_orders() and said the
+        orders were "still matching against MIR" - true before
+        deactivate_missing_orders() existed, and actively misleading
+        afterwards, since by the time it printed they had just been retired
+        and were no longer matching anything. It would also have repeated
+        the same names on every subsequent sync forever.
+
+        An annotated number is called out because it is the signature of a
+        RENAME rather than a genuine withdrawal, and only an operator can
+        tell those apart - see sync_utils.orphaned_orders()."""
+        if not retired:
+            return
+        renames = sum(1 for number in retired if "(" in number)
+        shown = ", ".join(retired[:5])
+        more = f" (+{len(retired) - 5} more)" if len(retired) > 5 else ""
+        detail = f", {renames} of them annotated (likely renames)" if renames else ""
+        self.stdout.write(self.style.WARNING(
+            f"sync_po_csv: retired {len(retired)} PO(s) no longer in the master CSV{detail} "
+            f"- they no longer match against MIR: {shown}{more}"
+        ))
     def _sync_data_quality_flags(self) -> None:
         """Match Accuracy Programme fix 3.G: qty x rate ~= net_value over
         every currently-active HRS PO line item (not just the ones this sync

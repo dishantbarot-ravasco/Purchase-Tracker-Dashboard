@@ -57,7 +57,7 @@ class TestDeactivateMissingOrders:
         retired = deactivate_missing_orders(
             RTPAchhadDomesticPurchaseOrder, [_ParsedOrder("3000001104")])
 
-        assert retired == 1
+        assert retired == ["3000001104 (Changed Purchase Order)"]
         assert RTPAchhadDomesticPurchaseOrder.objects.get(po_number="3000001104").is_active is True
         assert RTPAchhadDomesticPurchaseOrder.objects.get(
             po_number="3000001104 (Changed Purchase Order)").is_active is False
@@ -70,7 +70,7 @@ class TestDeactivateMissingOrders:
             RTPAchhadDomesticPurchaseOrder,
             [_ParsedOrder("1100000901"), _ParsedOrder("1100000902")])
 
-        assert retired == 0
+        assert retired == []
         assert RTPAchhadDomesticPurchaseOrder.objects.filter(is_active=True).count() == 2
 
     def test_nothing_is_deleted_only_deactivated(self):
@@ -87,13 +87,14 @@ class TestDeactivateMissingOrders:
         assert RTPAchhadDomesticPurchaseOrder.objects.filter(po_number="1100000901").exists()
         assert RTPAchhadDomesticPOLineItem.objects.filter(purchase_order=po).count() == 1
 
-    def test_an_already_retired_order_is_not_recounted(self):
-        """The count is what the sync reports, so it has to mean "retired by
-        THIS run" - otherwise every subsequent sync would report the same
-        backlog again and the number would never settle."""
+    def test_an_already_retired_order_is_not_reported_again(self):
+        """What the sync reports has to mean "retired by THIS run". An
+        earlier version listed everything absent from the CSV instead, which
+        named the same orders on every subsequent sync forever and described
+        them as still matching against MIR when they had just been retired."""
         _order("1100000901", is_active=False)
 
-        assert deactivate_missing_orders(RTPAchhadDomesticPurchaseOrder, []) == 0
+        assert deactivate_missing_orders(RTPAchhadDomesticPurchaseOrder, []) == []
 
     def test_an_order_that_comes_back_is_reactivated_by_the_sync(self):
         """Renames get reverted, and a withdrawn order can be reinstated

@@ -73,7 +73,7 @@ def sync_orders(po_model, line_item_model, parsed_orders: list) -> tuple[int, in
     # After every upsert, so an order that was renamed is re-created under its
     # new number before its old spelling is retired - never the other way
     # round, which would briefly leave the order book without it.
-    deactivated = deactivate_missing_orders(po_model, parsed_orders)
+    deactivated = len(deactivate_missing_orders(po_model, parsed_orders))
     return rows_seen, rows_changed, deactivated
 
 

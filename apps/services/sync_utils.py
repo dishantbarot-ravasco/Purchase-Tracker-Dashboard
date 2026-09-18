@@ -72,9 +72,16 @@ def orphaned_orders(order_model, parsed_orders):
     return list(order_model.objects.exclude(po_number__in=live).values_list("po_number", flat=True))
 
 
-def deactivate_missing_orders(order_model, parsed_orders) -> int:
+def deactivate_missing_orders(order_model, parsed_orders) -> list[str]:
     """Flip is_active off for every stored order the master CSV no longer
-    lists, and return how many were affected.
+    lists, and return the po_numbers it actually retired.
+
+    Returns the NAMES, not a count, because the count alone cannot be
+    reported honestly. orphaned_orders() answers "which stored orders are
+    absent from the CSV", which after this function has run still includes
+    every order retired on some previous day - so a sync reporting that list
+    would name the same orders every run, forever, and describe them as a
+    live problem. What an operator needs is what changed on THIS run.
 
     The write half of orphaned_orders() above, added 2026-09-18 after the
     read-only version proved insufficient: it reported ghosts to the sync
@@ -91,4 +98,10 @@ def deactivate_missing_orders(order_model, parsed_orders) -> int:
     upserted, exactly where each MIR/stock sync already does the same thing
     for its own rows."""
     live = {order.po_number for order in parsed_orders}
-    return order_model.objects.filter(is_active=True).exclude(po_number__in=live).update(is_active=False)
+    going = order_model.objects.filter(is_active=True).exclude(po_number__in=live)
+    # Materialize before the UPDATE - the queryset is lazy and its filter is
+    # is_active=True, so evaluating it afterwards would return nothing.
+    retired = sorted(going.values_list("po_number", flat=True))
+    if retired:
+        order_model.objects.filter(po_number__in=retired).update(is_active=False)
+    return retired
