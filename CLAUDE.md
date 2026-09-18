@@ -153,8 +153,12 @@ MIR/Stock spreadsheets have genuinely different column layouts**, not just diffe
 - **Vapi MIR is the most structurally different**: no `Net`/discount columns at all (straight from
   `RATE` to `TAXABLE VALUE`), GST as one overall rate column plus three amount-only IGST/CGST/SGST
   columns (no per-component rate columns), a single TCS amount instead of a rate+amount pair, and
-  its own `SAP P.O` field was **100% blank** across ~1,330 real rows checked — worse than HRS's
-  ~30%. Vapi has no usable Tier-1 shortcut and runs entirely on the weighted score.
+  its own `SAP P.O` field was **100% blank** across ~1,330 real rows checked — re-confirmed
+  2026-09-18, still 0 usable values, so `sap_po_number` remains dead weight for matching.
+  **Its other PO column is no longer blank, though**, and the widely-repeated "Vapi has no usable
+  Tier-1 shortcut" is out of date: measured 2026-09-18 across 1,450 rows, `po_number_raw` is 41.7%
+  blank but **27.2% (394 rows) carries a usable PO reference**. Someone has been filling it in. That
+  is the single biggest reason Vapi's match rate jumped (see the accuracy table below).
 - **Vapi Stock is a real shared multi-plant ledger**, not exclusively Vapi's: confirmed `PLANT`
   values `RTP-1` (145 rows), `HRS` (20), `RTP-2` (3). `RTPVapiRMLot.plant_tag` captures this without
   filtering, the same design HRS's own `location_tag` uses. Unlike Achhad, Vapi's Stock sheet **does**
@@ -464,8 +468,13 @@ number belonging to another supplier's order for a completely different material
 identification would bind it. 2-of-3 states that rule directly instead of hiding it in constants.
 Weight still decides *which* identified candidate wins; that is what the evidence tiers already do.
 
-**Rolling it out to Vapi is blocked on its MIR file**, not on code — it needs its PO-number coverage
-measured before the flag means anything there. Measure both halves of the flag separately: at HRS
+**Vapi's PO-number coverage has now been measured** (2026-09-18): 27.2% of its 1,450 MIR rows carry a
+usable reference, against Achhad's 36% when the flag was enabled there. That is enough for the rule
+to do real work, so Vapi is now a genuine candidate rather than a blocked one — but run the same
+two-part check Achhad and HRS got before enabling it: how many rows the vendor gate actually blocks
+(the 2-of-3 rule proper), and which registered no-PO vendors are now being PO'd (the exclusion
+narrowing). At HRS the first turned out to be a no-op and only the second did anything.
+`RTPVapiPOMirMatch`/`RTPVapiImportPOMirMatch` would need a `vendor_matched` column first, as HRS did. Measure both halves of the flag separately: at HRS
 the 2-of-3 rule itself turned out to be a no-op and only the no-PO-vendor narrowing did any work.
 
 ### Legacy slashed PO numbers drift between the two files
@@ -541,7 +550,8 @@ Per line item:
 
 - **Tier 1** — an exact/substring `po_number_raw` match. A free shortcut when MIR's own PO-number
   field happens to be populated and valid; it is unreliable on real data everywhere (~30% blank at
-  HRS, **100% blank at Vapi**), so it is never the only path.
+  HRS; **Vapi was ~100% blank and is now 27.2% populated**, measured 2026-09-18), so it is
+  never the only path.
 - **Tier 2** — a weighted score among vendor-gated candidates: material description token overlap
   **30%**, qty closeness **20%**, rate closeness **20%**, pre-tax value closeness **30%**. Below
   `MATCH_THRESHOLD = 0.55` a line item is left unmatched rather than forced onto a poor candidate.
@@ -656,6 +666,51 @@ still be called for one row.
 bumped later) — it runs the same pipeline against two dataset sizes and asserts the count barely
 moves, so a reintroduced N+1 fails by construction.
 
+### `_assign_pairs()` needs both its termination guards
+
+The optimal-assignment step is Bellman-Ford over a graph whose displacement edges carry negative
+weight. Where a **positive-gain cycle** exists it has two independent ways to never terminate, and
+both were live until 2026-09-18, when `match_vapi` simply stopped returning:
+
+1. **The relaxation loop re-queues forever.** Bounded by `dequeue_budget` (total work per source).
+2. **The path flip then walks a cyclic path forever.** `came_from_left`/`came_from_right` describe a
+   path only if the search ran to completion; a search that stops early — on the budget, or on any
+   future guard — can leave them describing a cycle. The flip walked it *while mutating as it went*,
+   leaving the assignment half-applied. The path is now collected and validated **before** anything
+   is written, and a cyclic one abandons that source rather than corrupting `match_left`/
+   `match_right` into disagreement.
+
+Fixing only the first moves the hang from one loop to the other — the faulthandler stack moved from
+the `best_gain` comparison to the flip loop and kept hanging. **Keep both.**
+
+**The graph size was never the cause**, and assuming it was cost two wrong fixes. Vapi's graph was
+**869 candidate pairs across 278 line items, a median of 2 each**. Instrumenting the loop counters is
+what actually settled it: 233 of the 234 source searches used **79 dequeues between them**, and
+exactly one ran away. A per-node re-queue bound of V (the textbook SPFA guard) is also too loose to
+help — V² dequeues × 234 sources is still hundreds of millions of iterations.
+
+Vapi is the plant that hits this because most of its MIR rows still have no PO number, so it matches
+on material alone and produces large sets of same-vendor, same-material candidates at near-identical
+weight —
+exactly the ties that create the cycles. HRS and Achhad have real PO-number coverage, which breaks
+them. It went critical when Vapi's order book roughly doubled (131 → 222 POs) in one sync.
+
+`TestAssignPairsTerminates` in `test_matching.py` pins this with graphs that hang the unguarded code.
+
+### Two hot paths in matching are cached or short-circuited for a reason
+
+`_po_number_contradicts()` scans **every known PO number** for **every candidate** of **every line
+item**, so anything it calls is on a cubic-ish path. Profiled on one real Vapi match run:
+`_po_number_matches` at 851,590 calls and `_po_tokens` at 1,691,328 — **12.5s of a 15.6s run**.
+
+- `_po_tokens` is `lru_cache`d. It is a pure function of a short string drawn from a corpus of well
+  under 2,000 distinct values, and returns a **tuple** so a cached value cannot be mutated by one
+  caller and handed back corrupted to the next.
+- `_po_number_matches` short-circuits the `legacy_po_matches()` fallback unless **both** sides
+  contain `/`. Without that guard it ran 844,956 times in one Vapi run, none of which could match —
+  Vapi's PO numbers are bare SAP numerals. `legacy_po_matches()` checks this itself, but only after
+  two calls and a `strip()` apiece; at this volume the cheap test has to come first.
+
 ### The five helpers are duplicated across the three matchers on purpose
 
 `_closeness()`, `_diff_pct()`, `_token_overlap()`, `_vendor_matches()`, `_po_number_matches()` are
@@ -677,6 +732,12 @@ measured** against labelled ground truth. Real rates from a full sync against li
 | HRS | 68.6% | 68 / 13 |
 | RTP-Achhad | 86.0% | 71 / 3 |
 | RTP-Vapi | 50.5% | 0 / 48 |
+
+**Those figures are stale for Vapi and should not be used as a baseline.** As of 2026-09-18 it
+matches **577 of 690 line items (83.6%)** against 1,415 active MIR rows. Three things moved at once:
+its MIR PO column went from ~100% blank to 27.2% populated, its order book grew 131 → 222 POs, and
+`match_vapi` had been **hanging outright** (see the termination guards above) so whatever was in the
+database predated all of it. Re-measure before comparing anything to the table above.
 
 MIR↔Stock rates are much lower (1.6–24%), but that is mostly structural, not matcher failure: Stock
 is a current snapshot (one row per live lot) while MIR is a full historical log, so most older MIR
@@ -1610,6 +1671,8 @@ alongside each.
 | MIR↔Stock comparing MT against KG → ~1000x phantom rate mismatch | [Unit normalisation](#units-are-normalised-before-comparing--on-both-pairings) |
 | Import USD rate compared raw against INR MIR → ~94x gap, 0 matches | [Import currency](#import-po--mir-convert-currency-first) |
 | Full-table SELECTs inside per-row loops → quadratic matching | [Performance](#performance-the-engine-was-quadratic) |
+| `_assign_pairs()` never terminating on a positive-gain cycle (twice: search, then path flip) | [Termination guards](#_assign_pairs-needs-both-its-termination-guards) |
+| `legacy_po_matches()` running 844k times where it could never match | [Two hot paths](#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason) |
 | Renaming a PO upstream forking it into two permanent rows | [Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither) |
 | Orphan detection reporting only to a stdout nobody reads | [Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither) |
 | `date.today()` returning the server's UTC date, not IST | below |
