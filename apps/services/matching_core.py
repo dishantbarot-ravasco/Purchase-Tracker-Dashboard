@@ -751,6 +751,41 @@ def _candidate_mir_entries(
 #      a disagreeing code as a slightly smaller intersection.
 
 
+def _grade_codes(tokens: list[str]) -> set[str]:
+    """The grade/product codes in a tokenized description.
+
+    Not simply "the tokens containing a digit", which is what this used to be
+    and which gets the important case backwards. tokenize() deliberately
+    splits at letter<->digit boundaries (see its docstring - it has to, so
+    "180P" and "180 P" agree), so a grade code arrives here already broken in
+    two: "Aksil 180 G" -> ['aksil', '180', 'g']. Taking only the digit-bearing
+    half leaves "180", which is identical for "Aksil 180 G" and "Aksil 180 P"
+    - so the two grades scored as AGREEING and collected the +0.25 bonus
+    meant for a shared code. Confirmed on real Achhad data (2026-09-18): PO
+    1100000882 ordered 5,000 kg of Aksil 180 G and was matched to a MIR row
+    for 8,150 kg of Aksil 180 P.
+    The same flaw sat under the "4600N vs 4200N" case this grade logic was
+    written for; that one only worked because 4600 and 4200 differ anyway.
+
+    So the number is re-joined with a SHORT trailing alphabetic token (one or
+    two characters - a grade suffix, not a word), and a code must carry at
+    least TWO digits to count. That second rule keeps a bare "2" out: split
+    descriptions are full of stray single digits ("...x 2.2 KGS" -> '2', '2')
+    and treating those as grade codes made unrelated products look like they
+    shared one - real case, PO 1100000763's 1220x75x2.2 paper core matched to
+    a 1500x77x2.5 one on nothing but the shared '2'."""
+    codes = set()
+    for i, token in enumerate(tokens):
+        if not token.isdigit():
+            continue
+        suffix = tokens[i + 1] if i + 1 < len(tokens) else ""
+        if suffix.isalpha() and len(suffix) <= 2:
+            codes.add(token + suffix)
+        elif len(token) >= 2:
+            codes.add(token)
+    return codes
+
+
 class _MaterialScorer:
     """IDF-weighted material similarity over one plant's own description
     corpus. Built once per matching pass (the corpus is that plant's MIR +
@@ -791,7 +826,10 @@ class _MaterialScorer:
 
     def similarity(self, a: str, b: str) -> Decimal:
         """Weighted Jaccard in [0, 1], adjusted for grade-code agreement."""
-        ta, tb = set(tokenize(a or "")), set(tokenize(b or ""))
+        # Ordered lists for grade-code extraction (a code is a number plus
+        # the token AFTER it, so order matters), sets for the Jaccard.
+        list_a, list_b = tokenize(a or ""), tokenize(b or "")
+        ta, tb = set(list_a), set(list_b)
         if not ta or not tb:
             return Decimal("0")
         denominator = sum(self._weight(t) for t in ta | tb)
@@ -800,8 +838,7 @@ class _MaterialScorer:
         numerator = sum(self._weight(t) for t in ta & tb)
         score = Decimal(str(numerator / denominator))
 
-        codes_a = {t for t in ta if any(ch.isdigit() for ch in t)}
-        codes_b = {t for t in tb if any(ch.isdigit() for ch in t)}
+        codes_a, codes_b = _grade_codes(list_a), _grade_codes(list_b)
         if codes_a and codes_b:
             if codes_a & codes_b:
                 score = min(Decimal("1"), score + self._GRADE_BONUS)
@@ -822,6 +859,18 @@ def _material_scorer(config: _MatchConfig) -> "_MaterialScorer":
     corpus += list(config.import_item_model.objects.filter(
         purchase_order__is_active=True).values_list("description", flat=True))
     return _MaterialScorer(corpus)
+
+
+def _material_similarity(config: _MatchConfig, description: str, mir_description: str, scorer=None) -> Decimal:
+    """The raw similarity behind _material_matches()' yes/no.
+
+    Kept as a number because the ranking needs it: within one evidence tier,
+    how well the descriptions agree is the only thing that can separate
+    several line items of the SAME order competing for that order's several
+    MIR rows. See _pair_weight()."""
+    if scorer is None:
+        return _token_overlap(description, mir_description)
+    return scorer.similarity(description, mir_description)
 
 
 def _material_matches(config: _MatchConfig, description: str, mir_description: str, scorer=None) -> bool:
@@ -948,6 +997,9 @@ class _Candidate(NamedTuple):
     date_weight: Decimal
     material_matched: bool
     po_number_matched: bool
+    # The similarity behind material_matched, kept so _pair_weight() can use
+    # it to separate candidates inside one evidence tier.
+    material_score: Decimal = Decimal("0")
     # Always True under the default rule - vendor is the mandatory gate
     # there, so a candidate cannot exist without it. Only meaningful, and
     # only ever False, under config.identification_two_of_three.
@@ -969,9 +1021,35 @@ def _pair_weight(candidate: "_Candidate") -> Decimal:
     financially, so the tie-break was effectively arbitrary while the PO
     number sat there unread. A PO number written on the receipt is
     categorically better evidence than "the numbers look about right", and
-    no amount of financial closeness should be able to outrank it."""
+    no amount of financial closeness should be able to outrank it.
+
+    MATERIAL SIMILARITY IS PART OF THE WITHIN-TIER WEIGHT (2026-09-18). It
+    used to be excluded on the reasoning quoted above - that its contribution
+    was "already spent on deciding the tier". That holds when candidates sit
+    in DIFFERENT tiers, and fails completely when they sit in the same one.
+    The case it fails on is a multi-line purchase order whose lines are all
+    confirmed by the same PO number against that order's own MIR rows: every
+    pair lands in TIER_RANK_PO_NUMBER, so the tier separates nothing, and the
+    only thing left ranking them is money - which is identical when the lines
+    share a rate. Material was then the one field that could tell the lines
+    apart, and it was the one field not being read.
+
+    Real case (Achhad PO 1000001471, Madura Industrial Textiles): three rolls
+    of EE-080 fabric, 140/158/168 cm, each matched to the WRONG width - a
+    clean one-place shift down the list, at a material similarity of 0.05.
+    Ecco Paper's 1100000783 and 1100000848 showed the same shape on core
+    sizes.
+
+    The weights below still sum to 1, so within_tier stays within [0, 100]
+    and a whole tier step (_TIER_STEP = 1000) remains strictly larger than
+    any within-tier difference. The lexicographic ordering that the
+    2026-09-12 redesign exists to guarantee is untouched - this only decides
+    who wins INSIDE a tier, which is exactly where the information was
+    missing."""
     within_tier = (
-        Decimal("0.75") * candidate.score + Decimal("0.25") * max(candidate.date_weight, Decimal("0"))
+        Decimal("0.55") * candidate.score
+        + Decimal("0.20") * max(candidate.date_weight, Decimal("0"))
+        + Decimal("0.25") * candidate.material_score
     ) * Decimal("100")
     return Decimal(candidate.tier_rank) * _TIER_STEP + within_tier
 
@@ -1066,7 +1144,8 @@ def _identification_pool(
                 continue
             date_weight = Decimal("0")
 
-        material_matched = _material_matches(config, item.description, c.material_description, scorer)
+        material_score = _material_similarity(config, item.description, c.material_description, scorer)
+        material_matched = material_score >= config.material_match_threshold
         if two_of_three:
             # Recomputed here rather than taken from the pool's construction:
             # candidates_for() returns a UNION now, so membership no longer
@@ -1103,6 +1182,7 @@ def _identification_pool(
             material_matched=material_matched,
             po_number_matched=po_number_matched,
             vendor_matched=vendor_matched,
+            material_score=material_score,
         )
     return pool, found
 

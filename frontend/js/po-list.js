@@ -86,6 +86,8 @@ function renderPoList(el) {
   // Created, which is deliberate: an overdue PO is also counted under
   // Partial or On Order.
   const overdueCount = filtered.filter(po => po._overdue).length;
+  // Also an overlay - see computeStatus()'s note on _noDeliveryDate.
+  const noDateCount = filtered.filter(po => po._noDeliveryDate).length;
   const total = filtered.length;
   const qtyDiscCount = filtered.filter(po => po._qtyFlag).length;
   // Over vs under delivery (2026-09-18, project owner). Tolerance is still
@@ -159,7 +161,7 @@ function renderPoList(el) {
     { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: rate differs between the PO and its matched MIR entry - zero tolerance. Value is not compared here - see the Data Quality legend for why.' },
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: overdueCount, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the order is still not fully received - including POs that are partly delivered. This overlaps the other status cards rather than excluding them, so the cards here add up to more than Total PO\u2019s Created.' },
     { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Nothing has arrived against this PO yet, and its delivery date has not passed.' },
-    { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
+    { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: noDateCount, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file for any line item, so this PO can never be called overdue or on order. Counted whether or not the material has arrived - a missing date is worth chasing either way. Overlaps the other cards rather than excluding them.' },
     { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on this PO - quantity/rate mismatch, PO not found in MIR, tax type/taxable value/final amount mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
   ];
   const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.statusFilter === c.key ? 'active' : '') + '" data-kpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.statusFilter === c.key) + '">' +
@@ -168,6 +170,7 @@ function renderPoList(el) {
 
   let tableRecs = filtered;
   if (state.statusFilter === 'overdue') tableRecs = filtered.filter(po => po._overdue);
+  else if (state.statusFilter === 'unknown') tableRecs = filtered.filter(po => po._noDeliveryDate);
   else if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
   else if (state.statusFilter === 'qtyover') tableRecs = filtered.filter(po => po._qtyOverFlag);
   else if (state.statusFilter === 'qtyunder') tableRecs = filtered.filter(po => po._qtyUnderFlag);

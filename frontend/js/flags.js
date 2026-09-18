@@ -714,6 +714,18 @@ function computeStatus(po) {
   // accepted deliberately: the status KPI cards no longer sum to Total PO's
   // Created. See po-list.js's cardDef.
   po._overdue = pastDue && status !== 'received';
+  // No delivery date on file AT ALL - an overlay, for the same reason
+  // _overdue is one (2026-09-18). As a status bucket this was only ever
+  // reachable when nothing had arrived either, so a PO with no delivery date
+  // whose material HAS turned up was silently counted as Received and the
+  // card read zero. Measured on Achhad: 10 of 134 POs carry no delivery date
+  // and the card showed 0. The card's own tooltip already described it this
+  // way - "no delivery date on file" - so the count now matches what it says.
+  //
+  // This is a data-completeness signal, not a delivery state: a missing date
+  // is worth chasing whether or not the goods arrived, because without it
+  // nothing can ever be called overdue or on order.
+  po._noDeliveryDate = !dates.length;
   return status;
 }
 

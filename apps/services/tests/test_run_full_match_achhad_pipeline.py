@@ -231,3 +231,72 @@ class TestAchhadMirStockMatching:
         run_full_match()
 
         assert RTPAchhadMirStockMatch.objects.filter(mir_entry=mir_entry).count() == 1
+
+
+@pytest.mark.django_db
+class TestWithinTierMaterialTieBreak:
+    """Several lines of ONE purchase order, all confirmed by the same PO
+    number against that order's own MIR rows (2026-09-18).
+
+    Every pair lands in the same evidence tier, so the tier separates
+    nothing; and when the lines share a rate the money separates nothing
+    either. Material similarity is the only field left that can tell them
+    apart, and until _pair_weight() included it the pairing was arbitrary.
+
+    Real case this reproduces: Achhad PO 1000001471 (Madura Industrial
+    Textiles), three rolls of EE-080 fabric at 140/158/168 cm, each matched
+    to the wrong width in a clean one-place shift down the list, at a
+    material similarity of 0.05.
+    """
+
+    def test_lines_of_one_po_pair_by_material_not_arbitrarily(self):
+        """Every quantity and rate here is IDENTICAL on purpose, so the
+        financial score cannot separate any pair from any other. Material is
+        then the only signal left, which is precisely the situation the real
+        defect arose in - and before _pair_weight() read it, the pairing was
+        whatever the assignment happened to settle on."""
+        po = _make_po(po_number="1000001471", vendor_name="Madura Industrial Textiles Ltd")
+        qty, rate = Decimal("1000"), Decimal("220")
+        narrow = RTPAchhadDomesticPOLineItem.objects.create(
+            purchase_order=po, item_id="1",
+            description="EE-080 fabric roll, width 140cm, GSM 320", hsn="5911",
+            qty=qty, uom="KG", net_price=rate, net_value=qty * rate)
+        wide = RTPAchhadDomesticPOLineItem.objects.create(
+            purchase_order=po, item_id="2",
+            description="EE-080 fabric roll, width 168cm, GSM 320", hsn="5911",
+            qty=qty, uom="KG", net_price=rate, net_value=qty * rate)
+
+        for mir_no, desc, ref in (
+            ("M-140", "Rubberised Textile Fabric-EE80,140cm", "3"),
+            ("M-168", "Rubberised Textile Fabric-EE80,168cm", "4"),
+        ):
+            RTPAchhadMIREntry.objects.create(
+                month="May-26", mir_no=mir_no, mir_date=datetime.date(2026, 5, 1),
+                party_name="Madura Industrial Textiles Ltd", po_number_raw="1000001471",
+                material_description=desc, qty=qty, uom="KG", rate=rate,
+                net=qty * rate, taxable_value=qty * rate, invoice_final_value=qty * rate,
+                source_row_ref=ref, is_active=True)
+
+        run_full_match()
+
+        assert RTPAchhadPOMirMatch.objects.get(po_line_item=narrow).mir_entry.mir_no == "M-140"
+        assert RTPAchhadPOMirMatch.objects.get(po_line_item=wide).mir_entry.mir_no == "M-168"
+
+    def test_material_never_outranks_a_whole_evidence_tier(self):
+        """The guarantee the 2026-09-12 redesign exists to give, re-checked
+        now that material is back in the within-tier weight: a PERFECT
+        material match with no PO number must still lose to a PO-number
+        confirmed candidate, however weak that one's other evidence."""
+        from apps.services.matching_core import (
+            TIER_RANK_MATERIAL_ONLY, TIER_RANK_PO_NUMBER, _Candidate, _pair_weight)
+
+        material_only = _Candidate(
+            mir=None, tier_rank=TIER_RANK_MATERIAL_ONLY, score=Decimal("1"),
+            coverage=Decimal("1"), date_weight=Decimal("1"),
+            material_matched=True, po_number_matched=False, material_score=Decimal("1"))
+        po_confirmed = _Candidate(
+            mir=None, tier_rank=TIER_RANK_PO_NUMBER, score=Decimal("0"),
+            coverage=Decimal("0"), date_weight=Decimal("0"),
+            material_matched=False, po_number_matched=True, material_score=Decimal("0"))
+
+        assert _pair_weight(po_confirmed) > _pair_weight(material_only)

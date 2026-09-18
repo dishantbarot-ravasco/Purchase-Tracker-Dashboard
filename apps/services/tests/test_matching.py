@@ -21,6 +21,7 @@ import datetime
 from decimal import Decimal
 
 from apps.services.matching import FLAG_DIFF_PCT, MATCH_THRESHOLD
+from apps.services.parsers.common import tokenize
 from apps.services.matching_core import (
     DATE_IMPOSSIBLE,
     _Candidate,
@@ -33,6 +34,7 @@ from apps.services.matching_core import (
     _date_verdict,
     _diff_pct,
     _diffs_and_flag,
+    _grade_codes,
     _identification_pool,
     _pair_weight,
     _po_number_contradicts,
@@ -1333,3 +1335,68 @@ class TestAssignPairsTerminates:
             "b": [("r1", Decimal("500")), ("r2", Decimal("400"))],
         }
         assert _assign_pairs(edges) == {"a": "r1", "b": "r2"}
+
+
+class TestGradeCodes:
+    """_grade_codes() - the fix for a grade check that rewarded the exact
+    disagreement it existed to catch (2026-09-18).
+
+    tokenize() splits at letter<->digit boundaries by design, so "Aksil 180 G"
+    arrives as ['aksil', '180', 'g']. The old check kept only digit-bearing
+    tokens, which reduced both "180 G" and "180 P" to "180" - identical - so
+    two different grades collected the SHARED-CODE BONUS. Real case: Achhad PO
+    1100000882 ordered 5,000 kg of Aksil 180 G and was matched to a MIR row
+    for 8,150 kg of Aksil 180 P.
+    """
+
+    def test_a_number_fuses_with_its_short_grade_suffix(self):
+        """The case the old code got backwards. These must be different
+        codes, not the same one."""
+        assert _grade_codes(tokenize("Aksil 180 G")) == {"180g"}
+        assert _grade_codes(tokenize("Aksil 180 P")) == {"180p"}
+
+    def test_the_suffix_is_found_whether_or_not_it_was_written_attached(self):
+        """tokenize() already folds '180P' and '180 P' together - that is why
+        it splits at the boundary - so the rejoin has to see them alike."""
+        assert _grade_codes(tokenize("AKSIL 180P")) == _grade_codes(tokenize("Aksil 180 P"))
+        assert _grade_codes(tokenize("ALUMINIUM TRIHYDRATE 4600N")) == {"4600n"}
+
+    def test_a_long_trailing_word_is_not_a_grade_suffix(self):
+        """Only a one or two character token is a suffix; a real word after a
+        number is just a word ('1220 MMX', '25 KGS')."""
+        assert "1220mmx" not in _grade_codes(tokenize("PAPER CORE 1220MMx75MMx2.2KGS"))
+        assert "1220" in _grade_codes(tokenize("PAPER CORE 1220MMx75MMx2.2KGS"))
+
+    def test_a_single_stray_digit_is_not_a_grade_code(self):
+        """Split descriptions are full of them ('2.2 KGS' -> '2', '2'), and
+        treating one as a code made unrelated products look like they shared
+        one - real case, PO 1100000763's 1220x75x2.2 paper core against a
+        1500x77x2.5 one, matched on nothing but a shared '2'."""
+        codes = _grade_codes(tokenize("Paper Core 2.5 Kgs"))
+        assert "2" not in codes and "5" not in codes
+
+    def test_no_digits_at_all_means_no_grade_codes(self):
+        assert _grade_codes(tokenize("Carbon Black Pellets")) == set()
+
+
+class TestGradeDisagreementIsDecisive:
+    """The scorer's end-to-end behaviour, at Achhad's real 0.30 threshold -
+    _grade_codes() only matters through what it does to a match decision."""
+
+    @staticmethod
+    def _scorer():
+        return _MaterialScorer([
+            "PRECIPITATED SILICA Aksil 180 G", "Aksil 180 P", "Aksil 180 G",
+            "ALUMINIUM TRIHYDRATE 4600N", "Aluminium Trihydrate 4200N",
+            "JC EPMIX S-80", "JC Epmix S-80",
+        ])
+
+    def test_a_different_grade_falls_below_the_threshold(self):
+        s = self._scorer()
+        assert s.similarity("PRECIPITATED SILICA Aksil 180 G", "Aksil 180 P") < Decimal("0.30")
+        assert s.similarity("ALUMINIUM TRIHYDRATE 4600N", "Aluminium Trihydrate 4200N") < Decimal("0.30")
+
+    def test_the_same_grade_still_scores_well_above_it(self):
+        s = self._scorer()
+        assert s.similarity("PRECIPITATED SILICA Aksil 180 G", "Aksil 180 G") > Decimal("0.60")
+        assert s.similarity("JC EPMIX S-80", "JC Epmix S-80") > Decimal("0.60")
