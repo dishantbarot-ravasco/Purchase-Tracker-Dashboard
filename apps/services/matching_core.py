@@ -456,13 +456,25 @@ _PO_TOKEN_SPLIT = re.compile(r"[,&/;\s]+")
 _TRAILING_ZERO_DECIMAL = re.compile(r"^(\d+)\.0+$")
 
 
-def _po_tokens(value: str) -> list[str]:
+@lru_cache(maxsize=8192)
+def _po_tokens(value: str) -> tuple[str, ...]:
+    """Tokenized PO reference, cached.
+
+    Pure function of a short string drawn from a small set - one plant has a
+    few hundred distinct PO numbers and a few thousand MIR references - but
+    it is called from inside _po_number_contradicts()'s scan over EVERY known
+    PO number, for every candidate, for every line item. Profiled on Vapi
+    (2026-09-18): 1,691,328 calls, 7.5s of a 15.6s match run, on a corpus of
+    well under 2,000 distinct strings.
+
+    Returns a tuple rather than a list so the cached value cannot be mutated
+    by a caller and handed back corrupted to the next one."""
     tokens = [t for t in _PO_TOKEN_SPLIT.split(value.strip().upper()) if t]
     out = []
     for t in tokens:
         m = _TRAILING_ZERO_DECIMAL.match(t)
         out.append(m.group(1) if m else t)
-    return out
+    return tuple(out)
 
 
 def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
@@ -491,6 +503,15 @@ def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
     n = len(po_tokens)
     if any(raw_tokens[i : i + n] == po_tokens for i in range(len(raw_tokens) - n + 1)):
         return True
+    # The legacy fold only ever applies to the slashed form, so skip it
+    # outright when neither side carries a '/'. Without this guard it ran on
+    # every failed comparison - 844,956 times in one profiled Vapi match run,
+    # none of which could have matched, because Vapi's PO numbers are bare
+    # SAP numerals. legacy_po_matches() checks this itself, but only after
+    # two function calls and a strip() apiece; at this call volume the cheap
+    # test has to come first.
+    if "/" not in po_number or "/" not in po_number_raw:
+        return False
     return legacy_po_matches(po_number, po_number_raw)
 
 
@@ -1244,6 +1265,23 @@ def _assign_pairs(edges: dict) -> dict:
         came_from_right = {source: None}  # line item -> the row it was displaced from
         queue = [source]
         queued = {source}
+        # WORK BOUND - without it this search does not terminate on real data
+        # (2026-09-18, RTP-Vapi: `match_vapi` stopped returning entirely).
+        #
+        # This is Bellman-Ford over a graph whose displacement edges carry
+        # negative weight, so a node is re-queued every time its best_gain
+        # improves; where a positive-gain cycle exists that never settles.
+        # The graph is not the problem - 869 candidate pairs across 278 line
+        # items, a median of 2 each. Instrumented on Vapi's real order book,
+        # 233 of the 234 source searches together used 79 dequeues and
+        # exactly one ran away.
+        #
+        # Bounded on TOTAL WORK PER SOURCE rather than re-queues per node:
+        # the textbook per-node bound of V gives V^2 dequeues per source,
+        # which at 234 sources is still hundreds of millions of iterations.
+        # The legitimate need here is a couple of dozen, so this ceiling sits
+        # orders of magnitude clear of it while stopping a runaway at once.
+        dequeue_budget = 64 + 8 * len(adjacency)
         # A path may end two ways, and both have to be searched: on an
         # unclaimed row, or on a line item that was displaced and simply
         # stays unmatched. Missing the second one loses real improvements -
@@ -1253,6 +1291,9 @@ def _assign_pairs(edges: dict) -> dict:
         end_kind, end_key, end_gain = None, None, Decimal("0")
 
         while queue:
+            dequeue_budget -= 1
+            if dequeue_budget < 0:
+                break
             left = queue.pop(0)
             queued.discard(left)
             reached_gain = best_gain[left]
@@ -1285,16 +1326,39 @@ def _assign_pairs(edges: dict) -> dict:
         # Flip the alternating path back to the source: each row on it moves
         # to the line item that reached it, and that line item releases the
         # row it was displaced from, which is the next row on the path.
-        if end_kind == "row":
-            row = end_key
-        else:
-            match_left.pop(end_key, None)  # displaced holder ends unmatched
-            row = came_from_right.get(end_key)
+        #
+        # WALKED AND VALIDATED BEFORE ANYTHING IS MUTATED (2026-09-18). This
+        # was a second, independent non-termination: came_from_left/
+        # came_from_right describe a path only if the relaxation above ran to
+        # completion, and a search that stops early - on the work bound, or
+        # on any future guard - can leave them describing a CYCLE. Walking
+        # that while mutating as it went spun forever with the assignment
+        # half-applied, which is how Vapi hung even once the search itself
+        # was bounded (faulthandler landed here, not in the loop above).
+        #
+        # Collecting the path first also means a cyclic one costs nothing:
+        # the source is skipped and the assignment every earlier source
+        # agreed on is left exactly as it was, rather than partially
+        # rewritten into a state where match_left and match_right disagree.
+        start_row = end_key if end_kind == "row" else came_from_right.get(end_key)
+        path = []
+        walked = set()
+        row = start_row
         while row is not None:
+            if row in walked:
+                path = None  # cyclic - abandon this source, change nothing
+                break
+            walked.add(row)
             left = came_from_left[row]
+            path.append((left, row))
+            row = came_from_right.get(left)
+        if path is None:
+            continue
+        if end_kind == "left":
+            match_left.pop(end_key, None)  # displaced holder ends unmatched
+        for left, row in path:
             match_left[left] = row
             match_right[row] = left
-            row = came_from_right.get(left)
 
     return match_left
 

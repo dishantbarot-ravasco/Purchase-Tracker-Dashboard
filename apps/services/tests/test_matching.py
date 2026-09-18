@@ -1261,3 +1261,75 @@ class TestQtyOverDelivered:
         primary = _FakeMir("Imported Coal", Decimal("28.51"), "MT.", Decimal("11300"), Decimal("322163.00"))
         *_rest, qty_over = _diffs_and_flag(config, item, primary, qty_override=Decimal("121100"))
         assert qty_over is True
+
+
+class TestAssignPairsTerminates:
+    """_assign_pairs() had two independent non-termination bugs, both found
+    2026-09-18 when `match_vapi` simply stopped returning on real data.
+
+    Neither is about graph size - Vapi's graph was 869 candidate pairs across
+    278 line items, a median of 2 each. Both are about the alternating-path
+    search meeting a positive-gain cycle: the relaxation loop re-queued
+    forever, and once that was bounded, the path FLIP walked a cyclic path
+    forever instead. The second is the one that kept it hanging after the
+    first was fixed, so both guards are load-bearing.
+
+    These tests assert termination and a coherent result, deliberately not a
+    specific assignment - the point is that no input can hang it."""
+
+    @staticmethod
+    def _coherent(result, edges):
+        """A result must be a real matching: every pair an edge that exists,
+        and no MIR row claimed twice. A half-applied path flip breaks the
+        second of those, which is why it is checked rather than assumed."""
+        valid = {(left, right) for left, pairs in edges.items() for right, _w in pairs}
+        assert all((left, right) in valid for left, right in result.items())
+        assert len(set(result.values())) == len(result)
+
+    def test_a_tightly_cyclic_graph_terminates(self):
+        """Every line item wants every row at nearly identical weight - the
+        shape that makes displacement chains loop back on themselves."""
+        edges = {
+            f"item{i}": [(f"row{j}", Decimal("1000") + Decimal(i + j) / Decimal("97"))
+                         for j in range(6)]
+            for i in range(6)
+        }
+        result = _assign_pairs(edges)
+        self._coherent(result, edges)
+
+    def test_identical_weights_everywhere_terminate(self):
+        """Exact ties are the degenerate case of the above - with no weight
+        to separate candidates, every displacement is a lateral move."""
+        edges = {
+            f"item{i}": [(f"row{j}", Decimal("500")) for j in range(8)]
+            for i in range(8)
+        }
+        result = _assign_pairs(edges)
+        self._coherent(result, edges)
+
+    def test_many_items_competing_for_few_rows_terminates(self):
+        """Vapi's real shape: far more line items than distinct MIR rows they
+        can plausibly claim, so most searches end by displacing someone."""
+        edges = {
+            f"item{i}": [(f"row{j}", Decimal("100") + Decimal(i % 3)) for j in range(3)]
+            for i in range(40)
+        }
+        result = _assign_pairs(edges)
+        self._coherent(result, edges)
+        assert len(result) <= 3  # only three rows exist to be claimed
+
+    def test_an_ordinary_graph_still_assigns_the_best_pairing(self):
+        """The guards must not change a normal outcome - each item takes its
+        own clearly-best row."""
+        edges = {
+            "a": [("r1", Decimal("900")), ("r2", Decimal("100"))],
+            "b": [("r1", Decimal("100")), ("r2", Decimal("900"))],
+        }
+        assert _assign_pairs(edges) == {"a": "r1", "b": "r2"}
+
+    def test_a_contested_row_goes_to_the_stronger_claim(self):
+        edges = {
+            "a": [("r1", Decimal("900"))],
+            "b": [("r1", Decimal("500")), ("r2", Decimal("400"))],
+        }
+        assert _assign_pairs(edges) == {"a": "r1", "b": "r2"}
