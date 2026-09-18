@@ -78,6 +78,14 @@ function renderPoList(el) {
 
   const counts = { received: 0, partial: 0, pending: 0, overdue: 0, unknown: 0 };
   filtered.forEach(po => counts[po._status]++);
+  // Overdue is an OVERLAY over the status buckets, not one of them
+  // (2026-09-18) - a PO past its delivery date with anything still
+  // outstanding counts, whether or not part of it has already arrived. See
+  // computeStatus()'s own note for the 8-vs-34 undercount this fixes. The
+  // consequence is that the status cards no longer sum to Total PO's
+  // Created, which is deliberate: an overdue PO is also counted under
+  // Partial or On Order.
+  const overdueCount = filtered.filter(po => po._overdue).length;
   const total = filtered.length;
   const qtyDiscCount = filtered.filter(po => po._qtyFlag).length;
   // Over vs under delivery (2026-09-18, project owner). Tolerance is still
@@ -143,14 +151,14 @@ function renderPoList(el) {
   // flag icon - it's a plain aggregate, not a status.
   const cardDef = [
     { key: 'total', cls: '', label: "Total PO's Created", val: total, tip: 'All purchase orders in the selected date range and plant(s).' },
-    { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has a matched MIR entry - the material has been received.' },
-    { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items on this PO have a matched MIR entry yet.' },
+    { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has fully arrived - matched to a MIR entry, and not short of the ordered quantity. An over-delivered line still counts as received (the material did arrive); a short-delivered one does not, and shows as Partial Delivered instead.' },
+    { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Something has arrived against this PO but the order is not complete - either a line item has no MIR entry yet, or one arrived short of the ordered quantity.' },
     { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags. The two cards beside this one split the same set by direction; they can add up to less than this total, which means some of these rows have no recorded direction yet (their last matching run predates the over/under split - re-run matching for this plant).' },
     { key: 'qtyover', cls: 'critical', label: 'Over-Delivered', val: qtyOverCount, flag: KPI_FLAG_COLORS.critical, tip: 'More was received than the PO ordered, summed across every delivery against each line - zero tolerance, any nonzero difference flags. A subset of Quantity Mismatches.' },
     { key: 'qtyunder', cls: 'critical', label: 'Short-Delivered', val: qtyUnderCount, flag: KPI_FLAG_COLORS.critical, tip: 'Less was received than the PO ordered - zero tolerance. On an order still open this is a part-delivery; on a closed one it is a short shipment. Check the Progress column. A subset of Quantity Mismatches.' },
     { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: rate differs between the PO and its matched MIR entry - zero tolerance. Value is not compared here - see the Data Quality legend for why.' },
-    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully matched to MIR.' },
-    { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched to MIR.' },
+    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: overdueCount, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the order is still not fully received - including POs that are partly delivered. This overlaps the other status cards rather than excluding them, so the cards here add up to more than Total PO\u2019s Created.' },
+    { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Nothing has arrived against this PO yet, and its delivery date has not passed.' },
     { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
     { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on this PO - quantity/rate mismatch, PO not found in MIR, tax type/taxable value/final amount mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
   ];
@@ -159,7 +167,8 @@ function renderPoList(el) {
     '<div class="val" data-count-target="' + c.val + '" data-count-fmt="int">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>').join('');
 
   let tableRecs = filtered;
-  if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
+  if (state.statusFilter === 'overdue') tableRecs = filtered.filter(po => po._overdue);
+  else if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
   else if (state.statusFilter === 'qtyover') tableRecs = filtered.filter(po => po._qtyOverFlag);
   else if (state.statusFilter === 'qtyunder') tableRecs = filtered.filter(po => po._qtyUnderFlag);
   else if (state.statusFilter === 'ratedisc') tableRecs = filtered.filter(po => po._rateFlag);

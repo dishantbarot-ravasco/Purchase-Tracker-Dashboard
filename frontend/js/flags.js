@@ -638,17 +638,83 @@ function rowTintClass(rec) {
 // pick this up; STATUS_LABELS.pending is the single place the visible text
 // lives. Renamed 'Pending' -> 'On Order' (2026-09-04, project owner).
 const STATUS_LABELS = { received: 'Received', partial: 'Partial Delivered', pending: 'On Order', overdue: 'Overdue', unknown: 'Delivery Date Unknown' };
+// Did anything at all arrive against this line item? A match dismissed by a
+// reviewer (dismissedByOverride) means "this pairing is wrong", so it is not
+// an arrival - computePoFlags() has always excluded dismissed matches from
+// its counts, and before 2026-09-18 the status did not, so dismissing a bad
+// match cleared a PO's flags while leaving it counted as Material Inwarded.
+function lineItemArrived(it) {
+  return !!it.matched && !it.dismissedByOverride;
+}
+
+// Is this line item's order actually FULFILLED - not merely matched?
+//
+// This distinction is what the status buckets got wrong until 2026-09-18.
+// Matching is existence-based: it answers "which MIR row belongs to this
+// line", not "did all of it turn up". Measured on Achhad's 134 domestic POs,
+// 23 of the 120 counted as Material Inwarded were short-delivered, including
+// PO 1100000790 (100 of 500 KG of Titanium Dioxide - 80% short) and
+// 1100000834 (coal, 49% short). Both read as fully received.
+//
+// Short-delivered is therefore NOT received. Over-delivered still is: the
+// material did arrive, and taking too much is a different problem, already
+// flagged separately as Over-Delivered in MIR.
+//
+// A null qtyOverDelivered means the direction could not be determined (a UOM
+// mismatch, a missing quantity, or a match row written before migration
+// 0050). That is treated as received rather than short - this function must
+// not invent a shortfall it cannot actually measure, since the cost of a
+// false "incomplete" is a PO chased that was already fine.
+function lineItemFullyReceived(it) {
+  if (!lineItemArrived(it)) return false;
+  if (it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT && it.qtyOverDelivered === false) return false;
+  return true;
+}
+
+// Sets po._overdue as a side effect, deliberately - see the OVERDUE note
+// below. Every caller assigns `po._status = computeStatus(po)`, so doing it
+// here is what keeps the overlay in step across all four call sites
+// (po-list.js, materials.js, material-modal.js) without each having to
+// remember a second call.
 function computeStatus(po) {
   const items = po.items || [];
-  if (!items.length) return 'pending';
-  const matchedCount = items.filter(it => it.matched).length;
-  if (matchedCount === items.length) return 'received';
-  if (matchedCount > 0) return 'partial';
   const dates = items.map(it => it.deliveryDate).filter(Boolean).sort();
-  if (!dates.length) return 'unknown';
-  const dd = new Date(dates[0] + 'T00:00:00');
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  return (!isNaN(dd.getTime()) && dd < today) ? 'overdue' : 'pending';
+  const dd = dates.length ? new Date(dates[0] + 'T00:00:00') : null;
+  const pastDue = !!dd && !isNaN(dd.getTime()) && dd < today;
+
+  let status;
+  if (!items.length) {
+    status = 'pending';
+  } else if (items.every(lineItemFullyReceived)) {
+    status = 'received';
+  } else if (items.some(lineItemArrived)) {
+    // Something turned up, but the order is not complete - either a line is
+    // still unmatched, or one arrived short. Before 2026-09-18 this second
+    // case was impossible to reach on a single-line-item PO (102 of Achhad's
+    // 134), because matchedCount could only be 0 or 1 - so "Partial
+    // Delivered" measured "multi-item PO with some items unmatched", never
+    // partial delivery.
+    status = 'partial';
+  } else if (!dates.length) {
+    status = 'unknown';
+  } else {
+    status = pastDue ? 'overdue' : 'pending';
+  }
+
+  // OVERDUE IS AN OVERLAY, NOT A BUCKET (2026-09-18, project owner).
+  // It used to be reachable only when NOTHING had matched, because the
+  // received/partial branches returned before the date was ever consulted -
+  // so one delivery landing made a PO permanently un-overdue however much
+  // was still outstanding. On Achhad that hid 26 of 34 genuinely late
+  // orders; the card read 8.
+  //
+  // Being past due is orthogonal to how much has arrived, so it is now its
+  // own boolean and a PO can be both Partial and Overdue. The consequence,
+  // accepted deliberately: the status KPI cards no longer sum to Total PO's
+  // Created. See po-list.js's cardDef.
+  po._overdue = pastDue && status !== 'received';
+  return status;
 }
 
 // 3-step stepper (Ordered / Material Inwarded / Received in Inventory) -

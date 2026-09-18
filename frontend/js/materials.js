@@ -291,7 +291,10 @@ function computeMaterialStatus(m, entry) {
   const links = entry ? entry.links : [];
   const openLinks = entry ? entry.openLinks : [];
   const stocked = (m.qty || 0) > 0;
-  if (openLinks.some(l => l.po._status === 'overdue')) return 'overdue';
+  // _overdue, not _status === 'overdue' (2026-09-18): overdue is an overlay
+  // now, so a partly-delivered late PO has status 'partial' and would be
+  // missed by the old check. See flags.js's computeStatus().
+  if (openLinks.some(l => l.po._overdue)) return 'overdue';
   if (openLinks.length && stocked) return 'partial';
   if (openLinks.length) return 'onorder';
   // "Received" once there's real evidence of an MIR receipt (m.mirMatched -
