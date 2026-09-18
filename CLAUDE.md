@@ -380,9 +380,10 @@ then compared with **containment, not equality**: HRS's Stock sheet appends a ci
 MIR/PO data doesn't carry (`"Rubamin Private Limited"` vs `"Rubamin Private Limited - Vadodara"`),
 and exact matching produced **zero** MIR↔Stock matches until switched to `shorter in longer`.
 
-**Achhad is different since 2026-09-18** — `matching_achhad.py` sets
+**Achhad and HRS are different since 2026-09-18** — `matching_achhad.py` and `matching.py` set
 `_MatchConfig.identification_two_of_three=True`, and PO↔MIR identification there requires any **two
-of {PO number, vendor, material}** rather than vendor plus one of the other two. Vendor keeps all of
+of {PO number, vendor, material}** rather than vendor plus one of the other two. (Vapi is still on
+the vendor-mandatory default.) Vendor keeps all of
 its weight for the rows that have nothing else (423 of Achhad's 663 MIR rows carry no PO number at
 all, and those still identify on vendor plus material exactly as before) but it can now be
 **outvoted** by a PO number that agrees with the material.
@@ -397,6 +398,17 @@ name "Prestige Industries"; MIR 122/08's party column reads the literal placehol
 `_VENDOR_SIMILARITY_THRESHOLD`'s 0.90, which cannot go lower). Those matches are made **and
 flagged**: `vendor_matched=False` surfaces as the `Vendor Name Mismatch in MIR` data-quality flag,
 because a disagreeing name is always an error somebody should fix at source.
+
+**HRS enabled the same flag the same day for a different reason** — `matching.py`'s own comment has
+the numbers. Its MIR file's PO coverage is actually better than Achhad's (236 of 498 rows carry a
+usable PO reference, 232 of which name an order the master CSV holds), but **no HRS row is blocked
+by the vendor gate at all**: every PO-confirmed row also passes `_vendor_matches()` against its own
+order's vendor, so the 2-of-3 rule proper cannot fire there and `candidates_for()`'s union widening
+adds nothing. What HRS gets is the flag's *other* half — the narrowed no-PO-vendor exclusion below.
+Tinna Rubber is a registered `NO_PO_SUPPLIER` that the master CSV now raises four real line items
+against (3000001081 ×3, 3000001098), and those four MIR rows were being dropped before any gate
+ran. HRS's match models needed `vendor_matched` adding first (migration 0049) — enabling the flag
+on a model without that column raises `FieldError` from `_vendor_matched_field()`.
 
 **Why 2-of-3 and not a weighted score**, which is the obvious alternative and was considered: no set
 of weights with one threshold can express this data. `vendor+material` **must** identify (it is the

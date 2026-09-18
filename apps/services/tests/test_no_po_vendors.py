@@ -240,3 +240,116 @@ class TestMatcherExclusion:
             )
             pooled = {r.mir_no for r in _MirCandidateIndex(config)._rows}
             assert pooled == {"M-REAL"}, config.mir_model.__name__
+
+
+class TestPurchasesWithoutPo:
+    """purchases_without_po_summary() - the "how many things did we buy
+    without raising a PO" count, as opposed to no_po_vendor_summary()'s "what
+    did the registry exclude".
+
+    The distinction is the reason the function exists (project owner,
+    2026-09-18: "sometimes they create a PO, sometimes they don't, mostly
+    they don't"), so these tests are mostly about keeping the two apart.
+    """
+
+    @pytest.mark.django_db
+    def test_counts_rows_not_vendors_so_a_sometimes_po_supplier_is_split(self):
+        """The case a vendor-level list cannot express: one supplier, two
+        receipts, only one of which had a PO raised. The PO'd row must not be
+        counted, the other one must - which is only possible per row."""
+        import datetime
+        from apps.core.models import RTPAchhadMIREntry
+        from apps.services.no_po_vendors import purchases_without_po_summary
+
+        for ref in ("1100000901", ""):
+            RTPAchhadMIREntry.objects.create(
+                mir_no="M1", party_name="Sometimes Po Supplier Ltd", po_number_raw=ref,
+                material_description="Sulphur", mir_date=datetime.date(2026, 5, 4),
+                is_active=True, source_row_ref="r" + (ref or "0"),
+            )
+
+        summary = purchases_without_po_summary(RTPAchhadMIREntry)
+        assert summary["total"] == 1
+        assert summary["vendors"] == [{
+            "vendor": "Sometimes Po Supplier Ltd", "rowCount": 1,
+            "registered": False, "reason": "",
+        }]
+
+    @pytest.mark.django_db
+    def test_internal_transfers_are_excluded_but_no_po_suppliers_are_not(self):
+        """An inter-plant movement is not a purchase, so counting it would
+        bury the real number (~390 such rows at Achhad alone). A registered
+        third-party supplier IS counted - being a known process gap does not
+        stop it being one."""
+        import datetime
+        from apps.core.models import RTPAchhadMIREntry
+        from apps.services.no_po_vendors import purchases_without_po_summary
+
+        for party in ("Hindustan Rubbers (Silvassa)", "Harsha Impex", "Some Ordinary Supplier"):
+            RTPAchhadMIREntry.objects.create(
+                mir_no="M", party_name=party, po_number_raw="",
+                material_description="Sulphur", mir_date=datetime.date(2026, 5, 4),
+                is_active=True, source_row_ref=party,
+            )
+
+        summary = purchases_without_po_summary(RTPAchhadMIREntry)
+        assert summary["total"] == 2
+        assert {v["vendor"] for v in summary["vendors"]} == {"Harsha Impex", "Some Ordinary Supplier"}
+        assert summary["registered"] == 1      # Harsha Impex, a known gap
+        assert summary["unregistered"] == 1    # nobody has looked at this one
+
+    @pytest.mark.django_db
+    def test_an_unusable_po_reference_counts_as_no_po(self):
+        """'VERBAL' is a real value in these columns and means exactly this -
+        ordered by phone, no PO raised. A junk value is not a purchase order,
+        so is_usable_po_reference() decides membership, not blankness."""
+        import datetime
+        from apps.core.models import RTPAchhadMIREntry
+        from apps.services.no_po_vendors import purchases_without_po_summary
+
+        for i, ref in enumerate(("VERBAL", "36", "-")):
+            RTPAchhadMIREntry.objects.create(
+                mir_no="M", party_name="Some Ordinary Supplier", po_number_raw=ref,
+                material_description="Sulphur", mir_date=datetime.date(2026, 5, 4),
+                is_active=True, source_row_ref=str(i),
+            )
+
+        assert purchases_without_po_summary(RTPAchhadMIREntry)["total"] == 3
+
+    @pytest.mark.django_db
+    def test_by_month_is_chronological_and_skips_undated_rows(self):
+        """The trend is the point - a process gap is only interesting if you
+        can see whether it is closing. A row with no date cannot go in a
+        month bucket and is dropped from this series only, never from the
+        total."""
+        import datetime
+        from apps.core.models import RTPAchhadMIREntry
+        from apps.services.no_po_vendors import purchases_without_po_summary
+
+        for i, d in enumerate([datetime.date(2026, 7, 1), datetime.date(2026, 4, 9),
+                               datetime.date(2026, 4, 28), None]):
+            RTPAchhadMIREntry.objects.create(
+                mir_no="M", party_name="Some Ordinary Supplier", po_number_raw="",
+                material_description="Sulphur", mir_date=d,
+                is_active=True, source_row_ref=str(i),
+            )
+
+        summary = purchases_without_po_summary(RTPAchhadMIREntry)
+        assert summary["total"] == 4
+        assert summary["byMonth"] == [
+            {"month": "2026-04", "rowCount": 2},
+            {"month": "2026-07", "rowCount": 1},
+        ]
+
+    @pytest.mark.django_db
+    def test_inactive_rows_are_ignored(self):
+        import datetime
+        from apps.core.models import RTPAchhadMIREntry
+        from apps.services.no_po_vendors import purchases_without_po_summary
+
+        RTPAchhadMIREntry.objects.create(
+            mir_no="M", party_name="Some Ordinary Supplier", po_number_raw="",
+            material_description="Sulphur", mir_date=datetime.date(2026, 5, 4),
+            is_active=False, source_row_ref="r1",
+        )
+        assert purchases_without_po_summary(RTPAchhadMIREntry)["total"] == 0

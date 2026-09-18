@@ -387,10 +387,26 @@ class HRSPOMirMatch(models.Model):
     # full algorithm): identification is now "vendor mandatory plus one of
     # material/PO number", not a blended score - these two record which of
     # the latter two actually fired for the winning candidate (vendor is
-    # implied True on every row here, it's the hard gate that built the
-    # candidate pool in the first place).
+    # implied True on every row here - no longer so as of 2026-09-18, see
+    # vendor_matched below).
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
+    # Identification 2-of-3 (2026-09-18, Achhad and HRS - see
+    # matching_core.py's _MatchConfig.identification_two_of_three). Vendor
+    # used to be a precondition for a match existing at all, so there was
+    # nothing to record; now that a PO number plus material can identify a
+    # row whose party name disagrees, False here is the signal that they
+    # disagreed. That is a real data-entry error somewhere - a mistyped
+    # party name, a placeholder left in the column, or the same supplier
+    # written two ways - and surfacing it is the point: the match is still
+    # made (the PO number and the money both say it belongs here), but
+    # someone should fix the name at source. Defaults True so every
+    # pre-existing row, and every plant still on the vendor-mandatory rule,
+    # reads correctly without a backfill. No HRS row produces False on
+    # today's MIR file (matching.py's own comment has the measurement) - the
+    # column exists because the rule can produce one, not because the
+    # current file does.
+    vendor_matched = models.BooleanField(default=True)
     # Financial check now only raises a hard error for Qty/Rate - these two
     # ARE what `is_flagged` means now. Kept as their own columns (not just
     # derived from qty_diff_pct/rate_diff_pct at read time) so a reviewer-
@@ -853,9 +869,9 @@ class RTPAchhadPOMirMatch(models.Model):
     # identification/financial-check redesign rationale (2026-09-07).
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
-    # Identification 2-of-3 (2026-09-18, Achhad only - see matching_core.py's
-    # _MatchConfig.identification_two_of_three). Vendor used to be a
-    # precondition for a match existing at all, so there was nothing to
+    # Identification 2-of-3 (2026-09-18, Achhad and HRS - see
+    # matching_core.py's _MatchConfig.identification_two_of_three). Vendor
+    # used to be a precondition for a match existing at all, so there was nothing to
     # record; now that a PO number plus material can identify a row whose
     # party name disagrees, False here is the signal that they disagreed.
     # That is a real data-entry error somewhere - a mistyped party name, a
@@ -1598,6 +1614,11 @@ class HRSImportPOMirMatch(models.Model):
     # identification/financial-check redesign rationale (2026-09, imports).
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
+    # See HRSPOMirMatch.vendor_matched (2026-09-18). Imports needs the column
+    # for the same reason domestic does - _MatchConfig is one config per
+    # plant, so match_import_po_mir_line_item() runs the same 2-of-3 rule and
+    # _vendor_matched_field() hands this keyword to both models or neither.
+    vendor_matched = models.BooleanField(default=True)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -1750,9 +1771,9 @@ class RTPAchhadImportPOMirMatch(models.Model):
     # identification/financial-check redesign rationale (2026-09, imports).
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
-    # Identification 2-of-3 (2026-09-18, Achhad only - see matching_core.py's
-    # _MatchConfig.identification_two_of_three). Vendor used to be a
-    # precondition for a match existing at all, so there was nothing to
+    # Identification 2-of-3 (2026-09-18, Achhad and HRS - see
+    # matching_core.py's _MatchConfig.identification_two_of_three). Vendor
+    # used to be a precondition for a match existing at all, so there was nothing to
     # record; now that a PO number plus material can identify a row whose
     # party name disagrees, False here is the signal that they disagreed.
     # That is a real data-entry error somewhere - a mistyped party name, a

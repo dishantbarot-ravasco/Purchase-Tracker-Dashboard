@@ -105,17 +105,99 @@ class TestPoMirMatching:
         assert match.rate_mismatched is False
         assert match.is_flagged is False
 
-    def test_different_vendor_never_matches_even_with_identical_po_number_and_material(self):
+    # ── Identification 2-of-3 (2026-09-18, HRS joined Achhad) ──────────────
+    # HRS is on matching_core._MatchConfig.identification_two_of_three now,
+    # so vendor is a VOTE here, not a veto - the assertion that used to live
+    # in this block ("a matching PO number and material must not be enough on
+    # their own") no longer states the rule. What makes the flip safe on HRS
+    # is data, not code: no row in HRS's live MIR file both names an order we
+    # hold and disagrees on vendor, so the first two tests below pin behavior
+    # that today's file never exercises. They are here precisely because that
+    # is a property of one file and not of the plant - see matching.py's own
+    # comment for the counts, and the Achhad twins of these tests for the
+    # live rows each edge stands for.
+
+    def test_different_vendor_is_outvoted_by_po_number_plus_material(self):
         po = _make_po(vendor_name="Rubamin Private Limited")
         line_item = _make_po_line_item(po)
         _make_mir_entry(party_name="Some Totally Different Vendor Ltd")
 
         run_full_match()
 
-        assert not HRSPOMirMatch.objects.filter(po_line_item=line_item).exists(), (
-            "vendor is a mandatory hard gate - a matching PO number and material must not be "
-            "enough on their own (see matching_core.py's _identification_pool() docstring)"
+        match = HRSPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.po_number_matched is True
+        assert match.material_matched is True
+        assert match.vendor_matched is False, (
+            "the match is made on PO number plus material, and vendor_matched False is what "
+            "reports the party name disagreeing so someone can fix it at source"
         )
+
+    def test_different_vendor_with_only_a_po_number_never_matches(self):
+        """The refusal half of the rule: a PO number pointing at another
+        supplier's order with the material disagreeing too. One of three is
+        not identification."""
+        po = _make_po(vendor_name="Rubamin Private Limited")
+        line_item = _make_po_line_item(po, description="SBR 1502")
+        _make_mir_entry(
+            party_name="Some Totally Different Vendor Ltd",
+            material_description="Zinc Oxide",
+        )
+
+        run_full_match()
+
+        assert not HRSPOMirMatch.objects.filter(po_line_item=line_item).exists()
+
+    def test_different_vendor_with_only_a_material_never_matches(self):
+        """The mirror: the same common material bought from two suppliers is
+        not evidence on its own, and never was."""
+        po = _make_po(vendor_name="Rubamin Private Limited")
+        line_item = _make_po_line_item(po, description="SBR 1502")
+        _make_mir_entry(
+            party_name="Some Totally Different Vendor Ltd",
+            po_number_raw="4000000999",
+        )
+
+        run_full_match()
+
+        assert not HRSPOMirMatch.objects.filter(po_line_item=line_item).exists()
+
+    def test_no_po_vendor_row_is_reconciled_once_it_names_an_order_we_hold(self):
+        """The half of the flag that actually changes HRS's numbers today.
+        Tinna Rubber is registered NO_PO_SUPPLIER, so parsers.common's
+        NO_PO_VENDORS registry dropped its MIR rows from the PO<->MIR pool
+        entirely - including the four rows naming 3000001081/3000001098,
+        orders the master CSV really does hold against it. See
+        _MirCandidateIndex's docstring and matching.py's own comment."""
+        po = _make_po(
+            po_number="3000001081", vendor_name="Tinna Rubber and Infrastructure Ltd"
+        )
+        line_item = _make_po_line_item(po, description="Crumb Rubber 80 Mesh")
+        _make_mir_entry(
+            party_name="Tinna Rubber and Infrastructure Ltd",
+            po_number_raw="3000001081",
+            material_description="Crumb Rubber 80 Mesh",
+        )
+
+        run_full_match()
+
+        assert HRSPOMirMatch.objects.filter(po_line_item=line_item).exists()
+
+    def test_no_po_vendor_row_without_a_po_reference_stays_excluded(self):
+        """The other half of that rule - the ordinary no-PO purchase, which
+        is what the registry is actually for, is untouched."""
+        po = _make_po(
+            po_number="3000001081", vendor_name="Tinna Rubber and Infrastructure Ltd"
+        )
+        line_item = _make_po_line_item(po, description="Crumb Rubber 80 Mesh")
+        _make_mir_entry(
+            party_name="Tinna Rubber and Infrastructure Ltd",
+            po_number_raw="",
+            material_description="Crumb Rubber 80 Mesh",
+        )
+
+        run_full_match()
+
+        assert not HRSPOMirMatch.objects.filter(po_line_item=line_item).exists()
 
     def test_rerunning_is_idempotent_no_duplicate_match_rows(self):
         po = _make_po()

@@ -404,12 +404,25 @@ class TestNormalizeUom:
         assert normalize_uom(None) == (None, None)
 
     def test_ambiguous_real_code_is_unrecognized(self):
-        # 'TO' is a real value seen in RTP-Achhad's PO data but too
-        # ambiguous to confidently classify - see _UOM_FAMILIES' own comment.
-        """A real but deliberately-excluded ambiguous code (e.g. 'TO') is
-        unrecognized rather than guessed - guessing wrong is worse than not
-        converting at all."""
-        assert normalize_uom("TO") == (None, None)
+        # 'BQ2' is a real value seen in HRS's and Vapi's PO data (38 rows)
+        # but too ambiguous to classify - see _UOM_FAMILIES' own comment.
+        """A real but deliberately-excluded ambiguous code is unrecognized
+        rather than guessed - guessing wrong is worse than not converting at
+        all."""
+        assert normalize_uom("BQ2") == (None, None)
+        assert normalize_uom("BAG") == (None, None)
+
+    def test_tonne_spellings_are_mass_not_length(self):
+        """'TO' and 'MTS' were settled by census on 2026-09-18 - every real
+        row using either is coal, bought by the tonne. 'MTS' in particular
+        used to resolve to LENGTH, reading 28.14 tonnes of coal as 28.14
+        metres; the metre spellings are MTR/MTRS and stay length."""
+        assert normalize_uom("TO") == ("mass", Decimal("1000"))
+        assert normalize_uom("MTS") == ("mass", Decimal("1000"))
+        assert normalize_uom("Mts") == ("mass", Decimal("1000"))
+        assert normalize_uom("MT.") == ("mass", Decimal("1000"))
+        assert normalize_uom("MTR") == ("length", Decimal("1"))
+        assert normalize_uom("MTRS") == ("length", Decimal("1"))
 
     def test_different_families_have_different_labels(self):
         """Mass and count are reported as different family labels, so a

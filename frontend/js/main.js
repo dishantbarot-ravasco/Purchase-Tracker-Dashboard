@@ -577,6 +577,31 @@ async function loadSyncStatus() {
       const gapBadge = data.snapshotGapDays > 1
         ? ' <span class="badge stale" title="No stock snapshot in ' + data.snapshotGapDays + ' days">snapshot gap: ' + data.snapshotGapDays + 'd</span>'
         : '';
+      // "Purchased without a PO", 2026-09-18 (project owner: "sometimes
+      // they create a PO, sometimes they don't, mostly they don't"). One
+      // count of the receipts booked this year with no purchase order behind
+      // them - a process gap to close, not a fact about the data, so it gets
+      // a visible number rather than living only in the API payload the way
+      // `noPoVendors` did from 2026-09-17 until now.
+      //
+      // Inter-plant transfers are already excluded server-side (they are not
+      // purchases); the tooltip breaks the rest down by vendor, with the
+      // UNREGISTERED ones first because a supplier nobody has flagged is the
+      // one worth looking at. Rendered as .badge.stale rather than new CSS,
+      // same reasoning as gapBadge right above.
+      const pwp = data.purchasesWithoutPo;
+      let noPoBadge = '';
+      if (pwp && pwp.total > 0) {
+        const lines = (pwp.vendors || []).slice(0, 12).map(v =>
+          v.rowCount + '  ' + v.vendor + (v.registered ? '' : '  (not on the no-PO list)'));
+        if ((pwp.vendors || []).length > 12) lines.push('...and ' + (pwp.vendors.length - 12) + ' more');
+        const title = 'Receipts booked with no purchase order behind them.\n'
+          + pwp.unregistered + ' from suppliers not on the no-PO list, '
+          + pwp.registered + ' from suppliers already known to be bought without one.\n\n'
+          + lines.join('\n');
+        noPoBadge = ' <span class="badge stale" title="' + escapeHtml(title) + '">'
+          + pwp.total + ' purchased without a PO</span>';
+      }
       el.innerHTML = Object.keys(labels).map(src => {
         const run = data.sync[src];
         if (!run) return '<span class="badge stale">' + labels[src] + ': never synced</span>';
@@ -591,7 +616,7 @@ async function loadSyncStatus() {
         // something that needs its own dedicated UI.
         const titleAttr = cls === 'failed' && run.errorDetail ? ' title="' + escapeHtml(run.errorDetail) + '"' : '';
         return '<span class="badge ' + cls + '"' + titleAttr + '>' + labels[src] + ': ' + when + '</span>';
-      }).join('') + syncingBadge + gapBadge;
+      }).join('') + syncingBadge + gapBadge + noPoBadge;
     }
   } catch (e) {
     // Logged, and shown as a visible badge rather than silently leaving the

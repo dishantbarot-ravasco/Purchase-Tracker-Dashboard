@@ -263,9 +263,12 @@ class _MatchConfig:
     date_horizon_days: int = 270
 
     # ── Identification: 2-of-3 instead of vendor-mandatory (2026-09-18) ────
-    # Achhad only for now (matching_achhad.py); HRS/Vapi keep the default
-    # False until their MIR files carry PO numbers as completely as
-    # Achhad's now does.
+    # Achhad (matching_achhad.py) and HRS (matching.py); Vapi keeps the
+    # default False until its MIR file carries PO numbers as completely as
+    # those two now do. The measured case below is Achhad's, which is where
+    # the rule earns its keep - HRS's own file has no vendor-gate-blocked
+    # row at all, so the flag there only buys the narrowed no-PO-vendor
+    # exclusion further down; see matching.py's own comment for its numbers.
     #
     # WHAT CHANGES. Identification stops treating vendor as an absolute veto
     # and instead requires any TWO of {PO number, vendor, material}. Vendor

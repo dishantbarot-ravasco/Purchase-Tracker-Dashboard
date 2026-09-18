@@ -536,11 +536,14 @@ function computePoFlags(po) {
   // line item at all) rather than any match-row field, since there's no
   // match row to read from in that case.
   if (items.some(it => !it.matched)) cats.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
-  // Identification 2-of-3 (2026-09-18, Achhad only - see matching_core.py's
+  // Identification 2-of-3 (2026-09-18, Achhad and HRS - see matching_core.py's
   // _MatchConfig.identification_two_of_three). `vendorMatched` is true
-  // everywhere the vendor gate is still mandatory, so this flag simply never
-  // fires on HRS/Vapi; on Achhad, false means the match was identified by its
-  // PO number and material while the party name disagreed. That is always a
+  // everywhere the vendor gate is still mandatory, so this flag never fires on
+  // Vapi; on Achhad, false means the match was identified by its PO number and
+  // material while the party name disagreed. On HRS it should not fire either
+  // on today's file - no HRS MIR row that names an order we hold disagrees on
+  // vendor (matching.py's comment has the count) - so the first one that does
+  // appear is genuinely new, not a backlog. That is always a
   // real name error at source - a typo, a placeholder left in the column, or
   // one supplier written two ways - and the whole reason the rule surfaces it
   // instead of quietly accepting the match. Read with `=== false` rather than

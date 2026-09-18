@@ -461,17 +461,37 @@ def tokenize(text: str) -> list[str]:
 # near-zero.
 #
 # Deliberately excludes a handful of real but ambiguous codes seen in that
-# data: TO, BAG, BQ2, Bottle (too ambiguous to confidently classify from the
-# code alone - e.g. "TO" plausibly means "Tonne" but could be something
-# else entirely) and Sqm/SQMT/SQMTR/M2 (area - not one of the four families
+# data: BAG, BQ2, Bottle (too ambiguous to confidently classify from the code
+# alone) and Sqm/SQMT/SQMTR/M2 (area - not one of the four families
 # matching.py's scoring compares). These pass through unrecognized rather
 # than risk a wrong guess - see normalize_uom()'s own docstring.
+#
+# TO and MTS were resolved by evidence on 2026-09-18, having previously been
+# an exclusion and a wrong guess respectively. Both were settled by looking at
+# what MATERIAL each one actually sits on, across every plant's MIR and PO
+# data at once - the code alone genuinely is ambiguous, which is why the
+# original caution was right and why only a census could lift it:
+#
+#   TO   16 rows, all RTP-Achhad PO CSV, every one of them "Steam Coal
+#        Imported (Non Cooking)". Tonnes. It was excluded on the reasoning
+#        that it "plausibly means Tonne but could be something else
+#        entirely"; nothing else is bought by the TO, so it isn't.
+#   MTS  2 rows, both RTP-Achhad MIR, both "Imported Coal". Tonnes - and it
+#        was previously mapped to LENGTH, which is a genuine mis-parse, not
+#        merely a missing entry: 28.14 tonnes of coal read as 28.14 metres.
+#        Nobody writes metres as MTS: that is MTR (Vapi, 127 rows) or MTRS
+#        (Achhad, 163 rows), and both stay length below.
+#
+# The lesson for the next one of these: settle a unit by the materials it
+# appears against, not by what the abbreviation looks like.
 _UOM_FAMILIES: dict[str, tuple[str, Decimal]] = {
     # mass -> base KG
     "KG": ("mass", Decimal("1")),
     "KGS": ("mass", Decimal("1")),
     "GM": ("mass", Decimal("0.001")),
     "MT": ("mass", Decimal("1000")),
+    "MTS": ("mass", Decimal("1000")),   # tonnes, not metres - see above
+    "TO": ("mass", Decimal("1000")),
     "TON": ("mass", Decimal("1000")),
     "QTL": ("mass", Decimal("100")),
     # volume -> base LTR
@@ -493,7 +513,6 @@ _UOM_FAMILIES: dict[str, tuple[str, Decimal]] = {
     "MM": ("length", Decimal("0.001")),
     "MTR": ("length", Decimal("1")),
     "MTRS": ("length", Decimal("1")),
-    "MTS": ("length", Decimal("1")),
 }
 
 

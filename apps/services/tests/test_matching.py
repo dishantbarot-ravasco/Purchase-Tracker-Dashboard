@@ -502,10 +502,11 @@ class TestUomAdjust:
 
     def test_unrecognized_unit_passes_through_unconverted(self):
         """An unrecognized unit on either side (blank, or a real-but-
-        ambiguous code like 'TO') passes both values through unconverted
+        ambiguous code like 'BQ2') passes both values through unconverted
         rather than guessing a wrong conversion - see normalize_uom()'s own
-        docstring for why."""
-        qty_a, qty_b, rate_a, rate_b, mismatch = _uom_adjust(Decimal("100"), "TO", Decimal("100"), "KG", Decimal("5"), Decimal("5"))
+        docstring for why. ('TO' used to be this test's example; it was
+        resolved to tonnes by census on 2026-09-18.)"""
+        qty_a, qty_b, rate_a, rate_b, mismatch = _uom_adjust(Decimal("100"), "BQ2", Decimal("100"), "KG", Decimal("5"), Decimal("5"))
         assert mismatch is False
         assert (qty_a, qty_b, rate_a, rate_b) == (Decimal("100"), Decimal("100"), Decimal("5"), Decimal("5"))
 

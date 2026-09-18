@@ -76,9 +76,9 @@ class TestAchhadPoMirMatching:
         assert match.qty_mismatched is True
         assert match.is_flagged is True
 
-    # ── Identification 2-of-3 (2026-09-18, Achhad only) ────────────────────
-    # Achhad is the one plant on
-    # matching_core._MatchConfig.identification_two_of_three, so vendor is a
+    # ── Identification 2-of-3 (2026-09-18) ─────────────────────────────────
+    # Achhad is on matching_core._MatchConfig.identification_two_of_three
+    # (HRS joined the same day, Vapi has not), so vendor is a
     # VOTE here, not a veto. The three tests below pin the rule at its two
     # edges - what a disagreeing vendor can now be outvoted by, and what it
     # still cannot - because those edges are the whole safety argument. See

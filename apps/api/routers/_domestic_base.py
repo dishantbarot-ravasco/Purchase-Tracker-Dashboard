@@ -36,7 +36,7 @@ from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_ca
 from apps.core.models import DataQualityFlag, DomesticPOCorrection, FlagDismissal, MaterialCategoryReference, MaterialCorrection
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
-from apps.services.no_po_vendors import no_po_vendor_summary
+from apps.services.no_po_vendors import no_po_vendor_summary, purchases_without_po_summary
 from apps.services.parsers.common import normalize_material
 from apps.services.stock_consumption import DEFAULT_WINDOW_DAYS, consumption_stats
 from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
@@ -1055,6 +1055,14 @@ def make_sync_status(cfg: _PlantConfig):
             # one starts being PO'd its registry entry has to go or its
             # orders are silently excluded. See services/no_po_vendors.py.
             "noPoVendors": no_po_vendor_summary(cfg.mir_model),
+            # Purchased without a PO, 2026-09-18 (project owner: "sometimes
+            # they create a PO, sometimes they don't, mostly they don't").
+            # noPoVendors above reports what the REGISTRY excluded; this
+            # reports what the BUSINESS actually did, per row, and is the
+            # number meant to be driven down. See
+            # services/no_po_vendors.py's purchases_without_po_summary() for
+            # why a vendor-level list cannot answer it.
+            "purchasesWithoutPo": purchases_without_po_summary(cfg.mir_model),
             "syncInProgress": is_sync_in_progress(cfg.key),
             "lastSnapshotDate": last_snapshot_date.isoformat() if last_snapshot_date else None,
             "snapshotGapDays": snapshot_gap_days,
