@@ -547,7 +547,8 @@ class TestDiffsAndFlagValueEpsilon:
         (qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
          qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
          taxable_value_diff, final_value_diff,
-         net_value_mismatched, taxable_value_mismatched, final_value_mismatched) = _diffs_and_flag(config, item, mir)
+         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+         _qty_over_delivered) = _diffs_and_flag(config, item, mir)
         assert is_flagged is False
         assert data_mismatch is True
         # Added 2026-09-08: net_value_mismatched is the specific signal that
@@ -570,7 +571,8 @@ class TestDiffsAndFlagValueEpsilon:
             total_value=Decimal("5100.00"),
         )
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
-        (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched) = _diffs_and_flag(config, item, mir)
+        (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+         _qty_over_delivered) = _diffs_and_flag(config, item, mir)
         assert taxable_value_mismatched is True
         assert net_value_mismatched is False
         assert final_value_mismatched is False
@@ -586,7 +588,8 @@ class TestDiffsAndFlagValueEpsilon:
         )
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.invoice_final_value = Decimal("5850.00")
-        (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched) = _diffs_and_flag(config, item, mir)
+        (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+         _qty_over_delivered) = _diffs_and_flag(config, item, mir)
         assert final_value_mismatched is True
         assert net_value_mismatched is False
         assert taxable_value_mismatched is False
@@ -806,7 +809,8 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="IGST")
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
-        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
+        (*_rest, tax_type_mismatch, _taxable, _final,
+         _net_mm, _taxable_mm, _final_mm, _qty_over) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is False
 
     def test_igst_po_with_cgst_sgst_mir_is_a_mismatch(self):
@@ -814,7 +818,8 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="IGST")
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
-        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
+        (*_rest, tax_type_mismatch, _taxable, _final,
+         _net_mm, _taxable_mm, _final_mm, _qty_over) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is True
 
     def test_cgst_sgst_po_with_igst_mir_is_a_mismatch(self):
@@ -822,7 +827,8 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"), tax_type="CGST+SGST")
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
-        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
+        (*_rest, tax_type_mismatch, _taxable, _final,
+         _net_mm, _taxable_mm, _final_mm, _qty_over) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is True
 
     def test_blank_tax_type_is_never_a_mismatch(self):
@@ -830,7 +836,8 @@ class TestTaxTypeMismatch:
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
-        *_rest, tax_type_mismatch, _taxable, _final, _net_mm, _taxable_mm, _final_mm = _diffs_and_flag(config, item, mir)
+        (*_rest, tax_type_mismatch, _taxable, _final,
+         _net_mm, _taxable_mm, _final_mm, _qty_over) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is False
 
 
@@ -1173,3 +1180,84 @@ class TestIdentificationNegativeGates:
         candidates = [_FakeCandidate(1, "Unrelated", "3000001075")]
         _pool, found = _identification_pool(config, candidates, item, "3000001075")
         assert found[1].tier_rank == TIER_RANK_PO_NUMBER
+
+
+class TestQtyOverDelivered:
+    """The over/under split (2026-09-18, project owner). qty_diff_pct is an
+    absolute percentage, so before this there was no way to tell a genuine
+    over-receipt from a blanket order part-way through its schedule - both
+    produced the identical `Quantity Mismatch in MIR` flag.
+
+    Tolerance is unchanged and still zero; these tests pin the DIRECTION
+    only, and the first one pins that the tolerance really did not move.
+    """
+
+    def test_receiving_more_than_ordered_is_over_and_still_flags(self):
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("121"), "KG", Decimal("50"), Decimal("6050.00"))
+        *_rest, qty_over = _diffs_and_flag(config, item, mir)
+        assert qty_over is True
+        # the flag itself is untouched - direction is recorded, not traded for
+        assert _rest[6] is True  # qty_mismatched
+
+    def test_receiving_less_than_ordered_is_under_and_still_flags(self):
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("29"), "KG", Decimal("50"), Decimal("1450.00"))
+        *_rest, qty_over = _diffs_and_flag(config, item, mir)
+        assert qty_over is False
+        assert _rest[6] is True  # qty_mismatched
+
+    def test_an_exact_quantity_is_under_but_never_flagged(self):
+        """False here does NOT mean "short" on its own - it means "not more
+        than ordered". Read it alongside qty_mismatched, which is what says
+        whether there is a discrepancy at all; the frontend does exactly
+        that (flags.js's computePoFlags filters on qtyDiffPct first)."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        *_rest, qty_over = _diffs_and_flag(config, item, mir)
+        assert qty_over is False
+        assert _rest[6] is False  # qty_mismatched - nothing wrong here
+
+    def test_direction_is_none_when_no_comparison_was_possible(self):
+        """A UOM mismatch means qty_diff_pct is None, so there is no
+        direction to report - and None must not collapse to False, or an
+        uncomparable row would be miscounted as short-delivered."""
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", Decimal("100"), "NOS", Decimal("50"), Decimal("5000.00"))
+        *_rest, qty_over = _diffs_and_flag(config, item, mir)
+        assert qty_over is None
+
+    def test_direction_is_none_when_a_quantity_is_missing(self):
+        config = _test_config()
+        item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
+        mir = _FakeMir("Zinc Oxide", None, "KG", Decimal("50"), Decimal("5000.00"))
+        *_rest, qty_over = _diffs_and_flag(config, item, mir)
+        assert qty_over is None
+
+    def test_direction_uses_the_shipment_group_total_not_the_primary_row(self):
+        """The case that makes this worth storing rather than deriving in the
+        API. A part-delivered blanket order stores only its group's PRIMARY
+        MIR row, so reading the direction off that row would compare ONE
+        delivery against the WHOLE order and call a 43%-complete order
+        'over-delivered' the moment its first shipment exceeded... nothing.
+        Real shape: Achhad PO 1100000545, 19,236 of 33,500 m over nine
+        deliveries, primary row 2,227."""
+        config = _test_config()
+        item = _Matchable("Lamor Label", Decimal("33500"), "M", Decimal("100"), Decimal("3350000.00"))
+        primary = _FakeMir("Lamor Label", Decimal("2227"), "MTRS", Decimal("100"), Decimal("222700.00"))
+        *_rest, qty_over = _diffs_and_flag(config, item, primary, qty_override=Decimal("19236"))
+        assert qty_over is False
+
+    def test_a_group_that_overshoots_reports_over(self):
+        """Achhad PO 1100000833's shape - 121.1 tonnes received against 100
+        ordered, across four deliveries none of which individually exceeds
+        the order."""
+        config = _test_config()
+        item = _Matchable("Steam Coal", Decimal("100"), "TO", Decimal("11300"), Decimal("1130000.00"))
+        primary = _FakeMir("Imported Coal", Decimal("28.51"), "MT.", Decimal("11300"), Decimal("322163.00"))
+        *_rest, qty_over = _diffs_and_flag(config, item, primary, qty_override=Decimal("121100"))
+        assert qty_over is True

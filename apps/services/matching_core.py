@@ -1511,7 +1511,29 @@ def _diffs_and_flag(
     """Returns (qty_diff_pct, rate_diff_pct, value_diff_pct, is_flagged,
     uom_mismatch, severity, qty_mismatched, rate_mismatched, data_mismatch,
     tax_type_mismatch, taxable_value_diff_pct, final_value_diff_pct,
-    net_value_mismatched, taxable_value_mismatched, final_value_mismatched).
+    net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+    qty_over_delivered).
+
+    OVER vs UNDER (2026-09-18, project owner). qty_diff_pct is an ABSOLUTE
+    percentage and always was, so "received 20% more than ordered" and
+    "received 20% less" have been indistinguishable everywhere downstream -
+    one `Quantity Mismatch in MIR` flag covering a genuine over-receipt and
+    a blanket order that is simply part-way through its schedule. Real
+    Achhad cases, all reading identically today: PO 1100000833 took 121.1 of
+    100 tonnes ordered (over), PO 1100000839 took 158,638 of 145,000 kg
+    (over), PO 1100000545 has taken 19,236 of 33,500 m across nine
+    deliveries and is still open (under).
+
+    qty_over_delivered is True when more was received than ordered, False
+    when less, and None when no quantity comparison was possible at all
+    (a UOM mismatch, or a missing quantity on either side) - three states,
+    because "we could not tell" is not the same answer as "not over".
+
+    TOLERANCE IS UNCHANGED AND STILL ZERO (project owner, 2026-09-18:
+    "keep the tolerance to 0"): this field only records the DIRECTION of a
+    difference that config.flag_diff_pct has already decided is a mismatch.
+    It deliberately does not soften, re-band, or suppress anything - both
+    directions still flag exactly as they did.
 
     The last three (added 2026-09-08, Data Quality Flags clarity pass) were
     already being computed here the whole time as value_flagged/
@@ -1565,6 +1587,14 @@ def _diffs_and_flag(
     flag as incompatible."""
     aggregated = qty_override is not None or rate_override is not None or value_override is not None
     qty_a, qty_b, rate_a, rate_b, uom_mismatch = _uom_adjust(item.qty, item.uom, mir.qty, mir.uom, item.rate, mir.rate)
+    # The received quantity actually compared against the order - the
+    # shipment group's SUM when this item has one, not the primary row's own
+    # figure. Reading the direction off mir.qty instead would be wrong for
+    # exactly the part-delivered blanket orders this distinction is for: the
+    # stored mir_entry is only the group's primary row (see
+    # run_full_match()), so a nine-delivery order would report the direction
+    # of one delivery against the whole order.
+    qty_received = qty_override if qty_override is not None else qty_b
     if aggregated:
         uom_mismatch = False
         qty_diff = _diff_pct(qty_a, qty_override) if qty_override is not None else None
@@ -1574,6 +1604,10 @@ def _diffs_and_flag(
     else:
         qty_diff = _diff_pct(qty_a, qty_b)
         rate_diff = _diff_pct(rate_a, rate_b)
+    qty_over_delivered = (
+        None if (qty_diff is None or qty_a is None or qty_received is None)
+        else qty_received > qty_a
+    )
 
     def _value_flagged(a, b):
         return a is not None and b is not None and abs(a - b) > config.value_flag_epsilon
@@ -1608,6 +1642,7 @@ def _diffs_and_flag(
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_flagged,
         taxable_value_diff, final_value_diff,
         value_flagged, taxable_value_flagged, final_value_flagged,
+        qty_over_delivered,
     )
 
 
@@ -1749,6 +1784,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+        qty_over_delivered,
     ) = _diffs_and_flag(config, item, best_entry, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
     match, _ = config.po_mir_match_model.objects.update_or_create(
         po_line_item=po_line_item,
@@ -1757,6 +1793,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             tier=tier,
             match_score=best_score.quantize(Decimal("0.0001")),
             qty_diff_pct=qty_diff,
+            qty_over_delivered=qty_over_delivered,
             rate_diff_pct=rate_diff,
             value_diff_pct=value_diff,
             is_flagged=is_flagged,
@@ -1825,12 +1862,14 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+        qty_over_delivered,
     ) = _diffs_and_flag(config, item, best_entry, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
     defaults = dict(
         mir_entry=best_entry,
         tier=tier,
         match_score=best_score.quantize(Decimal("0.0001")),
         qty_diff_pct=qty_diff,
+        qty_over_delivered=qty_over_delivered,
         rate_diff_pct=rate_diff,
         value_diff_pct=value_diff,
         is_flagged=is_flagged,
@@ -2218,6 +2257,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+            qty_over_delivered,
         ) = _diffs_and_flag(config, matchable, mir, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
         config.po_mir_match_model.objects.update_or_create(
             po_line_item=item,
@@ -2226,6 +2266,7 @@ def run_full_match(config: _MatchConfig) -> dict:
                 tier=tier,
                 match_score=score.quantize(Decimal("0.0001")),
                 qty_diff_pct=qty_diff,
+                qty_over_delivered=qty_over_delivered,
                 rate_diff_pct=rate_diff,
                 value_diff_pct=value_diff,
                 is_flagged=is_flagged,
@@ -2266,12 +2307,14 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
+            qty_over_delivered,
         ) = _diffs_and_flag(config, matchable, mir, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
         defaults = dict(
             mir_entry=mir,
             tier=tier,
             match_score=score.quantize(Decimal("0.0001")),
             qty_diff_pct=qty_diff,
+            qty_over_delivered=qty_over_delivered,
             rate_diff_pct=rate_diff,
             value_diff_pct=value_diff,
             is_flagged=is_flagged,

@@ -395,6 +395,8 @@ function categorizeFlag(text) {
 // explicitly rather than interpolating FLAG_PCT ("by more than 0 percent"
 // is technically correct but reads oddly; "any difference" is clearer).
 const DISCREPANCY_LEGEND = [
+  { label: 'Over-Delivered in MIR', severity: 'critical', meaning: 'More was received (per the matched MIR entries, summed across every delivery against this line) than the PO ordered - any difference at all counts, there is no tolerance. Can mean a genuine over-shipment, a receipt booked against the wrong order, or an order that was topped up without the PO being revised.' },
+  { label: 'Short-Delivered in MIR', severity: 'critical', meaning: 'Less was received than the PO ordered - any difference at all counts, there is no tolerance. On an order that is still open this is simply a part-delivery and expected; on a closed one it is a short shipment. The Progress column shows how much of the order has arrived so far.' },
   { label: 'Quantity Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received quantity (from the matched MIR entry) does not exactly match the PO’s ordered quantity - any difference at all counts, there is no tolerance (e.g. 999kg received against a 1000kg order still flags). Can mean a short shipment, an over shipment, or a receipt logged against the wrong PO.' },
   { label: 'Rate Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received rate (from the matched MIR entry) does not exactly match the PO’s rate - any difference at all counts, there is no tolerance. Can mean a price change was not reflected on the PO or a billing error. Value is deliberately not compared here - it is qty x rate, so a quantity mismatch alone would otherwise double-count as a second, unrelated-looking problem.' },
   { label: 'PO Not Found in MIR', severity: 'critical', meaning: 'No MIR entry could be matched to this line item at all (no exact PO-number match, and nothing scored high enough on the weighted match) - the PO may not have been received yet, or the receipt was logged in a way this matcher could not link back to it.' },
@@ -433,6 +435,8 @@ const DISCREPANCY_LEGEND = [
 // falls back to DEFAULT_CATEGORY_COLOR.
 const CATEGORY_COLORS = {
   'Quantity Mismatch in MIR': '#dc2626',
+  'Over-Delivered in MIR': '#dc2626',
+  'Short-Delivered in MIR': '#dc2626',
   'Rate Mismatch in MIR': '#dc2626',
   'PO Not Found in MIR': '#dc2626',
   'Tax Type Mismatch in MIR': '#d97706',
@@ -524,8 +528,33 @@ function computePoFlags(po) {
   // tolerance threshold that rounds to 0.00% and shouldn't drive any tint.
   const allDiffs = items.filter(it => !it.dismissedByOverride).flatMap(it => [it.qtyDiffPct, it.rateDiffPct, it.valueDiffPct]).filter(v => v != null);
   po._maxDiffPct = allDiffs.length ? Math.max(...allDiffs) : 0;
+  // Over vs under delivery (2026-09-18, project owner). The qty flag splits
+  // by DIRECTION, not by size: tolerance stays zero, so every difference
+  // still flags - but "took more than we ordered" and "hasn't all arrived
+  // yet" are different problems with different owners, and until now both
+  // read as one `Quantity Mismatch in MIR`. A PO can legitimately show both
+  // at once when it has several line items, so these are two independent
+  // checks rather than an if/else.
+  //
+  // `=== true` / `=== false` deliberately, never truthiness: qtyOverDelivered
+  // is null when no quantity comparison was possible at all (UOM mismatch, or
+  // a missing qty), and a null must not be counted as "under".
+  const qtyOverItems = items.filter(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT
+    && !it.dismissedByOverride && it.qtyOverDelivered === true);
+  const qtyUnderItems = items.filter(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT
+    && !it.dismissedByOverride && it.qtyOverDelivered === false);
+  // Hung on the PO alongside _qtyFlag/_rateFlag so the KPI row and the
+  // "Filter by Flags" dropdown can count the two directions separately
+  // without re-deriving them per render - see po-list.js's cardDef.
+  po._qtyOverFlag = qtyOverItems.length > 0;
+  po._qtyUnderFlag = qtyUnderItems.length > 0;
   const cats = new Map();
-  if (po._qtyFlag) cats.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
+  if (qtyOverItems.length) cats.set('Over-Delivered in MIR', { label: 'Over-Delivered in MIR', severity: 'critical' });
+  if (qtyUnderItems.length) cats.set('Short-Delivered in MIR', { label: 'Short-Delivered in MIR', severity: 'critical' });
+  // Retained for a row whose direction could not be determined at all, so a
+  // real qty mismatch can never vanish from the flag list just because the
+  // units did not convert.
+  if (po._qtyFlag && !qtyOverItems.length && !qtyUnderItems.length) cats.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
   if (po._rateFlag) cats.set('Rate Mismatch in MIR', { label: 'Rate Mismatch in MIR', severity: 'critical' });
   // 2026-09-08: previously-computed-but-discarded match-quality signals
   // (matching_core.py's _diffs_and_flag() always computed these, but only

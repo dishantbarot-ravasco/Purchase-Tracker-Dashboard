@@ -380,6 +380,16 @@ class HRSPOMirMatch(models.Model):
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Over vs under delivery (2026-09-18, project owner). qty_diff_pct is an
+    # absolute percentage, so until now "received more than ordered" and
+    # "received less" were the same flag - a genuine over-receipt read
+    # identically to a blanket order part-way through its schedule. True =
+    # more received than ordered, False = less, NULL = no quantity
+    # comparison was possible (UOM mismatch, or a missing qty on either
+    # side), which is a different answer from False. Tolerance is unchanged
+    # and still zero - this records the direction of a mismatch, it does not
+    # decide whether one exists. See matching_core._diffs_and_flag().
+    qty_over_delivered = models.BooleanField(null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # Identification/Financial-Check redesign (2026-09-07, project owner
@@ -863,6 +873,16 @@ class RTPAchhadPOMirMatch(models.Model):
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Over vs under delivery (2026-09-18, project owner). qty_diff_pct is an
+    # absolute percentage, so until now "received more than ordered" and
+    # "received less" were the same flag - a genuine over-receipt read
+    # identically to a blanket order part-way through its schedule. True =
+    # more received than ordered, False = less, NULL = no quantity
+    # comparison was possible (UOM mismatch, or a missing qty on either
+    # side), which is a different answer from False. Tolerance is unchanged
+    # and still zero - this records the direction of a mismatch, it does not
+    # decide whether one exists. See matching_core._diffs_and_flag().
+    qty_over_delivered = models.BooleanField(null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full
@@ -1325,6 +1345,16 @@ class RTPVapiPOMirMatch(models.Model):
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Over vs under delivery (2026-09-18, project owner). qty_diff_pct is an
+    # absolute percentage, so until now "received more than ordered" and
+    # "received less" were the same flag - a genuine over-receipt read
+    # identically to a blanket order part-way through its schedule. True =
+    # more received than ordered, False = less, NULL = no quantity
+    # comparison was possible (UOM mismatch, or a missing qty on either
+    # side), which is a different answer from False. Tolerance is unchanged
+    # and still zero - this records the direction of a mismatch, it does not
+    # decide whether one exists. See matching_core._diffs_and_flag().
+    qty_over_delivered = models.BooleanField(null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full
@@ -1608,6 +1638,16 @@ class HRSImportPOMirMatch(models.Model):
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Over vs under delivery (2026-09-18, project owner). qty_diff_pct is an
+    # absolute percentage, so until now "received more than ordered" and
+    # "received less" were the same flag - a genuine over-receipt read
+    # identically to a blanket order part-way through its schedule. True =
+    # more received than ordered, False = less, NULL = no quantity
+    # comparison was possible (UOM mismatch, or a missing qty on either
+    # side), which is a different answer from False. Tolerance is unchanged
+    # and still zero - this records the direction of a mismatch, it does not
+    # decide whether one exists. See matching_core._diffs_and_flag().
+    qty_over_delivered = models.BooleanField(null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full
@@ -1765,6 +1805,16 @@ class RTPAchhadImportPOMirMatch(models.Model):
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Over vs under delivery (2026-09-18, project owner). qty_diff_pct is an
+    # absolute percentage, so until now "received more than ordered" and
+    # "received less" were the same flag - a genuine over-receipt read
+    # identically to a blanket order part-way through its schedule. True =
+    # more received than ordered, False = less, NULL = no quantity
+    # comparison was possible (UOM mismatch, or a missing qty on either
+    # side), which is a different answer from False. Tolerance is unchanged
+    # and still zero - this records the direction of a mismatch, it does not
+    # decide whether one exists. See matching_core._diffs_and_flag().
+    qty_over_delivered = models.BooleanField(null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full
@@ -1945,6 +1995,16 @@ class RTPVapiImportPOMirMatch(models.Model):
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 
     qty_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
+    # Over vs under delivery (2026-09-18, project owner). qty_diff_pct is an
+    # absolute percentage, so until now "received more than ordered" and
+    # "received less" were the same flag - a genuine over-receipt read
+    # identically to a blanket order part-way through its schedule. True =
+    # more received than ordered, False = less, NULL = no quantity
+    # comparison was possible (UOM mismatch, or a missing qty on either
+    # side), which is a different answer from False. Tolerance is unchanged
+    # and still zero - this records the direction of a mismatch, it does not
+    # decide whether one exists. See matching_core._diffs_and_flag().
+    qty_over_delivered = models.BooleanField(null=True, blank=True)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full

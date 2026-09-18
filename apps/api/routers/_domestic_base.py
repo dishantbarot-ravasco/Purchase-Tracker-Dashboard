@@ -270,6 +270,12 @@ def _line_item_dict(item):
         "dismissedBy": match.dismissed_by.email if match and match.dismissed_by else None,
         "dismissedAt": match.dismissed_at.isoformat() if match and match.dismissed_at else None,
         "qtyDiffPct": float(match.qty_diff_pct) if match and match.qty_diff_pct is not None else None,
+        # Over vs under delivery (2026-09-18). True = more received than
+        # ordered, false = less, null = no quantity comparison was possible.
+        # Null is NOT the same as false, so this passes the three states
+        # through rather than coercing to a boolean - the frontend needs to
+        # tell "under-delivered" from "we could not tell".
+        "qtyOverDelivered": getattr(match, "qty_over_delivered", None) if match else None,
         "rateDiffPct": float(match.rate_diff_pct) if match and match.rate_diff_pct is not None else None,
         "valueDiffPct": float(match.value_diff_pct) if match and match.value_diff_pct is not None else None,
         # Match Accuracy Programme fixes 2.C/3.F - see matching_core.py.

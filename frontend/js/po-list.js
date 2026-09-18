@@ -80,6 +80,13 @@ function renderPoList(el) {
   filtered.forEach(po => counts[po._status]++);
   const total = filtered.length;
   const qtyDiscCount = filtered.filter(po => po._qtyFlag).length;
+  // Over vs under delivery (2026-09-18, project owner). Tolerance is still
+  // zero - this splits the same flagged set by DIRECTION, so the two add up
+  // to qtyDiscCount except where a PO has both (several line items, one over
+  // and one short), which is why they are counted independently rather than
+  // as a partition. See flags.js's computePoFlags().
+  const qtyOverCount = filtered.filter(po => po._qtyOverFlag).length;
+  const qtyUnderCount = filtered.filter(po => po._qtyUnderFlag).length;
   const rateDiscCount = filtered.filter(po => po._rateFlag).length;
   // "Data Quality Flags" used to mean "informational severity only"
   // (po._hasInfoFlag) - narrower than the name promised, and confusingly
@@ -126,7 +133,8 @@ function renderPoList(el) {
     { key: 'total', cls: '', label: "Total PO's Created", val: total, tip: 'All purchase orders in the selected date range and plant(s).' },
     { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has a matched MIR entry - the material has been received.' },
     { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items on this PO have a matched MIR entry yet.' },
-    { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags.' },
+    { key: 'qtyover', cls: 'critical', label: 'Over-Delivered', val: qtyOverCount, flag: KPI_FLAG_COLORS.critical, tip: 'More was received than the PO ordered, summed across every delivery against each line - zero tolerance, any nonzero difference flags.' },
+    { key: 'qtyunder', cls: 'critical', label: 'Short-Delivered', val: qtyUnderCount, flag: KPI_FLAG_COLORS.critical, tip: 'Less was received than the PO ordered - zero tolerance. On an order still open this is a part-delivery; on a closed one it is a short shipment. Check the Progress column.' },
     { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: rate differs between the PO and its matched MIR entry - zero tolerance. Value is not compared here - see the Data Quality legend for why.' },
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully matched to MIR.' },
     { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched to MIR.' },
@@ -139,6 +147,8 @@ function renderPoList(el) {
 
   let tableRecs = filtered;
   if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
+  else if (state.statusFilter === 'qtyover') tableRecs = filtered.filter(po => po._qtyOverFlag);
+  else if (state.statusFilter === 'qtyunder') tableRecs = filtered.filter(po => po._qtyUnderFlag);
   else if (state.statusFilter === 'ratedisc') tableRecs = filtered.filter(po => po._rateFlag);
   else if (state.statusFilter === 'critical') tableRecs = filtered.filter(po => po._qtyFlag || po._rateFlag);
   else if (state.statusFilter === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
@@ -249,6 +259,8 @@ function renderPoList(el) {
   }).join('');
   const flagsOptionsHtml =
     '<option value="qtydisc"' + (state.statusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch (' + qtyDiscCount + ')</option>' +
+    '<option value="qtyover"' + (state.statusFilter === 'qtyover' ? ' selected' : '') + '>&nbsp;&nbsp;Over-Delivered (' + qtyOverCount + ')</option>' +
+    '<option value="qtyunder"' + (state.statusFilter === 'qtyunder' ? ' selected' : '') + '>&nbsp;&nbsp;Short-Delivered (' + qtyUnderCount + ')</option>' +
     '<option value="ratedisc"' + (state.statusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch (' + rateDiscCount + ')</option>' +
     '<option value="critical"' + (state.statusFilter === 'critical' ? ' selected' : '') + '>Critical Issues (' + criticalCount + ')</option>' +
     '<option value="flags"' + (state.statusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flagsCount + ')</option>' +

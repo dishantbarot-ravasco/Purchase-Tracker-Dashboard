@@ -132,6 +132,12 @@ def _mir_match_dict(item):
         "tier": match.tier,
         "matchScore": float(match.match_score),
         "qtyDiffPct": _f(match.qty_diff_pct),
+        # Over vs under delivery (2026-09-18). True = more received than
+        # ordered, false = less, null = no quantity comparison was possible.
+        # Null is NOT the same as false, so this passes the three states
+        # through rather than coercing to a boolean - the frontend needs to
+        # tell "under-delivered" from "we could not tell".
+        "qtyOverDelivered": getattr(match, "qty_over_delivered", None),
         "rateDiffPct": _f(match.rate_diff_pct),
         "valueDiffPct": _f(match.value_diff_pct),
         "isFlagged": match.is_flagged,

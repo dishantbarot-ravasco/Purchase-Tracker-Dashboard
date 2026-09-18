@@ -417,8 +417,9 @@ number belonging to another supplier's order for a completely different material
 identification would bind it. 2-of-3 states that rule directly instead of hiding it in constants.
 Weight still decides *which* identified candidate wins; that is what the evidence tiers already do.
 
-**Rolling it out to HRS and Vapi is blocked on their MIR files**, not on code — they need the same
-PO-number coverage Achhad's now has before the flag means anything there.
+**Rolling it out to Vapi is blocked on its MIR file**, not on code — it needs its PO-number coverage
+measured before the flag means anything there. Measure both halves of the flag separately: at HRS
+the 2-of-3 rule itself turned out to be a no-op and only the no-PO-vendor narrowing did any work.
 
 ### Legacy slashed PO numbers drift between the two files
 

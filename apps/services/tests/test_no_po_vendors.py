@@ -285,11 +285,15 @@ class TestPurchasesWithoutPo:
         from apps.core.models import RTPAchhadMIREntry
         from apps.services.no_po_vendors import purchases_without_po_summary
 
-        for party in ("Hindustan Rubbers (Silvassa)", "Harsha Impex", "Some Ordinary Supplier"):
+        # source_row_ref is varchar(20) - keep it a short synthetic row
+        # number, not the party name. Postgres enforces that length and
+        # SQLite does not, so a too-long value here passes locally and fails
+        # only in CI (caught exactly that way, 2026-09-18).
+        for i, party in enumerate(("Hindustan Rubbers (Silvassa)", "Harsha Impex", "Some Ordinary Supplier")):
             RTPAchhadMIREntry.objects.create(
                 mir_no="M", party_name=party, po_number_raw="",
                 material_description="Sulphur", mir_date=datetime.date(2026, 5, 4),
-                is_active=True, source_row_ref=party,
+                is_active=True, source_row_ref=str(i),
             )
 
         summary = purchases_without_po_summary(RTPAchhadMIREntry)
