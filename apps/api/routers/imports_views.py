@@ -334,7 +334,8 @@ def purchase_orders(request):
     for plant_key, (po_model, _item_model, _sr_plant, label, _match_model) in _PLANTS.items():
         if not user_can_access_plant(request.user, plant_key):
             continue
-        qs = po_model.objects.prefetch_related(
+        # is_active=True - see _domestic_base.py's own note.
+        qs = po_model.objects.filter(is_active=True).prefetch_related(
             "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
         )
         result.extend(_po_dict(po, plant_key, label, category_reference=category_reference) for po in qs)

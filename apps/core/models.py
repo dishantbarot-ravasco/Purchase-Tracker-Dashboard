@@ -130,6 +130,12 @@ class HRSDomesticPurchaseOrder(models.Model):
         help_text="True for the pre-SAP Excel-template POs (HRS/HO/26-27/xxx numbering).",
     )
 
+    # See RTPAchhadDomesticPurchaseOrder.is_active for the full rationale -
+    # purchase orders were the only entity in this pipeline that never got
+    # deactivated, so an upstream RENAME left the old spelling behind forever
+    # as a second order competing for the same MIR rows.
+    is_active = models.BooleanField(default=True)
+
     synced_from_row_hash = models.CharField(
         max_length=64, blank=True,
         help_text="Hash of the source CSV row(s) this PO was built from, to detect real changes on re-sync.",
@@ -604,6 +610,30 @@ class RTPAchhadDomesticPurchaseOrder(models.Model):
 
     is_old_format_template = models.BooleanField(default=False)
 
+    # Whether the master CSV still lists this order (2026-09-18).
+    #
+    # Purchase orders were the ONLY entity in this pipeline without this flag.
+    # MIR entries and stock lots have always had one, and their syncs flip it
+    # off for rows the source no longer contains; the PO sync upserted on
+    # po_number as a natural key and never removed anything. So RENAMING a PO
+    # upstream - which happens every time an annotation is added or cleaned
+    # off, e.g. "3000001104 (Changed Purchase Order)" back to "3000001104" -
+    # left the old spelling behind forever as a second order carrying a
+    # duplicate set of line items. Measured 2026-09-12: 6 such ghosts for
+    # HRS, 5 for Achhad, 11 for Vapi, every one a rename rather than a real
+    # deletion. The project owner then cleaned the annotation off every PO
+    # number at once, which turned each remaining annotated order into
+    # another ghost - reported as "I removed the suffix and it still shows on
+    # the dashboard", which is exactly what it looked like from outside.
+    #
+    # Deactivated rather than deleted, deliberately and for the same reason
+    # sync_utils.orphaned_orders() refused to delete: an order withdrawn
+    # upstream and one merely renamed are indistinguishable from here, and
+    # deleting is irreversible. Everything downstream (matching, the API, the
+    # KPIs) filters on is_active, so a deactivated order stops competing for
+    # MIR rows immediately, and a re-appearing one reactivates on the next
+    # sync with its history intact.
+    is_active = models.BooleanField(default=True)
     synced_from_row_hash = models.CharField(max_length=64, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
@@ -1110,6 +1140,30 @@ class RTPVapiDomesticPurchaseOrder(models.Model):
 
     is_old_format_template = models.BooleanField(default=False)
 
+    # Whether the master CSV still lists this order (2026-09-18).
+    #
+    # Purchase orders were the ONLY entity in this pipeline without this flag.
+    # MIR entries and stock lots have always had one, and their syncs flip it
+    # off for rows the source no longer contains; the PO sync upserted on
+    # po_number as a natural key and never removed anything. So RENAMING a PO
+    # upstream - which happens every time an annotation is added or cleaned
+    # off, e.g. "3000001104 (Changed Purchase Order)" back to "3000001104" -
+    # left the old spelling behind forever as a second order carrying a
+    # duplicate set of line items. Measured 2026-09-12: 6 such ghosts for
+    # HRS, 5 for Achhad, 11 for Vapi, every one a rename rather than a real
+    # deletion. The project owner then cleaned the annotation off every PO
+    # number at once, which turned each remaining annotated order into
+    # another ghost - reported as "I removed the suffix and it still shows on
+    # the dashboard", which is exactly what it looked like from outside.
+    #
+    # Deactivated rather than deleted, deliberately and for the same reason
+    # sync_utils.orphaned_orders() refused to delete: an order withdrawn
+    # upstream and one merely renamed are indistinguishable from here, and
+    # deleting is irreversible. Everything downstream (matching, the API, the
+    # KPIs) filters on is_active, so a deactivated order stops competing for
+    # MIR rows immediately, and a re-appearing one reactivates on the next
+    # sync with its history intact.
+    is_active = models.BooleanField(default=True)
     synced_from_row_hash = models.CharField(max_length=64, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
@@ -1535,6 +1589,30 @@ class HRSImportPurchaseOrder(models.Model):
     total_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True, help_text="Total Value (As per PO), in `currency`.")
     remarks = models.TextField(blank=True)
 
+    # Whether the master CSV still lists this order (2026-09-18).
+    #
+    # Purchase orders were the ONLY entity in this pipeline without this flag.
+    # MIR entries and stock lots have always had one, and their syncs flip it
+    # off for rows the source no longer contains; the PO sync upserted on
+    # po_number as a natural key and never removed anything. So RENAMING a PO
+    # upstream - which happens every time an annotation is added or cleaned
+    # off, e.g. "3000001104 (Changed Purchase Order)" back to "3000001104" -
+    # left the old spelling behind forever as a second order carrying a
+    # duplicate set of line items. Measured 2026-09-12: 6 such ghosts for
+    # HRS, 5 for Achhad, 11 for Vapi, every one a rename rather than a real
+    # deletion. The project owner then cleaned the annotation off every PO
+    # number at once, which turned each remaining annotated order into
+    # another ghost - reported as "I removed the suffix and it still shows on
+    # the dashboard", which is exactly what it looked like from outside.
+    #
+    # Deactivated rather than deleted, deliberately and for the same reason
+    # sync_utils.orphaned_orders() refused to delete: an order withdrawn
+    # upstream and one merely renamed are indistinguishable from here, and
+    # deleting is irreversible. Everything downstream (matching, the API, the
+    # KPIs) filters on is_active, so a deactivated order stops competing for
+    # MIR rows immediately, and a re-appearing one reactivates on the next
+    # sync with its history intact.
+    is_active = models.BooleanField(default=True)
     synced_from_row_hash = models.CharField(max_length=64, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
@@ -1738,6 +1816,30 @@ class RTPAchhadImportPurchaseOrder(models.Model):
     total_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     remarks = models.TextField(blank=True)
 
+    # Whether the master CSV still lists this order (2026-09-18).
+    #
+    # Purchase orders were the ONLY entity in this pipeline without this flag.
+    # MIR entries and stock lots have always had one, and their syncs flip it
+    # off for rows the source no longer contains; the PO sync upserted on
+    # po_number as a natural key and never removed anything. So RENAMING a PO
+    # upstream - which happens every time an annotation is added or cleaned
+    # off, e.g. "3000001104 (Changed Purchase Order)" back to "3000001104" -
+    # left the old spelling behind forever as a second order carrying a
+    # duplicate set of line items. Measured 2026-09-12: 6 such ghosts for
+    # HRS, 5 for Achhad, 11 for Vapi, every one a rename rather than a real
+    # deletion. The project owner then cleaned the annotation off every PO
+    # number at once, which turned each remaining annotated order into
+    # another ghost - reported as "I removed the suffix and it still shows on
+    # the dashboard", which is exactly what it looked like from outside.
+    #
+    # Deactivated rather than deleted, deliberately and for the same reason
+    # sync_utils.orphaned_orders() refused to delete: an order withdrawn
+    # upstream and one merely renamed are indistinguishable from here, and
+    # deleting is irreversible. Everything downstream (matching, the API, the
+    # KPIs) filters on is_active, so a deactivated order stops competing for
+    # MIR rows immediately, and a re-appearing one reactivates on the next
+    # sync with its history intact.
+    is_active = models.BooleanField(default=True)
     synced_from_row_hash = models.CharField(max_length=64, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 
@@ -1913,6 +2015,30 @@ class RTPVapiImportPurchaseOrder(models.Model):
     total_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     remarks = models.TextField(blank=True)
 
+    # Whether the master CSV still lists this order (2026-09-18).
+    #
+    # Purchase orders were the ONLY entity in this pipeline without this flag.
+    # MIR entries and stock lots have always had one, and their syncs flip it
+    # off for rows the source no longer contains; the PO sync upserted on
+    # po_number as a natural key and never removed anything. So RENAMING a PO
+    # upstream - which happens every time an annotation is added or cleaned
+    # off, e.g. "3000001104 (Changed Purchase Order)" back to "3000001104" -
+    # left the old spelling behind forever as a second order carrying a
+    # duplicate set of line items. Measured 2026-09-12: 6 such ghosts for
+    # HRS, 5 for Achhad, 11 for Vapi, every one a rename rather than a real
+    # deletion. The project owner then cleaned the annotation off every PO
+    # number at once, which turned each remaining annotated order into
+    # another ghost - reported as "I removed the suffix and it still shows on
+    # the dashboard", which is exactly what it looked like from outside.
+    #
+    # Deactivated rather than deleted, deliberately and for the same reason
+    # sync_utils.orphaned_orders() refused to delete: an order withdrawn
+    # upstream and one merely renamed are indistinguishable from here, and
+    # deleting is irreversible. Everything downstream (matching, the API, the
+    # KPIs) filters on is_active, so a deactivated order stops competing for
+    # MIR rows immediately, and a re-appearing one reactivates on the next
+    # sync with its history intact.
+    is_active = models.BooleanField(default=True)
     synced_from_row_hash = models.CharField(max_length=64, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
 

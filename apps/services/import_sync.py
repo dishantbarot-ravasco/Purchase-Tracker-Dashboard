@@ -11,6 +11,7 @@ stays a thin ~30-line shell (plant enum + Drive file title + this call).
 
 import hashlib
 
+from apps.services.sync_utils import deactivate_missing_orders
 from django.db import transaction
 from django.utils import timezone
 
@@ -47,12 +48,21 @@ def _order_hash(order) -> str:
 
 # ── Public API ───────────────────────────────────────────────────────────────
 
-def sync_orders(po_model, line_item_model, parsed_orders: list) -> tuple[int, int]:
+def sync_orders(po_model, line_item_model, parsed_orders: list) -> tuple[int, int, int]:
     """Upserts every parsed order (skipping unchanged ones via a row hash,
-    same convention as sync_po_csv.py). Returns (rows_seen, rows_changed).
+    same convention as sync_po_csv.py), then deactivates the ones the master
+    CSV no longer lists. Returns (rows_seen, rows_changed, deactivated).
     Caller wraps this in transaction.atomic() at the command level if it also
     needs SyncRun bookkeeping to share the same transaction - here each order
-    gets its own atomic block so one bad order doesn't roll back the rest."""
+    gets its own atomic block so one bad order doesn't roll back the rest.
+
+    The deactivation pass (2026-09-18) is the import side of the fix
+    described in sync_utils.deactivate_missing_orders(). Import POs were
+    worse off than domestic ones: the domestic syncs at least REPORTED
+    orphans to stdout, while these three had no orphan handling of any kind,
+    so a renamed import order forked silently with nothing said anywhere.
+    One pass here covers all three plants, since all three commands
+    delegate to this function."""
     rows_seen = 0
     rows_changed = 0
     for parsed in parsed_orders:
@@ -60,7 +70,11 @@ def sync_orders(po_model, line_item_model, parsed_orders: list) -> tuple[int, in
         with transaction.atomic():
             if _upsert_order(po_model, line_item_model, parsed):
                 rows_changed += 1
-    return rows_seen, rows_changed
+    # After every upsert, so an order that was renamed is re-created under its
+    # new number before its old spelling is retired - never the other way
+    # round, which would briefly leave the order book without it.
+    deactivated = deactivate_missing_orders(po_model, parsed_orders)
+    return rows_seen, rows_changed, deactivated
 
 
 def _upsert_order(po_model, line_item_model, parsed) -> bool:
@@ -75,12 +89,16 @@ def _upsert_order(po_model, line_item_model, parsed) -> bool:
     delete."""
     row_hash = _order_hash(parsed)
     existing = po_model.objects.filter(po_number=parsed.po_number).first()
-    if existing and existing.synced_from_row_hash == row_hash:
+    # `existing.is_active and` matters: without it an order that was
+    # deactivated (its number vanished from the CSV) and then came back
+    # UNCHANGED would hash-skip here and stay invisible forever.
+    if existing and existing.is_active and existing.synced_from_row_hash == row_hash:
         return False
 
     order, _ = po_model.objects.update_or_create(
         po_number=parsed.po_number,
         defaults=dict(
+            is_active=True,
             po_drive_folder_name=parsed.po_drive_folder_name,
             po_created_date=parsed.po_created_date,
             vendor_name=parsed.vendor_name,

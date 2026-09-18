@@ -42,7 +42,7 @@ from django.utils import timezone
 from apps.core.models import DataQualityFlag, HRSDomesticPOLineItem, HRSDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
-from apps.services.sync_utils import orphaned_orders
+from apps.services.sync_utils import deactivate_missing_orders, orphaned_orders
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
@@ -102,12 +102,18 @@ class Command(BaseCommand):
                     changed = self._upsert_order(parsed)
                     if changed:
                         rows_changed += 1
+                # Inside the same transaction as the upserts above, so the order
+                # book is never momentarily missing a renamed PO's replacement.
+                # See sync_utils.deactivate_missing_orders() for why this
+                # deactivates rather than deletes.
+                deactivated = deactivate_missing_orders(HRSDomesticPurchaseOrder, orders)
 
             self._sync_data_quality_flags()
             self._report_orphans(orders)
 
             self.stdout.write(self.style.SUCCESS(
-                f"sync_po_csv: {rows_seen} POs seen, {rows_changed} created/updated "
+                f"sync_po_csv: {rows_seen} POs seen, {rows_changed} created/updated, "
+                f"{deactivated} deactivated (no longer in the master CSV) "
                 f"({time.monotonic() - t0:.1f}s)"
             ))
         except HeaderMismatch as exc:
@@ -148,12 +154,22 @@ class Command(BaseCommand):
         whole-order hash matches what's already stored."""
         row_hash = _po_hash(parsed)
         existing = HRSDomesticPurchaseOrder.objects.filter(po_number=parsed.po_number).first()
-        if existing and existing.synced_from_row_hash == row_hash:
+        # `existing.is_active and` matters: without it a PO that was
+        # deactivated (its number vanished from the CSV) and then came back
+        # UNCHANGED would hash-skip here and stay invisible forever. Same
+        # guard, same reason, as each MIR/stock sync's own unchanged() check.
+        if existing and existing.is_active and existing.synced_from_row_hash == row_hash:
             return False
 
         order, _ = HRSDomesticPurchaseOrder.objects.update_or_create(
             po_number=parsed.po_number,
             defaults=dict(
+                # Reactivates an order that came back after being retired -
+                # a reverted rename, or an order reinstated upstream. Without
+                # this the row would be rewritten with fresh data and still
+                # be invisible everywhere. See
+                # sync_utils.deactivate_missing_orders().
+                is_active=True,
                 po_drive_folder_name=parsed.po_drive_folder_name,
                 po_created_date=parsed.po_created_date,
                 vendor_name=parsed.vendor_name,

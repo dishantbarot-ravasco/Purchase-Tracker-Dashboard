@@ -70,3 +70,25 @@ def orphaned_orders(order_model, parsed_orders):
     decides."""
     live = {order.po_number for order in parsed_orders}
     return list(order_model.objects.exclude(po_number__in=live).values_list("po_number", flat=True))
+
+
+def deactivate_missing_orders(order_model, parsed_orders) -> int:
+    """Flip is_active off for every stored order the master CSV no longer
+    lists, and return how many were affected.
+
+    The write half of orphaned_orders() above, added 2026-09-18 after the
+    read-only version proved insufficient: it reported ghosts to the sync
+    command's stdout, which under the scheduled django-q2 run nobody ever
+    sees, so they accumulated for months while competing for MIR rows.
+
+    Deactivating is NOT the deletion that function's docstring declines to
+    do. Nothing is destroyed, the row keeps its line items and history, and
+    an order that comes back - the common case, since most disappearances
+    here are renames - reactivates on the next sync. That reversibility is
+    what makes doing this automatically safe, where deleting would not be.
+
+    Call inside the sync's transaction, after every parsed order has been
+    upserted, exactly where each MIR/stock sync already does the same thing
+    for its own rows."""
+    live = {order.po_number for order in parsed_orders}
+    return order_model.objects.filter(is_active=True).exclude(po_number__in=live).update(is_active=False)

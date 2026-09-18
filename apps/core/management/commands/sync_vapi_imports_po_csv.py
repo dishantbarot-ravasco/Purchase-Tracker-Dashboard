@@ -50,10 +50,11 @@ class Command(BaseCommand):
         try:
             csv_text = self._load_csv_text(options.get("file"))
             orders = parse_import_po_csv(csv_text)
-            rows_seen, rows_changed = sync_orders(RTPVapiImportPurchaseOrder, RTPVapiImportPOLineItem, orders)
+            rows_seen, rows_changed, deactivated = sync_orders(RTPVapiImportPurchaseOrder, RTPVapiImportPOLineItem, orders)
 
             self.stdout.write(self.style.SUCCESS(
-                f"sync_vapi_imports_po_csv: {rows_seen} POs seen, {rows_changed} created/updated "
+                f"sync_vapi_imports_po_csv: {rows_seen} POs seen, {rows_changed} created/updated, "
+                f"{deactivated} deactivated (no longer in the master CSV) "
                 f"({time.monotonic() - t0:.1f}s)"
             ))
         except HeaderMismatch as exc:

@@ -299,6 +299,53 @@ because an Import PO's line items are always deleted and recreated together on a
 is no persisted row to diff field-by-field. `sync_advance_license.py` uses the same
 whole-licence-hash reasoning, and `sync_po_csv.py` its own `_po_hash`.
 
+### Purchase orders are retired, not deleted — and until 2026-09-18 they were neither
+
+Every `*PurchaseOrder` model has `is_active` (migration `0051`), and every PO sync — domestic and
+import — flips it off for orders the master CSV no longer lists, via
+`sync_utils.deactivate_missing_orders()`.
+
+**This was the one entity in the pipeline with no such flag.** MIR entries and stock lots have always
+had one and their syncs deactivate vanished rows; the PO sync upserted on `po_number` as a natural key
+and never removed anything. So **renaming a PO upstream forked it permanently**: the new spelling was
+created as a fresh row and the old one stayed forever, carrying a duplicate set of line items that went
+on competing for the same MIR rows. Measured 2026-09-12: 6 ghosts for HRS, 5 for Achhad, 11 for Vapi,
+every one a rename rather than a real deletion.
+
+It surfaced when the project owner cleaned `(Changed Purchase Order)` off every PO number at once and
+reported that the suffix was still on the dashboard. It wasn't stale data — it was a second, permanent
+PO record per renamed order.
+
+**The detection already existed and was invisible.** `orphaned_orders()` found them and the domestic
+syncs wrote a warning to **stdout only**, which under the scheduled django-q2 run nobody ever reads —
+not a `SyncRun` error, not a flag, not on the dashboard. The three import syncs had no detection at all.
+A count now rides on each plant's `sync-status` as `retiredPoCount` for exactly that reason.
+
+Four details that are load-bearing:
+
+- **Deactivate, never delete.** An order withdrawn upstream and one merely renamed are
+  indistinguishable from here, and a delete is irreversible — which is why `orphaned_orders()`
+  originally refused to act at all. Deactivation is reversible, so it is safe to do automatically.
+- **The hash-skip must be guarded on `is_active`.** `_upsert_order()` skips writing when the row hash
+  is unchanged; without `existing.is_active and` in that condition, an order that was deactivated and
+  then came back **unchanged** would skip the write and stay invisible forever. Every MIR/stock sync's
+  `unchanged()` check already had this guard for the same reason.
+- **`is_active=True` belongs in the upsert `defaults`**, or a returning order is rewritten with fresh
+  data and still never reappears.
+- **`run_full_match()` deletes matches belonging to inactive orders explicitly.** Every other stale
+  match is cleared by the per-item loops, which now only visit active orders — so a match written
+  before retirement would otherwise survive every subsequent run untouched, still holding its MIR row
+  against the live order that replaced it.
+
+`manage.py report_retired_pos` is the read-only companion: `--already-retired` reads the DB (no Drive
+credentials needed), the default fetches each master CSV to show what the next sync *would* retire.
+
+**The contradiction gate hides this bug in one narrow case, which is why it took so long to notice.**
+When MIR names the clean number, `_po_number_contradicts()` already drops the annotated ghost for free
+— the ghost's own multi-token number doesn't match what MIR wrote, while the clean number is a known
+order. That protection evaporates the moment the receipt has no PO reference to contradict with, and
+~64% of Achhad's MIR rows have none.
+
 ### Decimal precision conventions
 
 **GST rate fields need 3 decimal places at HRS/Achhad, 2 at Vapi — check the unit per plant.** Every
@@ -1563,6 +1610,8 @@ alongside each.
 | MIR↔Stock comparing MT against KG → ~1000x phantom rate mismatch | [Unit normalisation](#units-are-normalised-before-comparing--on-both-pairings) |
 | Import USD rate compared raw against INR MIR → ~94x gap, 0 matches | [Import currency](#import-po--mir-convert-currency-first) |
 | Full-table SELECTs inside per-row loops → quadratic matching | [Performance](#performance-the-engine-was-quadratic) |
+| Renaming a PO upstream forking it into two permanent rows | [Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither) |
+| Orphan detection reporting only to a stdout nobody reads | [Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither) |
 | `date.today()` returning the server's UTC date, not IST | below |
 | Per-IP login throttle locking out a whole office | [Throttling](#throttling-lockout-and-brute-force-counters) |
 | Google OAuth ignoring account lockout | [Throttling](#throttling-lockout-and-brute-force-counters) |

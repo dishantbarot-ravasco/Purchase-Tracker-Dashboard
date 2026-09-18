@@ -543,7 +543,11 @@ def make_purchase_orders(cfg: _PlantConfig):
         # to specific plants (empty plants list = "all plants", unchanged).
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's purchase orders."}, status=403)
-        qs = cfg.po_model.objects.prefetch_related(
+        # is_active=True (2026-09-18) - an order the master CSV no longer
+        # lists is retired, not shown. Without this the dashboard kept
+        # displaying a renamed PO's old spelling alongside its
+        # replacement, which is how this bug was reported.
+        qs = cfg.po_model.objects.filter(is_active=True).prefetch_related(
             "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
         )
         pos = list(qs)
@@ -599,7 +603,7 @@ def make_correct_field(cfg: _PlantConfig):
         raw_value = request.data.get("value")
         reason = (request.data.get("reason") or "").strip()
 
-        po = cfg.po_model.objects.filter(po_number=po_number).first()
+        po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
         if not po:
             return Response({"error": "Purchase order not found."}, status=404)
 
@@ -1069,6 +1073,17 @@ def make_sync_status(cfg: _PlantConfig):
             # services/no_po_vendors.py's purchases_without_po_summary() for
             # why a vendor-level list cannot answer it.
             "purchasesWithoutPo": purchases_without_po_summary(cfg.mir_model),
+            # Retired purchase orders, 2026-09-18. An order the master CSV no
+            # longer lists is deactivated by the sync rather than deleted (see
+            # sync_utils.deactivate_missing_orders()). Surfaced here because
+            # the previous version of this mechanism reported orphans to the
+            # sync command's stdout ONLY - which under the scheduled django-q2
+            # run nobody ever reads, so they accumulated for months while
+            # competing for MIR rows. A number on screen is what stops that
+            # happening again. A non-zero count is normal after a bulk rename
+            # upstream; a growing one is worth a look with
+            # `manage.py report_retired_pos`.
+            "retiredPoCount": cfg.po_model.objects.filter(is_active=False).count(),
             "syncInProgress": is_sync_in_progress(cfg.key),
             "lastSnapshotDate": last_snapshot_date.isoformat() if last_snapshot_date else None,
             "snapshotGapDays": snapshot_gap_days,

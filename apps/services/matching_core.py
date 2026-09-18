@@ -796,8 +796,10 @@ def _material_scorer(config: _MatchConfig) -> "_MaterialScorer":
     corpus = list(
         config.mir_model.objects.filter(is_active=True).values_list("material_description", flat=True)
     )
-    corpus += list(config.po_item_model.objects.values_list("description", flat=True))
-    corpus += list(config.import_item_model.objects.values_list("description", flat=True))
+    corpus += list(config.po_item_model.objects.filter(
+        purchase_order__is_active=True).values_list("description", flat=True))
+    corpus += list(config.import_item_model.objects.filter(
+        purchase_order__is_active=True).values_list("description", flat=True))
     return _MaterialScorer(corpus)
 
 
@@ -966,7 +968,13 @@ def known_po_numbers(config: _MatchConfig) -> frozenset:
     receipts could be claimed by a different line item."""
     numbers = set()
     for model in (config.po_item_model, config.import_item_model):
-        for raw in model.objects.values_list("purchase_order__po_number", flat=True).distinct():
+        # Active orders only (2026-09-18). A retired order is not one "we
+        # hold", and leaving it in here would let _po_number_contradicts()
+        # keep vetoing candidates on the strength of a PO number that no
+        # longer exists in the master CSV.
+        for raw in model.objects.filter(
+            purchase_order__is_active=True
+        ).values_list("purchase_order__po_number", flat=True).distinct():
             if not raw:
                 continue
             numbers.add(raw)
@@ -2132,8 +2140,18 @@ def run_full_match(config: _MatchConfig) -> dict:
     each sync, and synchronously after any "Edit Everywhere" field edit that
     feeds matching.
     """
-    po_items = list(config.po_item_model.objects.select_related("purchase_order").all())
-    import_items = list(config.import_item_model.objects.select_related("purchase_order").all())
+    # is_active=True (2026-09-18): an order the master CSV no longer lists is
+    # excluded from matching entirely. This is the point of the flag - a
+    # renamed PO's old spelling used to stay in the order book forever and go
+    # on competing for the same MIR rows as its own replacement, with
+    # duplicate line items that could never be PO-number-confirmed (an
+    # annotated number is several tokens long, MIR's column holds one) and so
+    # could only ever win on the weakest evidence the matcher has. See
+    # sync_utils.deactivate_missing_orders().
+    po_items = list(config.po_item_model.objects.filter(
+        purchase_order__is_active=True).select_related("purchase_order"))
+    import_items = list(config.import_item_model.objects.filter(
+        purchase_order__is_active=True).select_related("purchase_order"))
 
     # Item counts per PO, computed from the already-fetched po_items list
     # rather than one .count() query per line item - feeds _po_matchable()'s
@@ -2238,6 +2256,17 @@ def run_full_match(config: _MatchConfig) -> dict:
     for key, mir_id in _assign_pairs(ungrouped_edges).items():
         candidate = candidates_by_key[(key[0], key[1], mir_id)]
         assigned[key] = (candidate.mir, candidate.score, candidate.coverage, None)
+
+    # Matches belonging to a RETIRED order have to be cleared explicitly
+    # (2026-09-18). Every other stale match is deleted by the per-item loops
+    # below, which only visit items still in `po_items`/`import_items` - and
+    # those now exclude inactive orders, so a match written before the order
+    # was retired would otherwise survive every subsequent run untouched, and
+    # go on holding its MIR row against the live order that replaced it.
+    config.po_mir_match_model.objects.filter(
+        po_line_item__purchase_order__is_active=False).delete()
+    config.import_po_mir_match_model.objects.filter(
+        po_line_item__purchase_order__is_active=False).delete()
 
     po_matched = 0
     for item in po_items:
