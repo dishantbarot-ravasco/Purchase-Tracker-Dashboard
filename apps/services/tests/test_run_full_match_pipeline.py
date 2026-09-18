@@ -215,6 +215,44 @@ class TestPoMirMatching:
 
         assert HRSPOMirMatch.objects.filter(po_line_item=line_item).count() == 1
 
+    def test_a_shipment_group_that_loses_its_rows_falls_back_to_single_rows(self):
+        """run_full_match() settles multi-shipment groups before the optimal
+        assignment, and a group whose member rows are already claimed has to
+        give up. The line item must then rejoin the ordinary assignment with
+        its own per-row candidates - it used to be dropped from the
+        assignment entirely and end up unmatched with free MIR rows still
+        sitting in its pool (2026-09-18; 10 live HRS line items, PO
+        3000001046 the clearest case). Grouping is an optimization on HOW an
+        item takes its rows, never a reason for it to take none.
+
+        Two line items whose candidate pools overlap without being identical:
+        the narrower groups over the two 'SBR 1502' rows, the wider over all
+        three. Whichever settles second finds part of its group gone."""
+        po_a = _make_po(po_number="3000001104")
+        item_a = _make_po_line_item(po_a, description="SBR 1502", qty=Decimal("2000"))
+        po_b = _make_po(po_number="3000001105")
+        item_b = _make_po_line_item(po_b, description="SBR 1502 Carbon Black N330", qty=Decimal("3000"))
+        # Blank PO numbers throughout: these identify on vendor + material, so
+        # neither item's rows can contradict the other's order.
+        _make_mir_entry(po_number_raw="", material_description="SBR 1502",
+                        qty=Decimal("1000"), source_row_ref="7")
+        _make_mir_entry(po_number_raw="", material_description="SBR 1502",
+                        qty=Decimal("1000"), source_row_ref="8")
+        _make_mir_entry(po_number_raw="", material_description="Carbon Black N330",
+                        qty=Decimal("1000"), source_row_ref="9")
+
+        run_full_match()
+
+        assert HRSPOMirMatch.objects.filter(po_line_item=item_a).exists()
+        assert HRSPOMirMatch.objects.filter(po_line_item=item_b).exists(), (
+            "the line item whose shipment group lost its rows must fall back to its own per-row "
+            "candidates, not drop out of the assignment entirely"
+        )
+        assert (
+            HRSPOMirMatch.objects.get(po_line_item=item_a).mir_entry_id
+            != HRSPOMirMatch.objects.get(po_line_item=item_b).mir_entry_id
+        )
+
 
 @pytest.mark.django_db
 class TestMirStockMatching:

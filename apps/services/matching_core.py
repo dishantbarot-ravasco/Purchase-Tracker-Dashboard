@@ -2339,6 +2339,10 @@ def run_full_match(config: _MatchConfig) -> dict:
     # together - a group can never be half-claimed (fix 2.F).
     edges: dict[tuple[str, int], list] = {}
     group_members: dict[tuple[str, int, int], set] = {}
+    # Every item's PER-ROW edges, kept even for a grouped item whose `edges`
+    # entry is the single group edge. This is what a losing group falls back
+    # to (2026-09-18) - see the group loop below.
+    row_edges: dict[tuple[str, int], list] = {}
 
     def collect(kind, item, matchable, po):
         items_by_key[(kind, item.id)] = matchable
@@ -2352,6 +2356,9 @@ def run_full_match(config: _MatchConfig) -> dict:
             candidates_by_key[(kind, item.id, mir_id)] = candidate
         group = _shipment_group(config, matchable, pool)
         key = (kind, item.id)
+        if not pool:
+            return
+        row_edges[key] = [(candidate.mir.id, _pair_weight(candidate)) for candidate in found.values()]
         if group is not None:
             primary = _best_by_evidence(found, group.entries)
             if primary is None:
@@ -2360,8 +2367,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             group_members[(kind, item.id, primary.mir.id)] = {m.id for m in group.entries}
             edges[key] = [(primary.mir.id, _pair_weight(primary))]
             return
-        if pool:
-            edges[key] = [(candidate.mir.id, _pair_weight(candidate)) for candidate in found.values()]
+        edges[key] = row_edges[key]
 
     for item in po_items:
         collect("po", item, _po_matchable(item, item_counts[item.purchase_order_id] == 1), item.purchase_order)
@@ -2382,11 +2388,34 @@ def run_full_match(config: _MatchConfig) -> dict:
     # the assignment be genuinely optimal rather than approximately so.
     assigned: dict[tuple[str, int], tuple] = {}  # (kind, item.id) -> (mir, score, coverage, group_or_None)
     claimed_mir_ids: set[int] = set()
+    # A GROUP THAT LOSES ITS ROWS FALLS BACK TO SINGLE ROWS (2026-09-18) - it
+    # used to lose its match outright, which is the exact outcome fix 2.B
+    # exists to prevent. Grouping is an OPTIMIZATION on how a line item takes
+    # its rows (all of a split delivery at once, so qty/rate/value are
+    # compared against the aggregate), not a claim that single-row matching
+    # is wrong for that item - so a group being unavailable is no reason for
+    # the item to take nothing.
+    #
+    # Before this, `ungrouped_edges` was built from `key not in groups_by_key`
+    # and a demoted item was therefore absent from _assign_pairs() entirely.
+    # Measured on live data: 10 HRS line items, 1 Achhad, 4 Vapi, several with
+    # their own PO number written on an unclaimed MIR row sitting right there
+    # - HRS PO 3000001046 is the clearest (one line item, two free MIR rows
+    # both naming that exact PO, same vendor, identical material, matched
+    # instantly by match_po_mir_line_item() on its own and unmatched by the
+    # full run).
+    #
+    # Demoted, not re-grouped: the item rejoins the ordinary optimization with
+    # its per-row edges, so it competes for what is still free on equal terms
+    # and is compared row-by-row (no qty/rate/value override), which is what
+    # it would have done had _shipment_group() never found a group.
+    demoted_keys: list[tuple[str, int]] = []
     grouped_keys = sorted(groups_by_key, key=lambda k: (-edges[k][0][1], str(k)))
     for key in grouped_keys:
         primary_id = edges[key][0][0]
         members = group_members[(key[0], key[1], primary_id)]
         if members & claimed_mir_ids:
+            demoted_keys.append(key)
             continue
         candidate = candidates_by_key[(key[0], key[1], primary_id)]
         assigned[key] = (candidate.mir, candidate.score, candidate.coverage, groups_by_key[key])
@@ -2397,6 +2426,10 @@ def run_full_match(config: _MatchConfig) -> dict:
         for key, pairs in edges.items()
         if key not in groups_by_key
     }
+    for key in demoted_keys:
+        remaining = [(mir_id, weight) for mir_id, weight in row_edges[key] if mir_id not in claimed_mir_ids]
+        if remaining:
+            ungrouped_edges[key] = remaining
     for key, mir_id in _assign_pairs(ungrouped_edges).items():
         candidate = candidates_by_key[(key[0], key[1], mir_id)]
         assigned[key] = (candidate.mir, candidate.score, candidate.coverage, None)

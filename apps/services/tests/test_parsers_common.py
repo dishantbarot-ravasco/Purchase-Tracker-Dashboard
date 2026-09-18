@@ -522,3 +522,54 @@ class TestRepairMonthSwappedDate:
         """Swapping 2026-02-31 would not be a real date - the original is
         kept rather than raising."""
         assert repair_month_swapped_date(datetime.date(2026, 2, 28), 28) == datetime.date(2026, 2, 28)
+
+
+class TestHrsMirDateRepair:
+    """apps/services/parsers/mir.py's own wiring of repair_month_swapped_date()
+    (2026-09-18). The generic repair is covered above; these pin the HRS
+    plumbing - that the month is read off HRS's own `<serial>/<MM>` MIR-number
+    shape, and that the repair is actually applied to the DATE column.
+
+    The defect is real and current: 177 of the live file's 497 dated rows are
+    transposed and 38 land in the future. See _repair_mir_date()'s docstring."""
+
+    def test_reads_the_month_from_an_hrs_mir_number(self):
+        from apps.services.parsers.mir import _mir_no_month
+
+        assert _mir_no_month("24/04") == 4
+        assert _mir_no_month("122/08") == 8
+        assert _mir_no_month("01/04") == 4
+
+    def test_ignores_a_mir_number_it_cannot_read_a_month_from(self):
+        from apps.services.parsers.mir import _mir_no_month
+
+        assert _mir_no_month("") is None
+        assert _mir_no_month("MIR001") is None
+        assert _mir_no_month("07/13") is None  # 13 is not a month
+        assert _mir_no_month("07/00") is None
+
+    def test_repairs_a_transposed_date_against_the_mir_number(self):
+        """MIR 01/04 is April's first receipt; Excel stored 4 January."""
+        from apps.services.parsers.mir import _repair_mir_date
+
+        assert _repair_mir_date(datetime.datetime(2026, 1, 4), "01/04") == datetime.date(2026, 4, 1)
+
+    def test_repairs_a_future_dated_row(self):
+        """MIR 16/08 carries 8 December 2026 - a receipt dated months after
+        today. It is 12 August."""
+        from apps.services.parsers.mir import _repair_mir_date
+
+        assert _repair_mir_date(datetime.datetime(2026, 12, 8), "16/08") == datetime.date(2026, 8, 12)
+
+    def test_leaves_a_correct_date_alone(self):
+        """The safety net must stop firing on its own once the plant fixes the
+        column format - a correct row is never rewritten."""
+        from apps.services.parsers.mir import _repair_mir_date
+
+        assert _repair_mir_date(datetime.datetime(2026, 4, 1), "01/04") == datetime.date(2026, 4, 1)
+        assert _repair_mir_date(datetime.datetime(2026, 4, 17), "57/04") == datetime.date(2026, 4, 17)
+
+    def test_leaves_a_row_alone_when_the_mir_number_gives_no_month(self):
+        from apps.services.parsers.mir import _repair_mir_date
+
+        assert _repair_mir_date(datetime.datetime(2026, 1, 4), "MIR001") == datetime.date(2026, 1, 4)

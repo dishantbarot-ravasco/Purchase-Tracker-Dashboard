@@ -697,6 +697,25 @@ them. It went critical when Vapi's order book roughly doubled (131 → 222 POs) 
 
 `TestAssignPairsTerminates` in `test_matching.py` pins this with graphs that hang the unguarded code.
 
+### A shipment group that loses its rows must fall back, not lose its match
+
+`run_full_match()` settles multi-shipment groups **before** the optimal assignment, because a grouped
+edge stands for several MIR rows at once and plain bipartite matching cannot express that. A group
+whose member rows are already claimed has to give up — but until 2026-09-18 the line item was then
+**dropped from the assignment entirely**, because `ungrouped_edges` was built from
+`key not in groups_by_key`. It ended up unmatched with free rows still sitting in its own pool: the
+exact outcome fix 2.B exists to prevent.
+
+Grouping is an optimization on **how** an item takes its rows (all of a split delivery at once, so
+qty/rate/value compare against the aggregate), not a claim that single-row matching is wrong for that
+item. A losing group is now **demoted** — it rejoins the ordinary assignment with its per-row edges
+(`row_edges`, kept for every item now, not just ungrouped ones) and competes for what is still free.
+
+Measured on live data: **HRS 170 → 180 line items (75.6% → 80.0%)**, Achhad 178 → 179, Vapi +4. HRS
+PO `3000001046` was the clearest case — one line item, two unclaimed MIR rows both naming that exact
+PO number, same vendor, identical material, matched instantly by `match_po_mir_line_item()` on its own
+and left unmatched by the full run.
+
 ### Two hot paths in matching are cached or short-circuited for a reason
 
 `_po_number_contradicts()` scans **every known PO number** for **every candidate** of **every line
@@ -727,13 +746,24 @@ so it lives once in `match_dismiss.py`.
 There is no automated precision/recall measurement. `MATCH_THRESHOLD = 0.55` was **picked, not
 measured** against labelled ground truth. Real rates from a full sync against live Drive data:
 
-| Plant | PO line items matched to MIR | Tier 1 / Tier 2 |
-| --- | --- | --- |
-| HRS | 68.6% | 68 / 13 |
-| RTP-Achhad | 86.0% | 71 / 3 |
-| RTP-Vapi | 50.5% | 0 / 48 |
+| Plant | PO line items matched to MIR (2026-09-18, latest Drive files) |
+| --- | --- |
+| HRS | **179 of 225 (79.6%)** |
+| RTP-Achhad | **179 of 197 (90.9%)** |
+| RTP-Vapi | **567 of 690 (82.2%)** |
 
-**Those figures are stale for Vapi and should not be used as a baseline.** As of 2026-09-18 it
+**HRS's remaining gap is mostly not the matcher.** 21 of its 45 unmatched line items are on POs
+raised in the last 30 days, where the goods have not been received or not yet booked into the MIR
+(Achhad's equivalent is 5 of 19); most of the older ones are POs no MIR row mentions at all. HRS's
+MIR carried **177 of 497 rows with day/month transposed dates**, 38 of them dated in the future;
+`parsers/mir.py` now repairs them at parse time (2026-09-18) the way `parsers/vapi_mir.py` has since
+2026-09-12 — see `_repair_mir_date()` there. **It costs one match** (180 → 179) and that is the
+point: the date gate now runs on true dates, so pairs that only matched because a date was wrong no
+longer do. Achhad needs no repair — its date column is stored as plain text, so Excel never
+reinterprets it.
+
+The historical figures below are superseded; the earlier table read HRS 68.6% / Achhad 86.0% /
+Vapi 50.5%. As of 2026-09-18 it
 matches **577 of 690 line items (83.6%)** against 1,415 active MIR rows. Three things moved at once:
 its MIR PO column went from ~100% blank to 27.2% populated, its order book grew 131 → 222 POs, and
 `match_vapi` had been **hanging outright** (see the termination guards above) so whatever was in the

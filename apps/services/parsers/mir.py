@@ -19,6 +19,11 @@ Column J ("Purchase Order. No.") is the field the docstring on
 HRSMIREntry.po_number_raw warns about - confirmed unreliable by audit
 (~30% blank, ~25% non-standard format) and never used as a sole join key.
 
+Column C ("Date") is formatted mm/dd/yyyy and Excel has committed
+day/month-transposed values to 177 of its 497 real date cells - see
+_repair_mir_date() for the measurement and for why the repair keys on the
+MIR number's own month.
+
 Columns A ("Month") and B ("MIR. No.") have the identical Excel
 autoconvert quirk documented in apps/services/parsers/achhad_mir.py's module
 docstring - confirmed against the live file this session (previously
@@ -37,12 +42,19 @@ generic, not Achhad-specific, it just never got applied here.
 
 import datetime
 import io
+import re
 from dataclasses import dataclass
 
 import openpyxl
 from openpyxl.utils import column_index_from_string
 
-from apps.services.parsers.common import stream_rows, to_date, to_decimal, to_str
+from apps.services.parsers.common import (
+    repair_month_swapped_date,
+    stream_rows,
+    to_date,
+    to_decimal,
+    to_str,
+)
 
 # ── Column/row layout constants ─────────────────────────────────────────────
 
@@ -136,6 +148,64 @@ def _mir_no_label(cell) -> str:
     return f"{v.month:02d}/{v.day:02d}"
 
 
+# ── Transposed-date repair (DATE column, 2026-09-18) ────────────────────────
+# The same defect vapi_mir.py has carried a repair for since 2026-09-12, found
+# in HRS's own file this session and repaired the same way. See
+# _repair_mir_date() below for the measurement.
+
+_MIR_NO_MONTH_RE = re.compile(r"/\s*(\d{1,2})\s*$")
+
+
+def _mir_no_month(mir_no: str) -> int | None:
+    """The month encoded in a MIR number - '24/04' is April's 24th MIR.
+
+    Safe to read off _mir_no_label()'s output rather than the raw cell: when
+    Excel has turned the MIR number into a date, that helper rebuilds the
+    label from the SAME month/day pair Excel stored, so serial and month come
+    back in the order they were typed (see its docstring). A serial above 12
+    is never converted at all and stays literal text."""
+    match = _MIR_NO_MONTH_RE.search(mir_no or "")
+    if not match:
+        return None
+    month = int(match.group(1))
+    return month if 1 <= month <= 12 else None
+
+
+def _repair_mir_date(value, mir_no: str):
+    """Undoes a day/month transposition in the DATE column using the month
+    the MIR number states independently.
+
+    MEASURED ON THE LIVE HRS FILE (2026-09-18): 177 of 497 real date cells
+    are stored by Excel itself with day and month swapped - MIR '01/04'
+    (April) carries the datetime 2026-01-04, MIR '16/08' carries
+    2026-12-08 - and **38 rows land in the future**, October to December
+    2026. Column C is formatted mm/dd/yyyy, so a date typed "5-4-2026"
+    meaning 5 April was read month-first and committed to the file as 4 May.
+    openpyxl hands back a genuine datetime; only a second, independent
+    record of the month can tell. It is getting worse, not better: 28% of
+    April's rows against 59% of September's.
+
+    WHY THIS IS A SAFETY NET AND NOT THE FIX. The real repair is the cell
+    format, at the plant (the message in PO_MIR_Audit/ asks for exactly
+    that). This is what keeps the damage out of the database while that
+    happens, and what catches it silently if the format is ever set back.
+    Once the source is correct this function stops firing on its own - it
+    only ever rewrites a value that is *exactly* transposed against the MIR
+    number, so a correct date is never touched.
+
+    WHAT IT DOES NOT COVER. Only the DATE column. The same mm/dd/yyyy format
+    sits on Invoice Date (39 future-dated), Purchase Order Date and SAP P.O.
+    Date (4 each), but none of those has an independent month to check
+    against - an invoice may legitimately be raised in a different month
+    from the receipt, so there is no safe rule and guessing one would be
+    worse than leaving them alone. Those need the plant-side format fix.
+
+    See repair_month_swapped_date() for the three conditions under which a
+    value is left alone - a legitimately cross-month row is never
+    rewritten."""
+    return repair_month_swapped_date(to_date(value), _mir_no_month(mir_no))
+
+
 # ── Public entry point ───────────────────────────────────────────────────────
 
 def parse_mir_xlsx(file_bytes: bytes) -> list[ParsedMirEntry]:
@@ -167,11 +237,14 @@ def parse_mir_xlsx(file_bytes: bytes) -> list[ParsedMirEntry]:
         if not party_name:
             continue  # a blank Party Name means an empty row - MIR has no other reliable "is this row used" signal
 
+        # mir_no is read first: it is what _repair_mir_date() checks the DATE
+        # column against (see that function).
+        mir_no = _mir_no_label(c["B"])
         entries.append(
             ParsedMirEntry(
                 month=_month_label(c["A"]),
-                mir_no=_mir_no_label(c["B"]),
-                mir_date=to_date(c["C"].value),
+                mir_no=mir_no,
+                mir_date=_repair_mir_date(c["C"].value, mir_no),
                 sap_grn_number=to_str(c["D"].value),
                 po_number_raw=to_str(c["J"].value),  # unreliable join key, see module docstring - never used alone
                 party_name=party_name,
