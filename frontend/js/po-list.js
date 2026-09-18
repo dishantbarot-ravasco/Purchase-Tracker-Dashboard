@@ -87,6 +87,18 @@ function renderPoList(el) {
   // as a partition. See flags.js's computePoFlags().
   const qtyOverCount = filtered.filter(po => po._qtyOverFlag).length;
   const qtyUnderCount = filtered.filter(po => po._qtyUnderFlag).length;
+  // The combined Quantity Mismatches card is KEPT alongside the two
+  // directional ones, and is not redundant with them. qtyOverDelivered is
+  // NULL on any match row written before migration 0050 - i.e. every row on
+  // a plant whose matching has not been re-run since - and NULL is counted
+  // as neither direction (correctly: it means "not recorded", same as "could
+  // not be determined"). Dropping the combined card would therefore make a
+  // plant's entire quantity-mismatch count vanish from the KPI row until
+  // someone happened to re-run matching for it, which is exactly the
+  // regression this comment exists to prevent a future edit from
+  // reintroducing. The three also genuinely disagree in normal operation: a
+  // PO with several line items can be over on one and short on another, so
+  // over + short can EXCEED the combined count as well as fall short of it.
   const rateDiscCount = filtered.filter(po => po._rateFlag).length;
   // "Data Quality Flags" used to mean "informational severity only"
   // (po._hasInfoFlag) - narrower than the name promised, and confusingly
@@ -133,8 +145,9 @@ function renderPoList(el) {
     { key: 'total', cls: '', label: "Total PO's Created", val: total, tip: 'All purchase orders in the selected date range and plant(s).' },
     { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has a matched MIR entry - the material has been received.' },
     { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items on this PO have a matched MIR entry yet.' },
-    { key: 'qtyover', cls: 'critical', label: 'Over-Delivered', val: qtyOverCount, flag: KPI_FLAG_COLORS.critical, tip: 'More was received than the PO ordered, summed across every delivery against each line - zero tolerance, any nonzero difference flags.' },
-    { key: 'qtyunder', cls: 'critical', label: 'Short-Delivered', val: qtyUnderCount, flag: KPI_FLAG_COLORS.critical, tip: 'Less was received than the PO ordered - zero tolerance. On an order still open this is a part-delivery; on a closed one it is a short shipment. Check the Progress column.' },
+    { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags. The two cards beside this one split the same set by direction; they can add up to less than this total, which means some of these rows have no recorded direction yet (their last matching run predates the over/under split - re-run matching for this plant).' },
+    { key: 'qtyover', cls: 'critical', label: 'Over-Delivered', val: qtyOverCount, flag: KPI_FLAG_COLORS.critical, tip: 'More was received than the PO ordered, summed across every delivery against each line - zero tolerance, any nonzero difference flags. A subset of Quantity Mismatches.' },
+    { key: 'qtyunder', cls: 'critical', label: 'Short-Delivered', val: qtyUnderCount, flag: KPI_FLAG_COLORS.critical, tip: 'Less was received than the PO ordered - zero tolerance. On an order still open this is a part-delivery; on a closed one it is a short shipment. Check the Progress column. A subset of Quantity Mismatches.' },
     { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', val: rateDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: rate differs between the PO and its matched MIR entry - zero tolerance. Value is not compared here - see the Data Quality legend for why.' },
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully matched to MIR.' },
     { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched to MIR.' },

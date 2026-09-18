@@ -92,6 +92,12 @@ class TestPoMirMatching:
         assert match.qty_mismatched is True
         assert match.is_flagged is True
         assert match.qty_diff_pct is not None and match.qty_diff_pct > 0
+        # Over/under direction is written by every plant's matcher, not just
+        # the one it was designed against - this is what makes "re-run
+        # matching for that plant" the fix when a plant's KPI cards read zero
+        # (a match row written before migration 0050 has NULL here, and NULL
+        # is counted as neither direction). 990 received against 1000 ordered.
+        assert match.qty_over_delivered is False
 
     def test_an_exact_match_on_every_field_is_never_flagged(self):
         po = _make_po()

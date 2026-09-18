@@ -86,6 +86,8 @@ class TestVapiPoMirMatching:
         assert match.material_matched is True
         assert match.qty_mismatched is True
         assert match.is_flagged is True
+        # See the HRS pipeline test's note on this same assertion.
+        assert match.qty_over_delivered is False
 
     def test_different_vendor_never_matches(self):
         po = _make_po(vendor_name="Vapi Polymers Pvt Ltd")
