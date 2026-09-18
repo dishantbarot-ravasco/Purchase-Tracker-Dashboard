@@ -76,10 +76,105 @@ class TestAchhadPoMirMatching:
         assert match.qty_mismatched is True
         assert match.is_flagged is True
 
-    def test_different_vendor_never_matches(self):
+    # ── Identification 2-of-3 (2026-09-18, Achhad only) ────────────────────
+    # Achhad is the one plant on
+    # matching_core._MatchConfig.identification_two_of_three, so vendor is a
+    # VOTE here, not a veto. The three tests below pin the rule at its two
+    # edges - what a disagreeing vendor can now be outvoted by, and what it
+    # still cannot - because those edges are the whole safety argument. See
+    # that flag's own comment for the live Achhad rows each one stands for.
+
+    def test_different_vendor_is_outvoted_by_po_number_plus_material(self):
+        """MIR 96/05's shape: the party name is wrong, the PO number and the
+        material are right, and the money agrees to the rupee. Two of three
+        identify it, and vendor_matched records that the name disagreed so
+        someone can fix it at source."""
         po = _make_po(vendor_name="Ganesh Chemicals Ltd")
         line_item = _make_po_line_item(po)
         _make_mir_entry(party_name="A Completely Different Vendor Ltd")
+
+        run_full_match()
+
+        match = RTPAchhadPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.po_number_matched is True
+        assert match.material_matched is True
+        assert match.vendor_matched is False
+
+    def test_different_vendor_with_only_a_po_number_never_matches(self):
+        """MIR 74/06's shape, and the case this rule exists to REFUSE: a
+        mistyped PO number pointing at another supplier's order, with the
+        material disagreeing and nothing else corroborating. One of three is
+        not identification - leaving it unmatched is the honest outcome."""
+        po = _make_po(vendor_name="Ganesh Chemicals Ltd")
+        line_item = _make_po_line_item(po, description="Stearic Acid")
+        _make_mir_entry(
+            party_name="A Completely Different Vendor Ltd",
+            material_description="Ammonium Polyphosphate",
+        )
+
+        run_full_match()
+
+        assert not RTPAchhadPOMirMatch.objects.filter(po_line_item=line_item).exists()
+
+    def test_different_vendor_with_only_a_material_never_matches(self):
+        """The mirror of the test above: the same common material bought
+        from two suppliers is not evidence on its own, and never was."""
+        po = _make_po(vendor_name="Ganesh Chemicals Ltd")
+        line_item = _make_po_line_item(po, description="Stearic Acid")
+        _make_mir_entry(
+            party_name="A Completely Different Vendor Ltd",
+            po_number_raw="4000000999",
+        )
+
+        run_full_match()
+
+        assert not RTPAchhadPOMirMatch.objects.filter(po_line_item=line_item).exists()
+
+    def test_vendor_matched_is_true_on_an_ordinary_match(self):
+        po = _make_po()
+        line_item = _make_po_line_item(po)
+        _make_mir_entry()
+
+        run_full_match()
+
+        assert RTPAchhadPOMirMatch.objects.get(po_line_item=line_item).vendor_matched is True
+
+    def test_legacy_slashed_po_number_folds_across_the_two_file_formats(self):
+        """The master CSV writes 'RTP2/HO/26-27/ENGG-0007' where the MIR
+        sheet writes 'Eng/0007/2026-27' - the same Achhad order. Before
+        parsers.common.legacy_po_matches() the token comparison read that as
+        no PO evidence at all."""
+        po = _make_po(po_number="RTP2/HO/26-27/ENGG-0007")
+        line_item = _make_po_line_item(po)
+        _make_mir_entry(po_number_raw="Eng/0007/2026-27")
+
+        run_full_match()
+
+        match = RTPAchhadPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.po_number_matched is True
+        assert match.tier == RTPAchhadPOMirMatch.Tier.PO_NUMBER
+
+    def test_no_po_vendor_row_is_reconciled_once_it_names_an_order_we_hold(self):
+        """parsers.common's NO_PO_VENDORS registry drops a party's MIR rows
+        from the PO<->MIR pool entirely. When that party starts being PO'd -
+        as JMF Performance Materials and Eternia Trading now are at Achhad -
+        the rows naming one of our orders have to come back on their own,
+        or they stay silently excluded until someone remembers to edit that
+        list. See _MirCandidateIndex's docstring."""
+        po = _make_po(vendor_name="JMF Performance Materials Pvt. Ltd.")
+        line_item = _make_po_line_item(po)
+        _make_mir_entry(party_name="JMF Performance Materials Pvt. Ltd.")
+
+        run_full_match()
+
+        assert RTPAchhadPOMirMatch.objects.filter(po_line_item=line_item).exists()
+
+    def test_no_po_vendor_row_without_a_po_reference_stays_excluded(self):
+        """The other half of the rule above - the ordinary internal-transfer
+        case, which is what the registry is actually for, is untouched."""
+        po = _make_po(vendor_name="JMF Performance Materials Pvt. Ltd.")
+        line_item = _make_po_line_item(po)
+        _make_mir_entry(party_name="JMF Performance Materials Pvt. Ltd.", po_number_raw="")
 
         run_full_match()
 

@@ -853,6 +853,19 @@ class RTPAchhadPOMirMatch(models.Model):
     # identification/financial-check redesign rationale (2026-09-07).
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
+    # Identification 2-of-3 (2026-09-18, Achhad only - see matching_core.py's
+    # _MatchConfig.identification_two_of_three). Vendor used to be a
+    # precondition for a match existing at all, so there was nothing to
+    # record; now that a PO number plus material can identify a row whose
+    # party name disagrees, False here is the signal that they disagreed.
+    # That is a real data-entry error somewhere - a mistyped party name, a
+    # placeholder left in the column, or the same supplier written two ways -
+    # and surfacing it is the point: the match is still made (the PO number
+    # and the money both say it belongs here), but someone should fix the
+    # name at source. Defaults True so every pre-existing row, and every
+    # plant still on the vendor-mandatory rule, reads correctly without a
+    # backfill.
+    vendor_matched = models.BooleanField(default=True)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -1737,6 +1750,19 @@ class RTPAchhadImportPOMirMatch(models.Model):
     # identification/financial-check redesign rationale (2026-09, imports).
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
+    # Identification 2-of-3 (2026-09-18, Achhad only - see matching_core.py's
+    # _MatchConfig.identification_two_of_three). Vendor used to be a
+    # precondition for a match existing at all, so there was nothing to
+    # record; now that a PO number plus material can identify a row whose
+    # party name disagrees, False here is the signal that they disagreed.
+    # That is a real data-entry error somewhere - a mistyped party name, a
+    # placeholder left in the column, or the same supplier written two ways -
+    # and surfacing it is the point: the match is still made (the PO number
+    # and the money both say it belongs here), but someone should fix the
+    # name at source. Defaults True so every pre-existing row, and every
+    # plant still on the vendor-mandatory rule, reads correctly without a
+    # backfill.
+    vendor_matched = models.BooleanField(default=True)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)

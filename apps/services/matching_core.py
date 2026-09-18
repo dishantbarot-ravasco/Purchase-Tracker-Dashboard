@@ -152,6 +152,7 @@ from apps.services.parsers.common import (
     clean_po_number,
     is_usable_po_reference,
     is_no_po_vendor,
+    legacy_po_matches,
     normalize_material,
     normalize_uom,
     normalize_vendor_for_matching,
@@ -260,6 +261,53 @@ class _MatchConfig:
     # before the order exists is not.
     date_grace_days: int = 7
     date_horizon_days: int = 270
+
+    # ── Identification: 2-of-3 instead of vendor-mandatory (2026-09-18) ────
+    # Achhad only for now (matching_achhad.py); HRS/Vapi keep the default
+    # False until their MIR files carry PO numbers as completely as
+    # Achhad's now does.
+    #
+    # WHAT CHANGES. Identification stops treating vendor as an absolute veto
+    # and instead requires any TWO of {PO number, vendor, material}. Vendor
+    # keeps all of its weight for the rows that have nothing else - 423 of
+    # Achhad's 663 MIR rows carry no PO number at all, and those still
+    # identify on vendor plus material exactly as before - but it can now be
+    # OUTVOTED by a PO number that agrees with the material.
+    #
+    # WHY, on measured data. The project owner filled in the PO-number column
+    # of Achhad's MIR for every vendor an order is raised against (2026-09-18:
+    # 240 of 663 rows, and 416 of the 423 blanks are registered no-PO
+    # vendors). Against that file, vendor-as-hard-gate rejects exactly 6 rows
+    # whose PO number names an order we hold, and on four of them it is the
+    # VENDOR NAME that is wrong, not the PO number - confirmed by the money
+    # agreeing to the rupee with the cited order:
+    #     MIR  96/05  'Prestige Industries'  cites 1100000818 (Sunjay
+    #                 International) - Barytes Powder, 10000 @ 8.5 = 85000 on
+    #                 BOTH sides. Prestige's own order is a different material.
+    #     MIR  26/09  'Gurvinder Singh Huf'  cites 1100000902 (Star Polymers
+    #                 Inc. (S)) - EPDM Reclaim, 20000 @ 77 = 1540000 on both.
+    #     MIR  20/09  'Kadr Metals Pvt Ltd' vs 'Kedar Metals Pvt Ltd' - a
+    #                 typo scoring 0.842, just under _VENDOR_SIMILARITY_
+    #                 THRESHOLD's 0.90 (which cannot go lower - see it).
+    #     MIR 122/08  party column reads the literal placeholder
+    #                 'Seller / Consigner'.
+    #
+    # WHY NOT A WEIGHTED SUM, which is the obvious alternative. A single
+    # blended score cannot express this data: vendor+material MUST identify
+    # (it is the only evidence 423 rows have), while PO-number-alone must NOT
+    # (see the next paragraph), and no set of weights and one threshold can
+    # rank those two the way round they need to be. 2-of-3 states the rule
+    # directly instead of encoding it in constants that look arbitrary.
+    # Weight still decides WHICH identified candidate wins - that is what the
+    # evidence tiers below already do, with PO number ranked top.
+    #
+    # WHAT 2-OF-3 REFUSES, and why that matters. MIR 74/06 ('2M Elastomers')
+    # cites 1100000844, an order of Chemox Chemopharma's for a completely
+    # different material - a mistyped PO number with no corroboration
+    # anywhere. PO-number-alone identification would bind it; 2-of-3 leaves
+    # it unmatched, which is the honest outcome. On Achhad's current file the
+    # two rules otherwise agree pair for pair.
+    identification_two_of_three: bool = False
 
 
 # ── Internal scoring/gating helpers ─────────────────────────────────────────
@@ -419,7 +467,18 @@ def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
     accept an exact match, or po_number's own tokens appearing as a
     contiguous run inside po_number_raw's tokens (some rows are typed as
     e.g. 'HRS/HO/26-27/003 & 004'). Whole-token comparison (not substring)
-    rejects a prefix collision like '...003' matching '...0031'."""
+    rejects a prefix collision like '...003' matching '...0031'.
+
+    LEGACY-FORM FALLBACK (2026-09-18). The token test above is exact about
+    the tokens themselves, which is right for the 10-digit SAP numbers both
+    files copy verbatim - but the two files write the LEGACY slashed form
+    differently for the same order (MIR 'Eng/0007/2026-27' against the
+    master CSV's 'RTP2/HO/26-27/ENGG-0007'), so five real Achhad orders
+    carried a PO number in both files that this function read as no
+    evidence. legacy_po_matches() folds only that shape, only on a shared
+    series name, and only ever ADDS a positive hit - see its own section
+    header in parsers/common.py for why the series check is what keeps the
+    fold safe. Tried second, so nothing about the exact path changes."""
     if not po_number or not po_number_raw:
         return False
     po_tokens = _po_tokens(po_number)
@@ -427,7 +486,9 @@ def _po_number_matches(po_number: str, po_number_raw: str) -> bool:
         return False
     raw_tokens = _po_tokens(po_number_raw)
     n = len(po_tokens)
-    return any(raw_tokens[i : i + n] == po_tokens for i in range(len(raw_tokens) - n + 1))
+    if any(raw_tokens[i : i + n] == po_tokens for i in range(len(raw_tokens) - n + 1)):
+        return True
+    return legacy_po_matches(po_number, po_number_raw)
 
 
 # ── Shared scoring building blocks ──────────────────────────────────────────
@@ -486,19 +547,72 @@ class _MirCandidateIndex:
     at 0.897 - just under the line today, with nothing but that 0.003 margin
     stopping one plant's internal transfers from being claimed by another
     plant's POs.
+
+    A REGISTERED NO-PO VENDOR'S ROW IS KEPT WHEN IT NAMES AN ORDER WE HOLD
+    (2026-09-18, config.identification_two_of_three only). The registry
+    encodes "no purchase order is ever raised against this party". A row
+    whose own PO column names one of our actual orders is direct evidence
+    that the premise no longer holds for that row, and the registry's own
+    docstring says what must happen then: "any of these can start being
+    PO'd, at which point its entry here must be removed or its orders will
+    be silently excluded from reconciliation."
+
+    Relying on someone noticing has already failed once. Achhad's master CSV
+    now raises real orders against two registered parties - JMF Performance
+    Materials (1100000792, 1100000799, 1100000875) and Eternia Trading
+    (3000001072) - and ten MIR rows carrying those PO numbers were being
+    dropped here before any gate ran. Nothing said so, because a dropped row
+    and an unmatched row look identical from outside.
+
+    So the exclusion is narrowed rather than the list edited: a registered
+    party's row is still dropped when it has no usable PO reference (the
+    ordinary internal-transfer case, which is the overwhelming majority and
+    the reason the registry exists), and kept when it names a PO we hold.
+    This is deliberately self-correcting - the day a party starts being
+    PO'd, its rows re-enter reconciliation on their own instead of waiting
+    for someone to remember this file. Keeping a row does NOT make it match:
+    it still has to pass identification like any other, which is what
+    refuses MIR 74/06's mistyped reference (see _MatchConfig.
+    identification_two_of_three). The vendors stay listed and stay counted
+    for the dashboard either way - this registry suppresses matching, never
+    the row.
     """
 
-    def __init__(self, config: _MatchConfig):
+    def __init__(self, config: _MatchConfig, known_pos: "frozenset | None" = None):
+        self._config = config
         rows = list(
             config.mir_model.objects.filter(is_active=True, party_name__isnull=False).exclude(party_name="")
         )
-        self._rows = [r for r in rows if not is_no_po_vendor(r.party_name)]
+        if config.identification_two_of_three:
+            if known_pos is None:
+                known_pos = known_po_numbers(config)
+            self._rows = [
+                r for r in rows
+                if not is_no_po_vendor(r.party_name) or _names_known_po(r.po_number_raw, known_pos)
+            ]
+        else:
+            self._rows = [r for r in rows if not is_no_po_vendor(r.party_name)]
         # Parallel list, same order as _rows - avoids re-normalizing the same
         # party_name string once per line item.
         self._normalized_vendors = [normalize_vendor_for_matching(r.party_name) for r in self._rows]
         self._by_vendor: dict[str, list] = {}
+        self._by_po: dict[str, list] = {}
 
-    def candidates_for(self, vendor_name: str) -> list:
+    def candidates_for(self, vendor_name: str, po_number: str = "") -> list:
+        """Rows this line item could conceivably be identified against.
+
+        Under the default rule that is exactly the vendor-gated set, because
+        vendor is mandatory and nothing outside it can ever identify. Under
+        config.identification_two_of_three it is the UNION of the
+        vendor-gated set and the rows naming this PO number, since a PO
+        number plus material can now identify a row whose party name
+        disagrees - those rows are unreachable through the vendor gate by
+        definition, so the pool has to be widened or the new rule could
+        never fire at all.
+
+        Order follows `_rows` in both cases (see the class docstring on why
+        that has to hold), so the union is built by one ordered pass rather
+        than by concatenating two lists."""
         vendor = normalize_vendor_for_matching(vendor_name)
         cached = self._by_vendor.get(vendor)
         if cached is None:
@@ -514,7 +628,18 @@ class _MirCandidateIndex:
         # incidental mutation silently corrupt every later item on the same
         # vendor - a whole class of bug this cache would otherwise introduce
         # for no benefit, since the copy is cheap next to the query it avoids.
-        return list(cached)
+        if not (self._config.identification_two_of_three and po_number):
+            return list(cached)
+        by_po = self._by_po.get(po_number)
+        if by_po is None:
+            by_po = [row for row in self._rows if _po_number_matches(po_number, row.po_number_raw)]
+            self._by_po[po_number] = by_po
+        in_pool = {id(row) for row in cached}
+        extra = {id(row) for row in by_po} - in_pool
+        if not extra:
+            return list(cached)
+        in_pool |= extra
+        return [row for row in self._rows if id(row) in in_pool]
 
 
 class _StockLotPool:
@@ -552,14 +677,35 @@ class _StockLotPool:
         )
 
 
-def _candidate_mir_entries(config: _MatchConfig, vendor_name: str, index: "_MirCandidateIndex | None" = None) -> list:
-    """Vendor-gated MIR rows for one PO's vendor.
+def _names_known_po(po_number_raw: str, known_pos) -> bool:
+    """True when a MIR row's own PO column names a purchase order we hold.
+
+    Used only to narrow the no-PO-vendor exclusion (see _MirCandidateIndex's
+    docstring). Deliberately the same two conditions the contradiction gate
+    uses to decide a reference is real - PO-shaped (is_usable_po_reference())
+    and recognized - so a junk cell or a reference to something outside this
+    system's PO coverage keeps the row excluded, exactly as today."""
+    raw = (po_number_raw or "").strip()
+    if not raw or not is_usable_po_reference(raw):
+        return False
+    return any(_po_number_matches(known, raw) for known in known_pos)
+
+
+def _candidate_mir_entries(
+    config: _MatchConfig,
+    vendor_name: str,
+    index: "_MirCandidateIndex | None" = None,
+    po_number: str = "",
+) -> list:
+    """Candidate MIR rows for one PO - vendor-gated, plus the rows naming
+    `po_number` when config.identification_two_of_three is set (see
+    _MirCandidateIndex.candidates_for()).
 
     `index` is an optional pre-built `_MirCandidateIndex` - pass it from a
     batch loop to avoid re-querying the whole MIR table per line item (see
     that class's docstring). Omitting it preserves the original one-query
     behavior exactly, which is what the single-item callers want."""
-    return (index or _MirCandidateIndex(config)).candidates_for(vendor_name)
+    return (index or _MirCandidateIndex(config)).candidates_for(vendor_name, po_number)
 
 
 # ── IDF-weighted material similarity (2026-09-12) ───────────────────────
@@ -736,6 +882,17 @@ def _date_verdict(config: _MatchConfig, po_created_date, mir_date) -> Decimal:
 # evidence identifies it, and tiers are compared before any numeric score -
 # see _pair_weight() for why that ordering has to be lexicographic rather
 # than a weighted blend.
+# TIER_RANK_PO_AND_VENDOR sits above plain TIER_RANK_PO_NUMBER only under
+# config.identification_two_of_three, where a PO-number hit no longer implies
+# the vendor agreed. Two orders can carry the same number in MIR - one of them
+# by a typo - and when that happens the one whose party name ALSO agrees is
+# the better claim, so it must win the row before the other is considered.
+# Without the extra step both would sit in TIER_RANK_PO_NUMBER and the
+# assignment would fall back to money, which is exactly the coin-toss the
+# 2026-09-12 redesign removed everywhere else. Plants on the default rule
+# never reach this rank (vendor is mandatory there, so it is implied by every
+# candidate) and their ranking is bit-for-bit unchanged.
+TIER_RANK_PO_AND_VENDOR = 4  # MIR names this order AND the party agrees
 TIER_RANK_PO_NUMBER = 3      # MIR names this exact order
 TIER_RANK_MATERIAL_STRONG = 2  # material agrees and the money agrees closely
 TIER_RANK_MATERIAL_OK = 1      # material agrees and the money is plausible
@@ -765,6 +922,10 @@ class _Candidate(NamedTuple):
     date_weight: Decimal
     material_matched: bool
     po_number_matched: bool
+    # Always True under the default rule - vendor is the mandatory gate
+    # there, so a candidate cannot exist without it. Only meaningful, and
+    # only ever False, under config.identification_two_of_three.
+    vendor_matched: bool = True
 
 
 def _pair_weight(candidate: "_Candidate") -> Decimal:
@@ -821,6 +982,7 @@ def _identification_pool(
     scorer=None,
     po_created_date=None,
     known_pos=frozenset(),
+    vendor_name: str = "",
 ) -> tuple[list, dict]:
     """Vendor is already satisfied by `candidates` (the hard gate ran in
     _candidate_mir_entries). Applies the two hard NEGATIVE gates added
@@ -843,12 +1005,25 @@ def _identification_pool(
          repair_month_swapped_date()), so a date must never be allowed to
          veto an explicit, agreeing PO number.
 
+    TWO-OF-THREE (config.identification_two_of_three, Achhad 2026-09-18).
+    When the flag is set, `candidates` is no longer a vendor-gated list (see
+    _MirCandidateIndex.candidates_for()) and vendor becomes the third voting
+    factor rather than a precondition: a candidate is identified by any TWO
+    of {PO number, vendor, material}. Every pair that identifies under the
+    default rule still identifies under this one - vendor+material and
+    vendor+PO-number are both two of the three - so the flag can only ever
+    ADD candidates, never remove one. See _MatchConfig.
+    identification_two_of_three for the measured data behind it, and for why
+    a single weighted score cannot express the same rule.
+
     Returns (pool, candidates_by_mir_id) - the second value carries a
     _Candidate per surviving row, so callers can record which identification
-    field fired (material_matched/po_number_matched) and rank pairs without
-    recomputing the evidence."""
+    fields fired (material_matched/po_number_matched/vendor_matched) and
+    rank pairs without recomputing the evidence."""
     pool = []
     found: dict[int, _Candidate] = {}
+    two_of_three = config.identification_two_of_three
+    po_vendor = normalize_vendor_for_matching(vendor_name) if two_of_three else ""
     for c in candidates:
         po_number_matched = _po_number_matches(po_number, c.po_number_raw)
         if not po_number_matched and _po_number_contradicts(po_number, c.po_number_raw, known_pos):
@@ -860,11 +1035,24 @@ def _identification_pool(
             date_weight = Decimal("0")
 
         material_matched = _material_matches(config, item.description, c.material_description, scorer)
-        if not (material_matched or po_number_matched):
-            continue
+        if two_of_three:
+            # Recomputed here rather than taken from the pool's construction:
+            # candidates_for() returns a UNION now, so membership no longer
+            # tells us whether this particular row's vendor agreed.
+            vendor_matched = _vendor_matches(normalize_vendor_for_matching(c.party_name), po_vendor)
+            if (po_number_matched + vendor_matched + material_matched) < 2:
+                continue
+        else:
+            # Vendor was the hard gate that built `candidates`, so it is
+            # satisfied by construction for every row reaching this point.
+            vendor_matched = True
+            if not (material_matched or po_number_matched):
+                continue
 
         score, coverage, _uom = _score(config, item, c)
-        if po_number_matched:
+        if po_number_matched and vendor_matched and two_of_three:
+            tier_rank = TIER_RANK_PO_AND_VENDOR
+        elif po_number_matched:
             tier_rank = TIER_RANK_PO_NUMBER
         elif score >= _STRONG_FINANCIAL_SCORE:
             tier_rank = TIER_RANK_MATERIAL_STRONG
@@ -882,6 +1070,7 @@ def _identification_pool(
             date_weight=date_weight,
             material_matched=material_matched,
             po_number_matched=po_number_matched,
+            vendor_matched=vendor_matched,
         )
     return pool, found
 
@@ -1423,6 +1612,22 @@ def _diffs_and_flag(
 # Every function below writes to the DB (upsert-or-delete a match row) and is
 # safe to call repeatedly.
 
+def _vendor_matched_field(config: _MatchConfig, vendor_matched: bool) -> dict:
+    """The `vendor_matched` column as a spreadable dict, or {} for a plant
+    that has no such column.
+
+    Only the plants on config.identification_two_of_three have one, and only
+    they can produce a False: everywhere else vendor is the mandatory gate,
+    so a match cannot exist without it and the value would be a constant
+    True on every row. Same shape and same reasoning as
+    config.import_extended_fields' own conditional defaults - a model without
+    the column must never be handed the keyword, or update_or_create() raises
+    FieldError."""
+    if not config.identification_two_of_three:
+        return {}
+    return {"vendor_matched": vendor_matched}
+
+
 def _po_matchable(po_line_item, is_single_item_po: bool) -> _Matchable:
     """Builds a domestic line item's _Matchable, including the
     identification/financial-check redesign's tax_type/total_value/
@@ -1517,12 +1722,13 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
     po = po_line_item.purchase_order
     is_single_item_po = po.items.count() == 1
     item = _po_matchable(po_line_item, is_single_item_po)
-    candidates = _candidate_mir_entries(config, po.vendor_name)
+    candidates = _candidate_mir_entries(config, po.vendor_name, po_number=po.po_number)
     pool, found = _identification_pool(
         config, candidates, item, po.po_number,
         scorer=_material_scorer(config),
         po_created_date=po.po_created_date,
         known_pos=known_po_numbers(config),
+        vendor_name=po.vendor_name,
     )
     best_entry, best_score, coverage, group = _pick_match(config, item, pool, found)
 
@@ -1532,6 +1738,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
 
     material_matched = found[best_entry.id].material_matched
     po_number_matched = found[best_entry.id].po_number_matched
+    vendor_matched = found[best_entry.id].vendor_matched
     tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
     qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
     (
@@ -1555,6 +1762,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             severity=severity,
             material_matched=material_matched,
             po_number_matched=po_number_matched,
+            **_vendor_matched_field(config, vendor_matched),
             qty_mismatched=qty_mismatched,
             rate_mismatched=rate_mismatched,
             data_mismatch=data_mismatch,
@@ -1590,12 +1798,13 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
     po = import_line_item.purchase_order
     is_single_item_po = po.items.count() == 1
     item = _import_matchable(config, import_line_item, is_single_item_po)
-    candidates = _candidate_mir_entries(config, po.vendor_name)
+    candidates = _candidate_mir_entries(config, po.vendor_name, po_number=po.po_number)
     pool, found = _identification_pool(
         config, candidates, item, po.po_number,
         scorer=_material_scorer(config),
         po_created_date=po.po_created_date,
         known_pos=known_po_numbers(config),
+        vendor_name=po.vendor_name,
     )
     best_entry, best_score, coverage, group = _pick_match(config, item, pool, found)
 
@@ -1605,6 +1814,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
 
     material_matched = found[best_entry.id].material_matched
     po_number_matched = found[best_entry.id].po_number_matched
+    vendor_matched = found[best_entry.id].vendor_matched
     tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
     qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
     (
@@ -1629,6 +1839,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         defaults.update(dict(
             material_matched=material_matched,
             po_number_matched=po_number_matched,
+            **_vendor_matched_field(config, vendor_matched),
             qty_mismatched=qty_mismatched,
             rate_mismatched=rate_mismatched,
             data_mismatch=data_mismatch,
@@ -1903,12 +2114,17 @@ def run_full_match(config: _MatchConfig) -> dict:
     # query each.
     scorer = _material_scorer(config)
     known_pos = known_po_numbers(config)
+    # Computed above the index on purpose: under
+    # config.identification_two_of_three the index needs the known-PO set to
+    # decide which registered no-PO vendors' rows to keep (see
+    # _MirCandidateIndex's docstring), and passing the set already in hand
+    # keeps that to the one query run_full_match was always going to make.
     # Same "built once for the whole pass" reasoning as the two above - the
     # vendor-gated MIR pool is a property of the plant's MIR table, not of any
     # one line item. Before this existed, collect() re-queried the ENTIRE MIR
     # table once per line item; see _MirCandidateIndex's docstring for the
     # measured cost.
-    mir_index = _MirCandidateIndex(config)
+    mir_index = _MirCandidateIndex(config, known_pos)
 
     items_by_key: dict[tuple[str, int], _Matchable] = {}
     candidates_by_key: dict[tuple[str, int, int], _Candidate] = {}  # (kind, item_id, mir_id) -> evidence
@@ -1922,10 +2138,11 @@ def run_full_match(config: _MatchConfig) -> dict:
 
     def collect(kind, item, matchable, po):
         items_by_key[(kind, item.id)] = matchable
-        candidates = _candidate_mir_entries(config, po.vendor_name, index=mir_index)
+        candidates = _candidate_mir_entries(config, po.vendor_name, index=mir_index, po_number=po.po_number)
         pool, found = _identification_pool(
             config, candidates, matchable, po.po_number,
             scorer=scorer, po_created_date=po.po_created_date, known_pos=known_pos,
+            vendor_name=po.vendor_name,
         )
         for mir_id, candidate in found.items():
             candidates_by_key[(kind, item.id, mir_id)] = candidate
@@ -1990,6 +2207,7 @@ def run_full_match(config: _MatchConfig) -> dict:
         matchable = items_by_key[("po", item.id)]
         evidence = candidates_by_key[("po", item.id, mir.id)]
         material_matched, po_number_matched = evidence.material_matched, evidence.po_number_matched
+        vendor_matched = evidence.vendor_matched
         tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
         qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
         (
@@ -2013,6 +2231,7 @@ def run_full_match(config: _MatchConfig) -> dict:
                 severity=severity,
                 material_matched=material_matched,
                 po_number_matched=po_number_matched,
+                **_vendor_matched_field(config, vendor_matched),
                 qty_mismatched=qty_mismatched,
                 rate_mismatched=rate_mismatched,
                 data_mismatch=data_mismatch,
@@ -2036,6 +2255,7 @@ def run_full_match(config: _MatchConfig) -> dict:
         matchable = items_by_key[("import", item.id)]
         evidence = candidates_by_key[("import", item.id, mir.id)]
         material_matched, po_number_matched = evidence.material_matched, evidence.po_number_matched
+        vendor_matched = evidence.vendor_matched
         tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
         qty_override, rate_override, value_override = (group.qty, group.rate, group.value) if group is not None else (None, None, None)
         (
@@ -2060,6 +2280,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             defaults.update(dict(
                 material_matched=material_matched,
                 po_number_matched=po_number_matched,
+                **_vendor_matched_field(config, vendor_matched),
                 qty_mismatched=qty_mismatched,
                 rate_mismatched=rate_mismatched,
                 data_mismatch=data_mismatch,

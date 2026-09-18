@@ -371,20 +371,66 @@ wired to `match_hrs` / `match_achhad` / `match_vapi`; it is idempotent (`update_
 and safe to re-run any time. One pass covers both domestic and import PO line items, reported as
 `po_line_items_matched` and `import_po_line_items_matched`.
 
-### Vendor name is always a hard gate, never a scored factor
+### Vendor name is a hard gate on HRS/Vapi, one of three votes on Achhad
 
-Two records for different vendors are never candidates for each other, however well
-material/qty/rate/value line up. Names are normalised (`parsers/common.py`'s `normalize_vendor()` —
-strips legal suffixes like "Pvt Ltd", lowercases, strips punctuation) and then compared with
-**containment, not equality**: HRS's Stock sheet appends a city suffix its MIR/PO data doesn't carry
-(`"Rubamin Private Limited"` vs `"Rubamin Private Limited - Vadodara"`), and exact matching produced
-**zero** MIR↔Stock matches until switched to `shorter in longer`.
+On **HRS and Vapi**, two records for different vendors are never candidates for each other, however
+well material/qty/rate/value line up. Names are normalised (`parsers/common.py`'s
+`normalize_vendor()` — strips legal suffixes like "Pvt Ltd", lowercases, strips punctuation) and
+then compared with **containment, not equality**: HRS's Stock sheet appends a city suffix its
+MIR/PO data doesn't carry (`"Rubamin Private Limited"` vs `"Rubamin Private Limited - Vadodara"`),
+and exact matching produced **zero** MIR↔Stock matches until switched to `shorter in longer`.
+
+**Achhad is different since 2026-09-18** — `matching_achhad.py` sets
+`_MatchConfig.identification_two_of_three=True`, and PO↔MIR identification there requires any **two
+of {PO number, vendor, material}** rather than vendor plus one of the other two. Vendor keeps all of
+its weight for the rows that have nothing else (423 of Achhad's 663 MIR rows carry no PO number at
+all, and those still identify on vendor plus material exactly as before) but it can now be
+**outvoted** by a PO number that agrees with the material.
+
+This became safe only because the project owner filled in the PO-number column of Achhad's MIR for
+every vendor an order is raised against. Against that file the change is measurable and one-sided:
+**166 → 175 matched line items, zero lost, zero re-pointed** to a different MIR row. Four of the
+gains are rows where the PO number is right and the **party name is wrong** — MIR 96/05 books
+Barytes Powder (10000 @ 8.5 = 85000 on both sides) against Sunjay International's order under the
+name "Prestige Industries"; MIR 122/08's party column reads the literal placeholder
+`Seller / Consigner`; MIR 20/09 types "Kadr Metals" for "Kedar Metals" (0.842 similarity, under
+`_VENDOR_SIMILARITY_THRESHOLD`'s 0.90, which cannot go lower). Those matches are made **and
+flagged**: `vendor_matched=False` surfaces as the `Vendor Name Mismatch in MIR` data-quality flag,
+because a disagreeing name is always an error somebody should fix at source.
+
+**Why 2-of-3 and not a weighted score**, which is the obvious alternative and was considered: no set
+of weights with one threshold can express this data. `vendor+material` **must** identify (it is the
+only evidence 423 rows have) while `PO-number alone` **must not** — MIR 74/06 cites a mistyped
+number belonging to another supplier's order for a completely different material, and PO-alone
+identification would bind it. 2-of-3 states that rule directly instead of hiding it in constants.
+Weight still decides *which* identified candidate wins; that is what the evidence tiers already do.
+
+**Rolling it out to HRS and Vapi is blocked on their MIR files**, not on code — they need the same
+PO-number coverage Achhad's now has before the flag means anything there.
+
+### Legacy slashed PO numbers drift between the two files
+
+The 10-digit SAP numbers reconcile on their own; the legacy slashed form does not. Achhad's MIR
+writes `Eng/0007/2026-27` where the master CSV writes `RTP2/HO/26-27/ENGG-0007` — the same order,
+and five of them. `parsers/common.py`'s `legacy_po_matches()` folds that shape on **(fiscal year,
+serial) plus a shared series name by prefix**, tried only after `_po_number_matches()`'s exact token
+test. The series condition is the safety argument, not decoration: Achhad's MIR carries both
+`0014/2026-27` (Triambakam Impex) and `14/26-27` (Polyols & Polymers), which reduce to the identical
+`('26-27', 14)` and would otherwise both claim the same order. Refusing those digits-only shapes
+costs nothing — they still identify on vendor plus material.
 
 ### Some vendors never have a PO — that is registered, not inferred
 
 `parsers/common.py`'s **`NO_PO_VENDORS`** registry lists the vendors this company never raises a
 purchase order against. `matching_core._MirCandidateIndex` drops their MIR rows from the PO↔MIR
-candidate pool at build time. Roughly **890 of ~2,460 active MIR rows** across the three plants fall
+candidate pool at build time — **except**, on a plant running `identification_two_of_three`, a row
+whose own PO column names an order we actually hold. That exception exists because the registry has
+already gone stale once and nothing said so: Achhad's master CSV now raises real orders against JMF
+Performance Materials (1100000792/799/875) and Eternia Trading (3000001072), and ten MIR rows
+carrying those PO numbers were being dropped before any gate ran, indistinguishable from rows the
+matcher had simply failed on. Narrowing the exclusion is self-correcting; relying on someone
+remembering to edit this list is not. Keeping a row does **not** make it match — it still has to
+pass identification. Roughly **890 of ~2,460 active MIR rows** across the three plants fall
 in this bucket — a large block that previously sat in every pool forever, matched nothing, and had
 nothing anywhere saying why.
 

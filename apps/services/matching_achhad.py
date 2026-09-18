@@ -77,6 +77,14 @@ MATCH_CONFIG = _MatchConfig(
     # material-only gate, same weaker-confidence characteristic Achhad's
     # MIR<->Stock matching already had before this extension.
     stock_extended_fields=True,
+    # Identification 2-of-3 (2026-09-18, project owner) - Achhad first, HRS
+    # and Vapi stay on the vendor-mandatory default until their MIR files
+    # carry PO numbers as completely as Achhad's now does. See
+    # matching_core._MatchConfig.identification_two_of_three for the measured
+    # case, including the four rows where the PO number is right and the
+    # party name is wrong, and the one row this rule deliberately still
+    # refuses to match.
+    identification_two_of_three=True,
 )
 
 

@@ -158,6 +158,16 @@ def _mir_match_dict(item):
         # _domestic_base.py's _line_item_dict() for frontend consistency.
         "materialMatched": bool(getattr(match, "material_matched", False)),
         "poNumberMatched": bool(getattr(match, "po_number_matched", False)),
+        # vendorMatched is FALSE only on a plant running identification
+        # 2-of-3 (Achhad, 2026-09-18) - everywhere else vendor is still the
+        # mandatory gate, so a match cannot exist without it and this is
+        # always True. False means the match was identified by its PO number
+        # and material while the party name disagreed: a real name error at
+        # source, surfaced as its own Data Quality Flag rather than silently
+        # accepted. Defaults to True (not False) for a plant/row that has no
+        # such column, so the flag never fires where the concept does not
+        # apply.
+        "vendorMatched": bool(getattr(match, "vendor_matched", True)),
         "qtyMismatched": bool(getattr(match, "qty_mismatched", False)),
         "rateMismatched": bool(getattr(match, "rate_mismatched", False)),
         "dataMismatch": bool(getattr(match, "data_mismatch", False)),

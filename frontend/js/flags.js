@@ -298,6 +298,8 @@ function importCriticalFlagsFor(po) {
   // all - imports_views.py's _mir_match_dict() returns null below
   // MATCH_THRESHOLD) is the import equivalent of Domestic's `!it.matched`.
   if (items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
+  // See computePoFlags()'s own comment on this same flag.
+  if (items.some(i => live(i) && i.mirMatch.vendorMatched === false)) cats.push({ label: 'Vendor Name Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
@@ -396,6 +398,7 @@ const DISCREPANCY_LEGEND = [
   { label: 'Quantity Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received quantity (from the matched MIR entry) does not exactly match the PO’s ordered quantity - any difference at all counts, there is no tolerance (e.g. 999kg received against a 1000kg order still flags). Can mean a short shipment, an over shipment, or a receipt logged against the wrong PO.' },
   { label: 'Rate Mismatch in MIR', severity: 'critical', meaning: 'A line item’s received rate (from the matched MIR entry) does not exactly match the PO’s rate - any difference at all counts, there is no tolerance. Can mean a price change was not reflected on the PO or a billing error. Value is deliberately not compared here - it is qty x rate, so a quantity mismatch alone would otherwise double-count as a second, unrelated-looking problem.' },
   { label: 'PO Not Found in MIR', severity: 'critical', meaning: 'No MIR entry could be matched to this line item at all (no exact PO-number match, and nothing scored high enough on the weighted match) - the PO may not have been received yet, or the receipt was logged in a way this matcher could not link back to it.' },
+  { label: 'Vendor Name Mismatch in MIR', severity: 'info', meaning: 'The MIR entry was matched to this PO by its PO number and material description, but the party name recorded on it does not match the PO’s vendor. The match itself is sound - the order number and the amounts agree - so this flags a name that needs correcting at source: usually a typo, a placeholder left in the Party Name column, or the same supplier written two different ways in the two files.' },
   { label: 'Tax Type Mismatch in MIR', severity: 'info', meaning: 'The tax structure used (e.g. IGST vs CGST+SGST) is not consistent between the PO and the matched MIR entry.' },
   { label: 'Net Value Mismatch in MIR', severity: 'info', meaning: 'The pre-tax net value on the matched MIR entry differs from the PO’s net value by more than a small rounding allowance.' },
   { label: 'Taxable Value Mismatch in MIR', severity: 'info', meaning: 'The taxable value on the matched MIR entry differs from the PO’s taxable value by more than a small rounding allowance.' },
@@ -446,6 +449,9 @@ const CATEGORY_COLORS = {
   'Header or template data error': '#64748b',
   'Missing or blank field': '#64748b',
   'Vendor code scheme inconsistency': '#64748b',
+  // Slate, with the other data-completeness gaps: a name typed wrong in
+  // one of the two files, not a money or compliance problem.
+  'Vendor Name Mismatch in MIR': '#64748b',
   'Non raw material or different category': '#64748b',
   'Delivery date anomaly': '#2563eb',
 };
@@ -530,6 +536,18 @@ function computePoFlags(po) {
   // line item at all) rather than any match-row field, since there's no
   // match row to read from in that case.
   if (items.some(it => !it.matched)) cats.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
+  // Identification 2-of-3 (2026-09-18, Achhad only - see matching_core.py's
+  // _MatchConfig.identification_two_of_three). `vendorMatched` is true
+  // everywhere the vendor gate is still mandatory, so this flag simply never
+  // fires on HRS/Vapi; on Achhad, false means the match was identified by its
+  // PO number and material while the party name disagreed. That is always a
+  // real name error at source - a typo, a placeholder left in the column, or
+  // one supplier written two ways - and the whole reason the rule surfaces it
+  // instead of quietly accepting the match. Read with `=== false` rather than
+  // `!it.vendorMatched` so a line item with no match row at all (vendorMatched
+  // undefined) is not counted as a vendor mismatch; those are already reported
+  // as 'PO Not Found in MIR'.
+  if (items.some(it => it.vendorMatched === false && !it.dismissedByOverride)) cats.set('Vendor Name Mismatch in MIR', { label: 'Vendor Name Mismatch in MIR', severity: 'info' });
   if (items.some(it => it.taxTypeMismatch && !it.dismissedByOverride)) cats.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
   if (items.some(it => it.netValueMismatched && !it.dismissedByOverride)) cats.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
   if (items.some(it => it.taxableValueMismatched && !it.dismissedByOverride)) cats.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });

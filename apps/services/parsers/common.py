@@ -594,6 +594,125 @@ def clean_po_number(value: str) -> str:
     return cleaned or s
 
 
+# ── Legacy slashed PO numbers: cross-file format drift (2026-09-18) ─────────
+# The 10-digit SAP PO numbers reconcile between the master CSV and the MIR
+# sheets on their own - they are one atomic token and both files copy it
+# verbatim. The LEGACY slashed form does not: the two files write the same
+# order differently, confirmed against Achhad's live pair this session.
+#
+#   MIR sheet writes          master CSV writes                same order?
+#   Eng/0007/2026-27          RTP2/HO/26-27/ENGG-0007          yes
+#   RTP-ACHHAD/26-27/001      RTP2/HO/26-27/001                yes
+#   RTP/HO/25-26/003          RTP2/HO/25-26/0003               yes
+#
+# _po_number_matches()'s whole-token comparison cannot see through any of
+# these - the token sets genuinely differ - so five real Achhad orders carry
+# a PO number in both files that the matcher reads as "no PO evidence".
+#
+# The key below reduces a legacy reference to the two parts both files do
+# agree on: the FISCAL YEAR ('2026-27' and '26-27' fold together) and the
+# SERIAL number with leading zeros stripped ('0007'/'007'/'7' fold together).
+#
+# THE SERIES TOKEN IS REQUIRED, and that requirement is the whole safety
+# argument. (fiscal year, serial) alone is NOT unique in this data: Achhad's
+# MIR carries both '0014/2026-27' (Triambakam Impex) and '14/26-27' (Polyols
+# & Polymers Pvt Ltd), which reduce to the identical ('26-27', 14) and would
+# then both claim RTP2/HO/26-27/ENGG-0014. Demanding that the two sides also
+# share an alphabetic series token - by prefix, so 'Eng' reaches 'ENGG' and
+# 'RTP' reaches 'RTP2' - rejects both of those (neither carries one at all)
+# while still folding the three real pairs above.
+#
+# Refusing the digits-only shapes costs nothing: a PO number is only ever ONE
+# of the identification factors, so those rows still identify on vendor plus
+# material exactly as they do today. This helper only ever ADDS positive
+# evidence - `_po_number_contradicts()` deliberately does not consult it, so a
+# loose fold here can never become evidence AGAINST a match.
+_FY_RE = re.compile(r"^(?:20)?(\d{2})\s*-\s*(?:20)?(\d{2})$")
+# Splits on the separators BETWEEN parts of a reference, deliberately NOT on
+# '-': a hyphen binds a part together here ('26-27' is one fiscal year,
+# 'ENGG-0007' is one series+serial) and splitting on it would destroy both.
+_LEGACY_SPLIT_RE = re.compile(r"[/\s,;&]+")
+# The serial is read only from a token that is all digits ('001', '0014') or
+# from the digit run after a hyphen ('ENGG-0007'). Digits fused directly onto
+# letters are deliberately NOT a serial: 'RTP2' is a series name whose '2'
+# would otherwise be read as order number 2.
+_HYPHEN_SERIAL_RE = re.compile(r"-(\d+)$")
+
+
+def legacy_po_key(value: str) -> tuple[str, int] | None:
+    """(fiscal year, serial) for a legacy slashed PO reference, else None.
+
+    Returns None for anything this fold must not touch - a bare SAP numeral,
+    a reference with no fiscal year, or one with no serial - so a caller can
+    use `legacy_po_key(a) is not None and legacy_po_key(a) == legacy_po_key(b)`
+    as a complete test. Pair it with `legacy_po_series()` (see that function
+    and the section header for why the series check is mandatory).
+
+    When several tokens could be the serial, the LAST one wins - both files
+    write the order number at the end of the reference, and the fiscal year
+    (checked first, and skipped) is the only part that ever follows it."""
+    s = (value or "").strip()
+    if not s or "/" not in s:
+        return None
+    fy = None
+    serial = None
+    for token in (t for t in _LEGACY_SPLIT_RE.split(s.upper()) if t):
+        m = _FY_RE.match(token)
+        if m:
+            # Only a genuine consecutive-year pair is a fiscal year, so a
+            # hyphenated serial can never be mistaken for one.
+            start, end = int(m.group(1)), int(m.group(2))
+            if fy is None and (end - start) % 100 == 1:
+                fy = f"{start:02d}-{end:02d}"
+                continue
+        if token.isdigit():
+            serial = int(token)
+            continue
+        hyphenated = _HYPHEN_SERIAL_RE.search(token)
+        if hyphenated:
+            serial = int(hyphenated.group(1))
+    if fy is None or serial is None:
+        return None
+    return fy, serial
+
+
+def legacy_po_series(value: str) -> set[str]:
+    """The alphabetic series names of a legacy PO reference, upper-cased
+    ('RTP2/HO/26-27/ENGG-0007' -> {'RTP', 'HO', 'ENGG'},
+    'RTP-ACHHAD/26-27/001' -> {'RTP', 'ACHHAD'}).
+
+    Each token is split further on '-' and has any trailing digits stripped,
+    so 'RTP2' contributes 'RTP' and 'ENGG-0007' contributes 'ENGG'. Compared
+    by prefix in `legacy_po_matches()` below."""
+    out = set()
+    for token in (t for t in _LEGACY_SPLIT_RE.split((value or "").upper()) if t):
+        for part in token.split("-"):
+            word = re.sub(r"\d+$", "", part)
+            if word.isalpha() and len(word) >= 2:
+                out.add(word)
+    return out
+
+
+def legacy_po_matches(a: str, b: str) -> bool:
+    """True when two legacy slashed PO references name the same order
+    despite being written in the two files' different house formats - equal
+    (fiscal year, serial), plus a shared series name by prefix. See the
+    section header above for the collision that second condition prevents.
+
+    A multi-PO cell ('HRS/HO/26-27/003 & 004') reduces to only its LAST
+    serial here and so will not fold onto '...003'. That is not a gap: this
+    function is a FALLBACK behind matching_core._po_number_matches()'s own
+    contiguous-token-run test, which already handles that shape, and which
+    runs first."""
+    key = legacy_po_key(a)
+    if key is None or key != legacy_po_key(b):
+        return False
+    sa, sb = legacy_po_series(a), legacy_po_series(b)
+    if not sa or not sb:
+        return False
+    return any(x.startswith(y) or y.startswith(x) for x in sa for y in sb)
+
+
 def repair_month_swapped_date(value: datetime.date | None, expected_month: int | None) -> datetime.date | None:
     """Repairs a date whose day and month were transposed, using a month the
     caller knows independently.

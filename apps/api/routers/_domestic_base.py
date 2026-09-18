@@ -289,6 +289,16 @@ def _line_item_dict(item):
         # instead of blending it back into one boolean.
         "materialMatched": bool(match and match.material_matched),
         "poNumberMatched": bool(match and match.po_number_matched),
+        # vendorMatched is FALSE only on a plant running identification
+        # 2-of-3 (Achhad, 2026-09-18) - everywhere else vendor is still the
+        # mandatory gate, so a match cannot exist without it and this is
+        # always True. False means the match was identified by its PO number
+        # and material while the party name disagreed: a real name error at
+        # source, surfaced as its own Data Quality Flag rather than silently
+        # accepted. Defaults to True (not False) for a plant/row that has no
+        # such column, so the flag never fires where the concept does not
+        # apply.
+        "vendorMatched": bool(not match or getattr(match, "vendor_matched", True)),
         "qtyMismatched": bool(match and match.qty_mismatched),
         "rateMismatched": bool(match and match.rate_mismatched),
         "dataMismatch": bool(match and match.data_mismatch),
