@@ -236,6 +236,115 @@ function resetFilters() {
   resetImportFilters();
 }
 
+// ── Deep links: "/?plant=<key>&po=<number>" / "?material=<description>" ──
+//
+// Added 2026-09-19 (project owner: from Search PO, "instead of open entire
+// dashboard can't we take user to the info about that PO, or raw material").
+// search-po.html's detail panel used to offer a bare "Open Full Dashboard"
+// link to "/", which landed the reader on All Plants / no filters and left
+// them to find the PO they had just searched for a second time, by hand.
+// These params open that exact PO's (or material's) own detail modal on
+// arrival instead.
+//
+// The link is READ ONLY HERE and never written back into `state` blindly:
+// `plant` is accepted only if it is a real plant key (or 'all'), and the
+// po/material values are used as lookup keys and rendered through
+// escapeHtml()/textContent, never as markup - everything in a URL is
+// attacker-supplied by definition, even on an internal tool.
+//
+// The URL is deliberately left in the address bar after opening, so the
+// link is shareable and survives a reload - it is a real address for a PO,
+// not a one-shot instruction.
+function readDeepLinkParams() {
+  let params;
+  try { params = new URLSearchParams(window.location.search); } catch (e) { return null; }
+  const po = params.get('po');
+  const material = params.get('material');
+  if (!po && !material) return null;
+  const plantParam = params.get('plant');
+  const plant = (plantParam === 'all' || PLANT_KEYS.indexOf(plantParam) !== -1) ? plantParam : null;
+  return { po: po, material: material, plant: plant };
+}
+
+/** Points the view/plant tabs at the deep link's target BEFORE the first
+ * load, so the right plant's data is fetched once rather than fetched for
+ * the default selection and then again for the link's. */
+function applyDeepLinkToState(link) {
+  state.plant = link.plant || 'all';
+  if (link.material) {
+    state.view = 'materials';
+  } else {
+    state.view = 'po';
+    state.purchaseType = 'domestic'; // ?po= is a Domestic PO number (Search PO only searches those)
+  }
+}
+
+/** A target that can't be found is reported in place rather than silently
+ * ignored - a renamed/retired PO (see CLAUDE.md's "Purchase orders are
+ * retired, not deleted") is exactly the case where a saved link stops
+ * resolving, and "the dashboard just opened normally" gives the reader
+ * nothing to act on. textContent, not innerHTML: this string carries a
+ * value straight from the URL. */
+function showDeepLinkMiss(message) {
+  const el = document.getElementById('viewContent');
+  if (!el) return;
+  const note = document.createElement('div');
+  note.className = 'validation-note';
+  note.textContent = message;
+  el.insertBefore(note, el.firstChild);
+}
+
+async function openDeepLinkTarget(link) {
+  try {
+    if (link.po) {
+      const keys = (link.plant && link.plant !== 'all') ? [link.plant] : PLANT_KEYS;
+      await ensurePOsLoaded(keys);
+      // PO numbers are NOT unique across plants (see plantKeyFor()), so a
+      // link that names its plant is resolved against that plant alone; one
+      // that doesn't takes the first plant holding that number.
+      let hitKey = null;
+      keys.forEach(k => {
+        if (!hitKey && (PURCHASE_ORDERS_BY_PLANT[k] || []).some(p => p.poNumber === link.po)) hitKey = k;
+      });
+      if (!hitKey) {
+        showDeepLinkMiss('Purchase order ' + link.po + ' is no longer in ' + (link.plant && link.plant !== 'all' ? PLANTS[link.plant].label : 'any plant') + '. It may have been renamed or withdrawn upstream - search for it again from Search PO.');
+        return;
+      }
+      await openPoModal(hitKey + '::' + link.po);
+      return;
+    }
+    // Material: the link carries a description (the only stable handle a
+    // PO line item has - a Stock lot id is a per-plant autoincrement PK and
+    // means nothing to the page that built the link), so it is resolved the
+    // same two ways the material modal itself resolves siblings: exact
+    // normalized-description equality first, then findMaterialLotsFor()'s
+    // looser token-overlap linkage as a fallback.
+    await ensureMaterialsLoaded(PLANT_KEYS);
+    const wanted = normalizeMaterial(link.material);
+    const searchOrder = (link.plant && link.plant !== 'all') ? [link.plant].concat(PLANT_KEYS.filter(k => k !== link.plant)) : PLANT_KEYS;
+    let hit = null;
+    searchOrder.forEach(k => {
+      if (hit) return;
+      const lot = (MATERIALS_BY_PLANT[k] || []).find(m => normalizeMaterial(m.description) === wanted);
+      if (lot) hit = { plantKey: k, lot: lot };
+    });
+    if (!hit) {
+      const fuzzy = findMaterialLotsFor(link.material, null, searchOrder);
+      if (fuzzy.length) hit = fuzzy[0];
+    }
+    if (!hit) {
+      showDeepLinkMiss('No stock lot matching "' + link.material + '" was found at any plant, so there is no material analysis to open for it yet.');
+      return;
+    }
+    await openMaterialModal(hit.plantKey + '::' + hit.lot.lotId);
+  } catch (e) {
+    // Never take the dashboard down over a link: the page behind it is
+    // already rendered and correct, the reader just doesn't get the modal.
+    console.error('openDeepLinkTarget failed:', e);
+    showDeepLinkMiss('Couldn\'t open the linked record right now. The dashboard below is up to date - please try the link again, or search for it from Search PO.');
+  }
+}
+
 // ── Bootstrap ───────────────────────────────────────────────────────────
 /** Entry point, invoked once at the bottom of this file. Gates the whole
  * dashboard behind requireAuth(), then renders the shared nav chrome and
@@ -243,6 +352,11 @@ function resetFilters() {
 async function init() {
   const user = await requireAuth();  // frontend/js/auth.js - redirects to /login.html on failure
   if (!user) return;
+
+  // Before the tabs render and before the first fetch - see
+  // applyDeepLinkToState()'s own comment.
+  const deepLink = readDeepLinkParams();
+  if (deepLink) applyDeepLinkToState(deepLink);
 
   // Brand/nav/user identity now live in the static topnav in index.html
   // (shared with home.html/search-po.html/admin.html - see js/auth.js's
@@ -326,6 +440,9 @@ async function init() {
     }
   };
   await loadAndRender();
+  // After the first render, so the modal opens over a finished page (and so
+  // a miss can report itself into #viewContent rather than into a spinner).
+  if (deepLink) await openDeepLinkTarget(deepLink);
   // From here on the page keeps itself current - see startFreshnessWatch().
   startFreshnessWatch();
 }

@@ -232,16 +232,43 @@ function renderResults(f) {
   resultsEl.querySelectorAll('[data-idx]').forEach(el => el.onclick = () => showDetail(matches[Number(el.dataset.idx)]));
 }
 
+// Deep links into the dashboard (2026-09-19, project owner: "instead of
+// open entire dashboard can't we take user to the info about that PO, or
+// raw material"). "/" alone landed the reader on All Plants with no filters
+// and made them find the record they had just searched for all over again;
+// these open that exact PO's / material's own detail modal on arrival. See
+// main.js's readDeepLinkParams() for the receiving end.
+//
+// encodeURIComponent on every value: a real PO number here can contain a
+// space, a slash and brackets (e.g. '3000001104 (Changed Purchase Order)',
+// 'HRS/HO/26-27/003'), and a material description is free text from a
+// spreadsheet.
+function dashboardPoHref(plantKey, poNumber) {
+  return '/?plant=' + encodeURIComponent(plantKey) + '&po=' + encodeURIComponent(poNumber);
+}
+function dashboardMaterialHref(description) {
+  // No plant: Raw Material Analysis rolls a material up across all three
+  // plants anyway (see main.js's own file header), so pinning the link to
+  // the PO's plant would only narrow what the reader sees.
+  return '/?plant=all&material=' + encodeURIComponent(description);
+}
+
 // A deliberately simpler detail view than the full dashboard modal (see
 // this file's header comment) - core fields + line items + remarks,
 // no match-confidence/flag-severity styling.
 function showDetail(match) {
   const po = match.po;
   const itemsHtml = (po.items || []).length
-    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>MIR Status</th></tr></thead><tbody>' +
+    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>MIR Status</th><th>Material</th></tr></thead><tbody>' +
         po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '-') +
           '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
-          '</td><td><span class="status-pill ' + (it.matched ? 'matched">Matched' : 'unmatched">Not yet matched') + '</span></td></tr>').join('') +
+          '</td><td><span class="status-pill ' + (it.matched ? 'matched">Matched' : 'unmatched">Not yet matched') + '</span></td>' +
+          // Per line item, not once for the PO: a PO can carry several
+          // different materials, and "stock and consumption for THIS
+          // material" is the question a reader has while looking at that row.
+          '<td>' + (it.description
+            ? '<a class="detail-link" href="' + escapeHtml(dashboardMaterialHref(it.description)) + '">Stock &amp; usage &rarr;</a>'
+            : '-') + '</td></tr>').join('') +
       '</tbody></table>'
     : '<div class="fs-12-5 text-muted">No line items recorded.</div>';
   const remarksHtml = po.remarks
@@ -267,7 +294,7 @@ function showDetail(match) {
       '<h4 class="detail-h4-label">Items</h4>' +
       itemsHtml +
       remarksHtml +
-      '<div class="mt-20"><a href="/" class="btn btn-navy">Open Full Dashboard &rarr;</a></div>' +
+      '<div class="mt-20"><a href="' + escapeHtml(dashboardPoHref(match.plantKey, po.poNumber)) + '" class="btn btn-navy">Open this PO in the dashboard &rarr;</a></div>' +
     '</div>';
   document.getElementById('detailCloseBtn').onclick = () => { document.getElementById('detailArea').innerHTML = ''; };
   document.getElementById('detailArea').scrollIntoView({ behavior: 'smooth', block: 'start' });

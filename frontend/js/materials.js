@@ -418,107 +418,17 @@ function renderMaterialsView() {
     (c.flag ? flagIconHtml(c.flag) : '') +
     '<div class="val" data-count-target="' + c.raw + '" data-count-fmt="' + c.fmt + '">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>').join('');
 
-  // matStatusFilter is table-only-in-effect here (like PO's statusFilter on
-  // its own table) even though it's also a KPI-card click target - narrows
-  // `tableRecs`, not `filtered`, so the KPI counts above always show the
-  // full category/sub-category-filtered picture regardless of which status
-  // chip is selected, exactly like PO's Quantity/Rate Discrepancy cards.
-  let tableRecs = filtered;
-  if (state.matStatusFilter === 'qtydisc') tableRecs = qtyDiscMats.map(l => l.material);
-  else if (state.matStatusFilter === 'ratedisc') tableRecs = rateDiscMats.map(l => l.material);
-  else if (state.matStatusFilter === 'lowstock') tableRecs = lowStockMats;
-  else if (state.matStatusFilter === 'flags') tableRecs = flaggedMats.map(l => l.material);
-  // Per-category filter (added 2026-09-08) - 'cat:<label>' namespacing, same
-  // convention/reasoning as Domestic's/Import's own list views.
-  else if (typeof state.matStatusFilter === 'string' && state.matStatusFilter.startsWith('cat:')) {
-    const wantedLabel = state.matStatusFilter.slice(4);
-    tableRecs = linkage.filter(l => l.categories.some(c => c.label === wantedLabel)).map(l => l.material);
-  }
-  tableRecs = applyMatColFilters(tableRecs);
-  // "Materials by Stock Quantity" - sorted by stock qty descending, not
-  // value (per the reference design).
-  const sorted = tableRecs.slice().sort((a, b) => (b.qty || 0) - (a.qty || 0));
-
-  const showingAll = state.showAllMaterials;
-  const PAGE_SIZE = 10;
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const matTablePage = Math.min(Math.max(1, state.matTablePage), totalPages);
-  const listRecs = showingAll ? sorted.slice((matTablePage - 1) * PAGE_SIZE, matTablePage * PAGE_SIZE) : sorted.slice(0, 5);
-
-  const stockAllPlantsSuffix = isAllPlants() ? ' (All Plants)' : '';
-
-  // Colored flag-icon cluster per material row, identical pattern to PO's
-  // own rowFlags() in renderPoList() (categoryColor()/CATEGORY_COLORS +
-  // .row-flag-wrap's CSS hover tooltip) - built from computeMaterialPoLinkage()'s
-  // `categories` list. Rendered next to the status pill below (see
-  // computeMaterialStatus()), same "pill + flags" combo as PO's own Status
-  // column.
-  // Only a 'critical' category gets a row icon (2026-09-10, project owner:
-  // keep the flag symbol only for red/critical flags near status - an
-  // 'info' category still counts toward the Data Quality Flags KPI/filter,
-  // it just doesn't clutter the status cell with a row of icons for every
-  // minor note).
-  const rowFlags = entry => {
-    const cats = (entry ? entry.categories : []).filter(c => c.severity === 'critical');
-    if (!cats.length) return '';
-    return cats.map(c =>
-      '<span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
-    ).join('');
-  };
-
-  // Header filter row inside the table, same pattern as PO's filterCells -
-  // text search for Material, a <select> each for Category, Sub Category,
-  // Status, and Progress (project owner, 2026-09-04: added Category/Sub
-  // Category/Progress here, removed the old Stock/Inventory Value/Latest
-  // Rate min/max ranges). One entry per <th> in the table header (Material,
-  // Category, Sub Category, Stock, Inventory Value, Latest Rate, Status,
-  // Progress, Details) - Stock/Inventory Value/Latest Rate/Details have no
-  // header-row control of their own, so they still need an empty
-  // placeholder entry, or every later cell silently shifts one column left
-  // under the wrong header.
-  // Category/Sub Category header-row selects reuse catOptions/subCatOptions
-  // (already built above for the "Filter by" bar) and write into
-  // state.matCategoryFilter/matSubCategoryFilter directly - same field, two
-  // controls, same single-source-of-truth reasoning as Status. No more
-  // Stock/Inventory Value/Latest Rate range filters (project owner,
-  // 2026-09-04, removed to make room for these plus Progress).
-  const matCatColOptionsHtml = catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
-  const matSubCatColOptionsHtml = subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
-  const matFilterCells = [
-    '<input type="text" class="col-filter-input" data-mcf="material" placeholder="Search..." value="' + escapeHtml(state.matColFilters.material) + '">',
-    '<select class="col-filter-input" data-mcf="category"><option value="">All</option>' + matCatColOptionsHtml + '</select>',
-    '<select class="col-filter-input" data-mcf="subCategory"><option value="">All</option>' + matSubCatColOptionsHtml + '</select>',
-    '',
-    '',
-    '',
-    '', // Days Left - no header-row control of its own, same reasoning as Stock/Inventory Value/Latest Rate above.
-    '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
-      '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch</option>' +
-      '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch</option>' +
-      '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock</option>' +
-      '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag</option>' +
-    '</select>',
-    '<select class="col-filter-input" data-mcf="progress"><option value="">All</option>' +
-      '<option value="mirmatched"' + (state.matColFilters.progress === 'mirmatched' ? ' selected' : '') + '>MIR Matched</option>' +
-      '<option value="notmirmatched"' + (state.matColFilters.progress === 'notmirmatched' ? ' selected' : '') + '>Not MIR Matched</option>' +
-    '</select>',
-    '',
-  ];
-  const colFilterRow = '<tr class="col-filter-row">' + matFilterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
-
-  const pageButtons = totalPages <= 10
-    ? Array.from({ length: totalPages }, (_, i) => i + 1)
-        .map(p => '<button class="page-btn page-num' + (p === matTablePage ? ' active' : '') + '" data-matpage="' + p + '">' + p + '</button>')
-        .join('')
-    : '<span class="page-info">Page ' + matTablePage + ' of ' + totalPages + '</span>';
-  const paginationHtml = showingAll && totalPages > 1
-    ? '<div class="pagination-row">' +
-        '<button id="matPrevPageBtn" class="page-btn"' + (matTablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
-        pageButtons +
-        '<button id="matNextPageBtn" class="page-btn"' + (matTablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
-        jumpToPageHtml('mat', totalPages) +
-      '</div>'
-    : '';
+  // Everything below the chart is rendered by materialsListRegionHtml()
+  // from this context, so a Material-search keystroke can rebuild the list
+  // alone instead of this whole view - see MAT_LIST_CTX's own comment.
+  // catOptions/subCatOptions rather than a ready-made header-filter row:
+  // each cell carries its filter's CURRENT value, so a snapshot taken here
+  // would rewrite the Material search box back to what it held before the
+  // keystroke that triggered the re-render - the list would narrow correctly
+  // while the box under the cursor went blank. The option LISTS are safe to
+  // carry: they depend on the category/sub-category filters, which take the
+  // full render anyway.
+  MAT_LIST_CTX = { linkage: linkage, linkageByKey: linkageByKey, filtered: filtered, qtyDiscMats: qtyDiscMats, rateDiscMats: rateDiscMats, lowStockMats: lowStockMats, flaggedMats: flaggedMats, catOptions: catOptions, subCatOptions: subCatOptions };
 
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
@@ -566,7 +476,162 @@ function renderMaterialsView() {
       ((state.matCategoryFilter || state.matSubCategoryFilter || state.matStatusFilter) ? '<button id="matClearCategoryFilter">Clear</button>' : '') +
     '</div>' +
     renderMaterialsChart(filtered) +
-    '<div class="list-toggle-row"><div class="section-title m-0">Materials by Stock Quantity - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
+    // Its own container so a Material-search keystroke can replace just this
+    // (see renderMaterialsListRegion()), leaving the KPI row's count-up and
+    // the drill-down chart above it untouched.
+    '<div id="matListRegion">' + materialsListRegionHtml() + '</div>';
+
+  applyDynamicStyles(el); // chart-box height, legend dots - see shared.js's own comment; must run before wireMaterialsChart() reads the container's height
+  wireKpiCountUps();
+  wireMaterialsListRegion();
+
+  document.querySelectorAll('[data-matkpi]').forEach(c => c.onclick = () => {
+    const key = c.dataset.matkpi;
+    state.matStatusFilter = (state.matStatusFilter === key || key === 'total' || key === 'value' || key === 'transit' || key === 'qtyordered') ? null : key;
+    state.matTablePage = 1;
+    renderMaterialsView();
+  });
+  const matCatSelect = document.getElementById('matCatSelect');
+  if (matCatSelect) matCatSelect.onchange = () => { state.matCategoryFilter = matCatSelect.value || null; state.matSubCategoryFilter = null; state.matTablePage = 1; renderMaterialsView(); };
+  const matSubCatSelect = document.getElementById('matSubCatSelect');
+  if (matSubCatSelect) matSubCatSelect.onchange = () => { state.matSubCategoryFilter = matSubCatSelect.value || null; state.matTablePage = 1; renderMaterialsView(); };
+  const matFlagsSelect = document.getElementById('matFlagsSelect');
+  if (matFlagsSelect) matFlagsSelect.onchange = () => { state.matStatusFilter = matFlagsSelect.value || null; state.matTablePage = 1; renderMaterialsView(); };
+  const matClearCategoryBtn = document.getElementById('matClearCategoryFilter');
+  if (matClearCategoryBtn) matClearCategoryBtn.onclick = () => { state.matCategoryFilter = null; state.matSubCategoryFilter = null; state.matStatusFilter = null; state.matTablePage = 1; renderMaterialsView(); };
+
+  wireMaterialsChart(filtered);
+}
+
+// ── The list region (heading + header filters + rows + pagination) ───────
+// Split out of renderMaterialsView() on 2026-09-19. The Material text
+// search narrows `tableRecs` ONLY (see applyMatColFilters()'s own comment -
+// it is a table-only filter, it never touches the KPI row, the
+// category/flag bar or the drill-down chart), so rebuilding the whole view
+// on every keystroke was rebuilding six things that could not have changed
+// - including restarting all 8 KPI count-up animations from 0 and
+// destroying/recreating the Chart.js canvas, which is what the "it reloads
+// every time I type" report was actually describing.
+//
+// MAT_LIST_CTX carries what the last full render already computed (the
+// PO-linkage pass in particular is the expensive part and depends only on
+// the category/sub-category filters, never on the text search). A keystroke
+// re-runs the cheap tail: status/text narrowing, sort, page slice, markup.
+// It is null until renderMaterialsView() has run once, and
+// renderMaterialsListRegion() falls back to a full render in that case
+// rather than assuming it is there.
+let MAT_LIST_CTX = null;
+
+function materialsListRegionHtml() {
+  const ctx = MAT_LIST_CTX;
+  // matStatusFilter is table-only-in-effect here (like PO's statusFilter on
+  // its own table) even though it's also a KPI-card click target - narrows
+  // `tableRecs`, not `filtered`, so the KPI counts always show the full
+  // category/sub-category-filtered picture regardless of which status chip
+  // is selected, exactly like PO's Quantity/Rate Discrepancy cards.
+  let tableRecs = ctx.filtered;
+  if (state.matStatusFilter === 'qtydisc') tableRecs = ctx.qtyDiscMats.map(l => l.material);
+  else if (state.matStatusFilter === 'ratedisc') tableRecs = ctx.rateDiscMats.map(l => l.material);
+  else if (state.matStatusFilter === 'lowstock') tableRecs = ctx.lowStockMats;
+  else if (state.matStatusFilter === 'flags') tableRecs = ctx.flaggedMats.map(l => l.material);
+  // Per-category filter (added 2026-09-08) - 'cat:<label>' namespacing, same
+  // convention/reasoning as Domestic's/Import's own list views.
+  else if (typeof state.matStatusFilter === 'string' && state.matStatusFilter.startsWith('cat:')) {
+    const wantedLabel = state.matStatusFilter.slice(4);
+    tableRecs = ctx.linkage.filter(l => l.categories.some(c => c.label === wantedLabel)).map(l => l.material);
+  }
+  tableRecs = applyMatColFilters(tableRecs);
+  // "Materials by Stock Quantity" - sorted by stock qty descending, not
+  // value (per the reference design).
+  const sorted = tableRecs.slice().sort((a, b) => (b.qty || 0) - (a.qty || 0));
+
+  const showingAll = state.showAllMaterials;
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const matTablePage = Math.min(Math.max(1, state.matTablePage), totalPages);
+  const listRecs = showingAll ? sorted.slice((matTablePage - 1) * PAGE_SIZE, matTablePage * PAGE_SIZE) : sorted.slice(0, 5);
+  // Read back by wireMaterialsListRegion(), which has to clamp the same way
+  // rather than re-deriving a second page count that could disagree.
+  ctx.totalPages = totalPages;
+
+  const linkageByKey = ctx.linkageByKey;
+  // Built HERE, not handed over in MAT_LIST_CTX - see that object's own
+  // comment for the blank-search-box bug a snapshot causes.
+  // Header filter row inside the table, same pattern as PO's filterCells -
+  // text search for Material, a <select> each for Category, Sub Category,
+  // Status, and Progress (project owner, 2026-09-04: added Category/Sub
+  // Category/Progress here, removed the old Stock/Inventory Value/Latest
+  // Rate min/max ranges). One entry per <th> in the table header (Material,
+  // Category, Sub Category, Stock, Inventory Value, Latest Rate, Status,
+  // Progress, Details) - Stock/Inventory Value/Latest Rate/Details have no
+  // header-row control of their own, so they still need an empty
+  // placeholder entry, or every later cell silently shifts one column left
+  // under the wrong header.
+  // Category/Sub Category header-row selects reuse catOptions/subCatOptions
+  // (already built above for the "Filter by" bar) and write into
+  // state.matCategoryFilter/matSubCategoryFilter directly - same field, two
+  // controls, same single-source-of-truth reasoning as Status. No more
+  // Stock/Inventory Value/Latest Rate range filters (project owner,
+  // 2026-09-04, removed to make room for these plus Progress).
+  const matCatColOptionsHtml = ctx.catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
+  const matSubCatColOptionsHtml = ctx.subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
+  const matFilterCells = [
+    '<input type="text" class="col-filter-input" data-mcf="material" placeholder="Search..." value="' + escapeHtml(state.matColFilters.material) + '">',
+    '<select class="col-filter-input" data-mcf="category"><option value="">All</option>' + matCatColOptionsHtml + '</select>',
+    '<select class="col-filter-input" data-mcf="subCategory"><option value="">All</option>' + matSubCatColOptionsHtml + '</select>',
+    '',
+    '',
+    '',
+    '', // Days Left - no header-row control of its own, same reasoning as Stock/Inventory Value/Latest Rate above.
+    '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
+      '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch</option>' +
+      '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch</option>' +
+      '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock</option>' +
+      '<option value="flags"' + (state.matStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag</option>' +
+    '</select>',
+    '<select class="col-filter-input" data-mcf="progress"><option value="">All</option>' +
+      '<option value="mirmatched"' + (state.matColFilters.progress === 'mirmatched' ? ' selected' : '') + '>MIR Matched</option>' +
+      '<option value="notmirmatched"' + (state.matColFilters.progress === 'notmirmatched' ? ' selected' : '') + '>Not MIR Matched</option>' +
+    '</select>',
+    '',
+  ];
+  const colFilterRow = '<tr class="col-filter-row">' + matFilterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
+  const stockAllPlantsSuffix = isAllPlants() ? ' (All Plants)' : '';
+
+  // Colored flag-icon cluster per material row, identical pattern to PO's
+  // own rowFlags() in renderPoList() (categoryColor()/CATEGORY_COLORS +
+  // .row-flag-wrap's CSS hover tooltip) - built from computeMaterialPoLinkage()'s
+  // `categories` list. Rendered next to the status pill below (see
+  // computeMaterialStatus()), same "pill + flags" combo as PO's own Status
+  // column.
+  // Only a 'critical' category gets a row icon (2026-09-10, project owner:
+  // keep the flag symbol only for red/critical flags near status - an
+  // 'info' category still counts toward the Data Quality Flags KPI/filter,
+  // it just doesn't clutter the status cell with a row of icons for every
+  // minor note).
+  const rowFlags = entry => {
+    const cats = (entry ? entry.categories : []).filter(c => c.severity === 'critical');
+    if (!cats.length) return '';
+    return cats.map(c =>
+      '<span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
+    ).join('');
+  };
+
+  const pageButtons = totalPages <= 10
+    ? Array.from({ length: totalPages }, (_, i) => i + 1)
+        .map(p => '<button class="page-btn page-num' + (p === matTablePage ? ' active' : '') + '" data-matpage="' + p + '">' + p + '</button>')
+        .join('')
+    : '<span class="page-info">Page ' + matTablePage + ' of ' + totalPages + '</span>';
+  const paginationHtml = showingAll && totalPages > 1
+    ? '<div class="pagination-row">' +
+        '<button id="matPrevPageBtn" class="page-btn"' + (matTablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
+        pageButtons +
+        '<button id="matNextPageBtn" class="page-btn"' + (matTablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
+        jumpToPageHtml('mat', totalPages) +
+      '</div>'
+    : '';
+
+  return '<div class="list-toggle-row"><div class="section-title m-0">Materials by Stock Quantity - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
       (listRecs.some(m => { const e = linkageByKey.get(normalizeMaterial(m.description)); return e && (e.qtyFlag || e.rateFlag); }) ? rowTintLegendHtml() : '') +
       (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all ' + sorted.length + ' materials') + '</button>' : '') +
     '</div>' +
@@ -619,42 +684,50 @@ function renderMaterialsView() {
             '<div><span class="row-link" data-lot="' + key + '">View analysis</span></div></div>';
         }).join('') + '</div>';
     })();
+}
 
-  applyDynamicStyles(el); // chart-box height, legend dots - see shared.js's own comment; must run before wireMaterialsChart() reads the container's height
-  wireKpiCountUps();
+/** Re-renders the list region alone, in place. Falls back to a full
+ * renderMaterialsView() if the region (or the context it needs) isn't there
+ * - e.g. called before the first full render, or after something else
+ * replaced #viewContent. */
+function renderMaterialsListRegion() {
+  const region = document.getElementById('matListRegion');
+  if (!region || !MAT_LIST_CTX) { renderMaterialsView(); return; }
+  preserveFocus(region, () => { region.innerHTML = materialsListRegionHtml(); });
+  applyDynamicStyles(region); // the row-tint legend's dots - see shared.js's own comment
+  wireMaterialsListRegion();
+}
 
-  document.querySelectorAll('[data-matkpi]').forEach(c => c.onclick = () => {
-    const key = c.dataset.matkpi;
-    state.matStatusFilter = (state.matStatusFilter === key || key === 'total' || key === 'value' || key === 'transit' || key === 'qtyordered') ? null : key;
-    state.matTablePage = 1;
-    renderMaterialsView();
-  });
-  const matCatSelect = document.getElementById('matCatSelect');
-  if (matCatSelect) matCatSelect.onchange = () => { state.matCategoryFilter = matCatSelect.value || null; state.matSubCategoryFilter = null; state.matTablePage = 1; renderMaterialsView(); };
-  const matSubCatSelect = document.getElementById('matSubCatSelect');
-  if (matSubCatSelect) matSubCatSelect.onchange = () => { state.matSubCategoryFilter = matSubCatSelect.value || null; state.matTablePage = 1; renderMaterialsView(); };
-  const matFlagsSelect = document.getElementById('matFlagsSelect');
-  if (matFlagsSelect) matFlagsSelect.onchange = () => { state.matStatusFilter = matFlagsSelect.value || null; state.matTablePage = 1; renderMaterialsView(); };
-  const matClearCategoryBtn = document.getElementById('matClearCategoryFilter');
-  if (matClearCategoryBtn) matClearCategoryBtn.onclick = () => { state.matCategoryFilter = null; state.matSubCategoryFilter = null; state.matStatusFilter = null; state.matTablePage = 1; renderMaterialsView(); };
+function wireMaterialsListRegion() {
+  const totalPages = MAT_LIST_CTX ? MAT_LIST_CTX.totalPages : 1;
+  const region = document.getElementById('matListRegion');
+  if (!region) return;
+
   const toggleBtn = document.getElementById('toggleMatBtn');
-  if (toggleBtn) toggleBtn.onclick = () => { state.showAllMaterials = !state.showAllMaterials; state.matTablePage = 1; renderMaterialsView(); };
-  document.querySelectorAll('[data-lot]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.lot));
+  if (toggleBtn) toggleBtn.onclick = () => { state.showAllMaterials = !state.showAllMaterials; state.matTablePage = 1; renderMaterialsListRegion(); };
+  region.querySelectorAll('[data-lot]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.lot));
 
   const matPrevPageBtn = document.getElementById('matPrevPageBtn');
-  if (matPrevPageBtn) matPrevPageBtn.onclick = () => { state.matTablePage = Math.max(1, state.matTablePage - 1); renderMaterialsView(); };
+  if (matPrevPageBtn) matPrevPageBtn.onclick = () => { state.matTablePage = Math.max(1, state.matTablePage - 1); renderMaterialsListRegion(); };
   const matNextPageBtn = document.getElementById('matNextPageBtn');
-  if (matNextPageBtn) matNextPageBtn.onclick = () => { state.matTablePage = state.matTablePage + 1; renderMaterialsView(); };
-  document.querySelectorAll('[data-matpage]').forEach(btn => btn.onclick = () => { state.matTablePage = Number(btn.dataset.matpage); renderMaterialsView(); });
-  wireJumpToPage('mat', totalPages, (n) => { state.matTablePage = n; renderMaterialsView(); });
+  if (matNextPageBtn) matNextPageBtn.onclick = () => { state.matTablePage = state.matTablePage + 1; renderMaterialsListRegion(); };
+  region.querySelectorAll('[data-matpage]').forEach(btn => btn.onclick = () => { state.matTablePage = Number(btn.dataset.matpage); renderMaterialsListRegion(); });
+  wireJumpToPage('mat', totalPages, (n) => { state.matTablePage = n; renderMaterialsListRegion(); });
 
-  // Header filter row (only present when showingAll). Text input re-renders
-  // live on every keystroke via preserveFocus() (same as PO's own [data-cf]
-  // handling - see that function's comment); number/select inputs commit on
-  // 'change' instead, since re-rendering mid-typing a number is jarring.
-  document.querySelectorAll('[data-mcf]').forEach(inp => {
+  // Header filter row (only present when showingAll).
+  //
+  // The Material text box re-renders THIS REGION ONLY, debounced (see
+  // shared.js's debounceRender()) - it is a table-only filter, so the KPI
+  // row, the category/flag bar and the chart above cannot have changed.
+  // Category/Sub Category/Status write into the "global" filter fields the
+  // KPI row and chart are built from, so those do need the full re-render -
+  // and they fire on 'change' (a committed selection), not per keystroke,
+  // so one full pass each is all they ever cost.
+  region.querySelectorAll('[data-mcf]').forEach(inp => {
     const key = inp.dataset.mcf;
     const eventName = (inp.tagName === 'SELECT' || inp.type === 'number') ? 'change' : 'input';
+    const isGlobal = key === 'status' || key === 'category' || key === 'subCategory';
+    const rerender = isGlobal ? () => renderMaterialsView() : debounceRender(() => renderMaterialsListRegion());
     inp.addEventListener(eventName, () => {
       const raw = inp.value;
       if (key === 'status') { state.matStatusFilter = raw || null; }
@@ -663,11 +736,9 @@ function renderMaterialsView() {
       else if (key === 'subCategory') { state.matSubCategoryFilter = raw || null; }
       else { state.matColFilters[key] = raw; }
       state.matTablePage = 1;
-      preserveFocus(el, () => renderMaterialsView());
+      rerender();
     });
   });
-
-  wireMaterialsChart(filtered);
 }
 
 // ── Drill-down horizontal bar chart: Inventory Value by Category ->

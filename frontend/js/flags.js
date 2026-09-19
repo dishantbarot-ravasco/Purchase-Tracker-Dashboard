@@ -810,20 +810,32 @@ function applyColFilters(recs) {
   });
 }
 
-// Refocuses (and restores cursor position on) whatever [data-cf] header
-// filter input had focus before a full innerHTML re-render blew it away -
-// renderPoList() rebuilds the whole subtree on every keystroke of a text
-// filter, which would otherwise kick focus out after the first character
-// typed. Wrap any state-mutating handler that triggers a re-render while a
-// filter input might be focused: preserveFocus(el, () => { ...; renderPoList(el); }).
+// Refocuses (and restores cursor position on) whatever header filter input
+// had focus before an innerHTML re-render blew it away - a text filter
+// rebuilds its own subtree on every keystroke, which would otherwise kick
+// focus out after the first character typed. Wrap any state-mutating handler
+// that triggers a re-render while a filter input might be focused:
+// preserveFocus(el, () => { ...; renderPoList(el); }).
+//
+// All THREE filter attributes, not just data-cf: data-cf (Domestic PO),
+// data-icf (Import PO), data-mcf (Materials) - the same set
+// applyAccessibleNames() reads in shared.js. This used to look at data-cf
+// alone, so Materials' and Import Purchases' own header filters were never
+// re-focused at all: the input was rebuilt, nothing restored focus, and the
+// next character went nowhere - reported (2026-09-19) as the Raw Materials
+// search "reloading" on every keystroke. Domestic PO was the only one that
+// ever worked, which is why the bug survived in the two files that copied
+// this call without owning the helper.
+const FILTER_ATTRS = ['data-cf', 'data-icf', 'data-mcf'];
 function preserveFocus(container, renderFn) {
   const active = document.activeElement;
-  const cf = active && active.dataset ? active.dataset.cf : null;
-  const selStart = cf && typeof active.selectionStart === 'number' ? active.selectionStart : null;
-  const selEnd = cf && typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
+  const attr = active && active.getAttribute ? FILTER_ATTRS.find(a => active.hasAttribute(a)) : null;
+  const key = attr ? active.getAttribute(attr) : null;
+  const selStart = key && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+  const selEnd = key && typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
   renderFn();
-  if (!cf) return;
-  const restored = container.querySelector('[data-cf="' + cf + '"]');
+  if (!key) return;
+  const restored = container.querySelector('[' + attr + '="' + key + '"]');
   if (!restored) return;
   restored.focus();
   if (selStart != null && restored.setSelectionRange) {

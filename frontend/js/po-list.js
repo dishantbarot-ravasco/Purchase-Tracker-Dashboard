@@ -168,34 +168,6 @@ function renderPoList(el) {
     (c.flag ? flagIconHtml(c.flag) : '') +
     '<div class="val" data-count-target="' + c.val + '" data-count-fmt="int">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>').join('');
 
-  let tableRecs = filtered;
-  if (state.statusFilter === 'overdue') tableRecs = filtered.filter(po => po._overdue);
-  else if (state.statusFilter === 'unknown') tableRecs = filtered.filter(po => po._noDeliveryDate);
-  else if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
-  else if (state.statusFilter === 'qtyover') tableRecs = filtered.filter(po => po._qtyOverFlag);
-  else if (state.statusFilter === 'qtyunder') tableRecs = filtered.filter(po => po._qtyUnderFlag);
-  else if (state.statusFilter === 'ratedisc') tableRecs = filtered.filter(po => po._rateFlag);
-  else if (state.statusFilter === 'critical') tableRecs = filtered.filter(po => po._qtyFlag || po._rateFlag);
-  else if (state.statusFilter === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
-  // "Filter by Flags" per-category options (added 2026-09-08) are namespaced
-  // 'cat:<label>' rather than the bare label, so they can never collide with
-  // a real STATUS_LABELS key (received/partial/pending/overdue/unknown) in
-  // the catch-all branch below.
-  else if (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:')) {
-    const wantedLabel = state.statusFilter.slice(4);
-    tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
-  }
-  else if (state.statusFilter && state.statusFilter !== 'total') tableRecs = filtered.filter(po => po._status === state.statusFilter);
-  // Table-only filters (never touch the KPI counts/charts above, which stay
-  // scoped to `filtered` = the from/to date range + category filter only) -
-  // clicking a bar in the trend chart narrows the list to that month; the
-  // "View all" table's header filters (poNumber/vendor/delivery/value/
-  // progress) narrow further. See applyColFilters() and the chart onClick
-  // handlers below.
-  if (state.chartMonthFilter) tableRecs = tableRecs.filter(po => (po.createdDate || '').slice(0, 7) === state.chartMonthFilter);
-  tableRecs = applyColFilters(tableRecs);
-  tableRecs = tableRecs.slice().sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
-
   // `key` drives both the doughnut's onClick (maps a clicked slice back to
   // the same statusFilter value a KPI-card click would set) and the header
   // Status <select> (see the "View all" table below) - one status value,
@@ -217,39 +189,6 @@ function renderPoList(el) {
   });
   const months = Object.keys(monthTotals).sort();
 
-  const showingAll = state.showAllPOs;
-  const totalForList = tableRecs.length;
-  // "View all" is paginated 10/page instead of dumping every matching row
-  // at once (project owner, 2026-09-04) - the compact top-5 view is
-  // unaffected, it's always just the first 5 of tableRecs, a preview, not
-  // a paginated browse. state.tablePage is clamped here (not just where
-  // it's set) so a filter change that shrinks the result set below the
-  // previously-viewed page can never stick on a blank page.
-  const PAGE_SIZE = 10;
-  const totalPages = Math.max(1, Math.ceil(totalForList / PAGE_SIZE));
-  const tablePage = Math.min(Math.max(1, state.tablePage), totalPages);
-  const listRecs = showingAll ? tableRecs.slice((tablePage - 1) * PAGE_SIZE, tablePage * PAGE_SIZE) : tableRecs.slice(0, 5);
-
-  // Drives the "N filter(s) active - Clear" chip next to the list heading -
-  // every table-only filter that could be narrowing the list below what the
-  // KPI cards/charts show (which stay scoped to `filtered`, the date-range
-  // bar only). The date range counts once here even though it's exposed in
-  // two places (the bar above and the "Created On" header filter below -
-  // same state.from/state.to, not two separate fields).
-  const cf = state.colFilters;
-  const activeFilterCount =
-    (state.chartMonthFilter ? 1 : 0) +
-    (state.statusFilter && state.statusFilter !== 'total' ? 1 : 0) +
-    (state.from || state.to ? 1 : 0) +
-    (state.categoryFilter ? 1 : 0) +
-    (state.subCategoryFilter ? 1 : 0) +
-    (cf.poNumber ? 1 : 0) +
-    (cf.vendor ? 1 : 0) +
-    (cf.deliveryFrom || cf.deliveryTo ? 1 : 0) +
-    (cf.progress ? 1 : 0);
-  const statusOptionsHtml = Object.keys(STATUS_LABELS).map(k =>
-    '<option value="' + k + '"' + (state.statusFilter === k ? ' selected' : '') + '>' + escapeHtml(STATUS_LABELS[k]) + '</option>'
-  ).join('');
   // Category/Sub Category/Flags dropdowns, rendered just above the chart row
   // (see el.innerHTML below) - same 3-dropdown pattern as Raw Material
   // Analysis's own Category/Sub Category/Flags bar, and now genuinely the
@@ -290,28 +229,10 @@ function renderPoList(el) {
     '<option value="critical"' + (state.statusFilter === 'critical' ? ' selected' : '') + '>Critical Issues (' + criticalCount + ')</option>' +
     '<option value="flags"' + (state.statusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + flagsCount + ')</option>' +
     flagCategoryOptionsHtml;
-  // Per-column header filter content - "as per their data": text (contains)
-  // for PO Number/Vendor, date-range for Created On (bound directly to the
-  // same state.from/state.to the top filter-row uses, not a duplicate
-  // field) and Delivery Date, and a <select> each for Status (bound to
-  // state.statusFilter - see statusChartData's `key` comment) and Progress.
-  // No Value column filter here - min/max value narrowing was removed
-  // (project owner, 2026-09-04) to keep this header row to "as per their
-  // data" text/date/select controls only. Details has no data of its own
-  // (just a link), so its cell is empty. One shared array of inner-cell HTML
-  // so both the "View all" table's <thead> AND the compact top-5 grid's
-  // header row render the identical controls - filtering works from either
-  // view, not just the expanded table.
-  const filterCells = [
-    '<input type="text" class="col-filter-input" data-cf="poNumber" placeholder="Search..." value="' + escapeHtml(state.colFilters.poNumber) + '">',
-    '<input type="text" class="col-filter-input" data-cf="vendor" placeholder="Search..." value="' + escapeHtml(state.colFilters.vendor) + '">',
-    '<div class="col-filter-range"><input type="date" data-cf="createdFrom" value="' + (state.from || '') + '"><input type="date" data-cf="createdTo" value="' + (state.to || '') + '"></div>',
-    '<div class="col-filter-range"><input type="date" data-cf="deliveryFrom" value="' + (state.colFilters.deliveryFrom || '') + '"><input type="date" data-cf="deliveryTo" value="' + (state.colFilters.deliveryTo || '') + '"></div>',
-    '', // Value (incl. tax) - no header filter (min/max removed); keeps this array 1:1 with the 8 table columns
-    '<select class="col-filter-input" data-cf="status"><option value="">All</option>' + statusOptionsHtml + '</select>',
-    '<select class="col-filter-input" data-cf="progress"><option value="">All</option><option value="inwarded"' + (state.colFilters.progress === 'inwarded' ? ' selected' : '') + '>Inwarded</option><option value="not"' + (state.colFilters.progress === 'not' ? ' selected' : '') + '>Not Inwarded</option></select>',
-    '',
-  ];
+  // Everything from the list heading down is rendered by poListRegionHtml()
+  // from this context, so a PO Number/Vendor keystroke can rebuild the list
+  // alone instead of this whole view - see PO_LIST_CTX's own comment.
+  PO_LIST_CTX = { el: el, filtered: filtered };
 
   el.innerHTML =
     '<div class="filter-row">' +
@@ -370,86 +291,14 @@ function renderPoList(el) {
           (statusChartData.length ? '<div class="chart-box"><canvas id="poStatusChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
         '</div>' +
       '</div>' : '') +
-    '<div class="list-toggle-row"><div class="section-title m-0">Purchase Orders (Latest first)</div>' +
-      (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
-      '<div class="flex-row-gap10">' +
-        (activeFilterCount ? '<span class="clear-list-filters" id="clearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
-        (totalForList > 5 ? '<button class="view-all-btn" id="toggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
-      '</div>' +
-    '</div>' +
-    (() => {
-      // One colored flag icon per category on this PO (not a "2 critical /
-      // 1 flag" text count) - see categoryColor()/CATEGORY_COLORS for the
-      // color-per-category scheme and DISCREPANCY_LEGEND for what each one
-      // means.
-      const rowFlags = po => {
-        // Only a 'critical' category gets a row icon (2026-09-10, project
-        // owner: keep the flag symbol only for red/critical flags near
-        // status - an 'info' category still counts toward the Data Quality
-        // Flags KPI/filter, it just doesn't clutter the status cell with a
-        // row of icons for every minor note).
-        const cats = (po._categories || []).filter(c => c.severity === 'critical');
-        return cats.map(c =>
-          // data-tooltip + CSS (.row-flag-wrap::after, see style.css) instead
-          // of a native title attribute - title tooltips have a ~1s hover
-          // delay and are easy to dismiss with the slightest mouse movement,
-          // which read as "hovering isn't working" per the project owner's
-          // 2026-09-04 report. The CSS tooltip shows immediately and
-          // reliably instead.
-          ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
-        ).join('');
-      };
-      if (showingAll) {
-        const colFilterRow = '<tr class="col-filter-row">' + filterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
-        // 10 rows/page instead of dumping the whole filtered result set at
-        // once (project owner, 2026-09-04) - direct page-number buttons up
-        // to 10 pages (comfortably covers real data sizes today); beyond
-        // that, falls back to a plain "Page X of Y" indicator rather than
-        // rendering 11+ buttons in a row.
-        const pageButtons = totalPages <= 10
-          ? Array.from({ length: totalPages }, (_, i) => i + 1)
-              .map(p => '<button class="page-btn page-num' + (p === tablePage ? ' active' : '') + '" data-page="' + p + '">' + p + '</button>')
-              .join('')
-          : '<span class="page-info">Page ' + tablePage + ' of ' + totalPages + '</span>';
-        const paginationHtml = totalPages > 1
-          ? '<div class="pagination-row">' +
-              '<button id="prevPageBtn" class="page-btn"' + (tablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
-              pageButtons +
-              '<button id="nextPageBtn" class="page-btn"' + (tablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
-              jumpToPageHtml('po', totalPages) +
-            '</div>'
-          : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
-          '<tbody>' + listRecs.map(po => {
-            const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
-            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
-              '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
-              '<td>' + escapeHtml(formatDateIN(po.createdDate)) + '</td>' +
-              '<td>' + escapeHtml(formatDateIN(po._deliveryDate)) + '</td>' +
-              '<td>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</td>' +
-              '<td><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po) + '</td>' +
-              '<td>' + miniStepperHtml(po) + '</td>' +
-              '<td><span class="row-link" data-po="' + key + '">View details</span></td></tr>';
-          }).join('') + '</tbody></table></div>' + paginationHtml;
-      }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
-        '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
-        '<div class="top5-list" id="top5List">' + listRecs.map(po => {
-          const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
-          return '<div class="top5-row' + rowTintClass(po) + '">' +
-            '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
-            '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
-            '<div>' + escapeHtml(formatDateIN(po.createdDate) || 'Not available') + '</div>' +
-            '<div>' + escapeHtml(formatDateIN(po._deliveryDate) || 'Not available') + '</div>' +
-            '<div>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</div>' +
-            '<div><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po) + '</div>' +
-            '<div>' + miniStepperHtml(po) + '</div>' +
-            '<div><span class="row-link" data-po="' + key + '">View details</span></div></div>';
-        }).join('') + '</div>';
-    })();
+    // Its own container so a PO Number/Vendor keystroke can replace just
+    // this (see renderPoListRegion()), leaving the KPI row's count-up and
+    // both charts above it untouched.
+    '<div id="poListRegion">' + poListRegionHtml() + '</div>';
 
   applyDynamicStyles(el); // legend dots (categoryColor()) - see shared.js's own comment
   wireKpiCountUps();
+  wirePoListRegion();
 
   document.querySelectorAll('[data-kpi]').forEach(c => c.onclick = () => {
     const key = c.dataset.kpi;
@@ -465,17 +314,6 @@ function renderPoList(el) {
     renderPoList(el);
   };
   document.getElementById('clearFilter').onclick = () => { state.from = null; state.to = null; state.tablePage = 1; renderPoList(el); };
-  const toggleBtn = document.getElementById('toggleAllBtn');
-  if (toggleBtn) toggleBtn.onclick = () => { state.showAllPOs = !state.showAllPOs; state.tablePage = 1; renderPoList(el); };
-  document.querySelectorAll('[data-po]').forEach(el2 => el2.onclick = () => openPoModal(el2.dataset.po));
-
-  const prevPageBtn = document.getElementById('prevPageBtn');
-  if (prevPageBtn) prevPageBtn.onclick = () => { state.tablePage = Math.max(1, state.tablePage - 1); renderPoList(el); };
-  const nextPageBtn = document.getElementById('nextPageBtn');
-  if (nextPageBtn) nextPageBtn.onclick = () => { state.tablePage = state.tablePage + 1; renderPoList(el); }; // clamped to totalPages on next render
-  document.querySelectorAll('.page-num').forEach(btn => btn.onclick = () => { state.tablePage = Number(btn.dataset.page); renderPoList(el); });
-  wireJumpToPage('po', totalPages, (n) => { state.tablePage = n; renderPoList(el); });
-
   const categorySelect = document.getElementById('categoryFilterSelect');
   if (categorySelect) categorySelect.onchange = () => { state.categoryFilter = categorySelect.value || null; state.subCategoryFilter = null; state.tablePage = 1; renderPoList(el); };
   const subCategorySelect = document.getElementById('subCategoryFilterSelect');
@@ -488,35 +326,6 @@ function renderPoList(el) {
     if (['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter) || (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:'))) state.statusFilter = null;
     state.tablePage = 1; renderPoList(el);
   };
-
-  const clearListFiltersBtn = document.getElementById('clearListFilters');
-  if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
-    state.statusFilter = null; state.chartMonthFilter = null; state.from = null; state.to = null;
-    state.categoryFilter = null; state.subCategoryFilter = null; state.tablePage = 1;
-    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
-    renderPoList(el);
-  };
-  // Header filter row (only present when showingAll - see the colFilterRow
-  // markup above). Text inputs re-render on every keystroke ('input') for a
-  // live-filter feel; date/number/select commit on 'change' instead, since
-  // re-rendering mid-typing a number or mid-picking a date is jarring and
-  // unnecessary. preserveFocus() re-focuses the same input (and restores
-  // its cursor position) after the innerHTML rebuild a text-input keystroke
-  // triggers - without it, typing a second character would be impossible.
-  document.querySelectorAll('[data-cf]').forEach(inp => {
-    const key = inp.dataset.cf;
-    const eventName = (inp.tagName === 'SELECT' || inp.type === 'date' || inp.type === 'number') ? 'change' : 'input';
-    inp.addEventListener(eventName, () => {
-      const raw = inp.value;
-      if (key === 'createdFrom') state.from = raw || null;
-      else if (key === 'createdTo') state.to = raw || null;
-      else if (key === 'status') state.statusFilter = raw || null;
-      else if (key === 'deliveryFrom' || key === 'deliveryTo') state.colFilters[key] = raw || null;
-      else state.colFilters[key] = raw;
-      state.tablePage = 1;
-      preserveFocus(el, () => renderPoList(el));
-    });
-  });
 
   destroyPageCharts();
   // Charts are a secondary view on top of the KPIs/table already rendered
@@ -672,3 +481,261 @@ function renderPoList(el) {
   }
 }
 
+// ── The list region (heading + header filters + rows + pagination) ───────
+// Split out of renderPoList() on 2026-09-19, same change and same reasoning
+// as materials.js's own MAT_LIST_CTX (see that comment for the full
+// story): the PO Number/Vendor header searches are table-only filters -
+// they narrow `tableRecs`, never `filtered` - so rebuilding the KPI row
+// (restarting 10 count-up animations from 0) and destroying/recreating both
+// Chart.js canvases on every keystroke was work that could not change
+// anything on screen except the list.
+//
+// PO_LIST_CTX holds what the last full render computed and the text search
+// cannot affect: the date/category-narrowed `filtered` array, the header
+// filter cells, and the container to render back into.
+let PO_LIST_CTX = null;
+
+function poListRegionHtml() {
+  const ctx = PO_LIST_CTX;
+  const filtered = ctx.filtered;
+  let tableRecs = filtered;
+  if (state.statusFilter === 'overdue') tableRecs = filtered.filter(po => po._overdue);
+  else if (state.statusFilter === 'unknown') tableRecs = filtered.filter(po => po._noDeliveryDate);
+  else if (state.statusFilter === 'qtydisc') tableRecs = filtered.filter(po => po._qtyFlag);
+  else if (state.statusFilter === 'qtyover') tableRecs = filtered.filter(po => po._qtyOverFlag);
+  else if (state.statusFilter === 'qtyunder') tableRecs = filtered.filter(po => po._qtyUnderFlag);
+  else if (state.statusFilter === 'ratedisc') tableRecs = filtered.filter(po => po._rateFlag);
+  else if (state.statusFilter === 'critical') tableRecs = filtered.filter(po => po._qtyFlag || po._rateFlag);
+  else if (state.statusFilter === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
+  // "Filter by Flags" per-category options (added 2026-09-08) are namespaced
+  // 'cat:<label>' rather than the bare label, so they can never collide with
+  // a real STATUS_LABELS key (received/partial/pending/overdue/unknown) in
+  // the catch-all branch below.
+  else if (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:')) {
+    const wantedLabel = state.statusFilter.slice(4);
+    tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
+  }
+  else if (state.statusFilter && state.statusFilter !== 'total') tableRecs = filtered.filter(po => po._status === state.statusFilter);
+  // Table-only filters (never touch the KPI counts/charts above, which stay
+  // scoped to `filtered` = the from/to date range + category filter only) -
+  // clicking a bar in the trend chart narrows the list to that month; the
+  // "View all" table's header filters (poNumber/vendor/delivery/value/
+  // progress) narrow further. See applyColFilters() and the chart onClick
+  // handlers below.
+  if (state.chartMonthFilter) tableRecs = tableRecs.filter(po => (po.createdDate || '').slice(0, 7) === state.chartMonthFilter);
+  tableRecs = applyColFilters(tableRecs);
+  tableRecs = tableRecs.slice().sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
+
+  const showingAll = state.showAllPOs;
+  const totalForList = tableRecs.length;
+  // "View all" is paginated 10/page instead of dumping every matching row
+  // at once (project owner, 2026-09-04) - the compact top-5 view is
+  // unaffected, it's always just the first 5 of tableRecs, a preview, not
+  // a paginated browse. state.tablePage is clamped here (not just where
+  // it's set) so a filter change that shrinks the result set below the
+  // previously-viewed page can never stick on a blank page.
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(totalForList / PAGE_SIZE));
+  const tablePage = Math.min(Math.max(1, state.tablePage), totalPages);
+  const listRecs = showingAll ? tableRecs.slice((tablePage - 1) * PAGE_SIZE, tablePage * PAGE_SIZE) : tableRecs.slice(0, 5);
+  // Read back by wirePoListRegion(), which has to clamp the same way rather
+  // than re-deriving a second page count that could disagree.
+  ctx.totalPages = totalPages;
+
+  // Per-column header filter content - "as per their data": text (contains)
+  // for PO Number/Vendor, date-range for Created On (bound directly to the
+  // same state.from/state.to the top filter-row uses, not a duplicate
+  // field) and Delivery Date, and a <select> each for Status (bound to
+  // state.statusFilter - see statusChartData's `key` comment) and Progress.
+  // No Value column filter here - min/max value narrowing was removed
+  // (project owner, 2026-09-04) to keep this header row to "as per their
+  // data" text/date/select controls only. Details has no data of its own
+  // (just a link), so its cell is empty. One shared array of inner-cell HTML
+  // so both the "View all" table's <thead> AND the compact top-5 grid's
+  // header row render the identical controls - filtering works from either
+  // view, not just the expanded table.
+  //
+  // Built HERE, not handed over in PO_LIST_CTX: each cell carries its
+  // filter's CURRENT value, so a snapshot taken at full-render time would
+  // rewrite the PO Number box back to what it held before the keystroke that
+  // triggered this render - the list would narrow correctly while the box
+  // the reader is typing into went blank under the cursor. (Found exactly
+  // that way while verifying this split.)
+  const statusOptionsHtml = Object.keys(STATUS_LABELS).map(k =>
+    '<option value="' + k + '"' + (state.statusFilter === k ? ' selected' : '') + '>' + escapeHtml(STATUS_LABELS[k]) + '</option>'
+  ).join('');
+  const filterCells = [
+    '<input type="text" class="col-filter-input" data-cf="poNumber" placeholder="Search..." value="' + escapeHtml(state.colFilters.poNumber) + '">',
+    '<input type="text" class="col-filter-input" data-cf="vendor" placeholder="Search..." value="' + escapeHtml(state.colFilters.vendor) + '">',
+    '<div class="col-filter-range"><input type="date" data-cf="createdFrom" value="' + (state.from || '') + '"><input type="date" data-cf="createdTo" value="' + (state.to || '') + '"></div>',
+    '<div class="col-filter-range"><input type="date" data-cf="deliveryFrom" value="' + (state.colFilters.deliveryFrom || '') + '"><input type="date" data-cf="deliveryTo" value="' + (state.colFilters.deliveryTo || '') + '"></div>',
+    '', // Value (incl. tax) - no header filter (min/max removed); keeps this array 1:1 with the 8 table columns
+    '<select class="col-filter-input" data-cf="status"><option value="">All</option>' + statusOptionsHtml + '</select>',
+    '<select class="col-filter-input" data-cf="progress"><option value="">All</option><option value="inwarded"' + (state.colFilters.progress === 'inwarded' ? ' selected' : '') + '>Inwarded</option><option value="not"' + (state.colFilters.progress === 'not' ? ' selected' : '') + '>Not Inwarded</option></select>',
+    '',
+  ];
+
+  // Drives the "N filter(s) active - Clear" chip next to the list heading -
+  // every table-only filter that could be narrowing the list below what the
+  // KPI cards/charts show (which stay scoped to `filtered`, the date-range
+  // bar only). The date range counts once here even though it's exposed in
+  // two places (the bar above and the "Created On" header filter below -
+  // same state.from/state.to, not two separate fields).
+  const cf = state.colFilters;
+  const activeFilterCount =
+    (state.chartMonthFilter ? 1 : 0) +
+    (state.statusFilter && state.statusFilter !== 'total' ? 1 : 0) +
+    (state.from || state.to ? 1 : 0) +
+    (state.categoryFilter ? 1 : 0) +
+    (state.subCategoryFilter ? 1 : 0) +
+    (cf.poNumber ? 1 : 0) +
+    (cf.vendor ? 1 : 0) +
+    (cf.deliveryFrom || cf.deliveryTo ? 1 : 0) +
+    (cf.progress ? 1 : 0);
+
+  return '<div class="list-toggle-row"><div class="section-title m-0">Purchase Orders (Latest first)</div>' +
+      (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
+      '<div class="flex-row-gap10">' +
+        (activeFilterCount ? '<span class="clear-list-filters" id="clearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
+        (totalForList > 5 ? '<button class="view-all-btn" id="toggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
+      '</div>' +
+    '</div>' +
+    (() => {
+      // One colored flag icon per category on this PO (not a "2 critical /
+      // 1 flag" text count) - see categoryColor()/CATEGORY_COLORS for the
+      // color-per-category scheme and DISCREPANCY_LEGEND for what each one
+      // means.
+      const rowFlags = po => {
+        // Only a 'critical' category gets a row icon (2026-09-10, project
+        // owner: keep the flag symbol only for red/critical flags near
+        // status - an 'info' category still counts toward the Data Quality
+        // Flags KPI/filter, it just doesn't clutter the status cell with a
+        // row of icons for every minor note).
+        const cats = (po._categories || []).filter(c => c.severity === 'critical');
+        return cats.map(c =>
+          // data-tooltip + CSS (.row-flag-wrap::after, see style.css) instead
+          // of a native title attribute - title tooltips have a ~1s hover
+          // delay and are easy to dismiss with the slightest mouse movement,
+          // which read as "hovering isn't working" per the project owner's
+          // 2026-09-04 report. The CSS tooltip shows immediately and
+          // reliably instead.
+          ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
+        ).join('');
+      };
+      if (showingAll) {
+        const colFilterRow = '<tr class="col-filter-row">' + filterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
+        // 10 rows/page instead of dumping the whole filtered result set at
+        // once (project owner, 2026-09-04) - direct page-number buttons up
+        // to 10 pages (comfortably covers real data sizes today); beyond
+        // that, falls back to a plain "Page X of Y" indicator rather than
+        // rendering 11+ buttons in a row.
+        const pageButtons = totalPages <= 10
+          ? Array.from({ length: totalPages }, (_, i) => i + 1)
+              .map(p => '<button class="page-btn page-num' + (p === tablePage ? ' active' : '') + '" data-page="' + p + '">' + p + '</button>')
+              .join('')
+          : '<span class="page-info">Page ' + tablePage + ' of ' + totalPages + '</span>';
+        const paginationHtml = totalPages > 1
+          ? '<div class="pagination-row">' +
+              '<button id="prevPageBtn" class="page-btn"' + (tablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
+              pageButtons +
+              '<button id="nextPageBtn" class="page-btn"' + (tablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
+              jumpToPageHtml('po', totalPages) +
+            '</div>'
+          : '';
+        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+          '<tbody>' + listRecs.map(po => {
+            const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
+            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
+              '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
+              '<td>' + escapeHtml(formatDateIN(po.createdDate)) + '</td>' +
+              '<td>' + escapeHtml(formatDateIN(po._deliveryDate)) + '</td>' +
+              '<td>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</td>' +
+              '<td><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po) + '</td>' +
+              '<td>' + miniStepperHtml(po) + '</td>' +
+              '<td><span class="row-link" data-po="' + key + '">View details</span></td></tr>';
+          }).join('') + '</tbody></table></div>' + paginationHtml;
+      }
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+        '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
+        '<div class="top5-list" id="top5List">' + listRecs.map(po => {
+          const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
+          return '<div class="top5-row' + rowTintClass(po) + '">' +
+            '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
+            '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
+            '<div>' + escapeHtml(formatDateIN(po.createdDate) || 'Not available') + '</div>' +
+            '<div>' + escapeHtml(formatDateIN(po._deliveryDate) || 'Not available') + '</div>' +
+            '<div>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</div>' +
+            '<div><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po) + '</div>' +
+            '<div>' + miniStepperHtml(po) + '</div>' +
+            '<div><span class="row-link" data-po="' + key + '">View details</span></div></div>';
+        }).join('') + '</div>';
+    })();
+}
+
+/** Re-renders the list region alone, in place. Falls back to a full
+ * renderPoList() if the region (or the context it needs) isn't there - e.g.
+ * called before the first full render, or after something else replaced
+ * #viewContent. */
+function renderPoListRegion() {
+  const region = document.getElementById('poListRegion');
+  if (!region || !PO_LIST_CTX) { renderPoList(document.getElementById('content')); return; }
+  preserveFocus(region, () => { region.innerHTML = poListRegionHtml(); });
+  applyDynamicStyles(region); // the row-tint legend's dots - see shared.js's own comment
+  wirePoListRegion();
+}
+
+function wirePoListRegion() {
+  const region = document.getElementById('poListRegion');
+  if (!region) return;
+  const el = PO_LIST_CTX ? PO_LIST_CTX.el : region.parentNode;
+  const totalPages = PO_LIST_CTX ? PO_LIST_CTX.totalPages : 1;
+
+  const toggleBtn = document.getElementById('toggleAllBtn');
+  if (toggleBtn) toggleBtn.onclick = () => { state.showAllPOs = !state.showAllPOs; state.tablePage = 1; renderPoListRegion(); };
+  region.querySelectorAll('[data-po]').forEach(el2 => el2.onclick = () => openPoModal(el2.dataset.po));
+
+  const prevPageBtn = document.getElementById('prevPageBtn');
+  if (prevPageBtn) prevPageBtn.onclick = () => { state.tablePage = Math.max(1, state.tablePage - 1); renderPoListRegion(); };
+  const nextPageBtn = document.getElementById('nextPageBtn');
+  if (nextPageBtn) nextPageBtn.onclick = () => { state.tablePage = state.tablePage + 1; renderPoListRegion(); }; // clamped to totalPages on next render
+  region.querySelectorAll('.page-num').forEach(btn => btn.onclick = () => { state.tablePage = Number(btn.dataset.page); renderPoListRegion(); });
+  wireJumpToPage('po', totalPages, (n) => { state.tablePage = n; renderPoListRegion(); });
+
+  // Clears the "global" date/category/status filters too, so this one has
+  // to go through the full render.
+  const clearListFiltersBtn = document.getElementById('clearListFilters');
+  if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
+    state.statusFilter = null; state.chartMonthFilter = null; state.from = null; state.to = null;
+    state.categoryFilter = null; state.subCategoryFilter = null; state.tablePage = 1;
+    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
+    renderPoList(el);
+  };
+
+  // Header filter row (only present when showingAll - see the colFilterRow
+  // markup above).
+  //
+  // PO Number / Vendor / Delivery Date / Progress are table-only filters
+  // (see applyColFilters()), so they re-render THIS REGION ONLY - the KPI
+  // row and both charts above are built from `filtered`, which they cannot
+  // narrow. Created On and Status do write into the global fields those are
+  // built from, so they take the full render. The text boxes are debounced
+  // (shared.js's debounceRender()) so a fast typist gets one pass per pause
+  // rather than one per character; date/select controls fire on 'change',
+  // which is already one committed event.
+  region.querySelectorAll('[data-cf]').forEach(inp => {
+    const key = inp.dataset.cf;
+    const eventName = (inp.tagName === 'SELECT' || inp.type === 'date' || inp.type === 'number') ? 'change' : 'input';
+    const isGlobal = key === 'createdFrom' || key === 'createdTo' || key === 'status';
+    const rerender = isGlobal ? () => renderPoList(el) : debounceRender(() => renderPoListRegion());
+    inp.addEventListener(eventName, () => {
+      const raw = inp.value;
+      if (key === 'createdFrom') state.from = raw || null;
+      else if (key === 'createdTo') state.to = raw || null;
+      else if (key === 'status') state.statusFilter = raw || null;
+      else if (key === 'deliveryFrom' || key === 'deliveryTo') state.colFilters[key] = raw || null;
+      else state.colFilters[key] = raw;
+      state.tablePage = 1;
+      rerender();
+    });
+  });
+}

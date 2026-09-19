@@ -150,6 +150,70 @@ duplicated per page: `PLANTS`/`PLANT_KEYS`, the authenticated `apiForPlant()` wr
 to `/login.html`), `escapeHtml`/`formatInr`/`formatDateIN`, the inline-edit helpers, and the
 accessibility helpers.
 
+**A header-filter keystroke re-renders the list region only — never the whole view (2026-09-19).**
+Reported as the Raw Materials search "refreshing/reloading every time I type something, it's
+horrifying", and "somewhat in Purchase order too". Two separate defects, and the loud one was not
+the obvious one:
+
+- **`preserveFocus()` only ever looked at `data-cf`.** It is defined in `flags.js` and called from
+  all three list views, but Materials' inputs carry `data-mcf` and Import's `data-icf`, so in those
+  two views nothing re-focused the rebuilt input — the caret was gone after the first character and
+  the next keystroke went nowhere. Domestic PO was the only view where it worked, which is exactly
+  why the bug survived in the two files that call the helper without owning it. It now matches on
+  all three attributes (`FILTER_ATTRS`), the same set `applyAccessibleNames()` reads.
+- **Every keystroke rebuilt the entire view.** A text filter is table-only — it narrows `tableRecs`,
+  never `filtered` — yet the `input` handler re-ran the whole render: KPI cards restarting their
+  count-up animations from 0, `destroyPageCharts()` plus fresh `new Chart(...)` for every canvas,
+  and in Materials the PO↔material linkage pass as well. That flash *is* what "it reloads" was
+  describing.
+
+Each of `po-list.js` / `import-po.js` / `materials.js` now renders its list (heading, header filter
+row, rows, pagination) into its own `#poListRegion` / `#importListRegion` / `#matListRegion`
+container via `poListRegionHtml()` / `importListRegionHtml()` / `materialsListRegionHtml()`, reading
+a module-level `PO_LIST_CTX` / `IMPORT_LIST_CTX` / `MAT_LIST_CTX` that the last **full** render
+filled with what a text filter cannot affect. A keystroke re-renders that region alone, debounced
+through `shared.js`'s `debounceRender()` (`LIST_FILTER_DEBOUNCE_MS = 150`; search-po's own 250ms is
+longer because that one can await a fetch).
+
+**The split of which control takes which path is load-bearing, not cosmetic.** A control that writes
+into a "global" filter — one the KPI row or the charts are built from — must still call the full
+render: Domestic's Created On and Status, Materials' Category/Sub Category/Status, and every
+"Clear" that resets those. Everything else is table-only and stays in the region. If you add a
+header filter, decide which it is by checking whether `filtered` or only `tableRecs` sees it; the
+cheap path silently shows stale KPI numbers for a global filter. The state write itself is never
+debounced — only the render — so the next full render always sees what was typed.
+
+**The header filter row must be built inside the region function, never handed over in the context
+object.** Each cell carries its filter's *current* value, so a snapshot taken at full-render time
+rewrites the box being typed into back to its pre-keystroke value: the list narrows correctly while
+the text vanishes under the cursor. All three files had exactly that bug for the length of one
+verification run, which is the only reason it is written down here.
+
+Verified with a throwaway in-browser harness against the running dev server (~85 assertions: each
+view rendered end-to-end from synthetic data, a real `input` event on its search box, then asserting
+the list narrowed, focus and caret and typed text survived, and the KPI card / chart-panel elements
+were *the same DOM nodes* as before the keystroke — plus `preserveFocus` on all three attributes,
+`debounceRender` collapsing 5 keystrokes into 1 render, pagination, the view-all toggle, the
+global-filter full-render path, and the deep links below). Same convention and same reason as the
+freshness watcher above — there is no Node here. The harness was not committed.
+
+**Search PO deep-links into the dashboard rather than "/" (2026-09-19).** Project owner: "instead of
+open entire dashboard can't we take user to the info about that PO, or raw material". The detail
+panel's old `Open Full Dashboard →` landed the reader on All Plants with no filters, leaving them to
+find by hand the record they had just searched for. `search-po-page.js` now builds
+`/?plant=<key>&po=<number>` and, per line item, `/?plant=all&material=<description>`; `main.js`'s
+`readDeepLinkParams()` reads them before the tabs render (so the right plant is fetched once, not
+twice) and `openDeepLinkTarget()` opens that PO's or material's own modal after the first render.
+
+Four details: `plant` is honoured only if it is a real plant key or `all` — **everything in a URL is
+attacker-supplied**, and the miss message goes through `textContent`, never `innerHTML`; a PO link
+names its plant because PO numbers are not unique across plants, while a material link is
+deliberately cross-plant (`plant=all`) since that view rolls a material up across all three anyway;
+a target that no longer resolves (a **retired/renamed PO** is the realistic case — see
+[Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither))
+says so in a `.validation-note` instead of opening silently as if nothing was asked for; and the URL
+is left in the address bar on purpose, so the link is shareable and survives a reload.
+
 **CSS:** `brand.css` owns the shared top nav (gold/navy, ported from TDS); `style.css` owns the
 dashboard's separate navy/blue/red palette; each page layers its own `css/<page>-page.css`.
 `index.html` is the only page loading both — **do not merge the two palettes**, that separation is

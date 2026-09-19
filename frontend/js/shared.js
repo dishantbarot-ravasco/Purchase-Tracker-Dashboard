@@ -507,6 +507,35 @@ function emptyStateHtml(message, tone) {
     '</svg></div><div class="empty-state-msg">' + message + '</div>';
 }
 
+// ── Debounced live filtering ─────────────────────────────────────────────
+// Every header-row text filter (po-list.js/import-po.js/materials.js) used
+// to re-render on the raw 'input' event, so one keystroke rebuilt that
+// view's entire subtree - KPI cards (restarting their count-up animation
+// from 0), both Chart.js canvases destroyed and recreated, then the table.
+// Typing a six-character material name did that six times, which is what
+// the page "refreshing/reloading on every letter" actually was (project
+// owner, 2026-09-19).
+//
+// Two changes fix it together and neither is sufficient alone: each view
+// now re-renders only its own list region on a text keystroke (see
+// renderMaterialsListRegion() and friends), and the re-render is debounced
+// through this helper so a fast typist gets one pass per pause, not one per
+// character. The state write itself is NEVER debounced - only the render -
+// so the next full re-render always sees what was typed.
+//
+// 150ms rather than search-po-page.js's 250ms: that page's search can await
+// a network fetch, these filters only re-filter an array already in memory,
+// so the shorter delay still reads as instant while collapsing a fast
+// typist's keystrokes.
+const LIST_FILTER_DEBOUNCE_MS = 150;
+function debounceRender(fn, ms) {
+  let timer = null;
+  return function () {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(fn, ms == null ? LIST_FILTER_DEBOUNCE_MS : ms);
+  };
+}
+
 // ── "Jump to page" control ───────────────────────────────────────────────
 // Small number input + Go button appended to every paginated "View all"
 // table's .pagination-row (po-list.js/materials.js/import-po.js) - the

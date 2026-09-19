@@ -263,31 +263,6 @@ function renderImportPoList(el) {
       '<div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>';
   }).join('');
 
-  let tableRecs = filtered;
-  const sf = state.importStatusFilter;
-  if (sf === 'inwarded') tableRecs = filtered.filter(poInwarded);
-  else if (sf === 'partial') tableRecs = filtered.filter(p => p.partialDelivery);
-  else if (sf === 'qtydisc') tableRecs = filtered.filter(p => p.qtyDiscrepancy);
-  else if (sf === 'qtydiscmir') tableRecs = filtered.filter(poQtyDiscMir);
-  else if (sf === 'ratedisc') tableRecs = filtered.filter(poRateDiscMir);
-  else if (sf === 'critical') tableRecs = filtered.filter(p => p._qtyFlag || p._rateFlag);
-  else if (sf === 'overdue') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Overdue');
-  else if (sf === 'onorder') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'On Order');
-  else if (sf === 'unknowndate') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Unknown');
-  else if (sf === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
-  // Per-category filter (added 2026-09-08) - 'cat:<label>' namespacing, same
-  // convention/reasoning as Domestic's own po-list.js.
-  else if (typeof sf === 'string' && sf.startsWith('cat:')) {
-    const wantedLabel = sf.slice(4);
-    tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
-  }
-  else if (sf === 'placed') tableRecs = filtered.filter(p => p.shipmentStage === 'Placed');
-  else if (sf === 'shipped') tableRecs = filtered.filter(p => p.shipmentStage === 'Shipped (BL)');
-  else if (sf === 'cleared') tableRecs = filtered.filter(p => p.shipmentStage === 'Cleared (BOE)');
-  if (state.importChartMonthFilter) tableRecs = tableRecs.filter(po => (po.createdDate || '').slice(0, 7) === state.importChartMonthFilter);
-  tableRecs = applyImportColFilters(tableRecs);
-  tableRecs = tableRecs.slice().sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
-
   const stageChartData = [
     { key: 'placed', label: IMPORT_STAGE_LABELS['Placed'], val: counts.placed, color: '#d97706' },
     { key: 'shipped', label: IMPORT_STAGE_LABELS['Shipped (BL)'], val: counts.shipped, color: '#2563eb' },
@@ -302,20 +277,6 @@ function renderImportPoList(el) {
   });
   const months = Object.keys(monthTotals).sort();
 
-  const showingAll = state.importShowAllPOs;
-  const totalForList = tableRecs.length;
-  const PAGE_SIZE = 10;
-  const totalPages = Math.max(1, Math.ceil(totalForList / PAGE_SIZE));
-  const tablePage = Math.min(Math.max(1, state.importTablePage), totalPages);
-  const listRecs = showingAll ? tableRecs.slice((tablePage - 1) * PAGE_SIZE, tablePage * PAGE_SIZE) : tableRecs.slice(0, 5);
-
-  const cf = state.importColFilters;
-  const activeFilterCount =
-    (state.importChartMonthFilter ? 1 : 0) +
-    (state.importStatusFilter ? 1 : 0) +
-    (state.importFrom || state.importTo ? 1 : 0) +
-    (state.importCategoryFilter ? 1 : 0) + (state.importSubCategoryFilter ? 1 : 0) +
-    (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
 
   const categoryOptionsHtml = Object.entries(categoryCounts)
     .sort((a, b) => b[1] - a[1])
@@ -338,19 +299,11 @@ function renderImportPoList(el) {
     '<option value="flags"' + (state.importStatusFilter === 'flags' ? ' selected' : '') + '>Data Quality Flag (' + counts.flags + ')</option>' +
     flagCategoryOptionsHtml;
 
-  // No Value column filter here - min/max value narrowing was removed
-  // (project owner, 2026-09-04), same as Domestic's own table.
-  const filterCells = [
-    '<input type="text" class="col-filter-input" data-icf="poNumber" placeholder="Search..." value="' + escapeHtml(cf.poNumber) + '">',
-    '<input type="text" class="col-filter-input" data-icf="vendor" placeholder="Search..." value="' + escapeHtml(cf.vendor) + '">',
-    '<input type="text" class="col-filter-input" data-icf="country" placeholder="Search..." value="' + escapeHtml(cf.country) + '">',
-    '',
-    '',
-    '<select class="col-filter-input" data-icf="stage"><option value="">All</option>' +
-      IMPORT_STAGES.map(s => '<option value="' + s + '"' + (cf.stage === s ? ' selected' : '') + '>' + escapeHtml(IMPORT_STAGE_LABELS[s]) + '</option>').join('') +
-    '</select>',
-    '',
-  ];
+
+  // Everything from the list heading down is rendered by
+  // importListRegionHtml() from this context, so a header-filter keystroke
+  // can rebuild the list alone - see IMPORT_LIST_CTX's own comment.
+  IMPORT_LIST_CTX = { el: el, filtered: filtered, poInwarded: poInwarded, poQtyDiscMir: poQtyDiscMir, poRateDiscMir: poRateDiscMir };
 
   el.innerHTML =
     '<div class="filter-row">' +
@@ -408,57 +361,13 @@ function renderImportPoList(el) {
           (stageChartData.length ? '<div class="chart-box"><canvas id="importStageChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
         '</div>' +
       '</div>' : '') +
-    '<div class="list-toggle-row"><div class="section-title m-0">Import Purchase Orders (Latest first)</div>' +
-      (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
-      '<div class="flex-row-gap10">' +
-        (activeFilterCount ? '<span class="clear-list-filters" id="importClearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
-        (totalForList > 5 ? '<button class="view-all-btn" id="importToggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
-      '</div>' +
-    '</div>' +
-    (() => {
-      if (showingAll) {
-        const colFilterRow = '<tr class="col-filter-row">' + filterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
-        const pageButtons = totalPages <= 10
-          ? Array.from({ length: totalPages }, (_, i) => i + 1)
-              .map(p => '<button class="page-btn page-num' + (p === tablePage ? ' active' : '') + '" data-impage="' + p + '">' + p + '</button>')
-              .join('')
-          : '<span class="page-info">Page ' + tablePage + ' of ' + totalPages + '</span>';
-        const paginationHtml = totalPages > 1
-          ? '<div class="pagination-row">' +
-              '<button id="importPrevPageBtn" class="page-btn"' + (tablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
-              pageButtons +
-              '<button id="importNextPageBtn" class="page-btn"' + (tablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
-              jumpToPageHtml('import', totalPages) +
-            '</div>'
-          : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
-          '<tbody>' + listRecs.map(po => {
-            const key = escapeHtml(po.plant + '::' + po.poNumber);
-            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
-              '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
-              '<td>' + escapeHtml(po.countryOfOrigin || '-') + '</td>' +
-              '<td>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-') + '</td>' +
-              '<td>' + blNumberCellHtml(po, '-') + '</td>' +
-              '<td><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</td>' +
-              '<td><span class="row-link" data-impo="' + key + '">View details</span></td></tr>';
-          }).join('') + '</tbody></table></div>' + paginationHtml;
-      }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
-        '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
-        '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
-          const key = escapeHtml(po.plant + '::' + po.poNumber);
-          return '<div class="top5-row' + rowTintClass(po) + '">' +
-            '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
-            '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
-            '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
-            '<div>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : 'Not available') + '</div>' +
-            '<div>' + blNumberCellHtml(po, 'Not available') + '</div>' +
-            '<div><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</div>' +
-            '<div><span class="row-link" data-impo="' + key + '">View details</span></div></div>';
-        }).join('') + '</div>';
-    })();
+    // Its own container so a header-filter keystroke can replace just
+    // this (see renderImportListRegion()), leaving the KPI row's count-up
+    // and both charts above it untouched.
+    '<div id="importListRegion">' + importListRegionHtml() + '</div>';
 
   wireKpiCountUps();
+  wireImportListRegion();
 
   document.querySelectorAll('[data-kpi]').forEach(c => {
     if (!c.dataset.kpi) return; // disabled (MIR-placeholder) card - no filter to set
@@ -478,18 +387,6 @@ function renderImportPoList(el) {
   document.getElementById('importClearFilter').onclick = () => { state.importFrom = null; state.importTo = null; state.importTablePage = 1; renderImportPoList(el); };
   document.getElementById('importRodtepBtn').onclick = () => openRodtepPanel();
   document.getElementById('importAdvanceLicenseBtn').onclick = () => openAdvanceLicensePanel();
-  const toggleBtn = document.getElementById('importToggleAllBtn');
-  if (toggleBtn) toggleBtn.onclick = () => { state.importShowAllPOs = !state.importShowAllPOs; state.importTablePage = 1; renderImportPoList(el); };
-  document.querySelectorAll('[data-impo]').forEach(el2 => el2.onclick = () => openImportPoModal(el2.dataset.impo));
-  document.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = (e) => { e.stopPropagation(); trackBlNumber(el2.dataset.trackBl); });
-
-  const prevPageBtn = document.getElementById('importPrevPageBtn');
-  if (prevPageBtn) prevPageBtn.onclick = () => { state.importTablePage = Math.max(1, state.importTablePage - 1); renderImportPoList(el); };
-  const nextPageBtn = document.getElementById('importNextPageBtn');
-  if (nextPageBtn) nextPageBtn.onclick = () => { state.importTablePage = state.importTablePage + 1; renderImportPoList(el); };
-  document.querySelectorAll('[data-impage]').forEach(btn => btn.onclick = () => { state.importTablePage = Number(btn.dataset.impage); renderImportPoList(el); });
-  wireJumpToPage('import', totalPages, (n) => { state.importTablePage = n; renderImportPoList(el); });
-
   const importCategorySelect = document.getElementById('importCategoryFilterSelect');
   if (importCategorySelect) importCategorySelect.onchange = () => { state.importCategoryFilter = importCategorySelect.value || null; state.importSubCategoryFilter = null; state.importTablePage = 1; renderImportPoList(el); };
   const importSubCategorySelect = document.getElementById('importSubCategoryFilterSelect');
@@ -502,23 +399,6 @@ function renderImportPoList(el) {
     if (['qtydisc', 'qtydiscmir', 'ratedisc', 'critical', 'flags'].includes(state.importStatusFilter) || (typeof state.importStatusFilter === 'string' && state.importStatusFilter.startsWith('cat:'))) state.importStatusFilter = null;
     state.importTablePage = 1; renderImportPoList(el);
   };
-
-  const clearListFiltersBtn = document.getElementById('importClearListFilters');
-  if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
-    state.importStatusFilter = null; state.importChartMonthFilter = null; state.importFrom = null; state.importTo = null;
-    state.importCategoryFilter = null; state.importSubCategoryFilter = null; state.importTablePage = 1;
-    state.importColFilters = { poNumber: '', vendor: '', country: '', stage: '' };
-    renderImportPoList(el);
-  };
-  document.querySelectorAll('[data-icf]').forEach(inp => {
-    const key = inp.dataset.icf;
-    const eventName = (inp.tagName === 'SELECT' || inp.type === 'number') ? 'change' : 'input';
-    inp.addEventListener(eventName, () => {
-      state.importColFilters[key] = inp.value;
-      state.importTablePage = 1;
-      preserveFocus(el, () => renderImportPoList(el));
-    });
-  });
 
   destroyPageCharts();
   if (months.length) {
@@ -630,6 +510,190 @@ function renderImportPoList(el) {
     }
   }
 }
+
+// ── The list region (heading + header filters + rows + pagination) ──────
+// Split out of renderImportPoList() on 2026-09-19, same change and same
+// reasoning as Domestic's own PO_LIST_CTX and materials.js's MAT_LIST_CTX
+// (see materials.js for the full story): every [data-icf] header filter
+// writes into state.importColFilters, which applyImportColFilters() applies
+// to `tableRecs` alone - so the KPI row and both charts, built from
+// `filtered`, cannot change and were being rebuilt on every keystroke for
+// nothing.
+let IMPORT_LIST_CTX = null;
+
+function importListRegionHtml() {
+  const ctx = IMPORT_LIST_CTX;
+  const filtered = ctx.filtered;
+  const poInwarded = ctx.poInwarded;
+  const poQtyDiscMir = ctx.poQtyDiscMir;
+  const poRateDiscMir = ctx.poRateDiscMir;
+  const cf = state.importColFilters;
+  // Built HERE, not handed over in IMPORT_LIST_CTX: each cell carries its
+  // filter's CURRENT value, so a snapshot taken at full-render time would
+  // rewrite the box being typed into back to its pre-keystroke value - the
+  // list would narrow correctly while the text vanished under the cursor.
+  // No Value column filter here - min/max value narrowing was removed
+  // (project owner, 2026-09-04), same as Domestic's own table.
+  const filterCells = [
+    '<input type="text" class="col-filter-input" data-icf="poNumber" placeholder="Search..." value="' + escapeHtml(cf.poNumber) + '">',
+    '<input type="text" class="col-filter-input" data-icf="vendor" placeholder="Search..." value="' + escapeHtml(cf.vendor) + '">',
+    '<input type="text" class="col-filter-input" data-icf="country" placeholder="Search..." value="' + escapeHtml(cf.country) + '">',
+    '',
+    '',
+    '<select class="col-filter-input" data-icf="stage"><option value="">All</option>' +
+      IMPORT_STAGES.map(s => '<option value="' + s + '"' + (cf.stage === s ? ' selected' : '') + '>' + escapeHtml(IMPORT_STAGE_LABELS[s]) + '</option>').join('') +
+    '</select>',
+    '',
+  ];
+
+  let tableRecs = filtered;
+  const sf = state.importStatusFilter;
+  if (sf === 'inwarded') tableRecs = filtered.filter(poInwarded);
+  else if (sf === 'partial') tableRecs = filtered.filter(p => p.partialDelivery);
+  else if (sf === 'qtydisc') tableRecs = filtered.filter(p => p.qtyDiscrepancy);
+  else if (sf === 'qtydiscmir') tableRecs = filtered.filter(poQtyDiscMir);
+  else if (sf === 'ratedisc') tableRecs = filtered.filter(poRateDiscMir);
+  else if (sf === 'critical') tableRecs = filtered.filter(p => p._qtyFlag || p._rateFlag);
+  else if (sf === 'overdue') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Overdue');
+  else if (sf === 'onorder') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'On Order');
+  else if (sf === 'unknowndate') tableRecs = filtered.filter(p => p.deliveryDateStatus === 'Unknown');
+  else if (sf === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
+  // Per-category filter (added 2026-09-08) - 'cat:<label>' namespacing, same
+  // convention/reasoning as Domestic's own po-list.js.
+  else if (typeof sf === 'string' && sf.startsWith('cat:')) {
+    const wantedLabel = sf.slice(4);
+    tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
+  }
+  else if (sf === 'placed') tableRecs = filtered.filter(p => p.shipmentStage === 'Placed');
+  else if (sf === 'shipped') tableRecs = filtered.filter(p => p.shipmentStage === 'Shipped (BL)');
+  else if (sf === 'cleared') tableRecs = filtered.filter(p => p.shipmentStage === 'Cleared (BOE)');
+  if (state.importChartMonthFilter) tableRecs = tableRecs.filter(po => (po.createdDate || '').slice(0, 7) === state.importChartMonthFilter);
+  tableRecs = applyImportColFilters(tableRecs);
+  tableRecs = tableRecs.slice().sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
+
+  const showingAll = state.importShowAllPOs;
+  const totalForList = tableRecs.length;
+  const PAGE_SIZE = 10;
+  const totalPages = Math.max(1, Math.ceil(totalForList / PAGE_SIZE));
+  const tablePage = Math.min(Math.max(1, state.importTablePage), totalPages);
+  const listRecs = showingAll ? tableRecs.slice((tablePage - 1) * PAGE_SIZE, tablePage * PAGE_SIZE) : tableRecs.slice(0, 5);
+  // Read back by wireImportListRegion(), which has to clamp the same way
+  // rather than re-deriving a second page count that could disagree.
+  ctx.totalPages = totalPages;
+
+
+  const activeFilterCount =
+    (state.importChartMonthFilter ? 1 : 0) +
+    (state.importStatusFilter ? 1 : 0) +
+    (state.importFrom || state.importTo ? 1 : 0) +
+    (state.importCategoryFilter ? 1 : 0) + (state.importSubCategoryFilter ? 1 : 0) +
+    (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
+
+  return '<div class="list-toggle-row"><div class="section-title m-0">Import Purchase Orders (Latest first)</div>' +
+      (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
+      '<div class="flex-row-gap10">' +
+        (activeFilterCount ? '<span class="clear-list-filters" id="importClearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
+        (totalForList > 5 ? '<button class="view-all-btn" id="importToggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
+      '</div>' +
+    '</div>' +
+    (() => {
+      if (showingAll) {
+        const colFilterRow = '<tr class="col-filter-row">' + filterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
+        const pageButtons = totalPages <= 10
+          ? Array.from({ length: totalPages }, (_, i) => i + 1)
+              .map(p => '<button class="page-btn page-num' + (p === tablePage ? ' active' : '') + '" data-impage="' + p + '">' + p + '</button>')
+              .join('')
+          : '<span class="page-info">Page ' + tablePage + ' of ' + totalPages + '</span>';
+        const paginationHtml = totalPages > 1
+          ? '<div class="pagination-row">' +
+              '<button id="importPrevPageBtn" class="page-btn"' + (tablePage <= 1 ? ' disabled' : '') + '>&larr; Prev</button>' +
+              pageButtons +
+              '<button id="importNextPageBtn" class="page-btn"' + (tablePage >= totalPages ? ' disabled' : '') + '>Next &rarr;</button>' +
+              jumpToPageHtml('import', totalPages) +
+            '</div>'
+          : '';
+        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+          '<tbody>' + listRecs.map(po => {
+            const key = escapeHtml(po.plant + '::' + po.poNumber);
+            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
+              '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
+              '<td>' + escapeHtml(po.countryOfOrigin || '-') + '</td>' +
+              '<td>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-') + '</td>' +
+              '<td>' + blNumberCellHtml(po, '-') + '</td>' +
+              '<td><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</td>' +
+              '<td><span class="row-link" data-impo="' + key + '">View details</span></td></tr>';
+          }).join('') + '</tbody></table></div>' + paginationHtml;
+      }
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
+        '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
+        '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
+          const key = escapeHtml(po.plant + '::' + po.poNumber);
+          return '<div class="top5-row' + rowTintClass(po) + '">' +
+            '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
+            '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
+            '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
+            '<div>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : 'Not available') + '</div>' +
+            '<div>' + blNumberCellHtml(po, 'Not available') + '</div>' +
+            '<div><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</div>' +
+            '<div><span class="row-link" data-impo="' + key + '">View details</span></div></div>';
+        }).join('') + '</div>';
+    })();
+}
+
+/** Re-renders the list region alone, in place. Falls back to a full
+ * renderImportPoList() if the region (or the context it needs) isn't there. */
+function renderImportListRegion() {
+  const region = document.getElementById('importListRegion');
+  if (!region || !IMPORT_LIST_CTX) { renderImportPoList(document.getElementById('content')); return; }
+  preserveFocus(region, () => { region.innerHTML = importListRegionHtml(); });
+  applyDynamicStyles(region); // the row-tint legend's dots - see shared.js's own comment
+  wireImportListRegion();
+}
+
+function wireImportListRegion() {
+  const region = document.getElementById('importListRegion');
+  if (!region) return;
+  const el = IMPORT_LIST_CTX ? IMPORT_LIST_CTX.el : region.parentNode;
+  const totalPages = IMPORT_LIST_CTX ? IMPORT_LIST_CTX.totalPages : 1;
+
+  const toggleBtn = document.getElementById('importToggleAllBtn');
+  if (toggleBtn) toggleBtn.onclick = () => { state.importShowAllPOs = !state.importShowAllPOs; state.importTablePage = 1; renderImportListRegion(); };
+  region.querySelectorAll('[data-impo]').forEach(el2 => el2.onclick = () => openImportPoModal(el2.dataset.impo));
+  region.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = (e) => { e.stopPropagation(); trackBlNumber(el2.dataset.trackBl); });
+
+  const prevPageBtn = document.getElementById('importPrevPageBtn');
+  if (prevPageBtn) prevPageBtn.onclick = () => { state.importTablePage = Math.max(1, state.importTablePage - 1); renderImportListRegion(); };
+  const nextPageBtn = document.getElementById('importNextPageBtn');
+  if (nextPageBtn) nextPageBtn.onclick = () => { state.importTablePage = state.importTablePage + 1; renderImportListRegion(); };
+  region.querySelectorAll('[data-impage]').forEach(btn => btn.onclick = () => { state.importTablePage = Number(btn.dataset.impage); renderImportListRegion(); });
+  wireJumpToPage('import', totalPages, (n) => { state.importTablePage = n; renderImportListRegion(); });
+
+  // Clears the "global" date/category/status filters too, so this one has
+  // to go through the full render.
+  const clearListFiltersBtn = document.getElementById('importClearListFilters');
+  if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
+    state.importStatusFilter = null; state.importChartMonthFilter = null; state.importFrom = null; state.importTo = null;
+    state.importCategoryFilter = null; state.importSubCategoryFilter = null; state.importTablePage = 1;
+    state.importColFilters = { poNumber: '', vendor: '', country: '', stage: '' };
+    renderImportPoList(el);
+  };
+
+  // Every one of these is a table-only filter (see applyImportColFilters()),
+  // so they all re-render this region only. The text boxes are debounced
+  // (shared.js's debounceRender()); the Stage <select> fires on 'change',
+  // already one committed event.
+  region.querySelectorAll('[data-icf]').forEach(inp => {
+    const key = inp.dataset.icf;
+    const eventName = (inp.tagName === 'SELECT' || inp.type === 'number') ? 'change' : 'input';
+    const rerender = eventName === 'change' ? () => renderImportListRegion() : debounceRender(() => renderImportListRegion());
+    inp.addEventListener(eventName, () => {
+      state.importColFilters[key] = inp.value;
+      state.importTablePage = 1;
+      rerender();
+    });
+  });
+}
+
 
 
 // compositeKey is "<plant>::<poNumber>" (po.plant is already the imports
