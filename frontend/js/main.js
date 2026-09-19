@@ -252,9 +252,16 @@ function resetFilters() {
 // escapeHtml()/textContent, never as markup - everything in a URL is
 // attacker-supplied by definition, even on an internal tool.
 //
-// The URL is deliberately left in the address bar after opening, so the
-// link is shareable and survives a reload - it is a real address for a PO,
-// not a one-shot instruction.
+// The params are CONSUMED: `clearDeepLinkParams()` strips them from the
+// address bar as soon as the modal is open. The first version deliberately
+// left them there, reasoning that the URL was "a real address for a PO" and
+// should survive a reload - the project owner reported the result the same
+// day ("i search this dashboard and every time i reload it's get open don't
+// know why"). A modal is a transient thing the reader dismisses; re-opening
+// it on every refresh of what is now just "the dashboard" reads as the page
+// being stuck, and there is no way to get rid of it short of editing the
+// URL. Sharing still works exactly as before - the link opens the PO for
+// whoever follows it - it just stops repeating itself afterwards.
 function readDeepLinkParams() {
   let params;
   try { params = new URLSearchParams(window.location.search); } catch (e) { return null; }
@@ -277,6 +284,20 @@ function applyDeepLinkToState(link) {
     state.view = 'po';
     state.purchaseType = 'domestic'; // ?po= is a Domestic PO number (Search PO only searches those)
   }
+}
+
+/** Strips only the three deep-link params, leaving anything else on the URL
+ * (and the path) alone, then rewrites the address bar in place. replaceState,
+ * not pushState: the reader never navigated anywhere, so this must not add a
+ * history entry that Back would walk into. Called once the link has been
+ * acted on, success or miss - see readDeepLinkParams()'s own comment. */
+function clearDeepLinkParams() {
+  if (!window.history || !window.history.replaceState) return;
+  let url;
+  try { url = new URL(window.location.href); } catch (e) { return; }
+  ['po', 'material', 'plant'].forEach(k => url.searchParams.delete(k));
+  const search = url.searchParams.toString();
+  window.history.replaceState(null, '', url.pathname + (search ? '?' + search : '') + url.hash);
 }
 
 /** A target that can't be found is reported in place rather than silently
@@ -342,6 +363,11 @@ async function openDeepLinkTarget(link) {
     // already rendered and correct, the reader just doesn't get the modal.
     console.error('openDeepLinkTarget failed:', e);
     showDeepLinkMiss('Couldn\'t open the linked record right now. The dashboard below is up to date - please try the link again, or search for it from Search PO.');
+  } finally {
+    // In `finally`, so a link that missed or threw is consumed too: leaving
+    // it on the URL would replay the same failure on every refresh, which is
+    // the more confusing half of the behaviour this fixes.
+    clearDeepLinkParams();
   }
 }
 

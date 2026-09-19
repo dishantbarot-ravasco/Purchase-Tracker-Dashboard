@@ -211,8 +211,19 @@ names its plant because PO numbers are not unique across plants, while a materia
 deliberately cross-plant (`plant=all`) since that view rolls a material up across all three anyway;
 a target that no longer resolves (a **retired/renamed PO** is the realistic case — see
 [Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither))
-says so in a `.validation-note` instead of opening silently as if nothing was asked for; and the URL
-is left in the address bar on purpose, so the link is shareable and survives a reload.
+says so in a `.validation-note` instead of opening silently as if nothing was asked for; and the
+params are **consumed** — `clearDeepLinkParams()` strips them from the address bar (via
+`replaceState`, so Back is unaffected) once the link has been acted on.
+
+**That last one was the opposite way round for a few hours and was wrong.** The first version left
+the URL in place, reasoning that `/?plant=hrs&po=3000001082` is "a real address for a PO" and ought
+to survive a reload. The project owner reported the result the same day: *"i search this dashboard
+and every time i reload it's get open don't know why"*. A modal is transient — something the reader
+dismisses — so re-opening it on every refresh of what is, by then, just the dashboard reads as the
+page being stuck, with no way out short of editing the URL by hand. **Sharing was never the thing at
+risk**: the link still opens the PO for whoever follows it, once. The clear runs in a `finally`, so
+a link that missed or threw is consumed too — otherwise the failure message replays on every
+refresh, which is the more confusing half of it.
 
 **CSS:** `brand.css` owns the shared top nav (gold/navy, ported from TDS); `style.css` owns the
 dashboard's separate navy/blue/red palette; each page layers its own `css/<page>-page.css`.
