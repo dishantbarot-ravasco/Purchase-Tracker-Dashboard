@@ -8,11 +8,15 @@ taxable_value is used directly as the value-closeness comparator (no `or
 mir.net` fallback - RTPVapiMIREntry has no `net` field at all); its Stock
 lot uses HRS's stronger (material, vendor) gate via `supplier_name`
 (confirmed a real, distinct vendor column - see RTP-Vapi's section header
-comment in apps/core/models.py), not Achhad's material-only gate; and
-RTPVapiMIREntry.po_number_raw was 0% populated on every real row confirmed
-this session, so the tier-1 PO-number shortcut currently never fires
-against real Vapi data - it stays wired up so it starts working
-automatically the day that column gets populated.
+comment in apps/core/models.py), not Achhad's material-only gate.
+
+RTPVapiMIREntry.po_number_raw was 0% populated when this comment was first
+written - it no longer is. The plant head added a 'PURCHASE ORDER' column to
+the live MIR file 2026-09-11 (see parsers/vapi_mir.py); measured 2026-09-19
+across 1,489 rows it is 97.5% filled, and 29.0% names an order the master
+CSV actually holds (the rest is mostly the literal word 'VERBAL', or several
+orders joined by a hyphen - see matching_core.py's _MULTI_PO_HYPHEN_RE for
+that shape). The tier-1 PO-number shortcut fires for real now.
 """
 
 from decimal import Decimal
@@ -48,8 +52,8 @@ VALUE_FLAG_EPSILON = Decimal("1.00")
 #
 # MATERIAL_MATCH_THRESHOLD is deliberately LOWER than HRS/Achhad's 0.3, not
 # copied from it - confirmed against a real sync+match run this session:
-# Vapi's po_number_raw is 100% blank (see the module docstring above), so
-# identification depends ENTIRELY on the material threshold with no PO-
+# Vapi's po_number_raw was 100% blank when this was first tuned, so
+# identification depended ENTIRELY on the material threshold with no PO-
 # number fallback, unlike HRS/Achhad where a PO-number hit can carry a match
 # whose material score is weak. At 0.3, real legitimate matches were
 # rejected outright - e.g. PO "PTFE Coated Fabric, brown, 0.38mm, width
@@ -60,8 +64,18 @@ VALUE_FLAG_EPSILON = Decimal("1.00")
 # item, not a bad match). 0.2 recovers this and similar real cases seen in
 # the same run without visibly worse false-positive risk (still gated by
 # vendor + picked by qty/rate/value closeness among candidates that clear
-# it) - re-check with real data again if this needs further tuning up or
-# down.
+# it).
+#
+# RE-CHECKED, NOT JUST CARRIED OVER (2026-09-19): now that po_number_raw is
+# genuinely populated, the obvious question is whether identification can
+# lean on it and raise this back to HRS/Achhad's 0.3. Measured directly
+# (real run_full_match() against a throwaway DB copy, HRS/Achhad's
+# threshold substituted in): it COSTS 7 real import matches (Chloroprene
+# M-40K/M-42, SSBR, DTDM Powder - all near-zero-overlap free-text
+# descriptions against terse MIR codes, same shape as the case above) and
+# gains nothing. 0.2 stays right even though the reason first written down
+# for it is now stale - see identification_two_of_three below for the
+# actual PO-number-fallback change that was safe to make instead.
 _WEIGHT_QTY = Decimal("0.29")
 _WEIGHT_RATE = Decimal("0.29")
 _WEIGHT_VALUE = Decimal("0.42")
@@ -113,6 +127,40 @@ MATCH_CONFIG = _MatchConfig(
     # story. This flag only adds the Qty/Value data-mismatch checks on top
     # of the existing material(+vendor)-only gate.
     stock_extended_fields=True,
+    # Identification 2-of-3 (2026-09-19, project owner) - Achhad and HRS
+    # first (2026-09-18), Vapi once its MIR PO coverage was actually
+    # measured rather than assumed still-blank (see the module docstring
+    # above). See matching_core._MatchConfig.identification_two_of_three for
+    # the rule itself; the case for enabling it here:
+    #
+    #   RTP VAPI MIR FILE 2026-27.xlsx, 1,489 rows (2026-09-19): A/B/C
+    #   measured directly (real run_full_match() against a throwaway DB
+    #   copy) - 583 domestic matches with po_number_raw blanked out
+    #   entirely, 588 with the column live and vendor still mandatory, 599
+    #   with this flag on. The flag is STRICTLY ADDITIVE over the live
+    #   default: +11, 0 lost, 0 re-pointed.
+    #
+    # The 11 split into the same two halves Achhad/HRS's own comments
+    # describe, measured separately as those comments say to:
+    #   - 7 are the narrowed no-PO-vendor exclusion (_MirCandidateIndex's
+    #     docstring) - Tinna Rubber and Eternia Trading are both registered
+    #     NO_PO_SUPPLIER, but the master CSV now raises real orders against
+    #     them (six agree with the order to the rupee; one is an open
+    #     partial receipt, 325 of 500 @182).
+    #   - 4 are the 2-of-3 rule proper, all on Madura Technical Textiles'
+    #     PO 1000001433 - its receipts are written under the party names
+    #     'MADURA INDL TEXTILES LTD'/'MADURA TECHNICAL FABRICS LTD.', ~10
+    #     characters short of clearing _vendor_matches() against 'Madura
+    #     Technical Textiles Ltd'. One of the four (MIR row 536, rate 250
+    #     against the order's own 170) looks like the PO number copied down
+    #     a column rather than re-typed per receipt - it binds, and lands
+    #     flagged severity=material, which is the right outcome: surfaced,
+    #     not hidden.
+    #
+    # Vapi's own MATERIAL_MATCH_THRESHOLD (0.2, not HRS/Achhad's 0.3) is
+    # unaffected by this flag and was re-measured, not just carried over -
+    # see that constant's own comment.
+    identification_two_of_three=True,
 )
 
 

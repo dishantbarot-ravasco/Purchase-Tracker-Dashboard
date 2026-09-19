@@ -249,8 +249,10 @@ MIR/Stock spreadsheets have genuinely different column layouts**, not just diffe
   its own `SAP P.O` field was **100% blank** across ~1,330 real rows checked — re-confirmed
   2026-09-18, still 0 usable values, so `sap_po_number` remains dead weight for matching.
   **Its other PO column is no longer blank, though**, and the widely-repeated "Vapi has no usable
-  Tier-1 shortcut" is out of date: measured 2026-09-18 across 1,450 rows, `po_number_raw` is 41.7%
-  blank but **27.2% (394 rows) carries a usable PO reference**. Someone has been filling it in. That
+  Tier-1 shortcut" is out of date: measured 2026-09-19 across 1,489 rows, `po_number_raw` is 97.5%
+  populated (only 2.5% blank) but **29.0% (432 rows) names an order the master CSV holds** — most of
+  the rest is the literal word `VERBAL` (536 rows), or several orders joined by a hyphen (334 rows,
+  see [PO↔MIR](#po--mir) on `_MULTI_PO_HYPHEN_RE`). Someone has been filling it in. That
   is the single biggest reason Vapi's match rate jumped (see the accuracy table below).
 - **Vapi Stock is a real shared multi-plant ledger**, not exclusively Vapi's: confirmed `PLANT`
   values `RTP-1` (145 rows), `HRS` (20), `RTP-2` (3). `RTPVapiRMLot.plant_tag` captures this without
@@ -515,19 +517,20 @@ wired to `match_hrs` / `match_achhad` / `match_vapi`; it is idempotent (`update_
 and safe to re-run any time. One pass covers both domestic and import PO line items, reported as
 `po_line_items_matched` and `import_po_line_items_matched`.
 
-### Vendor name is a hard gate on HRS/Vapi, one of three votes on Achhad
+### Vendor name is a hard gate on MIR↔Stock, one of three votes on PO↔MIR everywhere now
 
-On **HRS and Vapi**, two records for different vendors are never candidates for each other, however
-well material/qty/rate/value line up. Names are normalised (`parsers/common.py`'s
+Two records for different vendors are never candidates for each other on MIR↔Stock, however
+well material/qty/rate/value line up (Achhad excepted — its Stock sheet has no vendor column at
+all, see below). Names are normalised (`parsers/common.py`'s
 `normalize_vendor()` — strips legal suffixes like "Pvt Ltd", lowercases, strips punctuation) and
 then compared with **containment, not equality**: HRS's Stock sheet appends a city suffix its
 MIR/PO data doesn't carry (`"Rubamin Private Limited"` vs `"Rubamin Private Limited - Vadodara"`),
 and exact matching produced **zero** MIR↔Stock matches until switched to `shorter in longer`.
 
-**Achhad and HRS are different since 2026-09-18** — `matching_achhad.py` and `matching.py` set
-`_MatchConfig.identification_two_of_three=True`, and PO↔MIR identification there requires any **two
-of {PO number, vendor, material}** rather than vendor plus one of the other two. (Vapi is still on
-the vendor-mandatory default.) Vendor keeps all of
+**All three plants run PO↔MIR identification as 2-of-3 now — Achhad and HRS since 2026-09-18, Vapi
+since 2026-09-19.** `_MatchConfig.identification_two_of_three=True` in all three of
+`matching_achhad.py`/`matching.py`/`matching_vapi.py` means identification there requires any **two
+of {PO number, vendor, material}** rather than vendor plus one of the other two. Vendor keeps all of
 its weight for the rows that have nothing else (423 of Achhad's 663 MIR rows carry no PO number at
 all, and those still identify on vendor plus material exactly as before) but it can now be
 **outvoted** by a PO number that agrees with the material.
@@ -561,14 +564,42 @@ number belonging to another supplier's order for a completely different material
 identification would bind it. 2-of-3 states that rule directly instead of hiding it in constants.
 Weight still decides *which* identified candidate wins; that is what the evidence tiers already do.
 
-**Vapi's PO-number coverage has now been measured** (2026-09-18): 27.2% of its 1,450 MIR rows carry a
-usable reference, against Achhad's 36% when the flag was enabled there. That is enough for the rule
-to do real work, so Vapi is now a genuine candidate rather than a blocked one — but run the same
-two-part check Achhad and HRS got before enabling it: how many rows the vendor gate actually blocks
-(the 2-of-3 rule proper), and which registered no-PO vendors are now being PO'd (the exclusion
-narrowing). At HRS the first turned out to be a no-op and only the second did anything.
-`RTPVapiPOMirMatch`/`RTPVapiImportPOMirMatch` would need a `vendor_matched` column first, as HRS did. Measure both halves of the flag separately: at HRS
-the 2-of-3 rule itself turned out to be a no-op and only the no-PO-vendor narrowing did any work.
+**Vapi enabled the same flag 2026-09-19**, once its `'PURCHASE ORDER'` MIR column's coverage was
+actually measured rather than assumed still-blank: 29.0% of 1,489 MIR rows name an order the master
+CSV holds (up from an earlier, already-stale "27.2%" figure — the column keeps filling in). Migration
+`0052` added `vendor_matched` to `RTPVapiPOMirMatch`/`RTPVapiImportPOMirMatch` first, same prerequisite
+HRS needed. Measured directly (real `run_full_match()` against a throwaway DB copy): **588 → 599
+domestic matches, strictly additive — 0 lost, 0 re-pointed.** Same two-part split as HRS/Achhad: 4 are
+the 2-of-3 rule proper (all on Madura Technical Textiles' PO `1000001433`, whose receipts are written
+under `'MADURA INDL TEXTILES LTD'`/`'MADURA TECHNICAL FABRICS LTD.'` — neither clears
+`_vendor_matches()` against `'Madura Technical Textiles Ltd'`), 7 are the narrowed no-PO-vendor
+exclusion (Tinna Rubber, Eternia Trading — both registered `NO_PO_SUPPLIER` but now genuinely PO'd).
+See `matching_vapi.py`'s own comment for the full measurement.
+
+**Vapi's PO column also introduced a genuinely new shape neither HRS nor Achhad has: one MIR row
+naming several open orders at once**, joined by hyphens (`'1000001552-1000001630'`) — a delivery
+allocated across several of a vendor's concurrently open orders for the same material. Confirmed real,
+not a typo: Madura Industrial Textiles alone runs up to 21 concurrently open orders for the same
+fabric code (EE250) at once. 334 of Vapi's 1,489 MIR rows write this shape (never wider than 3 orders
+per cell), and `matching_core._MULTI_PO_HYPHEN_RE` now splits it into separate tokens so
+`_po_number_matches()` treats naming ANY of them as positive evidence — guarded to digits-only
+segments of at least 8 digits (`is_usable_po_reference()`'s own floor) so it can never fire on a cell
+that merely *contains* a hyphen for another reason: HRS's/Achhad's legacy slashed form uses one for
+its own fiscal-year segment (`'HRS/HO/26-27/003'`), and so does Vapi's own single-PO legacy form
+(`'RTP1/HO/26-27/008'`, `'DDO-0095/26-27'`) — both excluded by the slash/letters before the hyphen is
+ever inspected.
+
+**This one, unlike the flag above, is not strictly additive, and that is expected, not a bug.**
+Measured together with 2-of-3: domestic matches move 588 → 577, a **net loss of 11** against today's
+live baseline. Nearly all of the loss and the accompanying 295 re-pointings concentrate in one vendor
+— Madura Industrial Textiles — whose ~100 concurrent orders are priced almost identically (₹230–250
+across most of its EE-series fabric codes), so qty/rate/value tie-breaking there was always weak; most
+of the matches this removes were already flagged `severity=material` and bound to a MIR row whose own
+PO column named a *specific, different* order with zero corroboration before this fix existed to read
+it. Where the fix re-points an item, the new destination is frequently the row that names that exact
+PO number — a correction, not a regression — but it was shipped without a labelled-ground-truth check
+(see [Match accuracy](#match-accuracy-manual-validation-is-required-not-optional)), so review a sample
+of Madura's re-pointed pairs through `review.html` before trusting the new count over the old one.
 
 ### Legacy slashed PO numbers drift between the two files
 
@@ -643,8 +674,10 @@ Per line item:
 
 - **Tier 1** — an exact/substring `po_number_raw` match. A free shortcut when MIR's own PO-number
   field happens to be populated and valid; it is unreliable on real data everywhere (~30% blank at
-  HRS; **Vapi was ~100% blank and is now 27.2% populated**, measured 2026-09-18), so it is
-  never the only path.
+  HRS; **Vapi was ~100% blank and is now 97.5% populated, 29.0% of it a usable, recognized
+  reference**, measured 2026-09-19), so it is never the only path. Vapi's own column can also name
+  *more than one* order in a single cell (`_MULTI_PO_HYPHEN_RE`, see below) — a shape HRS/Achhad
+  don't have.
 - **Tier 2** — a weighted score among vendor-gated candidates: material description token overlap
   **30%**, qty closeness **20%**, rate closeness **20%**, pre-tax value closeness **30%**. Below
   `MATCH_THRESHOLD = 0.55` a line item is left unmatched rather than forced onto a poor candidate.
@@ -663,6 +696,31 @@ not a real discrepancy.
 **PO Item Id is not a trustworthy join key** and the matcher never relies on it: an audit found one
 code (`11287940`) reused across three chemically unrelated materials from two different vendors on
 the same PO source data.
+
+**A MIR row can name more than one open order at once — Vapi only, `_MULTI_PO_HYPHEN_RE`
+(2026-09-19).** Confirmed real, not a data-entry slip: Madura Industrial Textiles alone carries up to
+21 concurrently open orders for the same fabric code (EE250) at once, so a single delivery genuinely
+gets allocated across several of them, written as e.g. `'1000001552-1000001630'`. 334 of Vapi's 1,489
+MIR rows write this shape (never wider than 3 orders per cell; 319 have every number recognized).
+`_po_tokens()` splits it into separate tokens — guarded to digits-only segments of at least 8 digits
+(`is_usable_po_reference()`'s own floor), so it can never fire on a cell that merely *contains* a
+hyphen for another reason: HRS's/Achhad's legacy slashed form uses one for its own fiscal-year segment
+(`'HRS/HO/26-27/003'`), and Vapi has its own single-order legacy form that does the same
+(`'RTP1/HO/26-27/008'`, `'DDO-0095/26-27'`) — both excluded by the slash/letters before the hyphen is
+ever inspected. Splitting lets `_po_number_matches()` treat naming *either* order as positive evidence
+and `_po_number_contradicts()` correctly treat a candidate naming *neither* as contradicted, leaving
+the ordinary qty/rate/value scoring to decide which one actually wins the claim.
+
+**This one is not strictly additive, and that is expected.** Measured together with 2-of-3: Vapi's
+domestic matches move 588 → 577, a net loss of 11 against the live baseline, with 295 re-pointings —
+almost all inside Madura Industrial Textiles, whose ~100 concurrent orders are priced nearly
+identically (₹230–250 across most EE-series codes), so qty/rate tie-breaking there was always weak.
+Most of what this removes was already flagged `severity=material` and bound to a MIR row whose own PO
+column named a *specific, different* order with zero corroboration before this fix could read it; most
+re-pointed items land on the row that actually names their own PO number. Shipped without a
+labelled-ground-truth check for the same reason nothing else on this page has one (see
+[Match accuracy](#match-accuracy-manual-validation-is-required-not-optional)) — review a sample of
+Madura's re-pointed pairs through `review.html` before trusting the new count over the old one.
 
 ### MIR ↔ Stock
 
@@ -861,6 +919,12 @@ matches **577 of 690 line items (83.6%)** against 1,415 active MIR rows. Three t
 its MIR PO column went from ~100% blank to 27.2% populated, its order book grew 131 → 222 POs, and
 `match_vapi` had been **hanging outright** (see the termination guards above) so whatever was in the
 database predated all of it. Re-measure before comparing anything to the table above.
+
+**2026-09-19: `identification_two_of_three` and `_MULTI_PO_HYPHEN_RE` both landed the same day** (see
+[PO↔MIR](#po--mir) and [Vendor gate](#vendor-name-is-a-hard-gate-on-mirstock-one-of-three-votes-on-pomir-everywhere-now)
+for each in isolation) — 588 → 599 from the flag alone, 588 → 577 with both together. **Don't quote a
+single before/after Vapi percentage without saying which of the two changes it includes** — they move
+the same count in opposite directions and by design, not by accident.
 
 MIR↔Stock rates are much lower (1.6–24%), but that is mostly structural, not matcher failure: Stock
 is a current snapshot (one row per live lot) while MIR is a full historical log, so most older MIR

@@ -1382,11 +1382,12 @@ class RTPVapiRMSnapshot(models.Model):
 
 
 class RTPVapiPOMirMatch(models.Model):
-    """Same shape as HRSPOMirMatch - see that class's docstring. In
-    practice this plant's matches are almost always tier WEIGHTED, since
-    Vapi's own po_number_raw was 100% blank across every row checked (see
-    the RTP-Vapi section header comment) - the PO_NUMBER tier is kept for
-    forward compatibility, not because it currently fires."""
+    """Same shape as HRSPOMirMatch - see that class's docstring. The plant
+    head started filling in a 'PURCHASE ORDER' MIR column 2026-09-11 (see
+    parsers/vapi_mir.py); measured 2026-09-19 it names an order the master
+    CSV actually holds on 29.0% of MIR rows, so the PO_NUMBER tier now fires
+    for real. `sap_po_number`/RTPVapiMIREntry's original SAP P.O. column is
+    the one that stayed 100% blank and remains unused for matching."""
 
     class Tier(models.TextChoices):
         PO_NUMBER = "po_number", "PO number match (exact)"
@@ -1423,6 +1424,15 @@ class RTPVapiPOMirMatch(models.Model):
     # docstring.
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
+    # Identification 2-of-3 (2026-09-19, Vapi - see matching_core.py's
+    # _MatchConfig.identification_two_of_three). Vapi joined Achhad/HRS the
+    # day its 'PURCHASE ORDER' column's coverage was actually measured (29.0%
+    # usable+recognized of 1,489 MIR rows) - see matching_vapi.py's own
+    # comment for the full A/B/C measurement (+11 matches, 0 lost, 0
+    # re-pointed). Same column, same reasoning as HRSPOMirMatch.vendor_matched:
+    # defaults True so every pre-existing row, and every plant still on the
+    # vendor-mandatory rule, reads correctly without a backfill.
+    vendor_matched = models.BooleanField(default=True)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -2137,6 +2147,12 @@ class RTPVapiImportPOMirMatch(models.Model):
     # identification/financial-check redesign rationale (2026-09, imports).
     material_matched = models.BooleanField(default=False)
     po_number_matched = models.BooleanField(default=False)
+    # See RTPVapiPOMirMatch.vendor_matched (2026-09-19). Imports needs the
+    # column for the same reason domestic does - _MatchConfig is one config
+    # per plant, so match_import_po_mir_line_item() runs the same 2-of-3 rule
+    # and _vendor_matched_field() hands this keyword to both models or
+    # neither.
+    vendor_matched = models.BooleanField(default=True)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
