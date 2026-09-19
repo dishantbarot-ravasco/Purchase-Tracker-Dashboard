@@ -116,6 +116,35 @@ Each page's own bootstrap was likewise extracted (`theme-init.js`, `login-theme-
 `home-page.js`, `admin-page.js`, `search-po-page.js`, `review-page.js`). That split was done so
 CSP's `script-src` could drop `'unsafe-inline'` entirely, not for tidiness.
 
+**The dashboard keeps itself fresh — `main.js`'s freshness watcher (2026-09-19).**
+`ensurePOsLoaded()` fills `PURCHASE_ORDERS_BY_PLANT` once and only refetches when the cache is
+cleared, and the only two places that cleared it were the viewer's own "Refresh Data" click and the
+end of an admin-triggered sync's polling loop. **Every other way the database moves left an open page
+showing its open-time numbers indefinitely, with nothing on screen saying so** — the hourly scheduled
+sync, a colleague's sync, a sync from `admin.html` or another tab, an admin sync whose poll hit
+`SYNC_POLL_TIMEOUT_MS` before the sync actually finished, or a `match_*` command run by hand.
+Reported against a real screenshot: 7 of 11 KPI cards stale, the 4 that agreed only because nothing
+in their input had moved.
+
+`checkFreshness()` polls each selected plant's own `/sync-status` (the endpoint the badges already
+read — deliberately not a new one), builds a stamp from the newest `finishedAt`/`startedAt` across
+its sources, and when that differs from what the current render was built on it clears the caches and
+re-renders. A **timestamp, not a row count**: matching can re-point a match row without any count
+changing, and the KPI cards read match rows.
+
+Three guards, each load-bearing: `MANUAL_SYNC_RUNNING` (set for the whole of
+`triggerRealSyncAndRefresh`, cleared in `pollSyncUntilDone()`'s `finally` so a timeout or a throw
+cannot disable the watcher for the session) stops it fighting the manual reload; an open
+`.modal-backdrop.open` defers it, so the list never rebuilds under a reviewer reading a PO; and a
+failed poll returns quietly to try again next tick.
+
+**The hidden-tab check sits on the interval, not inside `checkFreshness()`** — it is a polling
+policy, not a freshness rule. That placement is also what makes the function testable: an
+embedded/automated browser can report `document.hidden` as `true` permanently, which made every call
+a silent no-op while it lived inside. Verified with a throwaway in-browser harness (17 assertions,
+all passing) since there is no Node here to run a JS test runner; the harness was deleted after, same
+convention as the earlier `_a11y_tmp`.
+
 `shared.js` (loaded on every protected page right after `auth.js`) holds what would otherwise be
 duplicated per page: `PLANTS`/`PLANT_KEYS`, the authenticated `apiForPlant()` wrapper (401 → bounce
 to `/login.html`), `escapeHtml`/`formatInr`/`formatDateIN`, the inline-edit helpers, and the

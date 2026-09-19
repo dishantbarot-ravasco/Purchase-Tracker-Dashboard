@@ -14,16 +14,6 @@
         "cd /d C:/Users/Admin/OneDrive/Desktop/Purchase Automation App/Purchase Tracker Dashboard && uv run python manage.py runserver 0.0.0.0:8020"
       ],
       "port": 8020
-    },
-    {
-      "name": "a11y-harness",
-      "runtimeExecutable": "cmd",
-      "runtimeArgs": [
-        "/d",
-        "/c",
-        "cd /d \"C:/Users/Admin/OneDrive/Desktop/Purchase Automation App/Purchase Tracker Dashboard/_a11y_tmp\" && \"../.venv/Scripts/python.exe\" -m http.server 8031"
-      ],
-      "port": 8031
     }
   ]
 }

@@ -326,6 +326,8 @@ async function init() {
     }
   };
   await loadAndRender();
+  // From here on the page keeps itself current - see startFreshnessWatch().
+  startFreshnessWatch();
 }
 
 // Admin-only real Drive sync (2026-09-04) - triggers every currently
@@ -340,6 +342,10 @@ async function triggerRealSyncAndRefresh(btn) {
   const targetKeys = selectedPlantKeys();
   btn.disabled = true;
   btn.textContent = 'Starting sync…';
+  // The watcher would otherwise re-render mid-sync, on each source finishing
+  // in turn - correct but noisy, and it would fight this function's own
+  // reload at the end. pollSyncUntilDone() clears the flag in its `finally`.
+  MANUAL_SYNC_RUNNING = true;
   try {
     await Promise.all(targetKeys.map(async key => {
       try {
@@ -399,6 +405,17 @@ async function triggerRealSyncAndRefresh(btn) {
 const SYNC_POLL_INTERVAL_MS = 4000;
 const SYNC_POLL_TIMEOUT_MS = 5 * 60 * 1000;
 async function pollSyncUntilDone(btn, targetKeys) {
+  try {
+    return await _pollSyncUntilDone(btn, targetKeys);
+  } finally {
+    // Always, including on the timeout path and on a thrown error: leaving
+    // this set would silently disable the freshness watcher for the rest of
+    // the session.
+    MANUAL_SYNC_RUNNING = false;
+  }
+}
+
+async function _pollSyncUntilDone(btn, targetKeys) {
   const startedAt = Date.now();
   btn.textContent = 'Syncing…';
   // The button's own label change is the only progress signal a sighted user
@@ -634,6 +651,103 @@ async function loadAndRender() {
   } else {
     await loadAndRenderMaterials();
   }
+  // Record what this render is based on, so the freshness watcher below can
+  // tell "same data" from "the database moved under us".
+  DATA_STAMP = await currentDataStamp().catch(() => DATA_STAMP);
+}
+
+// ── Live data freshness watcher ─────────────────────────────────────────
+//
+// THE BUG THIS FIXES (2026-09-19, project owner: "the KPIs should always
+// keep on updating when the data is refreshed"). ensurePOsLoaded() populates
+// PURCHASE_ORDERS_BY_PLANT once and only re-fetches when the cache is
+// cleared - and the only two places that cleared it were the viewer's own
+// "Refresh Data" click and the end of an admin-triggered sync's polling
+// loop. Every other way the database can move left an open page showing the
+// numbers it loaded at open time, indefinitely and with nothing on screen
+// saying so:
+//   - the SCHEDULED sync (hourly, 9am-8pm - see ensure_schedules) rewrites
+//     PO/MIR/stock rows and re-runs matching while the page sits open;
+//   - a sync triggered by a COLLEAGUE, or from admin.html, or from another
+//     tab;
+//   - an admin sync whose polling loop hit SYNC_POLL_TIMEOUT_MS and gave up
+//     before the sync actually finished (that branch deliberately does not
+//     re-render, and now does not need to);
+//   - a match_* management command run by hand.
+// Reported against a real screenshot: 7 of the 11 KPI cards were stale, the
+// four that happened to agree only because nothing in their input had moved.
+//
+// The watcher polls each selected plant's own /sync-status - the same
+// endpoint the badges already read, deliberately reusing it rather than
+// adding a new one - and re-renders when the newest SyncRun timestamp it
+// sees is not the one the current render was built from.
+//
+// WHY A TIMESTAMP AND NOT A ROW COUNT: `sync` carries one entry per source
+// (po_csv/mir/stock/match), so a run that changes nothing still advances
+// startedAt. That is the behaviour we want - matching can re-point a match
+// row without any count changing, and the KPI cards read match rows.
+const FRESHNESS_POLL_MS = 60000;
+let DATA_STAMP = null;        // newest SyncRun timestamp behind what is on screen
+let FRESHNESS_TIMER = null;
+let MANUAL_SYNC_RUNNING = false;  // triggerRealSyncAndRefresh() does its own reload
+
+// The newest SyncRun timestamp across every source of every selected plant.
+// Returns null rather than throwing on a failed poll - one bad tick must
+// never take the watcher down (same reasoning as pollSyncUntilDone()'s own
+// `continue` on a failed poll).
+async function currentDataStamp() {
+  const keys = selectedPlantKeys();
+  const stamps = await Promise.all(keys.map(async key => {
+    const data = await apiForPlant(key, '/sync-status');
+    return Object.values(data.sync || {})
+      .map(r => r.finishedAt || r.startedAt)
+      .filter(Boolean)
+      .sort()
+      .pop() || '';
+  }));
+  return keys.map((k, i) => k + ':' + stamps[i]).join('|');
+}
+
+async function checkFreshness() {
+  // Never fight the manual sync's own polling loop, and never re-render the
+  // page out from under an open modal - a reviewer reading a PO's line items
+  // should not have the list rebuild beneath them. The stamp is left
+  // untouched in both cases, so the next tick simply tries again.
+  //
+  // The hidden-tab check deliberately does NOT live here - it is a polling
+  // policy, not a freshness rule, so it sits on the interval below. Keeping
+  // it out of this function is also what makes the function testable at all:
+  // an embedded/automated browser can report document.hidden as true
+  // permanently, which would otherwise make every call a silent no-op.
+  if (MANUAL_SYNC_RUNNING) return;
+  if (document.querySelector('.modal-backdrop.open')) return;
+  let stamp;
+  try {
+    stamp = await currentDataStamp();
+  } catch (e) {
+    return;  // offline, 500, mid-deploy - try again next tick
+  }
+  if (!DATA_STAMP || stamp === DATA_STAMP) { DATA_STAMP = DATA_STAMP || stamp; return; }
+  PURCHASE_ORDERS_BY_PLANT = {};
+  MATERIALS_BY_PLANT = {};
+  IMPORT_PO_CACHE = null;
+  await loadSyncStatus();
+  await loadAndRender();   // sets DATA_STAMP to the new value
+  if (typeof announce === 'function') announce('New data has arrived. The dashboard has been updated.');
+}
+
+function startFreshnessWatch() {
+  if (FRESHNESS_TIMER) return;
+  // A backgrounded tab is throttled by the browser and polling it is waste -
+  // so the interval skips while hidden, and visibilitychange picks it straight
+  // back up. That is what makes a page left open overnight correct the moment
+  // someone looks at it, rather than up to a minute later.
+  FRESHNESS_TIMER = setInterval(() => {
+    if (!document.hidden) checkFreshness();
+  }, FRESHNESS_POLL_MS);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkFreshness();
+  });
 }
 
 // ── API fetch helpers & per-plant caches ────────────────────────────────
