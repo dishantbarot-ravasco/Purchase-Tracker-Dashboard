@@ -455,6 +455,43 @@ _PO_TOKEN_SPLIT = re.compile(r"[,&/;\s]+")
 # doesn't regress every one of these real rows.
 _TRAILING_ZERO_DECIMAL = re.compile(r"^(\d+)\.0+$")
 
+# MULTI-PO HYPHEN CELL (2026-09-19, Vapi). A MIR row can name more than one
+# open purchase order at once - e.g. '1000001552-1000001630', or three
+# joined the same way - when a vendor's delivery is allocated across several
+# of that vendor's concurrently open orders for the same material. Confirmed
+# real and not rare, not a data-entry slip: Madura Industrial Textiles alone
+# carries up to 21 concurrently open orders for the same fabric code
+# (EE250) at once, and 334 of Vapi's 1,489 MIR rows write exactly this
+# shape - never more than 3 numbers per cell (192 pairs, 142 triples, 0
+# wider); 319 of the 334 have every number recognized.
+#
+# Guarded to the shape this convention actually uses - digits only, no
+# slash, no letters, each segment at least _PO_MIN_DIGITS (8) long, matching
+# is_usable_po_reference()'s own floor - so it can never fire on a cell that
+# merely CONTAINS a hyphen for another reason. Two real shapes were checked
+# and correctly excluded: HRS's/Achhad's legacy slashed form, which uses a
+# hyphen for its own fiscal-year segment ('HRS/HO/26-27/003',
+# 'RTP2/HO/26-27/ENGG-0007'), and Vapi's OWN legacy single-PO references
+# that happen to do the same ('RTP1/HO/26-27/008', 'DDO-0095/26-27') - both
+# disqualified by the slash (or, for the second, the letters) before the
+# hyphen is ever looked at, so this never touches either.
+#
+# Splitting turns each named order into its own token, so _po_number_matches()
+# treats ANY of them as positive evidence and _po_number_contradicts()
+# correctly treats a candidate naming NONE of them as contradicted - the
+# multi-shipment case _shipment_group() already handles from the PO's own
+# side (one delivery, several MIR rows), now handled from the MIR side (one
+# receipt, several eligible orders) and left to the ordinary qty/rate/value
+# scoring in _identification_pool()/_assign_pairs() to decide which one
+# actually wins the claim, exactly as a genuine ambiguous cell should be
+# resolved. Measured against live Vapi data: this correctly REMOVES some
+# existing matches, not just adds them - several were bound to an order
+# named on NEITHER side of the hyphen, on weak material similarity alone,
+# because the cell used to be inert evidence; those get the same
+# opportunity to be corrected as any other tier-1 contradiction would give
+# them, not carved out because splitting was new.
+_MULTI_PO_HYPHEN_RE = re.compile(r"^\d{8,}(?:\s*-\s*\d{8,})+$")
+
 
 @lru_cache(maxsize=8192)
 def _po_tokens(value: str) -> tuple[str, ...]:
@@ -469,7 +506,10 @@ def _po_tokens(value: str) -> tuple[str, ...]:
 
     Returns a tuple rather than a list so the cached value cannot be mutated
     by a caller and handed back corrupted to the next one."""
-    tokens = [t for t in _PO_TOKEN_SPLIT.split(value.strip().upper()) if t]
+    cleaned = value.strip().upper()
+    if _MULTI_PO_HYPHEN_RE.match(cleaned):
+        cleaned = cleaned.replace("-", " ")
+    tokens = [t for t in _PO_TOKEN_SPLIT.split(cleaned) if t]
     out = []
     for t in tokens:
         m = _TRAILING_ZERO_DECIMAL.match(t)

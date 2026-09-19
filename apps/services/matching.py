@@ -86,9 +86,10 @@ MATCH_CONFIG = _MatchConfig(
     stock_rate_field="basic_rate",
     stock_vendor_field="party_name",
     # Imports identification/financial-check redesign (2026-09, project
-    # owner: same treatment as domestic for HRS/Achhad, Vapi excluded for
-    # now - see matching_core.py's _MatchConfig docstring and
-    # matching_vapi.py's own comment on why Vapi stays False).
+    # owner: same treatment as domestic for HRS/Achhad - see
+    # matching_core.py's _MatchConfig docstring. Vapi was added the same
+    # day (matching_vapi.py's own comment); this flag is now True across
+    # all three plants.
     import_extended_fields=True,
     # MIR<->Stock identification/financial-check extension (2026-09-08) -
     # see matching_core.py's match_mir_entry_stock() docstring for the full
@@ -99,7 +100,10 @@ MATCH_CONFIG = _MatchConfig(
     # day-delivery false positives confirmed against live HRS/Vapi data).
     stock_extended_fields=True,
     # Identification 2-of-3 (2026-09-18, project owner) - Achhad first, HRS
-    # second, Vapi still on the vendor-mandatory default. See
+    # second, Vapi joined 2026-09-19 once its own MIR PO coverage was
+    # measured (see matching_vapi.py's own comment for that plant's numbers,
+    # which look like neither of the two cases below - Vapi genuinely does
+    # both halves of the flag's work). See
     # matching_core._MatchConfig.identification_two_of_three for the rule
     # itself; what it does HERE is not what it does at Achhad, and the
     # measured difference is the reason this is safe:

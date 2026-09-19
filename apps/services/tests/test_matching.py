@@ -42,6 +42,7 @@ from apps.services.matching_core import (
     _import_total_value_inr,
     _material_matches,
     _po_number_matches,
+    _po_tokens,
     _shipment_group,
     _tax_type_mismatch,
     _token_overlap,
@@ -340,6 +341,60 @@ class TestPoNumberMatches:
         data shape - openpyxl reads some PO-number cells as floats) must
         still match the PO's own clean integer-looking po_number."""
         assert _po_number_matches("3000001081", "3000001081.0") is True
+
+
+# ── _po_tokens()/_po_number_matches(): multi-PO hyphen cells (2026-09-19, Vapi) ──
+# A MIR row can name more than one open order at once - e.g.
+# '1000001552-1000001630' - when a vendor's delivery is allocated across
+# several of its concurrently open orders for the same material. See
+# matching_core.py's _MULTI_PO_HYPHEN_RE comment for the measured real data
+# behind this (334 of Vapi's 1,489 MIR rows) and why the guard is narrow.
+
+class TestMultiPoHyphenCells:
+    def test_either_named_number_matches(self):
+        """Either PO number named in a two-way hyphen cell is positive evidence."""
+        assert _po_number_matches("1000001552", "1000001552-1000001630") is True
+        assert _po_number_matches("1000001630", "1000001552-1000001630") is True
+
+    def test_three_way_cell(self):
+        """A three-way cell (the widest shape seen in real Vapi data) splits the same way."""
+        assert _po_number_matches("1000001493", "1000001479-1000001493-1000001500") is True
+
+    def test_number_not_in_the_cell_does_not_match(self):
+        """A real PO number that the cell simply doesn't name is not evidence for it."""
+        assert _po_number_matches("1000001236", "1000001552-1000001630") is False
+
+    def test_hrs_legacy_slashed_form_is_not_treated_as_multi_po(self):
+        """HRS's legacy PO number uses a hyphen for its own fiscal-year segment
+        ('26-27') - the slash must keep this out of the multi-PO split, or
+        'HRS/HO/26-27/003' would be misread as two orders '26' and '27'."""
+        assert _po_tokens("HRS/HO/26-27/003") == ("HRS", "HO", "26-27", "003")
+        assert _po_number_matches("HRS/HO/26-27/003", "HRS/HO/26-27/003") is True
+
+    def test_achhad_legacy_slashed_form_is_not_treated_as_multi_po(self):
+        """Same guard, Achhad's own slashed convention."""
+        assert _po_tokens("RTP2/HO/26-27/ENGG-0007") == ("RTP2", "HO", "26-27", "ENGG-0007")
+
+    def test_vapis_own_legacy_single_po_is_not_treated_as_multi_po(self):
+        """Real Vapi MIR shape: a single legacy PO reference that happens to
+        contain a hyphen in its own fiscal-year segment, not a list of
+        several orders - e.g. 'RTP1/HO/26-27/008' or 'DDO-0095/26-27'. Both
+        are excluded by the slash before the hyphen is ever inspected."""
+        assert _po_tokens("RTP1/HO/26-27/008") == ("RTP1", "HO", "26-27", "008")
+        assert _po_tokens("DDO-0095/26-27") == ("DDO-0095", "26-27")
+
+    def test_short_hyphenated_junk_is_not_split(self):
+        """A short, sub-8-digit hyphenated value (junk, not a PO list) stays
+        one token - the same floor is_usable_po_reference() itself uses."""
+        assert _po_tokens("36-100000") == ("36-100000",)
+
+    def test_contradiction_gate_treats_an_unlisted_order_as_contradicted(self):
+        """The other half of the fix: once a hyphen cell is split, a
+        candidate naming neither number is correctly seen as contradicted -
+        exactly like any other tier-1 PO-number disagreement."""
+        known = frozenset({"1000001552", "1000001630", "1000001236"})
+        assert _po_number_contradicts("1000001236", "1000001552-1000001630", known) is True
+        assert _po_number_contradicts("1000001552", "1000001552-1000001630", known) is False
 
 
 # ── _material_matches()/_identification_pool(): the 2026-09-07 identification gate ──
