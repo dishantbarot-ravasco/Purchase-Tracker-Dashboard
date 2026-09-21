@@ -83,6 +83,7 @@ MATCH_CONFIG = _MatchConfig(
     # (mir_taxable_value's default, against PO's "Total Value") rather than
     # standing in for Net.
     mir_value=lambda mir: mir.net,
+    plant_key="hrs",
     stock_rate_field="basic_rate",
     stock_vendor_field="party_name",
     # Imports identification/financial-check redesign (2026-09, project
@@ -99,6 +100,27 @@ MATCH_CONFIG = _MatchConfig(
     # tried and reverted as an identification path, real cross-vendor same-
     # day-delivery false positives confirmed against live HRS/Vapi data).
     stock_extended_fields=True,
+    # MIR<->Stock three-tier identification (2026-09-21). Material is STILL
+    # mandatory and still primary - the reverted date-alone path described
+    # above stays reverted. What changed is that "the same material" is read
+    # with the IDF scorer instead of letter-for-letter equality, and that a
+    # pair agreeing on BOTH receipt date and rate can identify without the
+    # descriptions agreeing (behind the grade-code contradiction gate and
+    # tier-1 exclusivity - see match_mir_entry_stock()).
+    #
+    # Measured on live HRS data: 135 -> 270 matched MIR rows (26.8% -> 53.7%),
+    # of which 133 come from the scorer and 2 from the date+rate path. HRS
+    # gains least from date+rate of the three plants, and that is the right
+    # outcome - it is the only plant with vendor, date, rate AND a reliable
+    # category all populated, so almost everything real is already caught by
+    # name. Precision held: on same-date pairs (the only ones where comparing
+    # a rate is fair) rate agreement is 98%, against 100% on a third as many
+    # pairs before.
+    #
+    # 0.45 was swept per plant at 0.35/0.45/0.55/0.65 - see
+    # _MatchConfig.stock_material_threshold.
+    stock_material_threshold=Decimal("0.45"),
+    stock_date_rate_path=True,
     # Identification 2-of-3 (2026-09-18, project owner) - Achhad first, HRS
     # second, Vapi joined 2026-09-19 once its own MIR PO coverage was
     # measured (see matching_vapi.py's own comment for that plant's numbers,

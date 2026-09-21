@@ -51,10 +51,13 @@ uv run python manage.py sync_po_csv        # PO master CSV -> HRSDomesticPurchas
 uv run python manage.py sync_mir           # MIR xlsx -> HRSMIREntry
 uv run python manage.py sync_stock         # Stock xlsx -> HRSRMLot (+ today's HRSRMSnapshot)
 uv run python manage.py match_hrs          # PO<->MIR and MIR<->Stock matching
+uv run python manage.py compute_hrs_consumption   # consumption ledger (reads the DB, no Drive fetch)
+#   --all rebuilds the whole history; --since YYYY-MM-DD from a date; default is a 45-day lookback
 
 # RTP-Achhad and RTP-Vapi: identical shape, separate models/commands
 uv run python manage.py sync_achhad_po_csv / sync_achhad_mir / sync_achhad_stock / match_achhad
 uv run python manage.py sync_vapi_po_csv   / sync_vapi_mir   / sync_vapi_stock   / match_vapi
+uv run python manage.py compute_achhad_consumption / compute_vapi_consumption
 
 # Import POs (one command per plant, one shared parser)
 uv run python manage.py sync_hrs_imports_po_csv / sync_achhad_imports_po_csv / sync_vapi_imports_po_csv
@@ -93,7 +96,8 @@ import path — it is `apps.services.*` now.
 
 Several modules are **deliberately dependency-free** (no Django imports at all), so they unit-test
 as plain Python and are safe to import from a migration's `RunPython`: `parsers/common.py`,
-`validation.py`, `stock_identity.py`, `arithmetic_checks.py`, `stock_consumption.py`. Keep them that
+`validation.py`, `stock_identity.py`, `arithmetic_checks.py`, `consumption_engine.py` (and
+`stock_consumption.py`, now superseded). Keep them that
 way — the DB-touching counterpart lives in its own module (e.g. `data_quality.py` is the DB layer
 over `arithmetic_checks.py`).
 
@@ -211,8 +215,19 @@ names its plant because PO numbers are not unique across plants, while a materia
 deliberately cross-plant (`plant=all`) since that view rolls a material up across all three anyway;
 a target that no longer resolves (a **retired/renamed PO** is the realistic case — see
 [Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither))
-says so in a `.validation-note` instead of opening silently as if nothing was asked for; and the URL
-is left in the address bar on purpose, so the link is shareable and survives a reload.
+says so in a `.validation-note` instead of opening silently as if nothing was asked for; and the
+params are **consumed** — `clearDeepLinkParams()` strips them from the address bar (via
+`replaceState`, so Back is unaffected) once the link has been acted on.
+
+**That last one was the opposite way round for a few hours and was wrong.** The first version left
+the URL in place, reasoning that `/?plant=hrs&po=3000001082` is "a real address for a PO" and ought
+to survive a reload. The project owner reported the result the same day: *"i search this dashboard
+and every time i reload it's get open don't know why"*. A modal is transient — something the reader
+dismisses — so re-opening it on every refresh of what is, by then, just the dashboard reads as the
+page being stuck, with no way out short of editing the URL by hand. **Sharing was never the thing at
+risk**: the link still opens the PO for whoever follows it, once. The clear runs in a `finally`, so
+a link that missed or threw is consumed too — otherwise the failure message replays on every
+refresh, which is the more confusing half of it.
 
 **CSS:** `brand.css` owns the shared top nav (gold/navy, ported from TDS); `style.css` owns the
 dashboard's separate navy/blue/red palette; each page layers its own `css/<page>-page.css`.
@@ -478,7 +493,19 @@ survives a description being reworded in the sheet (which happens).
 Every plant's sync+match pipeline runs on its own via a single `django_q.models.Schedule` row
 created/corrected idempotently by `manage.py ensure_schedules` (wired into `render.yaml`'s
 `buildCommand` and `docker-entrypoint.sh`). `Schedule.CRON`, `cron="0 9-20 * * *"` — **9:00 AM
-through 8:00 PM IST, hourly, 12 runs/day**, requiring `croniter`. The entry point is
+through 8:00 PM IST, hourly, 12 runs/day**, requiring `croniter`. **The cron is evaluated in
+`settings.TIME_ZONE`, not UTC** (django-q2's `Schedule.calculate_next_run()` calls Django's
+`localtime()` first), so those hours are IST as written — the stored `next_run` is displayed in UTC
+and reading it as the schedule is a repeatable mistake.
+
+**A `Schedule` row is inert on its own — something has to be running `manage.py qcluster` to fire
+it.** Checked 2026-09-21 on the local dev DB: the row, the cron and `croniter` were all correct and
+nothing had run since 2026-09-07, because no qcluster process existed on that machine (no service,
+no Windows Scheduled Task). `next_run` simply froze 13 days in the past and every snapshot in the
+database came from a human clicking Refresh Data — snapshot dates and manual `SyncRun` dates were
+the same set exactly. **When snapshot history has holes, check for a live worker before suspecting
+the snapshot code.** `Q_CLUSTER["catch_up"]` is `False` and the Stock xlsx only holds today's
+position, so missed days are permanently unrecoverable. The entry point is
 `sync_trigger.run_daily_sync_all_plants()`, which also runs the company-wide RoDTEP and Advance
 Licence syncs. Admin/dashboard-triggered `sync-trigger` endpoints still exist alongside it, and a
 plant is **skipped, not queued behind**, if a manual refresh is already mid-flight for it.
@@ -649,6 +676,10 @@ and labelled for the dashboard by `services/no_po_vendors.py`, surfaced as `noPo
 plant's `sync-status`. A silent exclusion would recreate the exact confusion the registry exists to
 end. Keep that split if you extend this.
 
+**This registry is about PO↔MIR only.** Its MIR↔Stock counterpart is a separate list answering a
+separate question — see
+[Some vendors' goods never reach the RM Stock sheet](#some-vendors-goods-never-reach-the-rm-stock-sheet--a-second-separate-registry).
+
 **Lookup is exact normalized equality — deliberately NOT `_vendor_matches()`.** No containment, no
 0.90-similarity arm. A false positive here removes a real supplier's receipts from reconciliation;
 a false negative merely leaves a row unmatched exactly as it already was. The containment arm makes
@@ -731,7 +762,249 @@ has no vendor column, explicitly documented as weaker and more false-positive-pr
 
 **No plant compares stock quantity in this pairing.** HRS's `received` field (the sheet's "REC"
 formula column) reads `0` for nearly every real lot — it evidently clears once allocated rather than
-holding a running total comparable to one MIR line's qty. Only rate is compared.
+holding a running total comparable to one MIR line's qty. Only rate is compared. That was re-measured
+on the 2026-09-21 pass and is now quantified: on pairs that are near-certainly the same delivery
+(descriptions identical *and* dates identical), **rate agrees 97–100% and `received` qty agrees ~0%**.
+Rate is a usable identifier; stock qty is not, and must not become one.
+
+#### Three tiers, not one equality test (2026-09-21)
+
+Until this date, identification was a single rule — `normalize_material()` on both sides, compared
+letter for letter. Coverage was **HRS 26.8%, Achhad 19.9%, Vapi 1.6%** of active MIR rows. Not because
+the data disagreed, but because the two files write the same material differently: `'8MPA RECLAIM
+RUBBER'` vs `'RECLAIM RUBBER 8MPA'`, `'Precipitated Silica'` vs `'PRECIPITATD SILICA'`,
+`'Reclam Rubber 7MPA'` vs `'RECLAIM RUBBER 7MPA'`.
+
+Tried in order per (MIR row, lot), best evidence winning:
+
+- **Tier 3 — identical names.** The original rule, unchanged.
+- **Tier 2 — close enough.** `_MaterialScorer`, the IDF-weighted comparison PO↔MIR has always used,
+  now with **per-token edit distance** (`fuzzy_tokens=True`, ≥0.85 on tokens of 4+ characters). This
+  is where nearly all the gain is. **`fuzzy_tokens` defaults to `False` and PO↔MIR does not get it** —
+  that pairing's accuracy figures were measured against exact-token comparison.
+  `stock_material_threshold = 0.45` at all three plants, swept at 0.35/0.45/0.55/0.65; note it is
+  **separate from `material_match_threshold`** (PO↔MIR's, 0.2–0.3) because these are different
+  comparisons over different vocabularies — a Stock sheet is a warehouse's shorthand, not order
+  paperwork. Vapi's own lowered 0.2 in particular does **not** apply here.
+- **Tier 1 — the descriptions agree on nothing, but the receipt date and the rate both do.** See
+  below.
+
+**Descriptions are cleaned first**, and at Vapi this is worth more than any scoring change:
+`clean_mir_material_for_stock()` strips the SAP code Vapi's MIR prefixes (`'RM00011014 ZINC OXIDE'`,
+173 of 1,489 rows) and `clean_stock_material()` strips the plant tag its Stock sheet appends
+(`'RECLAIM RUBBER 6MPA HRS'`). Both are rare vocabulary, so IDF weighted them *most heavily*. Worth
++27 matched rows on its own, and why Vapi's exact-name matches alone go 24 → 71. **Deliberately
+outside `normalize_material()`** — that function's output is a persisted join key
+(`MaterialCategoryReference.normalized_description`, `stock_identity.lot_natural_key()`), same
+confinement and same reason as `tokenize()`'s letter/digit split.
+
+#### Date + rate is this pairing's PO number — behind two guards
+
+There is no shared key here: MIR has **no item-code column at all**, HRS's `sap_item_code` has nothing
+to join to, and `MaterialCategoryReference` resolves only 30–47% of lots and 5–32% of MIR rows, so it
+cannot act as a hub either. Material text is the only identification axis — except that rec-date and
+rate, measured, turn out to be highly selective on their own. Average lots passing **one** signal, out
+of the whole active stock table: **rec-date 0.6/0.5/0.3, rate-within-2% 2.4/2.7/1.5, vendor 4.2/–/1.2,
+category 6.5/2.5/1.9** (HRS/Achhad/Vapi). Rec-date is *more* selective than vendor.
+
+So `stock_date_rate_path=True` admits a pair on date **and** rate when the descriptions disagree —
+`'Kanatol-8A (DOA)'` ↔ `'DOA Oil'`, `'JC Magnesium Hydroxide'` ↔ `'JH Magnesium Hydroxide MDH'`,
+`'RMP001105002 EVA BAG'` ↔ `'BATA BAG/EVA BAG 20"X26"X180G'`.
+
+**Raw, this path is unsafe, and it fails exactly where the old docstring warned** — a vendor
+delivering several SKUs on one day at one price cross-matches them. Real pairs it bound: `'NBR 2675'`
+↔ `'NBR 3345'` (both ₹226.50), `'AUROBOND 825'` ↔ `'AUROAID AR 262'` (both ₹345, matched **both ways
+round**), `'Eva Bag 20"X20"'` ↔ `'24 x 36 Eva Bag'` (swapped), `'Nordel 4770'` ↔ `'Nordel 4570'`.
+
+Two guards make it safe, both verified necessary:
+
+- **`_grade_codes_contradict()`** — codes present on both sides and sharing none ⇒ reject. The RM
+  analogue of `_po_number_contradicts()`. It removes every pair above and **costs nothing on the
+  material paths** (identical matched-row counts with it on and off — `_MaterialScorer`'s existing
+  grade *penalty* already pushes a disagreement under threshold there).
+- **Tier-1 exclusivity** (`_StockLotPool.best_describer`) — a lot claimed on date+rate alone yields to
+  any MIR row sharing that date that actually describes it. This is what un-swaps the Eva Bags.
+  **Deliberately tier-1 only**: a lot really does receive two MIR lines of the same material on one day
+  (two invoices), and this pairing stays many-to-many.
+
+**Only the best evidence survives per MIR row, ties included** — `(tier, material score)`. Ties are
+what keep the genuine many-to-many case (several lots of the same material all match at identical
+evidence). What it removes is one MIR row spreading across several lots that are *not* the same
+material as each other, merely each over the threshold. Measured on Achhad — no vendor gate, so worst
+affected — **without it: 350 matched rows produce 713 match rows (2.04 each) and same-date rate
+agreement drops to 88%. With it: same coverage, 405 rows (1.15 each), agreement back to 98%.**
+
+Measured on live data, PO↔MIR unchanged throughout (179/179/577):
+
+| Plant | MIR rows matched, before → after | Tier 3 / Tier 2 / Tier 1 | Stock lots reconciled |
+| --- | --- | --- | --- |
+| HRS | 135 → **269** (26.8% → 53.5%) | 135 / 133 / 2 | 69 of 210 |
+| RTP-Achhad | 132 → **350** (19.9% → 52.7%) | 132 / 210 / 10 | 130 of 325 |
+| RTP-Vapi | 24 → **304** (1.6% → 20.4%) | 71 / 230 / 3 | 68 of 168 |
+
+**Read the per-plant split, not just the totals** — each plant gains from a different part:
+
+- **HRS** gains almost entirely from Tier 2 and barely from Tier 1, which is correct: it is the only
+  plant with vendor, date, rate *and* a reliable category all populated, so nearly everything real is
+  already caught by name. Of its 53 remaining reachable misses, most are the **vendor gate working**
+  (Balaji Rubbers and GPC International both supply SBR and genuinely should not match). One is a real
+  miss worth an alias: `'Singh Plasticisers And Resins (India)'` vs `'Singh Plasticisers & Resin (I)
+  Pvt Ltd'`, 7 rows.
+- **Achhad** gets the most out of Tier 1, because its Stock sheet has **no vendor column at all** — date
+  and rate are the only independent evidence it has. It now leaves **zero reachable rows behind**: every
+  Achhad MIR row whose material exists anywhere in its Stock sheet matches. Its real constraint is data,
+  not logic — only **211 of 325 lots (65%)** carry a receipt date at all, against HRS's 100% and Vapi's
+  95%, and Tier 1 cannot fire without one.
+- **Vapi**'s gain is mostly the description cleaning. Its `category` column is **useless here** — 17%
+  agreement on known-good pairs, against HRS's 95% and Achhad's 80% — so it is not wired in anywhere.
+
+**Do not compare Vapi's 20.4% to the other two, or to PO↔MIR.** See
+[the RM sheet's scope](#the-rm-stock-sheets-do-not-hold-everything-mir-logs) below.
+
+#### The RM Stock sheets do not hold everything MIR logs
+
+The hard ceiling on this pairing is **not** the matcher. The RM sheets hold chemicals and raw rubber;
+MIR logs everything that comes through the gate. **Conveyor belting, conveyor fabric (the EE/NN/EP
+series), rubber compound and MS crates appear in no plant's RM sheet at all** — searched directly: 0
+hits for `belt`/`belting`/`fabric`/EE/NN codes across all three, while Vapi's MIR alone has 216 rows
+saying "belt" and 117 saying "fabric".
+
+That is **36% of HRS's active MIR rows, 47% of Achhad's, and 76% of Vapi's**. Measured against the rows
+whose material is actually in the sheet, the three plants match **84% / 100% / 85%** — which is the fair
+comparison to PO↔MIR's ~90%, and says the matching itself performs about as well on this pairing as on
+that one. These rows are not lost: they still reconcile against their purchase orders.
+
+**Open question for the plants, not a code fix:** whether conveyor fabric and belting are deliberately
+outside RM stock tracking, or tracked in a separate finished-goods file this app does not sync. If such
+a file exists it is a new pipeline, not something to force into MIR↔Stock.
+
+### What MIR↔Stock deliberately skips — two registries, neither shared with the PO side
+
+`parsers/common.py`'s **`NO_RM_STOCK_VENDORS`** is the MIR↔Stock counterpart of `NO_PO_VENDORS`, and
+answers a genuinely different question about a different pairing: not "no purchase order exists" but
+"these goods are not tracked in the RM Stock sheet". A vendor can be in either list, both, or neither —
+**Madura is properly PO'd** (the single biggest source of PO↔MIR matches at Vapi) and simply never
+appears in a stock file; Tinna Rubber is the mirror image. **Don't merge them.**
+
+Measured 2026-09-21 at the project owner's prompt, across all three plants at once:
+
+| Plant | MIR rows from Madura | Share of that plant's MIR | Value | RM stock lots |
+| --- | --- | --- | --- | --- |
+| RTP-Vapi | 703 | 47.2% | ₹26.24 cr | **0** |
+| HRS | 112 | 22.3% | ₹4.07 cr | **0** |
+| RTP-Achhad | 15 | 2.3% | ₹0.39 cr | **0** |
+
+830 rows and ₹30.7 crore against **zero** stock lots anywhere — not "a few missing", nothing at all.
+Deliveries run 2026-04-01 → 2026-09-18, so this is current, not a historical backlog. Vapi's Madura rows
+alone are 703 of the 1,133 MIR rows that plant has no stock counterpart for — **62% of its entire
+MIR↔Stock gap**.
+
+Same rule as `NO_PO_VENDORS`: **suppress the match, never the row.** The rows stay in the MIR table and
+still reconcile against their purchase orders; `services/no_rm_stock_vendors.py` counts and labels them,
+surfaced as **`noRmStockVendors`** on each plant's `sync-status`. Lookup is exact normalized equality,
+same reasoning as `no_po_vendor_entry()` — so each of the four real spellings across the three MIR files
+needs its own line, and `test_mir_stock_identification.py` pins every one.
+
+#### `NOT_STOCKED_MATERIALS` — the material-keyed half
+
+The project owner's scope list, 2026-09-21. MIR logs everything received; the RM sheets hold chemicals
+and raw rubber. `parsers/common.py`'s **`NOT_STOCKED_MATERIALS`** lists the classes booked inward and
+never stocked, matched by regex against the raw description. Same rule again: suppress the match, never
+the row.
+
+**Every entry passed two tests against live data, and the patterns are worded the way they are because
+of what failed.** Re-run both before adding anything:
+
+- **A. No stock lot at any plant matches the pattern.** If a lot exists, the class *is* tracked and an
+  unmatched row is a **matching** gap — excluding it would hide the thing worth fixing.
+- **B. No currently-matched MIR row matches it**, i.e. it destroys no existing reconciliation.
+
+**Scoped per plant** (`NOT_STOCKED_MATERIALS` is a dict keyed on `_MatchConfig.plant_key`), unlike
+`NO_PO_VENDORS` and `NO_RM_STOCK_VENDORS`, which are deliberately one shared list each. The difference
+is real and measured, not defensive: **what a plant stocks is a fact about that plant's warehouse**,
+whereas whether a vendor is PO'd is a fact about the company. Four classes are shared because all three
+plants agree (zero stock lots anywhere); two genuinely differ:
+
+| | HRS | RTP-Achhad | RTP-Vapi |
+| --- | --- | --- | --- |
+| Conveyor fabric | excluded | excluded | excluded |
+| Conveyor belting | excluded | excluded | excluded |
+| Rubber compound (bare phrase) | excluded | excluded | excluded |
+| Crates | excluded | excluded | excluded |
+| **Grease** (inside spares) | **stocked** — not excluded | absent — excluded | **stocked** — not excluded |
+| **Printing / labels / logo** | absent — excluded | **stocked** — not excluded | absent — excluded |
+
+The evidence: `'GREASE EP 1'` is a real lot at HRS and Vapi and absent from Achhad;
+`'Lamor Logo 160mm X 70Mic (12290)'` is a real lot at Achhad and absent from the other two.
+
+**An unknown plant key excludes nothing**, deliberately — a new plant must state its own scope, and
+until it does every row stays in the pool exactly as it would have before this registry existed.
+`not_stocked_material_entry()` therefore takes `plant_key` as a required argument with no shared
+default: an omitted plant silently falling back to another plant's scope is the one failure mode this
+split exists to prevent.
+
+Live counts (**1,304 rows, ₹80.1 cr**): HRS 118, Achhad 213, Vapi 973.
+
+**Four things were rejected or narrowed, all by real data:**
+
+- **"Printing / labels / logo work" — excluded at HRS and Vapi, never at Achhad (fails A there).**
+  Achhad's Stock sheet carries `'Lamor Logo 160mm X 70Mic (12290)'`, and its MIR's 9 `'Lamor Logo Print'`
+  rows are that same product. **Diagnosed 2026-09-21 and it is blocked twice over**, which is worth
+  knowing before anyone "fixes" it by widening a threshold:
+  - *The scorer scores it 0.243 against a 0.45 threshold.* The two tokens that actually name the product
+    (`lamor`, `logo`) are shared, but the lot description also carries `160 mm x 70 mic 12290` — six
+    tokens of dimensions and item code the MIR row has no reason to repeat. Symmetric weighted Jaccard
+    counts every one of them in the denominator, and IDF weights the rare ones heaviest (`12290` alone
+    scores 7.2). **One side being more specific is penalised as if it disagreed.** An asymmetric
+    containment score fixes this pair and was measured: it costs Achhad's precision badly
+    (same-date rate agreement 58% → 30% at the threshold that recovers it), so it is not the answer.
+  - *The date+rate path cannot fire either*, because that lot has **`received_date = None`** — one of the
+    114 of Achhad's 325 lots (35%) with no receipt date. Rate is an exact ₹100.00 on all nine rows;
+    simulating a date on the lot matches it instantly, verified in a rolled-back transaction.
+
+  So this is **a data gap, not a matcher bug to code around**: filling Achhad's receipt-date column
+  recovers it for free. Excluding the class at Achhad would have hidden that.
+- **"Grease" — dropped from the spares class (fails A twice).** Both HRS's and Vapi's Stock sheets hold
+  `'GREASE EP 1'`. The pattern lists the spares words explicitly and omits it.
+- **Rubber compound — narrowed to the bare phrase only.** Achhad genuinely stocks *named* compounds
+  (`'Rubber Compound-EAR 11560'`, `'Rubber Compound-SHRC T23'`) and HRS stocks `'SILSHEET RUBBER'`. A
+  blanket `/rubber comp|silsheet/` **destroyed 43 real matches**. The anchored pattern matches only
+  `'RUBBER COMPOUND'` with an optional unit suffix, plus `'COMPOUNDED RUBBER'`.
+- **Packing — narrowed from bags/drums/wooden to CRATES only.** All three plants stock
+  EVA/LD/BATA bags; HRS stocks `'WOODEN STOPPER 12"'` and `'WOODEN CIRCLE 4"'`. Only MS crates are
+  genuinely untracked.
+
+**One loss got past both tests and is the reason to re-run the whole matcher, not just the two checks.**
+The belting pattern was first written with a bare `\bbelts?\b`, which caught Achhad's
+`'Rubber Compound Cushion Belts'` — a compound the plant stocks as `'Rubber Compound-Cushion'`, naming a
+belt only as its application. Test B missed it because that row happened to be unmatched at the moment
+the check ran. It surfaced by **re-running `run_full_match()` with the registry disabled and diffing the
+matched set** (Achhad 350 → 349). Requiring `conveyor`/`belting`/`transmission belt` costs nothing and
+closes it. Do that diff for any new entry; `test_mir_stock_identification.py` pins this case by name.
+
+Net effect on matching: **zero matches lost at all three plants**, confirmed by that same diff. Coverage
+numbers are unchanged — as expected, since these rows never matched. What it buys is the same thing the
+PO side's `purchasesWithoutPo` buys: an out-of-scope row stops reading as a matcher failure.
+
+#### Reported as one thing, stored as two
+
+`services/rm_untracked.py`'s `rm_untracked_summary()` returns both halves — `byClass` and `byVendor`,
+plus `total` and `value` — on each plant's `sync-status` as **`rmUntracked`**. One summary because to a
+reader they are one thing ("receipts this pairing isn't expected to reconcile"); two registries
+underneath because they **go stale for different reasons** — a vendor entry becomes wrong when that
+vendor's goods start being stocked, a class when a plant starts stocking that class.
+
+**A row counted under a vendor is never also counted under a class**, since the matcher checks the
+vendor registry first — otherwise `total` would disagree with the number of rows actually excluded,
+which is the figure a reader subtracts from the MIR total.
+
+`main.js` renders it beside the sync badges as **"N not tracked in RM"** (`.badge.stale`, existing CSS),
+with the per-class and per-vendor breakdown in the tooltip. **Shown only under Raw Material Analysis**,
+unlike the PO-side badge — it counts MIR↔Stock exclusions, which is what that view reads. That made a
+second change necessary: the **view-tab handler now calls `loadSyncStatus()`**, which it never did (only
+the plant-tab handler did), so a view-specific badge would otherwise never have appeared on switching.
+
+Live counts: HRS 118 rows (₹4.23 cr), Achhad 212 (₹14.17 cr), Vapi 973 (₹61.74 cr).
 
 ### Units are normalised before comparing — on both pairings
 
@@ -926,9 +1199,15 @@ for each in isolation) — 588 → 599 from the flag alone, 588 → 577 with bot
 single before/after Vapi percentage without saying which of the two changes it includes** — they move
 the same count in opposite directions and by design, not by accident.
 
-MIR↔Stock rates are much lower (1.6–24%), but that is mostly structural, not matcher failure: Stock
-is a current snapshot (one row per live lot) while MIR is a full historical log, so most older MIR
-rows correctly have no current stock lot to match against.
+MIR↔Stock rates were much lower (1.6–24%) and are now **53.5% / 52.7% / 20.4%** after the 2026-09-21
+three-tier pass — see [MIR ↔ Stock](#mir--stock) for the per-plant split and the measurements behind
+each rule. What remains is mostly structural, not matcher failure, and in two distinct ways worth
+keeping apart: Stock is a current snapshot (one row per live lot) while MIR is a full historical log,
+so an older MIR row correctly has no current lot; and **the RM sheets do not track conveyor belting,
+conveyor fabric, rubber compound or MS crates at all**, which is 36%/47%/76% of the three plants' MIR
+rows. Against the rows whose material is actually in the sheet the figures are **84% / 100% / 85%**.
+**Quote that second set when comparing this pairing to PO↔MIR** — the headline percentages have
+different denominators and Vapi's in particular is dominated by materials no RM sheet holds.
 
 **Until a sample-based accuracy check exists, treat every match as a suggestion, not a fact.** This
 is a process instruction, not just a UI note (the dashboard's `.validation-note` banner and the
@@ -1213,6 +1492,16 @@ finishing.
 
 Per-material consumption rate and days-of-cover in Raw Material Analysis.
 
+> **Superseded 2026-09-21 — read [Consumption ledger](#consumption-ledger-2026-09-21--supersedes-the-days-left-engines-arithmetic)
+> instead.** The central claim in this section — that only Achhad's `issued` is period-to-date, and
+> that the books reconcile with the balance on just 45%/87%/82% of days — is **wrong**: all three
+> plants' `received`/`issued` are cumulative, and the books reconcile exactly (2,909 of 2,909
+> intervals). The balance-drawdown method described here overstated consumption by 1.31×–1.85×.
+> **No code path runs on it any more** — `stock_consumption.py` is dead code as of the same day's
+> read-path migration. This section is kept only because the reasoning is worth seeing next to what
+> replaced it, and because the measurements it cites are the ones that need re-reading, not
+> re-deriving.
+
 **Why it can't use `issued`/`received` as the primary signal**: those columns mean different things
 per plant — Achhad's `issued` is a period-to-date summary that resets each period; HRS's and Vapi's
 `issued`/`received` are formula cells pulled from a separate Receipt/Issue tab, and HRS's `received`
@@ -1275,6 +1564,182 @@ then divide the already-summed quantity. **Days-left itself is never summed or a
 — that is simply wrong.** Group confidence is the **weakest** contributing lot's band, not the best
 or a mean: one thin lot makes the whole group's rate thin. The "Low Stock" status fires on
 `daysLeft < 15` or any contributing lot's `daysToMsl === 0`.
+
+### Consumption ledger (2026-09-21) — supersedes the Days-Left engine's arithmetic
+
+`MaterialConsumptionDaily` + `ConsumptionEvent`, built by
+`apps/services/consumption_engine.py` (pure, dependency-free) and
+`apps/services/consumption_ledger.py` (its DB layer), rolled up by
+`apps/services/consumption_periods.py`, written by
+`manage.py compute_hrs_consumption` / `compute_achhad_consumption` / `compute_vapi_consumption`.
+
+**The premise the Days-Left engine was built on is wrong, and the section above it records the
+wrong finding.** That section says Achhad's `issued` is period-to-date while HRS's and Vapi's are
+genuine one-day figures, and that the books reconcile with the balance on only 45%/87%/82% of days.
+Re-measured on live data 2026-09-21:
+
+- **All three plants' `received`/`issued` are period-to-date cumulative.** `opening + received -
+  issued == closing` holds on **4,327 of 4,327** rows. `opening_stock` is frozen across consecutive
+  snapshots on 100% (Achhad, Vapi) and 83% (HRS) of pairs — it is the *period* opening, not
+  yesterday's closing. `issued` is monotonic per lot on 100%/100%/80% of lots.
+- Therefore `(closing₀ − closing₁) + (received₁ − received₀) == issued₁ − issued₀` **by
+  construction** within a period — verified on **2,909 of 2,909** same-period intervals, zero
+  failures.
+
+The old "45% reconcile / off by 2×–10×" figure was an artifact of comparing a cumulative column
+against a one-day balance delta. **Do not restore the balance-drawdown method as primary on the
+strength of that paragraph.**
+
+**The defect it caused.** `stock_consumption.py` adds the cumulative `received` *level*
+(`recv = float(r1) if r1 != r0`) rather than its increment, so any interval where `received` was
+already nonzero and grew adds the whole running total. Measured inflation: **HRS 1.78×, Achhad
+1.85×, Vapi 1.31×** — from only 5/1/12 intervals, all on large lots. 29 active materials read
+2–10× too low on days-left, several banded `high`: SILSHEET RUBBER 4.2 → 13.0, QUREANTI MMB
+7.3 → 24.7, Imported Coal 2.7 → 10.4. Exactly the rows that trip `daysLeft < 15`.
+
+**Four things that look like consumption and are not**, separated by
+`consumption_engine.classify_interval()` rather than averaged into a rate:
+
+- **`restatement` — the biggest distortion, and not the one first suspected.** The sheet rewrites
+  `opening` AND `closing` while `issued` never moves: a corrected figure, nothing issued. 148 of
+  HRS's 192 opening-change intervals; the balance method counts **766,459 units** there against the
+  issue book's **48,975**. Canonical case HRS lot 119 `SACK CARBON`, 450,500 → 17,850 on 2026-09-04
+  with `received`/`issued` both 0 either side — 432,650 phantom units, roughly a third of that
+  plant's whole measured total, from one cell. Reading the issue book gets it right for free.
+  **This is why an `opening` change must NOT fall back to the balance delta** — that is the
+  restatement case and the balance is 15× wrong on it. Branch on whether **`issued` reset**, not on
+  whether `opening` changed.
+- **`period_roll`** — `issued` genuinely resets downward. 44 of HRS's 192; none at Achhad/Vapi.
+  Excluded, recorded as an event.
+- **`closeout`** — a lot with no prior movement in the window jumps to closing 0 in one step, with
+  `received` unchanged. 8/8/4 events, **3–7%** of each plant's total. An earlier "≥90% of the lot
+  wiped in one interval" heuristic put this at 61%/34%/53% and was wrong — it swept up genuine
+  high-turnover consumption and gap-spanning consumption. A lot already being drawn down that
+  simply finishes is real consumption, not a closeout.
+- **`books_disagree`** — the identity fails. **0 of 2,909** in real data; a canary, not a
+  workaround.
+
+`spread` is not an exclusion: real consumption the snapshots can't pin to one day. It is divided
+evenly across the span with the rounding remainder on the last day, so `sum(days) == interval` and
+a period total stays exact. The old engine discarded any gap over 7 days outright, throwing away
+18% of HRS's and **63% of Achhad's** measured consumption.
+
+**The daily row is the only atom.** Month/quarter/financial-year totals are a `SUM` over
+`MaterialConsumptionDaily`, never a second independent derivation —
+`consumption_periods.period_series()/material_totals()/period_summary()`, with financial quarters
+(Apr–Jun = Q1) and Apr–Mar years matching the `*_25-26` Drive folder convention.
+`consumption_report.py`'s existing monthly report is the shape being replaced: it re-reads
+`*RMSnapshot` and re-sums `issued` independently of the daily report beside it.
+
+**`material_key` is `normalize_material(description)` — deliberately NOT `*RMLot.natural_key`.**
+That key is `<code>|<vendor>#<occurrence>`, shaped for MIR↔Stock matching. Consumption does not
+care who supplied a material, and vendor-keying forks one material across its suppliers (HRS buys
+SBR 1502 from three). The `#occurrence` suffix is assigned by sheet row order: measured
+2026-09-21, 56 HRS lots' `opening_stock` changed between Sep 2 and Sep 3 and **54% of those picked
+up the previous lot's opening** — a reshuffle splicing two materials' histories. A wrong match is
+visible and reviewable (`MatchReview`); a spliced consumption series just returns a confident wrong
+number. A material *code* would be better if all three plants had one — Vapi's is `hsn_code`, a
+tariff code where 24 of 73 distinct values cover more than one material, so it would merge
+unrelated materials outright. The code is stored as a non-key column instead.
+
+**`MaterialConsumptionDaily`/`ConsumptionEvent` are shared tables with a `plant` column** — a
+deliberate exception to [Per-plant models](#per-plant-models-not-a-shared-schema--deliberate-dont-fix-it),
+and the `SyncRun` case rather than the MIR/Stock case. That rule exists because the three plants'
+*spreadsheets* differ; nothing in these tables comes from a sheet column. Cross-plant rollups are a
+first-class use case (`material_totals()` with `plant=None`), only possible because `material_key`
+is uniform. **Don't split these into three models.**
+
+**Achhad's dated movement matrix wins for the days it covers.** `RTPAchhadRMDailyMovement` is
+already per-day and its dates are the *real issue dates* — a snapshot lags them by a day (lot
+`Isnr - (Svr - 10)`'s 09-03 movement first appears in the 09-04 snapshot). `_points_after()`
+synthesises an anchor point dated exactly at the matrix cutoff, carrying the matrix's own issues up
+to it, so the first snapshot interval measures only what the matrix didn't. **Keeping the last real
+snapshot as the anchor instead double-counts**: matrix through Sep 3, snapshots on Sep 2 and Sep 5,
+and Sep 3 gets a share from both. In the live data the two sources happened to abut exactly (matrix
+through Sep 7, next snapshot Sep 8) so nothing overlapped — which is why this needed a test rather
+than an inspection.
+
+**A bounded rebuild reads further back than it writes.** An interval needs the snapshot *before* it,
+so reading from `since` leaves the first day of the range with no predecessor and it silently
+vanishes. `_ANCHOR_LOOKBACK_DAYS = 30` of extra read, `date >= since` filter on the write. Only
+shows up on the bounded path, which is the path every scheduled run takes.
+
+**Lots are read regardless of `is_active`.** A lot that has since sold out genuinely consumed
+material while it was alive, and its snapshots survive deactivation by design. The Days-Left engine
+filtered these out and lost that history.
+
+**Runs on the qcluster, not an external cron.** `compute_<plant>_consumption` is the last step of
+each plant's `_PLANT_COMMANDS` pipeline in `sync_trigger.py`, after `match_<plant>`. It must run
+last — it derives entirely from what `sync_<plant>_stock` just wrote. It fetches nothing from Drive
+and is independent of the match step; the ordering is the only coupling and it is one-way. It
+records a `SyncRun.Source.CONSUMPTION` row for the same reason `match_*` records `MATCH`, and more
+urgently: a stale consumption ledger looks perfectly healthy from outside, because yesterday's rows
+are still there returning plausible numbers.
+
+**Verification.** Rebuilt over the full live history and reconciled against an independent
+recomputation from raw snapshots: HRS and Vapi agree **exactly** (556,948 and 576,075, diff 0);
+Achhad's 235,377.08 = 102,401.88 (matrix) + 132,975.20 (snapshots after the cutoff) with **zero**
+ledger rows on or before the cutoff disagreeing with the matrix.
+
+#### The read path (migrated 2026-09-21, same day)
+
+Both readers now go through the ledger; **nothing computes consumption per request any more.**
+
+- **`_domestic_base.py`** - `_consumption_by_lot()` and `_daily_movement_points()` are gone,
+  replaced by `_consumption_by_material()`, one aggregate query over the ledger. Achhad is now
+  one query too, not two: its daily Recp./Issue matrix is reconciled at build time instead of at
+  request time.
+- **`consumption_report.py`** - `_consumption_stats_by_lot()`/`_todays_issued_rows()`/
+  `_month_issued_rows()` are gone, replaced by one `_ledger_rows()` shared by both reports. That
+  module no longer imports a snapshot model at all.
+
+**This fixed a second, separate reporting error.** "Issued Today" read `*RMSnapshot.issued`
+directly for HRS/Vapi, on the belief that only Achhad's column was period-to-date. All three are.
+So the daily email printed a running month-to-date total under a column headed "Issued Today", and
+the monthly email **summed those running totals across the month**.
+
+**Achhad's period-to-date `(est.)` fallback is gone, and `isEstimate` means something else now.**
+The fallback existed because the day-matrix could be blank for the current day while the live
+cumulative column had a figure; there is no live cumulative column in the read path any more. The
+flag now marks a quantity **interpolated across a snapshot gap** rather than observed on one dated
+day, and applies at all three plants rather than only Achhad. The email footnote changed with it.
+
+**Rows are per material, not per lot**, in the API payload and both emails. A material split
+across vendor lots used to appear once per lot, each holding a fragment of the day's issues.
+`materials.js`'s `aggregateMaterialsByName()` therefore **counts each rate once per plant, not
+once per lot** - summing across `g.lots` was right when every lot carried its own fragment and
+would now multiply the rate by the lot count. The per-plant dedup is what keeps "All Plants"
+correct, since the ledger genuinely is per plant.
+
+**Rates divide by days the plant was OBSERVED, not by the window length** - `ConsumptionCoverage`,
+one row per (plant, day) that fell inside some lot's snapshot interval, written by the same build.
+This is not a refinement; it was found in verification and it was wrong in the shipped write path
+for an hour. `MaterialConsumptionDaily` holds only days something moved, so dividing by 30 asserts
+that every day without a row was a real zero - **including the days nobody looked**. HRS has 17
+covered days in a 30-day window today, so that assertion put every rate 43% low. A quiet day
+*inside* coverage still dilutes the average, which is correct. Coverage is read from the
+**intervals**, not from the quantities: a zero-quantity interval writes no ledger row but its days
+were still watched.
+
+**Expect thinner confidence bands than before, and that is the point.** The old bands keyed on the
+SPAN between the first and last snapshot, so 7 real days inside a 17-day span read `high`. They
+now key on coverage of the window. Against 2026-09-21's data every HRS material sits at `low` -
+correctly, because the plants have 6-7 distinct snapshot dates in an 18-day span. They will climb
+on their own once a qcluster is actually running (see [Scheduling](#scheduling)).
+
+Real movement on the live data, HRS: SILSHEET RUBBER 4.2 -> 8.2 days, CARBON BLACK N330 BKT
+0.7 -> 16.7, QUREANTI MMB (MB2) 7.3 -> 251.6.
+
+**`stock_consumption.py` is now dead code** - nothing imports it outside its own test. It is left
+in place deliberately, with its docstring's superseded premise intact, because the reasoning it
+records is the reasoning this section exists to overturn. Delete it only together with
+`test_stock_consumption.py`.
+
+**One live consequence worth knowing:** the daily report currently returns **0 rows**, because the
+newest snapshot is 2026-09-19 and there is nothing dated today to report. That is the honest
+outcome of a stalled snapshot pipeline - the old code filled the same gap with a month-to-date
+figure. It resolves itself the moment a qcluster runs.
+
 
 ### Data export
 
@@ -1590,18 +2055,16 @@ ordered by whichever category holds that plant's single biggest mover for the da
 category stay issued-qty-descending). A blank category buckets as **"Uncategorized"** rather than
 being dropped — real on some rows.
 
-*Achhad's "Issued Today" fallback.* The report prefers a genuinely-dated source per plant, because
-Achhad's own `issued` column is a period-to-date summary that resets each period — so it uses
-`RTPAchhadRMDailyMovement`, parsed from the Stock file's daily Recp./Issue matrix. Confirmed against a
-real exported file: that matrix can sit **completely blank** for the current day (every cell `None`)
-while the lot's period-to-date `Issued` already has nonzero values — the plant simply hadn't filled in
-today's column yet, and the report silently said "No material was issued today". Now
-`_todays_issued_rows()` falls back to the live `issued` column **only** when a lot has no
-`RTPAchhadRMDailyMovement` row for today at all (a lot that has one keeps using it — the fallback never
-overrides a real dated entry), flags it `isEstimate=True`, and renders `(est.)` plus a footnote. This
-is **explicitly presented as a rough period-to-date indicator, not a confirmed same-day figure**. If
-Achhad's entry lag is a permanent habit, most days will show `(est.)` — that's expected under this
-design, not a sign something is broken.
+*Superseded 2026-09-21 — Achhad's "Issued Today" fallback is gone.* It existed because Achhad's
+own `issued` column is a period-to-date summary and its daily Recp./Issue matrix could sit blank
+for the current day, so a lot with no dated row fell back to that live cumulative column, flagged
+`(est.)`. The read path no longer reads any live cumulative column: both reports read the
+consumption ledger, into which Achhad's matrix is reconciled at build time. A day the ledger has
+no rows for now reports **nothing**, which is the honest answer — the old fallback printed a
+month-to-date running total under a heading that said "Issued Today". `isEstimate`/`(est.)`
+survives with a different and now uniform meaning: the quantity was interpolated across a snapshot
+gap rather than observed on one dated day, at any of the three plants. See
+[Consumption ledger](#consumption-ledger-2026-09-21--supersedes-the-days-left-engines-arithmetic).
 
 **9 — Monthly RM Consumption Report.** `POST /api/internal/send-monthly-report`, a separate endpoint
 rather than a mode flag since the two run on genuinely different schedules. Same category-grouped shape
@@ -1611,13 +2074,13 @@ recently **completed** month — the natural target for a report firing on the 1
 params override for a manual re-send. `daysLeft`/confidence stay a present-tense estimate, same meaning
 as in the daily report.
 
-**It sums, rather than reading a live period-to-date column.** HRS/Vapi sum `*RMSnapshot.issued` across
-the month (already a genuine per-day figure, so summing is exactly as trustworthy as the daily read);
-Achhad sums `RTPAchhadRMDailyMovement.issued`, deliberately **not** the live `issued` column — reading
-that for an already-closed month would be flatly wrong the moment the period rolls over and the sheet
-resets. Achhad's `(est.)` fallback exists here too but is **only ever allowed for the current, still-open
-month**. If Achhad genuinely has no movement rows for a closed month, that material is **silently
-excluded rather than estimated** — a visible gap is more honest than an untrustworthy number.
+**It sums the ledger, one SUM over the same daily rows the daily report reads.** Superseded
+2026-09-21: it used to sum `*RMSnapshot.issued` across the month for HRS/Vapi on the belief that
+their column was a genuine per-day figure. It is period-to-date at **all three** plants, so that
+summed a running total once per snapshot. The safety property that mattered survives and is
+pinned by a test — a closed month is never estimated from whatever period is currently open; a
+material with no dated rows for it is **excluded rather than estimated**, a visible gap being more
+honest than an untrustworthy number.
 
 **10 — Plant Data Correction Report.** `POST /api/internal/send-mismatch-report`. Unlike every other
 email here, this goes to a **fixed, real individual per plant, not the internal admin list**:
@@ -1855,6 +2318,10 @@ alongside each.
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [PO ↔ MIR](#po--mir) |
 | Vendors with no PO looking like matcher failures for every run | [No-PO vendors](#some-vendors-never-have-a-po--that-is-registered-not-inferred) |
 | Exact vendor equality → zero MIR↔Stock matches (city suffix) | [Vendor gate](#vendor-name-is-always-a-hard-gate-never-a-scored-factor) |
+| Letter-for-letter material equality as MIR↔Stock's only rule → 1.6–27% coverage | [MIR ↔ Stock](#mir--stock) |
+| Date+rate identification without a grade-code gate → same-day same-price SKUs cross-matched | [MIR ↔ Stock](#date--rate-is-this-pairings-po-number--behind-two-guards) |
+| An early `return []` in `match_mir_entry_stock()` skipping the standalone stale-row cleanup | below |
+| A not-stocked pattern with a bare `belt` word silently killing a real compound match | [MIR ↔ Stock registries](#what-mirstock-deliberately-skips--two-registries-neither-shared-with-the-po-side) |
 | MIR↔Stock comparing MT against KG → ~1000x phantom rate mismatch | [Unit normalisation](#units-are-normalised-before-comparing--on-both-pairings) |
 | Import USD rate compared raw against INR MIR → ~94x gap, 0 matches | [Import currency](#import-po--mir-convert-currency-first) |
 | Full-table SELECTs inside per-row loops → quadratic matching | [Performance](#performance-the-engine-was-quadratic) |
@@ -1897,6 +2364,16 @@ which admin each excludes, wrapped in `transaction.atomic()` around the whole ch
 the PATCH and DELETE branches. The regression test is a real two-thread test with a genuine separate DB
 connection per thread (`@pytest.mark.django_db(transaction=True)`) — a row lock is only meaningful
 across two actually-separate transactions, which the default `django_db` fixture would never exercise.
+
+**`match_mir_entry_stock()`'s early exits must clear the entry's existing match rows, not just
+`return []`.** The function has two cleanup modes: a batch caller passes `kept_ids` and
+`run_full_match()` does one bulk delete of everything not kept, while a standalone caller relies on the
+per-entry `DELETE` at the *bottom* of the function. Every early exit therefore looked harmless — and was,
+in the batch path — while silently leaving a stale match in place forever in the standalone one, which
+is a live path (an "Edit Everywhere" save re-runs matching for one row). It surfaced when
+`NO_RM_STOCK_VENDORS` was added: registering a vendor whose rows already had matches left those matches
+on screen indefinitely. All early exits now go through a local `_no_matches()` that performs the same
+cleanup. **If you add another early return there, use it.**
 
 **Every modal opener needs the stale-response guard.** Clicking row A then row B before A's fetch
 resolves can let A's stale response land after B's and silently overwrite the modal, even though the

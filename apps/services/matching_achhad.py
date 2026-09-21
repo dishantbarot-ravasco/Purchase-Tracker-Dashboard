@@ -59,6 +59,7 @@ MATCH_CONFIG = _MatchConfig(
     # See matching.py's own comment - PO Net Value <-> MIR's Net column now,
     # not the previous `taxable_value or net` comparator.
     mir_value=lambda mir: mir.net,
+    plant_key="achhad",
     stock_rate_field="rate",
     stock_vendor_field=None,
     # Imports identification/financial-check redesign (2026-09, project
@@ -77,6 +78,35 @@ MATCH_CONFIG = _MatchConfig(
     # material-only gate, same weaker-confidence characteristic Achhad's
     # MIR<->Stock matching already had before this extension.
     stock_extended_fields=True,
+    # MIR<->Stock three-tier identification (2026-09-21). Material is STILL
+    # mandatory and still primary - the reverted date-alone path described
+    # above stays reverted; what changed is how "the same material" is read,
+    # plus a date-AND-rate path guarded by the grade-code contradiction gate
+    # and tier-1 exclusivity (see match_mir_entry_stock()).
+    #
+    # ACHHAD GETS THE MOST OUT OF THE DATE+RATE PATH OF THE THREE PLANTS, and
+    # the reason is this plant's known weakness: its Stock sheet has no vendor
+    # column at all (stock_vendor_field=None above), so material description
+    # was genuinely the ONLY evidence it had. Receipt date and rate are the
+    # two independent signals it can fall back on, and they carry real pairs
+    # a name comparison can never reach - 'Divyol Rubber Flex-A 5' <-> '710
+    # Oil', 'Kanatol-8A (DOA)' <-> 'DOA Oil', 'JC Magnesium Hydroxide' <->
+    # 'JH Magnesium Hydroxide MDH' (the plant's internal names against the
+    # vendor's brand names).
+    #
+    # Measured on live Achhad data: 132 -> 352 matched MIR rows
+    # (19.9% -> 53.0%) - 210 from the scorer, 10 from the date+rate path.
+    # Same-date rate agreement 97% -> 98% across 35 -> 95 such pairs.
+    # ZERO reachable rows left behind: every Achhad MIR row whose material
+    # exists anywhere in its Stock sheet now matches.
+    #
+    # One data-side caveat worth knowing before reading these numbers as a
+    # ceiling: Achhad's Stock sheet carries a receipt date on only 211 of 325
+    # lots (65%, against HRS's 100% and Vapi's 95%), and the date+rate path
+    # cannot fire without one. Filling that column is worth more here than
+    # any further tuning of this threshold.
+    stock_material_threshold=Decimal("0.45"),
+    stock_date_rate_path=True,
     # Identification 2-of-3 (2026-09-18, project owner) - Achhad first, HRS
     # second (same day, different reason - see matching.py's own comment),
     # Vapi joined 2026-09-19 once its own MIR PO coverage was measured (see

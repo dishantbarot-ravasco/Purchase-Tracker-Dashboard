@@ -81,11 +81,27 @@ log = logging.getLogger(__name__)
 _LOCK_TIMEOUT_SECONDS = 900  # 15 min
 
 # Per-plant command pipeline, in the order CLAUDE.md's "Commands" section
-# documents (each plant's own 3 sync commands, then its match command).
+# documents (each plant's own 3 sync commands, then its match command, then
+# its consumption ledger rebuild).
+#
+# compute_<plant>_consumption added 2026-09-21. It runs LAST and it must:
+# it derives entirely from what sync_<plant>_stock just wrote to
+# *RMSnapshot, so running it before that would rebuild the ledger from
+# yesterday's data and then report success. It fetches nothing from Drive
+# and is deliberately independent of the match step beside it - see
+# apps/services/consumption_engine.py's docstring for why consumption is
+# keyed on the material rather than on the lot identity matching uses. The
+# ordering here is the only coupling between them, and it is one-way.
+#
+# This replaces the external cron-job.org trigger the consumption report
+# used to depend on. A free external scheduler hitting an HTTP endpoint is
+# fine for sending an email, but a derived ledger has to be rebuilt on the
+# same beat as the data it derives from, by the same worker, or it silently
+# describes a different day than the dashboard beside it.
 _PLANT_COMMANDS = {
-    "hrs": ["sync_po_csv", "sync_mir", "sync_stock", "match_hrs"],
-    "achhad": ["sync_achhad_po_csv", "sync_achhad_mir", "sync_achhad_stock", "match_achhad"],
-    "vapi": ["sync_vapi_po_csv", "sync_vapi_mir", "sync_vapi_stock", "match_vapi"],
+    "hrs": ["sync_po_csv", "sync_mir", "sync_stock", "match_hrs", "compute_hrs_consumption"],
+    "achhad": ["sync_achhad_po_csv", "sync_achhad_mir", "sync_achhad_stock", "match_achhad", "compute_achhad_consumption"],
+    "vapi": ["sync_vapi_po_csv", "sync_vapi_mir", "sync_vapi_stock", "match_vapi", "compute_vapi_consumption"],
 }
 
 # Import POs match against the SAME MIR/Stock data the domestic pipeline

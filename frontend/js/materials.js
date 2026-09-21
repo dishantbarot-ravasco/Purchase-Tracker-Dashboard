@@ -83,10 +83,15 @@ function materialLinksToItem(material, po, item) {
 }
 
 // Days-left confidence bands, weakest to strongest (see
-// apps/services/stock_consumption.py's own _BANDS) - used both to pick a
+// apps/services/consumption_periods.py's own _BANDS) - used both to pick a
 // group's overall confidence (the weakest contributing lot's band, never
 // the best or a mean - see aggregateMaterialsByName() below) and to color
 // the confidence dot (daysLeftCellHtml()).
+//
+// The backend's bands key on COVERAGE of the window since 2026-09-21, not
+// on the span between the first and last snapshot. Expect more amber and
+// fewer green dots than before until the snapshot job runs every day -
+// that is the figure becoming honest about thin history, not a regression.
 const CONF_RANK = { none: 0, low: 1, medium: 2, high: 3 };
 const CONF_DOT_CLASS = { high: 'conf-dot-high', medium: 'conf-dot-medium', low: 'conf-dot-low', none: 'conf-dot-low' };
 
@@ -127,20 +132,36 @@ function aggregateMaterialsByName(lots) {
   // design's own "Not available" cells for multi-lot materials.
   return Array.from(groups.values()).map(g => {
     // Days-left is not summable (averaging/adding days across lots is
-    // simply wrong) - sum the consumption *rates* instead, then divide the
-    // already-summed quantity. Group confidence is the weakest contributing
-    // lot's band: one thin lot makes the whole group's rate thin, and
-    // taking the best or the mean would overstate it. A lot with no
-    // consumption block yet (brand-new, or too little history) counts as
-    // 'none' for this purpose, same as the backend's own confidence value.
+    // simply wrong) - sum the consumption *rates*, then divide the
+    // already-summed quantity.
+    //
+    // **Count each rate ONCE PER PLANT, not once per lot (2026-09-21).**
+    // The backend used to compute consumption per vendor lot, so summing
+    // across g.lots was right. It now reads a MATERIAL-level ledger
+    // (_domestic_base.py's _consumption_by_material()), so every sibling
+    // lot of one material carries the identical figure and summing them
+    // would multiply the rate by the lot count - a material HRS buys from
+    // three vendors would read three times its real burn, and its days-left
+    // a third of the truth. Deduping on _plantKey is what keeps "All
+    // Plants" correct: the ledger is per plant, so three plants' rates for
+    // one material genuinely do add up.
+    //
+    // Group confidence stays the weakest contributing band: one plant with
+    // thin snapshot coverage makes the whole group's rate thin, and taking
+    // the best or the mean would overstate it.
     let avgDaily = 0;
     let weakest = null;
+    const ratedPlants = new Set();
     g.lots.forEach(l => {
       const c = l.consumption;
       const conf = (c && c.confidence) || 'none';
-      if (c && c.avgDaily) avgDaily += c.avgDaily;
+      const plantKey = l._plantKey || '';
+      if (c && c.avgDaily && !ratedPlants.has(plantKey)) {
+        ratedPlants.add(plantKey);
+        avgDaily += c.avgDaily;
+      }
       if (!weakest || CONF_RANK[conf] < CONF_RANK[weakest.confidence]) {
-        weakest = { confidence: conf, historyDays: c ? c.historyDays : 0, intervalsUsed: c ? c.intervalsUsed : 0 };
+        weakest = { confidence: conf, coverageDays: c ? c.coverageDays : 0, observedDays: c ? c.observedDays : 0, windowDays: c ? c.windowDays : 0 };
       }
     });
     return {
@@ -157,8 +178,9 @@ function aggregateMaterialsByName(lots) {
         avgDaily: avgDaily > 0 ? avgDaily : null,
         daysLeft: avgDaily > 0 ? g.qty / avgDaily : null,
         confidence: weakest ? weakest.confidence : 'none',
-        historyDays: weakest ? weakest.historyDays : 0,
-        intervalsUsed: weakest ? weakest.intervalsUsed : 0,
+        coverageDays: weakest ? weakest.coverageDays : 0,
+        observedDays: weakest ? weakest.observedDays : 0,
+        windowDays: weakest ? weakest.windowDays : 0,
       },
     };
   });
@@ -174,9 +196,9 @@ function isMaterialLowStock(m) {
 }
 
 // Days Left cell: the number plus a confidence dot (green/amber/grey),
-// tooltipped with the history it's based on - the visible half of the
+// tooltipped with the coverage it's based on - the visible half of the
 // decision to show a days-left figure even on thin history (see
-// apps/services/stock_consumption.py's module docstring). Band 'none'
+// apps/services/consumption_engine.py's module docstring). Band 'none'
 // renders an em dash instead of a number - a two-day estimate must never
 // look identical to a month-long one.
 function daysLeftCellHtml(m) {
@@ -188,7 +210,17 @@ function daysLeftCellHtml(m) {
       '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="Not enough snapshot history yet" tabindex="0"></span></span>';
   }
   const valueText = c.daysLeft != null ? Math.round(c.daysLeft).toLocaleString('en-IN') + ' d' : 'No movement';
-  const tip = 'Based on ' + c.historyDays + ' day' + (c.historyDays === 1 ? '' : 's') + ' of history (' + c.intervalsUsed + ' interval' + (c.intervalsUsed === 1 ? '' : 's') + ')';
+  // Coverage, not span. The tooltip used to read "based on N days of
+  // history", where N was the gap between the first and last snapshot -
+  // it counted the calendar, so 7 real days inside a 17-day span read as
+  // "17 days". It now says how much of the window actually carries data
+  // and how much of that was observed on a dated day rather than
+  // interpolated across a snapshot gap.
+  const windowDays = c.windowDays || 0;
+  const coverage = c.coverageDays || 0;
+  const observed = c.observedDays || 0;
+  const tip = coverage + ' of ' + windowDays + ' days covered, ' + observed +
+    ' observed directly' + (coverage > observed ? ', the rest averaged across snapshot gaps' : '');
   return '<span class="days-left-cell"><span class="days-left-value">' + escapeHtml(valueText) + '</span>' +
     '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="' + escapeHtml(tip) + '" tabindex="0"></span></span>';
 }

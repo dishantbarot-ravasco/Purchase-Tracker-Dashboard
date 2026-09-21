@@ -252,9 +252,16 @@ function resetFilters() {
 // escapeHtml()/textContent, never as markup - everything in a URL is
 // attacker-supplied by definition, even on an internal tool.
 //
-// The URL is deliberately left in the address bar after opening, so the
-// link is shareable and survives a reload - it is a real address for a PO,
-// not a one-shot instruction.
+// The params are CONSUMED: `clearDeepLinkParams()` strips them from the
+// address bar as soon as the modal is open. The first version deliberately
+// left them there, reasoning that the URL was "a real address for a PO" and
+// should survive a reload - the project owner reported the result the same
+// day ("i search this dashboard and every time i reload it's get open don't
+// know why"). A modal is a transient thing the reader dismisses; re-opening
+// it on every refresh of what is now just "the dashboard" reads as the page
+// being stuck, and there is no way to get rid of it short of editing the
+// URL. Sharing still works exactly as before - the link opens the PO for
+// whoever follows it - it just stops repeating itself afterwards.
 function readDeepLinkParams() {
   let params;
   try { params = new URLSearchParams(window.location.search); } catch (e) { return null; }
@@ -277,6 +284,20 @@ function applyDeepLinkToState(link) {
     state.view = 'po';
     state.purchaseType = 'domestic'; // ?po= is a Domestic PO number (Search PO only searches those)
   }
+}
+
+/** Strips only the three deep-link params, leaving anything else on the URL
+ * (and the path) alone, then rewrites the address bar in place. replaceState,
+ * not pushState: the reader never navigated anywhere, so this must not add a
+ * history entry that Back would walk into. Called once the link has been
+ * acted on, success or miss - see readDeepLinkParams()'s own comment. */
+function clearDeepLinkParams() {
+  if (!window.history || !window.history.replaceState) return;
+  let url;
+  try { url = new URL(window.location.href); } catch (e) { return; }
+  ['po', 'material', 'plant'].forEach(k => url.searchParams.delete(k));
+  const search = url.searchParams.toString();
+  window.history.replaceState(null, '', url.pathname + (search ? '?' + search : '') + url.hash);
 }
 
 /** A target that can't be found is reported in place rather than silently
@@ -342,6 +363,11 @@ async function openDeepLinkTarget(link) {
     // already rendered and correct, the reader just doesn't get the modal.
     console.error('openDeepLinkTarget failed:', e);
     showDeepLinkMiss('Couldn\'t open the linked record right now. The dashboard below is up to date - please try the link again, or search for it from Search PO.');
+  } finally {
+    // In `finally`, so a link that missed or threw is consumed too: leaving
+    // it on the URL would replay the same failure on every refresh, which is
+    // the more confusing half of the behaviour this fixes.
+    clearDeepLinkParams();
   }
 }
 
@@ -594,6 +620,13 @@ function renderViewTabs() {
     renderViewTabs();
     renderPlantTabs();
     renderPurchaseTypeTabs();
+    // Sync status is re-read on a VIEW switch too, not just a plant switch
+    // (2026-09-21). It carries at least one badge that is view-specific now
+    // - "not tracked in RM" shows only under Raw Material Analysis - and
+    // without this the badge row keeps whatever the previously-selected view
+    // rendered, so switching to Raw Material Analysis simply never showed
+    // it. The plant-tab handler right below has always done this.
+    loadSyncStatus();
     await loadAndRender();
   });
 }
@@ -736,6 +769,35 @@ async function loadSyncStatus() {
         noPoBadge = ' <span class="badge stale" title="' + escapeHtml(title) + '">'
           + pwp.total + ' purchased without a PO</span>';
       }
+      // "RM doesn't track these", 2026-09-21 (project owner) - the Raw
+      // Material Analysis counterpart of the badge right above, and the same
+      // idea: a number on screen for rows this view is NOT expected to
+      // reconcile, so they stop reading as matcher failures.
+      //
+      // MIR logs everything received; the RM Stock sheet holds chemicals and
+      // raw rubber. Conveyor belting and fabric, un-named rubber compound,
+      // crates and spares are booked inward and never stocked - plus Madura
+      // by vendor. See services/rm_untracked.py, and parsers/common.py for
+      // which classes qualify and the two tests each had to pass.
+      //
+      // ONLY ON THE RAW MATERIAL view, unlike noPoBadge above: this counts
+      // exclusions from MIR<->Stock, which is what this view reads, and it
+      // would be noise beside a purchase-order list. Rendered as
+      // .badge.stale, reusing existing CSS rather than adding any - same
+      // reasoning as gapBadge and noPoBadge.
+      const rmu = data.rmUntracked;
+      let rmUntrackedBadge = '';
+      if (state.view === 'materials' && rmu && rmu.total > 0) {
+        const lines = (rmu.byClass || []).map(c => c.rowCount + '  ' + c.materialClass)
+          .concat((rmu.byVendor || []).map(v => v.rowCount + '  ' + v.vendor + '  (vendor)'));
+        const crores = (rmu.value || 0) / 10000000;
+        const title = 'Receipts the RM Stock sheet does not hold, so MIR-to-Stock does not try to match them.\n'
+          + 'They still reconcile against their purchase orders.\n'
+          + 'Rs ' + crores.toFixed(2) + ' cr in total.\n\n'
+          + lines.join('\n');
+        rmUntrackedBadge = ' <span class="badge stale" title="' + escapeHtml(title) + '">'
+          + rmu.total + " not tracked in RM</span>";
+      }
       el.innerHTML = Object.keys(labels).map(src => {
         const run = data.sync[src];
         if (!run) return '<span class="badge stale">' + labels[src] + ': never synced</span>';
@@ -750,7 +812,7 @@ async function loadSyncStatus() {
         // something that needs its own dedicated UI.
         const titleAttr = cls === 'failed' && run.errorDetail ? ' title="' + escapeHtml(run.errorDetail) + '"' : '';
         return '<span class="badge ' + cls + '"' + titleAttr + '>' + labels[src] + ': ' + when + '</span>';
-      }).join('') + syncingBadge + gapBadge + noPoBadge;
+      }).join('') + syncingBadge + gapBadge + noPoBadge + rmUntrackedBadge;
     }
   } catch (e) {
     // Logged, and shown as a visible badge rather than silently leaving the
