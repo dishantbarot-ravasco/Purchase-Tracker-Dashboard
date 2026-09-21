@@ -512,3 +512,74 @@ class TestSendMonthlyConsumptionReports:
             assert "NOT a stock-level warning" in m.alternatives[0][0]
             assert "NOT a stock-level warning" in m.body
             assert "every vendor lot" in m.body
+
+
+@pytest.mark.django_db
+class TestEmptyReportDistinguishesQuietFromMissing:
+    """A report with no rows must say WHICH kind of nothing it found.
+
+    Until 2026-09-21 the empty body always read "No material was issued
+    today", so a plant whose sync had silently died for a week got a calm
+    all-clear every morning - indistinguishable from a genuinely quiet day,
+    and on exactly the day someone needed to notice."""
+
+    def test_a_day_that_was_observed_but_had_no_issues_says_so_plainly(self):
+        # Two snapshots one day apart with the issue book static: the day
+        # WAS watched, and nothing moved. That is a real zero.
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Silica", [(y, 0), (t, 0)])
+        rebuild_plant_consumption("hrs")
+
+        report = build_plant_report("hrs", today=TODAY)
+        assert report["rows"] == []
+        assert report["emptyMessage"] == "No material was issued today."
+
+    def test_a_day_with_no_snapshot_says_it_is_a_data_gap(self):
+        # History stops three days ago; nothing was captured for today.
+        old_a, old_b = _days(4, 3)
+        hrs_lot_issuing("Silica", [(old_a, 0), (old_b, 50)])
+        rebuild_plant_consumption("hrs")
+
+        report = build_plant_report("hrs", today=TODAY)
+        assert report["rows"] == []
+        msg = report["emptyMessage"]
+        assert "NO STOCK SNAPSHOT WAS CAPTURED" in msg
+        assert "NOT an absence of consumption" in msg
+        assert old_b.isoformat() in msg, "must point at the last day that does have data"
+        assert "No material was issued today." != msg
+
+    def test_the_gap_message_reaches_both_email_bodies(self, mailoutbox):
+        make_user(email="admin-gap@ravasco.com", role="admin")
+        old_a, old_b = _days(4, 3)
+        hrs_lot_issuing("Silica", [(old_a, 0), (old_b, 50)])
+        rebuild_plant_consumption("hrs")
+
+        send_daily_consumption_reports()
+
+        [hrs_mail] = [m for m in mailoutbox if "HRS" in m.subject]
+        # An email client that can't render HTML must not lose the warning.
+        assert "NO STOCK SNAPSHOT WAS CAPTURED" in hrs_mail.body
+        assert "NO STOCK SNAPSHOT WAS CAPTURED" in hrs_mail.alternatives[0][0]
+
+    def test_a_period_before_the_plants_history_is_named_as_such(self):
+        hrs_lot_issuing("Carbon Black", [(AUG[0], 0), (AUG[3], 20)], rate=Decimal("50"))
+        rebuild_plant_consumption("hrs")
+
+        report = build_plant_monthly_report("hrs", year=2026, month=7, today=MONTH_TODAY)
+        msg = report["emptyMessage"]
+        assert "history only begins" in msg
+        # Not "no history at all" - August's data plainly exists.
+        assert "no consumption history for this plant at all" not in msg
+
+    def test_a_plant_with_no_history_whatsoever_says_that(self):
+        report = build_plant_report("vapi", today=TODAY)
+        assert "no consumption history for this plant at all" in report["emptyMessage"]
+
+    def test_a_report_with_rows_carries_no_empty_message(self):
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Silica", [(y, 0), (t, 50)])
+        rebuild_plant_consumption("hrs")
+
+        report = build_plant_report("hrs", today=TODAY)
+        assert report["rows"]
+        assert report["emptyMessage"] == ""

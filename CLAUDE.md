@@ -1061,6 +1061,42 @@ No separate MIR↔Stock table was needed for imports: `*MirStockMatch` is keyed 
 independent of whether that MIR row traces back to a domestic or an import PO, so it already covers
 the Stock leg for both.
 
+### Performance: the Raw Material Analysis render was quadratic too
+
+Reported 2026-09-21 as the Raw Material tab "gone slower". **The endpoint was never the problem** -
+measured per plant, `/materials` answers in 33-51 ms over 7 queries, and `/sync-status` (which the
+freshness watcher polls every 60 s) in ~20-30 ms including the three registry summaries. The cost was
+entirely client-side, in `materials.js`.
+
+`computeMaterialPoLinkage()` calls `materialLinksToItem()` once per **(material x PO line item)** pair.
+On "All Plants" against live data that is **703 stock lots x 1,112 active line items = 781,736 calls
+per render**, and every single call redid work that depends only on one string: two
+`normalizeMaterial()` regex passes, two tokenize-and-build-a-Set passes, a third `Set` for the union,
+and two `normalizeVendor()` passes (a seven-alternative regex). Behind those 781,736 calls there are
+only about **1,800 distinct strings**.
+
+Memoizing the per-string work in two `Map`s, and computing the union arithmetically
+(`|A| + |B| - |A n B|`) instead of allocating a third Set, takes it from **~2,100 ms to ~90 ms - 25x**,
+with **byte-identical results** (asserted decision by decision across all 781,736 pairs, not merely
+compared on the total). Verified in a real browser at that exact scale, since there is no Node here;
+harness deleted after, same convention as the freshness-watcher and header-filter work above.
+
+**The caches are cleared at the top of every `computeMaterialPoLinkage()` pass, deliberately.** The
+entire win is *within* one render; an "Edit Everywhere" save can change a description or a vendor name
+between renders, and a cache that outlived the pass would serve the previous string's tokens and
+silently link the wrong material. Clearing costs nothing measurable.
+
+**This was pre-existing, not introduced by the 2026-09-21 matching work** - but that release is what
+made it noticeable, for two compounding reasons worth knowing before blaming a matcher change:
+MIR<->Stock match rows went 342 -> 1,053 (x3.1), so each lot now carries more `mirStockMatches` to
+serialize and render; and the sync pipeline gained a fifth per-plant step
+(`compute_<plant>_consumption`, writing `SyncRun.Source.CONSUMPTION`), so the freshness watcher sees
+the data stamp advance more times per sync cycle - and every one of those advances triggers a full
+re-render.
+
+**If you add anything to the Raw Material render path, check it is not per-pair.** The linkage loop is
+the one place in this app where an innocuous-looking `normalize...()` call is multiplied by ~800,000.
+
 ### Performance: the engine was quadratic
 
 Two full-table SELECTs used to sit inside per-row loops — `_candidate_mir_entries()` loaded the
@@ -1735,10 +1771,18 @@ in place deliberately, with its docstring's superseded premise intact, because t
 records is the reasoning this section exists to overturn. Delete it only together with
 `test_stock_consumption.py`.
 
-**One live consequence worth knowing:** the daily report currently returns **0 rows**, because the
-newest snapshot is 2026-09-19 and there is nothing dated today to report. That is the honest
-outcome of a stalled snapshot pipeline - the old code filled the same gap with a month-to-date
-figure. It resolves itself the moment a qcluster runs.
+**An empty report says WHICH kind of nothing it found (2026-09-21).** Until this was fixed the
+empty body always read "No material was issued today", so a plant whose sync had silently died
+got a calm all-clear every morning, indistinguishable from a genuinely quiet day — the same
+conflation this whole ledger exists to stop, reproduced in the covering sentence. `_empty_message()`
+asks `ConsumptionCoverage`: a day inside a snapshot interval was observed, so zero rows there
+really is "no material was issued"; a day with no coverage was never looked at, and the email says
+so in block capitals, names the last date that does have data, and points at the Drive sync. A
+period entirely before the plant's history says that instead of claiming no history exists.
+
+The `(est.)` footnote was reworded in the same pass — it still described Achhad's removed
+period-to-date fallback. It now describes what the flag actually means everywhere: a figure
+averaged across a gap between snapshots.
 
 
 ### Data export
