@@ -56,6 +56,7 @@ from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from apps.core.models import (
+    ConsumptionCoverage,
     HRSRMLot,
     MaterialConsumptionDaily,
     ReportSendLog,
@@ -64,7 +65,7 @@ from apps.core.models import (
     SyncRun,
 )
 from apps.services.consumption_engine import SPREAD
-from apps.services.consumption_periods import DEFAULT_WINDOW_DAYS, consumption_rates
+from apps.services.consumption_periods import DEFAULT_WINDOW_DAYS, consumption_rates, coverage_in_window
 from apps.services.parsers.common import normalize_material
 from apps.services.security_alerts import _admin_emails
 
@@ -218,6 +219,47 @@ def _ledger_rows(cfg: dict, start: datetime.date, end: datetime.date, qty_key: s
     return rows
 
 
+def _empty_message(cfg: dict, start: datetime.date, end: datetime.date, period_phrase: str) -> str:
+    """What an empty report should actually say.
+
+    **"No material was issued" and "we have no data" are different claims,
+    and a report that conflates them is worse than useless on the one day
+    it matters.** Before 2026-09-21 the empty body always read "No material
+    was issued today." - so a plant whose sync had silently died for a week
+    got a calm all-clear every morning, indistinguishable from a genuinely
+    quiet day. That is the exact failure this whole ledger exists to stop,
+    reproduced in the covering sentence.
+
+    ConsumptionCoverage already knows which it is: a day inside a snapshot
+    interval was observed, so zero rows there really does mean nothing was
+    issued. A day with no coverage was never looked at, and the honest
+    answer is "unknown", pointing at the last date we do have.
+    """
+    covered, _observed = coverage_in_window(cfg["plant"], start, end)
+    if covered:
+        return f"No material was issued {period_phrase}."
+
+    # Point at the nearest real data in whichever direction it exists. A
+    # report for a month BEFORE this plant's history starts is a different
+    # situation from a sync that died yesterday, and saying "no history
+    # yet" when September is full of it would be its own small lie.
+    dates = ConsumptionCoverage.objects.filter(plant=cfg["plant"]).values_list("coverage_date", flat=True)
+    before = dates.filter(coverage_date__lt=start).order_by("-coverage_date").first()
+    after = dates.filter(coverage_date__gt=end).order_by("coverage_date").first()
+    if before:
+        tail = f" The most recent day with data is {before.isoformat()}."
+    elif after:
+        tail = f" This plant's history only begins on {after.isoformat()}, after the period asked for."
+    else:
+        tail = " There is no consumption history for this plant at all yet."
+    return (
+        f"NO STOCK SNAPSHOT WAS CAPTURED {period_phrase}, so there is nothing to report - "
+        f"this is a gap in the data, NOT an absence of consumption.{tail} "
+        "Material may well have been issued; it was simply never recorded. "
+        "If this repeats, the Drive sync for this plant needs checking."
+    )
+
+
 def build_plant_report(plant_key: str, today: datetime.date | None = None) -> dict:
     """Returns {'label', 'date', 'rows': [...]}, rows sorted by issuedToday
     descending (biggest movers first) - _render_report_email() re-groups
@@ -237,10 +279,14 @@ def build_plant_report(plant_key: str, today: datetime.date | None = None) -> di
     """
     cfg = _PLANTS[plant_key]
     today = today or timezone.localdate()
+    rows = _ledger_rows(cfg, today, today, "issuedToday")
     return {
         "label": cfg["label"],
         "date": today.isoformat(),
-        "rows": _ledger_rows(cfg, today, today, "issuedToday"),
+        "rows": rows,
+        # Computed here, not in the renderer: only the builder knows which
+        # plant and which dates were asked for. See _empty_message().
+        "emptyMessage": _empty_message(cfg, today, today, "today") if not rows else "",
     }
 
 
@@ -280,12 +326,17 @@ def build_plant_monthly_report(
         year, month = last_month_end.year, last_month_end.month
 
     month_start, month_end = _month_bounds(year, month)
+    rows = _ledger_rows(cfg, month_start, month_end, "issuedThisMonth")
+    month_label = f"{_MONTH_NAMES[month - 1]} {year}"
 
     return {
         "label": cfg["label"],
         "month": f"{year:04d}-{month:02d}",
-        "monthLabel": f"{_MONTH_NAMES[month - 1]} {year}",
-        "rows": _ledger_rows(cfg, month_start, month_end, "issuedThisMonth"),
+        "monthLabel": month_label,
+        "rows": rows,
+        "emptyMessage": (
+            _empty_message(cfg, month_start, month_end, f"for {month_label}") if not rows else ""
+        ),
     }
 
 
@@ -455,13 +506,18 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
 def _render_report_email(report: dict) -> tuple:
     """Builds (html_body, text_body) for one plant's DAILY report."""
     title = f"Raw Material Consumption Report - {report['label']} - {report['date']}"
+    # Superseded 2026-09-21: this used to describe Achhad's period-to-date
+    # fallback, which no longer exists. (est.) now means one thing at all
+    # three plants - see _ledger_rows().
     estimate_note = (
-        "(est.) marks a material with no dated entry yet in today's Recp./Issue matrix - "
-        "the figure shown is this plant's period-to-date running total instead, which can include "
-        "earlier days in the same period, not only today. Treat it as a rough indicator, not a "
-        "confirmed same-day amount."
+        "(est.) marks a figure averaged across a gap between stock snapshots rather than observed "
+        "on this day alone. The total across the gap is right; how it splits between those days is "
+        "an even share, not a measurement. Treat it as an indicator, not a confirmed same-day amount."
     )
-    return _render_consumption_email(title, "Issued Today", report["rows"], "issuedToday", "No material was issued today.", estimate_note)
+    return _render_consumption_email(
+        title, "Issued Today", report["rows"], "issuedToday",
+        report.get("emptyMessage") or "No material was issued today.", estimate_note,
+    )
 
 
 def _render_monthly_report_email(report: dict) -> tuple:
@@ -469,14 +525,15 @@ def _render_monthly_report_email(report: dict) -> tuple:
     (added 2026-09-08). Same category-wise shape as the daily report, just
     summed over a whole month - see build_plant_monthly_report()."""
     title = f"Raw Material Consumption Report (Monthly) - {report['label']} - {report['monthLabel']}"
+    # See the daily report's own note - same change, same reason.
     estimate_note = (
-        "(est.) marks a material with no dated entries at all in this month's Recp./Issue matrix "
-        "so far - the figure shown is this plant's still-open period-to-date running total instead, "
-        "which may change further before the month closes. Treat it as a rough indicator, not a "
-        "final monthly amount."
+        "(est.) marks a material whose month includes at least one figure averaged across a gap "
+        "between stock snapshots rather than observed day by day. The month's total is right; the "
+        "per-day split across those gaps is an even share, not a measurement."
     )
     return _render_consumption_email(
-        title, "Issued This Month", report["rows"], "issuedThisMonth", "No material was issued this month.", estimate_note,
+        title, "Issued This Month", report["rows"], "issuedThisMonth",
+        report.get("emptyMessage") or "No material was issued this month.", estimate_note,
     )
 
 
