@@ -430,6 +430,13 @@ class HRSPOMirMatch(models.Model):
     # column exists because the rule can produce one, not because the
     # current file does.
     vendor_matched = models.BooleanField(default=True)
+    # Set by a human, not the matcher (2026-09-21) - this row exists because
+    # someone used "Change MIR match" on the PO modal to name the MIR number
+    # themselves, and the matcher then picked the best row within that
+    # document. See ManualMirMatch. Recomputed on every run_full_match()
+    # rather than preserved like dismissed_* - it is derived from whether a
+    # pin currently exists, so removing the pin must clear the badge.
+    manually_pinned = models.BooleanField(default=False)
     # Financial check now only raises a hard error for Qty/Rate - these two
     # ARE what `is_flagged` means now. Kept as their own columns (not just
     # derived from qty_diff_pct/rate_diff_pct at read time) so a reviewer-
@@ -943,6 +950,13 @@ class RTPAchhadPOMirMatch(models.Model):
     # plant still on the vendor-mandatory rule, reads correctly without a
     # backfill.
     vendor_matched = models.BooleanField(default=True)
+    # Set by a human, not the matcher (2026-09-21) - this row exists because
+    # someone used "Change MIR match" on the PO modal to name the MIR number
+    # themselves, and the matcher then picked the best row within that
+    # document. See ManualMirMatch. Recomputed on every run_full_match()
+    # rather than preserved like dismissed_* - it is derived from whether a
+    # pin currently exists, so removing the pin must clear the badge.
+    manually_pinned = models.BooleanField(default=False)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -1444,6 +1458,13 @@ class RTPVapiPOMirMatch(models.Model):
     # defaults True so every pre-existing row, and every plant still on the
     # vendor-mandatory rule, reads correctly without a backfill.
     vendor_matched = models.BooleanField(default=True)
+    # Set by a human, not the matcher (2026-09-21) - this row exists because
+    # someone used "Change MIR match" on the PO modal to name the MIR number
+    # themselves, and the matcher then picked the best row within that
+    # document. See ManualMirMatch. Recomputed on every run_full_match()
+    # rather than preserved like dismissed_* - it is derived from whether a
+    # pin currently exists, so removing the pin must clear the badge.
+    manually_pinned = models.BooleanField(default=False)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -2370,6 +2391,85 @@ class FlagDismissal(models.Model):
 
     def __str__(self):
         return f"{self.plant}/{self.po_number}/{self.flag_key} dismissed={self.dismissed}"
+
+
+class ManualMirMatch(models.Model):
+    """A human's decision about which MIR entry a Domestic PO line item was
+    actually received against, overriding whatever the matcher would pick
+    (2026-09-21, project owner: "it would be great if we can edit the MIR
+    number too").
+
+    **It names a MIR NUMBER, not a MIR row, and that is deliberate.** One MIR
+    document routinely covers several material lines, so `mir_no` is not
+    unique in a plant's MIR table - `source_row_ref` is, but that is the
+    openpyxl ROW INDEX and shifts the moment a row is inserted above it (the
+    same instability that made `stock_identity.lot_natural_key()` necessary
+    for stock lots). Pinning a row number would therefore silently re-point
+    itself at a different material on the next sync. Naming the number
+    instead says exactly what a person actually knows - "this line came in
+    under MIR 96/05" - and leaves the existing qty/rate/material scoring to
+    choose among that document's own rows, which is a judgement the matcher
+    is better at than a human reading a dropdown.
+
+    An empty `mir_no` is a real, distinct instruction: "no MIR entry matches
+    this line, leave it unmatched." Without it there would be no way to
+    correct a confidently-wrong match except by pointing it at some other
+    wrong row.
+
+    `item_ref` addresses the line item. Domestic line items have no stable
+    natural key at all (see *POLineItem's own docstring - `item_id` is
+    neither required nor unique, and a real PO reuses one code across
+    chemically unrelated materials), and a plant's sync DELETES AND RECREATES
+    every line item on any change, so a primary key is no good either. It is
+    the line's zero-based position within its PO's items ordered by pk -
+    which is the master CSV's own row order, stable for as long as that PO's
+    lines do not change. `item_description` is stored alongside purely as a
+    tripwire: when the description at that position no longer matches, the
+    PO's lines HAVE changed, the pin is stale, and it is ignored and
+    reported rather than silently applied to whatever material now occupies
+    that slot. That is the `source_row_ref` trap again, caught by design
+    instead of by incident.
+
+    Shared table with a `plant` column, like FlagDismissal and
+    MaterialConsumptionDaily rather than the per-plant MIR/Stock models -
+    nothing in it comes from a plant's spreadsheet, so the reason those are
+    split (genuinely different column layouts) does not apply.
+    """
+
+    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    po_number = models.CharField(max_length=100)
+    item_ref = models.CharField(
+        max_length=50,
+        help_text="Zero-based position of the line item within its PO, as a string. See docstring.",
+    )
+    item_description = models.CharField(
+        max_length=500, blank=True,
+        help_text="The line's description when the pin was made - a staleness tripwire, not a key.",
+    )
+
+    mir_no = models.CharField(
+        max_length=20, blank=True,
+        help_text="MIR document number to match this line against. Blank means 'leave this line unmatched'.",
+    )
+    reason = models.TextField(blank=True)
+
+    created_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="manual_mir_matches")
+    created_by_email = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plant", "po_number", "item_ref"], name="uniq_manual_mir_match")
+        ]
+        indexes = [
+            models.Index(fields=["plant", "po_number"]),
+            models.Index(fields=["plant", "mir_no"]),
+        ]
+
+    def __str__(self):
+        target = self.mir_no or "(unmatched)"
+        return f"{self.plant}/{self.po_number}#{self.item_ref} -> {target}"
 
 
 class MaterialCategoryReference(models.Model):

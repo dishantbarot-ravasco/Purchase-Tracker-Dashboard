@@ -20,6 +20,8 @@ from apps.core.models import (
     RTPAchhadDomesticPOLineItem,
     RTPAchhadPOMirMatch,
     RTPAchhadRMLot,
+    ManualMirMatch,
+    SyncRun,
 )
 from apps.services import matching_core
 from apps.services.matching_core import _MatchConfig
@@ -60,6 +62,11 @@ MATCH_CONFIG = _MatchConfig(
     # not the previous `taxable_value or net` comparator.
     mir_value=lambda mir: mir.net,
     plant_key="achhad",
+    # Manual MIR pins (2026-09-21) - the model and this plant's SyncRun
+    # value, injected rather than imported inside matching_core so that
+    # module keeps its "no model imports" shape. See ManualMirMatch.
+    manual_match_model=ManualMirMatch,
+    syncrun_plant=SyncRun.Plant.RTP_ACHHAD,
     stock_rate_field="rate",
     stock_vendor_field=None,
     # Imports identification/financial-check redesign (2026-09, project

@@ -25,16 +25,36 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Optional
 
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
-from django.http import StreamingHttpResponse
+from django.http import HttpResponse, StreamingHttpResponse
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
 from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
-from apps.core.models import DataQualityFlag, DomesticPOCorrection, FlagDismissal, MaterialCategoryReference, MaterialCorrection
+from django.db.models import Q
+
+from apps.core.models import (
+    DataQualityFlag,
+    DomesticPOCorrection,
+    FlagDismissal,
+    ManualMirMatch,
+    MaterialCategoryReference,
+    MaterialCorrection,
+)
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
+# line_item_positions() is the matcher's OWN numbering - imported rather
+# than re-derived so the API and matching_core can never disagree about
+# which line a manual MIR pin addresses.
+from apps.services.matching_core import line_item_positions
+from apps.services.mir_without_po import (
+    BUCKET_LABELS,
+    BUCKET_ORDER,
+    mir_without_po_rows,
+    mir_without_po_summary,
+)
 from apps.services.no_po_vendors import no_po_vendor_summary, purchases_without_po_summary
 from apps.services.rm_untracked import rm_untracked_summary
 from apps.services.parsers.common import normalize_material
@@ -75,6 +95,16 @@ class _PlantConfig:
     stock_snapshot_model: type
 
     run_full_match: Callable[[], object]
+
+    # This plant's matching_*.py MATCH_CONFIG. Injected for the same reason
+    # run_full_match is: the three matchers are separately tuned and their
+    # configs are not interchangeable. Read by make_mir_without_po() below,
+    # which deliberately classifies MIR rows with the MATCHER's own idea of
+    # "we hold this PO number" (matching_core.known_po_numbers /
+    # _names_known_po) rather than a second, string-equality one - see
+    # services/mir_without_po.py's docstring for the ~120 HRS rows that
+    # choice moves between buckets.
+    match_config: object
 
     material_editable_fields: frozenset
     material_decimal_fields: frozenset
@@ -252,9 +282,16 @@ def _data_quality_flag_dict(flag):
     }
 
 
-def _line_item_dict(item):
+def _line_item_dict(item, item_ref=""):
     match = getattr(item, "mir_match", None)
     return {
+        # The line's address for a manual MIR pin (matching_core's
+        # line_item_positions()). Domestic line items have no stable id of
+        # their own - see ManualMirMatch's docstring - so this is a
+        # position, and it is the ONLY thing the frontend may use to
+        # address a line: item_id is neither unique nor always present.
+        "itemRef": item_ref,
+        "manuallyPinned": bool(match and getattr(match, "manually_pinned", False)),
         "description": item.description,
         "qty": float(item.qty) if item.qty is not None else None,
         "uom": item.uom,
@@ -407,7 +444,9 @@ def _po_dict(cfg: _PlantConfig, po, corrections_by_po=None, flag_dismissals_by_p
         "remarks": po.remarks,
         "isOldFormat": po.is_old_format_template,
         "materialCategories": _po_material_categories(items, category_reference),
-        "items": [_line_item_dict(i) for i in items],
+        # Numbered per PO in pk order - the master CSV's own row order, and
+        # the same numbering the matcher uses to resolve a pin.
+        "items": [_line_item_dict(i, str(n)) for n, i in enumerate(sorted(items, key=lambda x: x.id))],
         "corrections": [_correction_dict(c) for c in corrections],
         "flagDismissals": [_flag_dismissal_dict(fd) for fd in flag_dismissals],
         "dataQualityFlags": [_data_quality_flag_dict(f) for f in data_quality_flags],
@@ -986,6 +1025,127 @@ def make_export_stock_snapshots(cfg: _PlantConfig):
     return export_stock_snapshots
 
 
+def make_mir_without_po(cfg: _PlantConfig):
+    """The drill-down behind the "purchased without a PO" badge (2026-09-21,
+    project owner: "we have orders without a PO in MIR, which might be true
+    or waiting for a PO to be matched with them - can we show info about
+    them?").
+
+    sync_status already carried the COUNT, and main.js already showed it as
+    a badge with a per-vendor tooltip. What it could not answer was which
+    receipts those are, or - the actual question - whether a given one is
+    finished business or pending: a receipt with no order behind it is a
+    purchasing gap, an upstream PO-master gap, or a matcher gap, and those
+    need three different people. This endpoint returns the rows, bucketed.
+    See services/mir_without_po.py for what decides the bucket and why it
+    reuses the matcher's own PO-number logic rather than a string compare.
+
+    `?bucket=` narrows to one bucket (unknown value -> 400 rather than a
+    silently empty list, which would read as "nothing to fix"). `?format=csv`
+    returns the same rows as a download, so the purchase team can work
+    through them in a spreadsheet and hand corrections back - the one thing
+    a modal cannot do.
+
+    Read-gated like every other GET here (IsAuthenticated + plant scope),
+    NOT IsEditor. Unlike the stock-snapshot export this is not bulk history
+    - it is a few hundred rows of the same MIR data the dashboard already
+    shows a viewer, reorganized.
+    """
+
+    @api_view(["GET"])
+    def mir_without_po(request):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's MIR entries."}, status=403)
+
+        bucket = request.query_params.get("bucket") or ""
+        if bucket and bucket not in BUCKET_ORDER:
+            return Response(
+                {"error": f"Unknown bucket '{bucket}'. Expected one of: {', '.join(BUCKET_ORDER)}."},
+                status=400,
+            )
+
+        unfiltered_rows = mir_without_po_rows(cfg.mir_model, cfg.match_config)
+        rows = [r for r in unfiltered_rows if r["bucket"] == bucket] if bucket else unfiltered_rows
+
+        # `?download=csv`, NOT `?format=csv`: `format` is reserved by DRF's
+        # own content negotiation, which resolves it against the registered
+        # renderers and 404s on an unknown one - so this branch was never
+        # reached and the export answered "Not found". Caught by
+        # test_mir_without_po_endpoint.py, which is why it is named here.
+        if request.query_params.get("download") == "csv":
+            echo = _Echo()
+            writer = SafeCsvWriter(echo)
+            # Built eagerly, not streamed, unlike export_stock_snapshots():
+            # that endpoint's row count has no ceiling (one row per lot per
+            # day, forever), this one is bounded by the active MIR table and
+            # is a few hundred rows per plant. Streaming would only cost the
+            # Content-Length header for no benefit.
+            lines = [writer.writerow([
+                "Plant", "Why it is unreconciled", "MIR No", "MIR Date", "PO Number in MIR", "Vendor",
+                "Material", "Qty", "UOM", "Value", "Invoice No", "Invoice Date", "Category",
+                "Matched anyway", "Vendor on the no-PO list", "MIR Sheet Row",
+            ])]
+            for r in rows:
+                lines.append(writer.writerow([
+                    cfg.key.upper(), BUCKET_LABELS[r["bucket"]], r["mirNo"], r["mirDate"] or "",
+                    r["poNumberRaw"], r["vendor"], r["description"], r["qty"], r["uom"], r["value"],
+                    r["invoiceNo"], r["invoiceDate"] or "", r["category"],
+                    "yes" if r["matched"] else "no",
+                    "yes" if r["registeredNoPoVendor"] else "no",
+                    r["sourceRowRef"],
+                ]))
+            filename = f"{cfg.key}_mir_without_po{('_' + bucket) if bucket else ''}.csv"
+            response = HttpResponse("".join(lines), content_type="text/csv")
+            response["Content-Disposition"] = f'attachment; filename="{filename}"'
+            return response
+
+        return Response({
+            # `rows` passed through so the summary reuses this request's
+            # single pass over the MIR table instead of walking it again.
+            # When ?bucket= narrowed the list, the summary is still built
+            # from the FULL set (unfiltered_rows) - the panel's bucket tabs
+            # show every bucket's count no matter which one is open.
+            "summary": mir_without_po_summary(cfg.mir_model, cfg.match_config, unfiltered_rows),
+            "rows": rows,
+        })
+
+    return mir_without_po
+
+
+def _cached_mir_without_po_summary(cfg: _PlantConfig) -> dict:
+    """`mir_without_po_summary()` behind a 60-second per-plant cache, for
+    `sync_status` only.
+
+    Measured before adding the cache: 135ms (HRS), 53ms (Achhad), 163ms
+    (Vapi), against a `/sync-status` that answered in ~20-30ms. That endpoint
+    is polled every 60 seconds per selected plant by main.js's freshness
+    watcher (see CLAUDE.md), so paying it on every poll would make the app's
+    most frequently hit endpoint several times slower for a number that only
+    changes when a sync/match run finishes. The cost is `_names_known_po()`
+    scanning every known PO number per candidate row - the same shape that
+    makes `_po_number_contradicts()` a hot path in the matcher, and not
+    something to work around by re-deriving a faster, second idea of what a
+    known PO number is.
+
+    60 seconds because that is the poll interval: the badge can be at most
+    one tick stale, which is well inside the time between syncs. The CACHED
+    VALUE IS PLANT-DERIVED DATA, NOT A RESPONSE - the permission check still
+    runs per request in the view above, so this is not the `cache_page`
+    trap CLAUDE.md warns about (that one short-circuits the view entirely and
+    serves one caller's response to another).
+
+    /mir-without-po itself is deliberately NOT cached: it is opened
+    deliberately, not polled, and a reader who just corrected something
+    should see the result.
+    """
+    key = f"mir_without_po_summary:{cfg.key}"
+    cached = cache.get(key)
+    if cached is None:
+        cached = mir_without_po_summary(cfg.mir_model, cfg.match_config)
+        cache.set(key, cached, 60)
+    return cached
+
+
 def make_sync_status(cfg: _PlantConfig):
     @api_view(["GET"])
     def sync_status(request):
@@ -1043,6 +1203,17 @@ def make_sync_status(cfg: _PlantConfig):
             # services/no_po_vendors.py's purchases_without_po_summary() for
             # why a vendor-level list cannot answer it.
             "purchasesWithoutPo": purchases_without_po_summary(cfg.mir_model),
+            # The same question asked three ways, 2026-09-21 (project owner:
+            # "orders without a PO in MIR, which might be true or waiting for
+            # a PO to be matched with them"). purchasesWithoutPo above is one
+            # of these three buckets - the receipts that name no order at
+            # all - and this adds the two that are genuinely PENDING rather
+            # than finished: MIR names an order we don't hold (upstream PO
+            # master gap), and MIR names one we do hold that the matcher has
+            # not linked (ours). Counts only here; the rows themselves come
+            # from /mir-without-po, which the badge links to. See
+            # services/mir_without_po.py.
+            "mirWithoutPo": _cached_mir_without_po_summary(cfg),
             # What MIR<->Stock deliberately skips, 2026-09-21. The MIR<->Stock
             # counterpart of noPoVendors/purchasesWithoutPo above, and a
             # genuinely separate question: not "this had no purchase order"
@@ -1155,3 +1326,191 @@ def make_dismiss_flag(cfg: _PlantConfig):
         return Response(_flag_dismissal_dict(fd))
 
     return dismiss_flag
+
+
+# ── Manual MIR match ────────────────────────────────────────────────────
+# "The edit option - it would be great if we can edit the MIR number too, and
+# if that was assigned to some other PO then a pop up would appear telling
+# that matching with this would break so and so" (project owner, 2026-09-21).
+#
+# Two endpoints: one to LOOK UP candidate MIR numbers (with the collision
+# information the popup needs), one to SET the pin. Deliberately split -
+# the reader has to be told what a change will cost BEFORE committing to it,
+# and the backend is the only side that can see which other line items
+# currently hold rows of that document.
+#
+# Scoped to Domestic POs. Import POs match against the same MIR table but
+# through their own cross-plant router, and nothing has asked for it there.
+
+
+def _mir_row_dict(row):
+    return {
+        "mirNo": row.mir_no,
+        "mirDate": row.mir_date.isoformat() if row.mir_date else None,
+        "party": row.party_name,
+        "material": row.material_description,
+        "qty": float(row.qty) if row.qty is not None else None,
+        "uom": row.uom,
+        "rate": float(row.rate) if row.rate is not None else None,
+        "invoiceNo": row.invoice_no,
+        "poNumberRaw": row.po_number_raw,
+    }
+
+
+def _claims_for_mir_numbers(cfg, mir_numbers):
+    """{mir_no: [{poNumber, itemRef, description}, ...]} - which Domestic PO
+    line items currently hold a row of each of these MIR documents.
+
+    This is what the popup warns about, and it is read from the MATCH table
+    rather than from the pins: a row can be held by an ordinary automatic
+    match just as easily as by someone else's pin, and losing either one is
+    equally worth knowing about before you take it."""
+    if not mir_numbers:
+        return {}
+    matches = (
+        cfg.po_mir_match_model.objects
+        .filter(mir_entry__mir_no__in=mir_numbers, po_line_item__purchase_order__is_active=True)
+        .select_related("mir_entry", "po_line_item", "po_line_item__purchase_order")
+    )
+    # Positions are per PO, so they have to be derived from that PO's full
+    # item list - the same numbering the matcher and the pin both use.
+    ref_by_item_id = _item_refs_for_pos(cfg, {m.po_line_item.purchase_order_id for m in matches})
+    out: dict = {}
+    for m in matches:
+        out.setdefault(m.mir_entry.mir_no, []).append({
+            "poNumber": m.po_line_item.purchase_order.po_number,
+            "itemRef": ref_by_item_id.get(m.po_line_item_id, ""),
+            "description": m.po_line_item.description,
+            "manuallyPinned": bool(getattr(m, "manually_pinned", False)),
+        })
+    return out
+
+
+def _item_refs_for_pos(cfg, po_ids):
+    """{line item id: item_ref} for every line item of these POs, using
+    matching_core's own numbering so the API and the matcher can never
+    disagree about which line a pin addresses."""
+    if not po_ids:
+        return {}
+    items = list(
+        cfg.item_model.objects.filter(purchase_order_id__in=po_ids).select_related("purchase_order")
+    )
+    return {item_id: ref for item_id, (_po, ref, _desc) in line_item_positions(items).items()}
+
+
+def make_mir_candidates(cfg: _PlantConfig):
+    """GET .../purchase-orders/<po>/mir-candidates?q=<text>&itemRef=<n>
+
+    MIR documents this line could be pinned to, newest first, each with who
+    currently holds it. `q` filters on MIR number, party or material; with
+    no `q` it returns the rows this plant's MIR already associates with this
+    PO number plus the most recent ones, which is what a reader opening the
+    picker most often wants."""
+
+    @api_view(["GET"])
+    def mir_candidates(request, po_number):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant."}, status=403)
+        po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
+        if not po:
+            return Response({"error": "Purchase order not found."}, status=404)
+
+        q = (request.query_params.get("q") or "").strip()
+        rows = cfg.mir_model.objects.filter(is_active=True)
+        if q:
+            rows = rows.filter(
+                Q(mir_no__icontains=q) | Q(party_name__icontains=q) | Q(material_description__icontains=q)
+            )
+        else:
+            # No search text: the rows that already mention this PO number,
+            # then recent ones. A blank picker listing the whole register in
+            # arbitrary order would be useless on a 1,489-row MIR file.
+            rows = rows.filter(Q(po_number_raw__icontains=po_number) | Q(mir_date__isnull=False))
+        rows = list(rows.order_by("-mir_date", "-id")[:80])
+
+        claims = _claims_for_mir_numbers(cfg, {r.mir_no for r in rows if r.mir_no})
+        # One entry per MIR NUMBER, not per row - a pin names the document
+        # and the matcher picks the row, so offering rows would promise a
+        # precision the feature deliberately does not have.
+        seen: dict = {}
+        for row in rows:
+            if not row.mir_no:
+                continue
+            entry = seen.get(row.mir_no)
+            if entry is None:
+                entry = dict(_mir_row_dict(row))
+                entry["rowCount"] = 0
+                entry["claimedBy"] = claims.get(row.mir_no, [])
+                seen[row.mir_no] = entry
+            entry["rowCount"] += 1
+        return Response({"candidates": list(seen.values())})
+
+    return mir_candidates
+
+
+def make_set_mir_match(cfg: _PlantConfig):
+    """PATCH .../purchase-orders/<po>/mir-match
+
+    Body: {itemRef, mirNo, reason, clear}
+      - `mirNo` non-empty  -> pin this line to that MIR document
+      - `mirNo` empty      -> pin it as deliberately UNMATCHED
+      - `clear: true`      -> remove the pin, back to automatic matching
+    """
+
+    @api_view(["PATCH"])
+    @permission_classes([IsEditor])
+    def set_mir_match(request, po_number):
+        if not user_can_edit_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+
+        item_ref = str(request.data.get("itemRef") or "").strip()
+        mir_no = (request.data.get("mirNo") or "").strip()
+        reason = (request.data.get("reason") or "").strip()
+        clear = bool(request.data.get("clear"))
+
+        po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
+        if not po:
+            return Response({"error": "Purchase order not found."}, status=404)
+
+        items = list(cfg.item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+        refs = line_item_positions(items)
+        target = next((i for i in items if refs[i.id][1] == item_ref), None)
+        if target is None:
+            return Response({"error": "Line item not found on this purchase order."}, status=404)
+
+        if clear:
+            ManualMirMatch.objects.filter(
+                plant=cfg.syncrun_plant, po_number=po_number, item_ref=item_ref).delete()
+        else:
+            if mir_no and not cfg.mir_model.objects.filter(is_active=True, mir_no=mir_no).exists():
+                return Response({"error": f"No active MIR entry numbered {mir_no!r} at this plant."}, status=400)
+            ManualMirMatch.objects.update_or_create(
+                plant=cfg.syncrun_plant,
+                po_number=po_number,
+                item_ref=item_ref,
+                defaults=dict(
+                    mir_no=mir_no,
+                    # Captured now, compared on every later run - see
+                    # ManualMirMatch's docstring on staleness.
+                    item_description=target.description or "",
+                    reason=reason,
+                    created_by=request.user if getattr(request.user, "pk", None) else None,
+                    created_by_email=getattr(request.user, "email", ""),
+                ),
+            )
+
+        # Synchronous, same as an "Edit Everywhere" save to a matching field
+        # (see _REMATCH_TRIGGER_FIELDS): the reader is looking at the badge
+        # they just changed, and run_full_match() is idempotent and cheap at
+        # these data volumes.
+        result = cfg.run_full_match()
+        return Response({
+            "status": "ok",
+            "itemRef": item_ref,
+            "mirNo": "" if clear else mir_no,
+            "cleared": clear,
+            "manualPinsApplied": result.get("manual_pins_applied"),
+            "stalePins": result.get("manual_pins_stale", []),
+        })
+
+    return set_mir_match

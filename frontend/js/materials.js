@@ -528,7 +528,11 @@ function renderMaterialsView() {
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
     '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + '. Click a row for its full cross-plant analysis.</div>' +
-    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>"Inventory Value in Transit", "Quantity Ordered", and the mismatch/flag columns below are computed by automatically matching each material to purchase order line items by description (and vendor, where known) - the same best-effort approach this app already uses for PO&harr;MIR matching. <strong>Not guaranteed-correct identity resolution - verify manually before relying on it.</strong> "Days Left" is likewise an estimate, derived from recent stock-snapshot history, not a figure reported by the sheet - the confidence dot next to it shows how much history it is based on.</div></div>' +
+    matchingDisclaimerHtml(
+      'Ordered qty, in-transit value and the flag columns are matched automatically. Days Left is an estimate.',
+      '<p><strong>Matched columns.</strong> "Inventory Value in Transit", "Quantity Ordered" and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
+      '<p><strong>Days Left.</strong> Estimated from recent stock-snapshot history, not reported by the sheet. The confidence dot beside it shows how much history it is based on.</p>'
+    ) +
     '<div class="kpi-grid">' + kpiHtml + '</div>' +
     // "Filter by Category" / "Filter by Sub Category" / "Filter by Flags"
     // bar - moved above the chart (project owner, 2026-09-04) so the chart
@@ -602,6 +606,12 @@ function renderMaterialsView() {
     state.matStatusFilter = (KPI_CLEARS.has(key) || state.matStatusFilter === target) ? null : target;
     state.matTablePage = 1;
     renderMaterialsView();
+    // Take the reader to what they just filtered - the list sits below the
+    // chart panel and is normally off-screen from the KPI row, so without
+    // this the click looks like it did nothing. Only on NARROWING: when the
+    // click cleared the filter, the full list is the thing they were already
+    // looking at, and scrolling away from the cards would be the surprise.
+    if (state.matStatusFilter) revealFilteredList('matListRegion');
   });
   const matCatSelect = document.getElementById('matCatSelect');
   if (matCatSelect) matCatSelect.onchange = () => { state.matCategoryFilter = matCatSelect.value || null; state.matSubCategoryFilter = null; state.matTablePage = 1; renderMaterialsView(); };

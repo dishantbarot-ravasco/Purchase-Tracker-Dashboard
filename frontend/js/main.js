@@ -98,6 +98,10 @@
 //                        drill-down chart, and the material<->PO linkage
 //                        helpers everything else here reads.
 //   - js/material-modal.js - openMaterialModal() (material detail modal).
+//   - js/no-po-panel.js - openNoPoPanel() (the drill-down behind this
+//                        file's two no-PO sync badges: which receipts have
+//                        no purchase order behind them, split by whether
+//                        anything is actually pending on them).
 // This file keeps: PURCHASE_TYPES, the shared `state` object and per-plant
 // caches, the filter-reset helpers, and the bootstrap/nav/sync-polling code
 // (init() and everything init() calls directly) - the app's own central
@@ -412,8 +416,11 @@ async function init() {
         '<button type="button" id="refreshDataBtn" class="refresh-btn">Refresh Data</button>' +
       '</div>' +
     '</div>' +
-    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>Matches shown here are computed automatically (exact PO-number match, or a weighted score on vendor/material/qty/rate/value - see the confidence badge on each line item). They are not guaranteed correct, especially anything below "high" confidence or carrying a qty/rate flag. <strong>Manually verify before treating a match as ground truth for reconciliation decisions.</strong></div>' +
-    '</div>' +
+    matchingDisclaimerHtml(
+      'PO↔MIR matches are found automatically. Check one before you act on it.',
+      '<p>A PO line item is linked to a MIR entry either by an exact PO-number match, or by a weighted score across vendor, material, quantity, rate and value. The confidence badge on each line item tells you which.</p>' +
+      '<p><strong>Least likely to be right:</strong> anything below <em>high</em> confidence, and anything carrying a qty or rate flag. Verify those by hand before using them in a reconciliation decision.</p>'
+    ) +
     '<div class="view-tabs" id="viewTabs" role="tablist"></div>' +
     '<div class="plant-tabs" id="plantTabs" role="tablist"></div>' +
     '<div class="sub-tabs" id="purchaseTypeTabs" role="tablist"></div>' +
@@ -765,9 +772,42 @@ async function loadSyncStatus() {
         const title = 'Receipts booked with no purchase order behind them.\n'
           + pwp.unregistered + ' from suppliers not on the no-PO list, '
           + pwp.registered + ' from suppliers already known to be bought without one.\n\n'
+          + 'Click to see the rows.' + '\n\n'
           + lines.join('\n');
-        noPoBadge = ' <span class="badge stale" title="' + escapeHtml(title) + '">'
+        // Clickable since 2026-09-21 - the count alone was never enough to
+        // act on (project owner: "can we show info about them too?"). Opens
+        // no-po-panel.js on this bucket. data-nopo-bucket rather than an
+        // inline onclick: CSP drops 'unsafe-inline' for scripts, so every
+        // handler in this app is wired from JS (see CLAUDE.md's CSP note).
+        noPoBadge = ' <span class="badge stale badge-clickable" role="button" tabindex="0"'
+          + ' data-nopo-bucket="no_po" title="' + escapeHtml(title) + '">'
           + pwp.total + ' purchased without a PO</span>';
+      }
+      // "Waiting on a PO", 2026-09-21 - the other half of the same question.
+      // purchasesWithoutPo above counts receipts that name NO order; these
+      // name one and are still unreconciled, which is a pending item rather
+      // than a closed process gap, and it belongs to somebody else: an order
+      // we don't hold is an upstream PO-master gap, one we do hold is the
+      // matcher's. Two badges rather than one combined number precisely
+      // because "how many did we buy without an order" is a figure somebody
+      // is driving DOWN and must not be inflated by a matching backlog.
+      // See services/mir_without_po.py.
+      const mwp = data.mirWithoutPo;
+      const waitingBuckets = (mwp && mwp.buckets) || {};
+      const unknownPo = (waitingBuckets.po_unknown || {}).rowCount || 0;
+      const unmatchedPo = (waitingBuckets.po_known_unmatched || {}).rowCount || 0;
+      let waitingBadge = '';
+      if (unknownPo + unmatchedPo > 0) {
+        const wTitle = 'Receipts that DO name a purchase order and still are not reconciled.' + '\n'
+          + unknownPo + ' name an order we do not hold - the PO master has not got it yet.' + '\n'
+          + unmatchedPo + ' name one we do hold, not yet linked to a line item.' + '\n\n'
+          + 'Click to see the rows.';
+        // Opens on whichever bucket is larger - the one a reader most likely
+        // came to look at; the panel's own tabs reach the other.
+        waitingBadge = ' <span class="badge stale badge-clickable" role="button" tabindex="0"'
+          + ' data-nopo-bucket="' + (unknownPo >= unmatchedPo ? 'po_unknown' : 'po_known_unmatched') + '"'
+          + ' title="' + escapeHtml(wTitle) + '">'
+          + (unknownPo + unmatchedPo) + ' waiting on a PO</span>';
       }
       // "RM doesn't track these", 2026-09-21 (project owner) - the Raw
       // Material Analysis counterpart of the badge right above, and the same
@@ -812,7 +852,16 @@ async function loadSyncStatus() {
         // something that needs its own dedicated UI.
         const titleAttr = cls === 'failed' && run.errorDetail ? ' title="' + escapeHtml(run.errorDetail) + '"' : '';
         return '<span class="badge ' + cls + '"' + titleAttr + '>' + labels[src] + ': ' + when + '</span>';
-      }).join('') + syncingBadge + gapBadge + noPoBadge + rmUntrackedBadge;
+      }).join('') + syncingBadge + gapBadge + noPoBadge + waitingBadge + rmUntrackedBadge;
+      // Wired here, not delegated from #root: this container's innerHTML is
+      // rebuilt on every sync-status poll, so a listener bound once to the
+      // old nodes would be silently dropped on the next refresh.
+      const noPoPlant = state.plant;
+      el.querySelectorAll('[data-nopo-bucket]').forEach(badge => {
+        const open = () => openNoPoPanel(noPoPlant, badge.dataset.nopoBucket);
+        badge.onclick = open;
+        badge.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+      });
     }
   } catch (e) {
     // Logged, and shown as a visible badge rather than silently leaving the

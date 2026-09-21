@@ -239,6 +239,16 @@ class _MatchConfig:
     # keeps every row in the pool until someone states its scope.
     plant_key: str = ""
 
+    # ── Manual MIR pins, 2026-09-21 ──────────────────────────────────────
+    # apps.core.models.ManualMirMatch and this plant's SyncRun.Plant value,
+    # injected rather than imported so this module keeps its "no model
+    # imports, everything through the config" shape (see the module
+    # docstring). Left None/"" a plant simply has no pins and every pin pass
+    # below is a no-op, which is also what keeps the existing tests - which
+    # build a _MatchConfig by hand - working unchanged.
+    manual_match_model: Optional[type] = None
+    syncrun_plant: str = ""
+
     stock_rate_field: str = ""  # "basic_rate" (HRS/Vapi) or "rate" (Achhad)
     stock_vendor_field: Optional[str] = None  # "party_name"/"supplier_name", or None (Achhad has no vendor column)
 
@@ -2659,6 +2669,121 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool 
 
 
 @transaction.atomic
+
+# ── Manual MIR pins ─────────────────────────────────────────────────────
+# A pin is a human overriding the matcher for one Domestic PO line item:
+# "this line came in under MIR <number>", or "nothing matches this line".
+# See apps.core.models.ManualMirMatch for why it names a MIR NUMBER rather
+# than a MIR row, and why the line item is addressed by position.
+#
+# A pin OUTRANKS identification, which is the whole point of having one -
+# the realistic reason to reach for it is that the automatic rule got the
+# row wrong, and the commonest cause of that is exactly the evidence
+# identification runs on (a party name typed two ways, a material worded
+# differently, a PO number missing). Gating a pin on the same evidence would
+# make it useless in every case it exists for. What a pin does NOT override
+# is arithmetic: qty/rate/value diffs are computed for a pinned pair the
+# same as any other, so a manual match that does not add up still flags.
+
+
+def line_item_ref(position: int) -> str:
+    """The stable-enough address of a line item within its PO: its
+    zero-based position in the PO's own items ordered by pk, which is the
+    master CSV's row order. Shared by the matcher and the API so the two can
+    never disagree about what a pin points at."""
+    return str(position)
+
+
+def line_item_positions(po_items) -> dict:
+    """{line item id: (po_number, item_ref, description)} for every item in
+    `po_items`, numbered per PO in pk order."""
+    by_po: dict = {}
+    for item in po_items:
+        by_po.setdefault(item.purchase_order_id, []).append(item)
+    out: dict = {}
+    for items in by_po.values():
+        items.sort(key=lambda i: i.id)
+        for position, item in enumerate(items):
+            out[item.id] = (item.purchase_order.po_number, line_item_ref(position), item.description)
+    return out
+
+
+def _load_pins(config, positions):
+    """Resolves this plant's pins onto the line items they address.
+
+    Returns (pins_by_item_id, stale) where `stale` names the pins whose
+    line no longer holds the material it did when the pin was made - see
+    ManualMirMatch's docstring for why a mismatch there means the PO's lines
+    changed underneath the pin. A stale pin is IGNORED, never applied to
+    whatever material now sits at that position, and never deleted either:
+    it is the record of a human decision, and quietly destroying it would be
+    worse than leaving it visible and inert.
+    """
+    if config.manual_match_model is None or not config.syncrun_plant:
+        return {}, []
+    rows = list(config.manual_match_model.objects.filter(plant=config.syncrun_plant))
+    if not rows:
+        return {}, []
+    # Newest first: two pins can name the same single-row MIR document, and
+    # only one can have it. The more recent human decision wins, which is
+    # also what the UI's own collision warning tells the reader will happen.
+    rows.sort(key=lambda r: (r.updated_at, r.id), reverse=True)
+    by_address = {}
+    for row in rows:
+        by_address.setdefault((row.po_number, row.item_ref), row)
+    pins, stale = {}, []
+    order = {(r.po_number, r.item_ref): i for i, r in enumerate(rows)}
+    for item_id, (po_number, item_ref, description) in positions.items():
+        pin = by_address.get((po_number, item_ref))
+        if pin is None:
+            continue
+        if pin.item_description and pin.item_description.strip() != (description or "").strip():
+            stale.append(pin)
+            continue
+        pins[item_id] = pin
+    # Preserve the newest-first ordering for the claiming loop.
+    ordered = sorted(pins.items(), key=lambda kv: order[(kv[1].po_number, kv[1].item_ref)])
+    return dict(ordered), stale
+
+
+def _forced_candidate(config, matchable, mir, po, *, scorer, known_pos):
+    """A _Candidate for a pair a human pinned, built WITHOUT the
+    identification gate but with every real measurement intact - the same
+    score/coverage/date/material/PO/vendor evidence any other candidate
+    carries, so the downstream flagging and the confidence badge tell the
+    truth about a manual match instead of asserting it is perfect."""
+    po_number_matched = _po_number_matches(po.po_number, mir.po_number_raw)
+    material_score = _material_similarity(config, matchable.description, mir.material_description, scorer)
+    material_matched = material_score >= config.material_match_threshold
+    vendor_matched = _vendor_matches(
+        normalize_vendor_for_matching(mir.party_name),
+        normalize_vendor_for_matching(po.vendor_name),
+    )
+    score, coverage, _uom = _score(config, matchable, mir)
+    # An impossible date does NOT veto a pin, for the same reason it does not
+    # veto an agreeing PO number in _identification_pool(): the source dates
+    # are the least reliable field here (267 of 782 live Vapi MIR date cells
+    # had day and month transposed). It is discounted to zero weight, which
+    # only affects ranking among the pinned document's own rows.
+    date_weight = _date_verdict(config, po.po_created_date, getattr(mir, "mir_date", None))
+    if date_weight == DATE_IMPOSSIBLE:
+        date_weight = Decimal("0")
+    return _Candidate(
+        mir=mir,
+        # Ranked above every automatic tier: among the rows of the pinned
+        # document this only decides which row wins, and a pin is the
+        # strongest evidence there is - a person looked at the paperwork.
+        tier_rank=TIER_RANK_PO_AND_VENDOR,
+        score=score,
+        coverage=coverage,
+        date_weight=date_weight,
+        material_matched=material_matched,
+        po_number_matched=po_number_matched,
+        vendor_matched=vendor_matched,
+        material_score=material_score,
+    )
+
+
 def run_full_match(config: _MatchConfig) -> dict:
     """Re-runs every matching pass for one plant - domestic PO line items
     AND import PO line items (both against the same shared MIR table, so
@@ -2705,6 +2830,12 @@ def run_full_match(config: _MatchConfig) -> dict:
     item_counts: dict[int, int] = {}
     for item in po_items:
         item_counts[item.purchase_order_id] = item_counts.get(item.purchase_order_id, 0) + 1
+
+    # Manual MIR pins for this plant, resolved onto the line items they
+    # address. Read once per pass, same reasoning as the scorer/known-PO set
+    # below - a pin is a property of the plant, not of any one line item.
+    positions = line_item_positions(po_items)
+    pins, stale_pins = _load_pins(config, positions)
 
     # Same reasoning, for import items - feeds _import_matchable()'s own
     # single-line-item-PO check (only relevant when config.
@@ -2789,6 +2920,51 @@ def run_full_match(config: _MatchConfig) -> dict:
     # the assignment be genuinely optimal rather than approximately so.
     assigned: dict[tuple[str, int], tuple] = {}  # (kind, item.id) -> (mir, score, coverage, group_or_None)
     claimed_mir_ids: set[int] = set()
+
+    # MANUAL PINS SETTLE FIRST - before groups, before the optimal
+    # assignment - so a row a human named can never be taken out from under
+    # them by a better-scoring automatic pair. See _load_pins() above.
+    pinned_item_ids: set[int] = set()
+    pinned_mir_no = {p.mir_no.strip() for p in pins.values() if p.mir_no.strip()}
+    pin_rows_by_no: dict[str, list] = {}
+    if pinned_mir_no:
+        for row in config.mir_model.objects.filter(is_active=True, mir_no__in=pinned_mir_no):
+            pin_rows_by_no.setdefault((row.mir_no or "").strip(), []).append(row)
+    # Iterated in _load_pins()'s OWN order (newest decision first), not in
+    # po_items order - that ordering is the whole tie-break when two pins
+    # name the same single-row MIR document, and iterating the item list
+    # instead silently threw it away.
+    po_items_by_id = {item.id: item for item in po_items}
+    for item_id, pin in pins.items():
+        item = po_items_by_id.get(item_id)
+        if item is None:
+            continue
+        pinned_item_ids.add(item.id)
+        key = ("po", item.id)
+        # An empty mir_no is the explicit "leave this line unmatched"
+        # instruction, not a missing value - the item is simply never
+        # assigned, and the write loop below deletes whatever match it had.
+        target_no = pin.mir_no.strip()
+        if not target_no:
+            continue
+        rows = [r for r in pin_rows_by_no.get(target_no, []) if r.id not in claimed_mir_ids]
+        if not rows:
+            # The document has no free row left (another pin took it, or the
+            # number no longer exists in MIR at all). Left unmatched rather
+            # than silently falling back to the automatic pick, which would
+            # contradict the instruction the reader gave.
+            continue
+        matchable = items_by_key.get(key)
+        if matchable is None:
+            continue
+        candidates = [
+            _forced_candidate(config, matchable, row, item.purchase_order, scorer=scorer, known_pos=known_pos)
+            for row in rows
+        ]
+        best = max(candidates, key=lambda c: (_pair_weight(c), c.mir.id))
+        candidates_by_key[("po", item.id, best.mir.id)] = best
+        assigned[key] = (best.mir, best.score, best.coverage, None)
+        claimed_mir_ids.add(best.mir.id)
     # A GROUP THAT LOSES ITS ROWS FALLS BACK TO SINGLE ROWS (2026-09-18) - it
     # used to lose its match outright, which is the exact outcome fix 2.B
     # exists to prevent. Grouping is an OPTIMIZATION on how a line item takes
@@ -2811,7 +2987,8 @@ def run_full_match(config: _MatchConfig) -> dict:
     # and is compared row-by-row (no qty/rate/value override), which is what
     # it would have done had _shipment_group() never found a group.
     demoted_keys: list[tuple[str, int]] = []
-    grouped_keys = sorted(groups_by_key, key=lambda k: (-edges[k][0][1], str(k)))
+    grouped_keys = [k for k in sorted(groups_by_key, key=lambda k: (-edges[k][0][1], str(k)))
+                    if not (k[0] == "po" and k[1] in pinned_item_ids)]
     for key in grouped_keys:
         primary_id = edges[key][0][0]
         members = group_members[(key[0], key[1], primary_id)]
@@ -2825,7 +3002,10 @@ def run_full_match(config: _MatchConfig) -> dict:
     ungrouped_edges = {
         key: [(mir_id, weight) for mir_id, weight in pairs if mir_id not in claimed_mir_ids]
         for key, pairs in edges.items()
-        if key not in groups_by_key
+        # A pinned line item is already settled (or deliberately left
+        # unmatched) above, so it must not re-enter the optimization - it
+        # would otherwise be handed a second, automatic row.
+        if key not in groups_by_key and not (key[0] == "po" and key[1] in pinned_item_ids)
     }
     for key in demoted_keys:
         remaining = [(mir_id, weight) for mir_id, weight in row_edges[key] if mir_id not in claimed_mir_ids]
@@ -2870,6 +3050,10 @@ def run_full_match(config: _MatchConfig) -> dict:
             po_line_item=item,
             defaults=dict(
                 mir_entry=mir,
+                # Derived from whether a pin currently applies, NOT preserved
+                # across runs the way dismissed_* is - removing the pin has to
+                # clear the badge on the next run. See ManualMirMatch.
+                manually_pinned=item.id in pinned_item_ids,
                 tier=tier,
                 match_score=score.quantize(Decimal("0.0001")),
                 qty_diff_pct=qty_diff,
@@ -2982,5 +3166,14 @@ def run_full_match(config: _MatchConfig) -> dict:
         "po_line_items_matched": po_matched,
         "import_po_line_items_matched": import_po_matched,
         "mir_entries_stock_matched": mir_matched,
+        # Reported rather than only applied. A stale pin is one whose line
+        # item no longer holds the material it did when someone pinned it,
+        # so it was ignored this run - that is a thing a human needs to know
+        # about and re-decide, and the whole reason the detection exists
+        # instead of applying the pin to whatever now sits at that position.
+        "manual_pins_applied": len(pinned_item_ids),
+        "manual_pins_stale": [
+            {"poNumber": p.po_number, "itemRef": p.item_ref, "mirNo": p.mir_no} for p in stale_pins
+        ],
         "ran_at": timezone.now(),
     }

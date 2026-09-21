@@ -144,6 +144,20 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    another tab/session). Pulses gently so it reads as "in progress", not
    just another static status label. */
 .badge.syncing { background:var(--indigo-soft); color:var(--indigo-text); animation: badge-pulse 1.4s ease-in-out infinite; }
+/* A sync badge that opens a drill-down (2026-09-21) - the two no-PO badges
+   in main.js's loadSyncStatus(). Only the affordance is new: the badge keeps
+   whatever colour variant it already had, so this composes with .stale
+   rather than replacing it. .badge is inline-block, so :focus-visible needs
+   an explicit outline here - the shared :focus-visible ring is scoped to
+   real buttons/inputs and never reached these. */
+.badge-clickable { cursor:pointer; }
+.badge-clickable:hover { filter:brightness(0.94); text-decoration:underline; }
+.badge-clickable:focus-visible { outline:2px solid var(--dash-blue); outline-offset:2px; }
+/* The no-PO panel's filter box (no-po-panel.js). Its placeholder names all
+   four things it searches, which the default input width truncates to
+   "Filter by vendor, materi..." - so it takes the free space in its
+   .flex-row-gap10 row, with a floor for narrow viewports. */
+#noPoSearch { flex:1 1 auto; min-width:240px; }
 @keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .refresh-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--navy-solid); background:var(--navy-solid); color:var(--on-accent); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; box-shadow:var(--dash-shadow); }
 .refresh-btn:hover { background:var(--navy-hover); }
@@ -554,6 +568,10 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .legend-sub { font-size:12px; color:var(--slate-soft); margin-bottom:12px; }
 .legend-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
 .legend-item { font-size:12.5px; color:var(--slate); line-height:1.5; }
+/* Second line of a legend entry - the causes/caveats, muted and indented
+   past the dot+severity chip so the one-sentence definitions above them
+   stay scannable as a column. See flags.js's DISCREPANCY_LEGEND `detail`. */
+.legend-detail { font-size:11.5px; color:var(--slate-soft); margin-top:2px; padding-left:18px; }
 .lg-dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:7px; vertical-align:middle; }
 .lg-label { display:inline-block; font-size:9px; font-weight:800; letter-spacing:0.04em; border-radius:5px; padding:2px 6px; margin-right:7px; }
 .lg-label.critical { background:var(--red-soft); color:var(--red-text); }
@@ -564,6 +582,31 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .conf-badge.conf-low { background:var(--red-soft); color:var(--red-text); }
 .validation-note { display:flex; gap:8px; align-items:flex-start; background:var(--amber-soft); border:1px solid var(--amber-border); border-radius:10px; padding:10px 14px; font-size:12px; color:var(--amber-text); margin-bottom:16px; }
 .validation-note-icon { width:18px; height:18px; flex-shrink:0; margin-top:1px; }
+
+/* Collapsed automated-matching disclaimer - see shared.js's
+   matchingDisclaimerHtml(). Same amber palette as .validation-note above
+   (which it replaced at three call sites), but one line tall until opened.
+   The default disclosure triangle is removed in favour of the "How matching
+   works" affordance on the right, which reads as a real action; ::-webkit-
+   details-marker covers Safari, which ignores `list-style` on <summary>. */
+.auto-note { background:var(--amber-soft); border:1px solid var(--amber-border); border-radius:10px; color:var(--amber-text); font-size:12px; margin-bottom:16px; }
+.auto-note-summary { display:flex; gap:8px; align-items:center; padding:9px 14px; cursor:pointer; list-style:none; }
+.auto-note-summary::-webkit-details-marker { display:none; }
+.auto-note-summary:hover .auto-note-more { text-decoration:underline; }
+.auto-note-summary:focus-visible { outline:2px solid var(--amber-text); outline-offset:-2px; border-radius:10px; }
+.auto-note-icon { width:16px; height:16px; flex-shrink:0; }
+.auto-note-line { flex:1; min-width:0; }
+.auto-note-more { flex-shrink:0; font-weight:700; white-space:nowrap; }
+.auto-note-more::after { content:' \203A'; }
+.auto-note[open] .auto-note-more::after { content:' \2039'; }
+.auto-note-body { padding:0 14px 12px 38px; line-height:1.6; }
+.auto-note-body p { margin:0 0 8px; }
+.auto-note-body p:last-child { margin-bottom:0; }
+@media (max-width:640px) {
+  .auto-note-summary { align-items:flex-start; flex-wrap:wrap; }
+  .auto-note-more { width:100%; padding-left:24px; }
+  .auto-note-body { padding-left:14px; }
+}
 .row-link { color:var(--gold-accent-text); cursor:pointer; text-decoration:none; font-weight:700; font-size:12px; }
 .row-link:hover { text-decoration:underline; }
 .empty-state { padding:70px 20px; text-align:center; color:var(--gray); font-size:14px; background:var(--card); border:1px dashed var(--border-strong); border-radius:12px; }
@@ -684,6 +727,67 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .ov-selected-field { background:var(--gold-accent-soft); border:1px solid var(--gold-accent-border); border-radius:8px; padding:8px 12px; font-size:12.5px; margin-bottom:10px; color:var(--gold-accent-text); font-weight:600; }
 .ov-hint { font-size:12.5px; color:var(--slate-soft); font-style:italic; margin-bottom:10px; }
 .ov-disclaimer { font-size:11.5px; color:var(--slate-soft); margin-top:10px; padding-top:10px; border-top:1px dashed var(--border); }
+/* Inline validation, shown BEFORE the PATCH rather than as a 400 coming
+   back - see shared.js's validateOverrideValue(). */
+.ov-error { font-size:12px; font-weight:600; color:var(--dash-red); margin:-2px 0 8px; }
+.ov-error[hidden] { display:none !important; }
+/* Secondary button next to "Save Correction". Sits in the same .row, so it
+   inherits .override-box button's padding/radius and only overrides colour. */
+.ov-cancel { background:transparent !important; color:var(--slate-soft) !important; border-color:var(--border-strong) !important; font-weight:600; }
+.ov-cancel:hover { background:var(--gray-soft) !important; color:var(--slate) !important; }
+.ov-cancel[hidden] { display:none !important; }
+/* The box is re-parented under the field being corrected (shared.js's
+   _moveOverrideBoxTo()); this state marks it as belonging to that field
+   rather than sitting in its own tab. */
+.override-box.ov-anchored { border-color:var(--gold-accent-border); box-shadow:var(--dash-shadow); margin-bottom:14px; }
+/* The field currently being corrected, so it stays identifiable once the
+   box below it has the reader's attention. */
+.editable-line.ov-editing, .cell-editable.ov-editing { background:var(--gold-accent-soft); border-radius:6px; }
+.editable-line.ov-editing { box-shadow:0 0 0 3px var(--gold-accent-soft); }
+/* The pencil was hover-only at .35 opacity, so nothing on screen said a
+   field could be corrected until the cursor happened to pass over it. */
+.editable-line .edit-pencil, .cell-editable .edit-pencil { opacity:.6; }
+.edit-pencil:focus-visible { outline:2px solid var(--gold-accent-text); outline-offset:1px; border-radius:3px; opacity:1; }
+/* "revert" beside a Correction History row - see shared.js's
+   wireRevertLinks(). Same visual language as .dismiss-link. */
+.revert-link { color:var(--gold-accent-text); cursor:pointer; font-weight:700; font-size:11px; margin-left:8px; }
+.revert-link:hover { text-decoration:underline; }
+
+/* ── Change MIR match (po-modal.js's mirPickerHtml()) ──────────────────
+   The "change" affordance next to a line item's MIR badge, the "manual"
+   tag on a pinned match, and the picker panel itself. */
+.mir-change-link { color:var(--gold-accent-text); cursor:pointer; font-weight:700; font-size:11px; margin-left:6px; }
+.mir-change-link:hover { text-decoration:underline; }
+.mir-change-link:focus-visible { outline:2px solid var(--gold-accent-text); outline-offset:1px; border-radius:3px; }
+.pinned-tag { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:6px; background:var(--indigo-soft); color:var(--indigo-text); cursor:default; }
+tr.mir-editing > td { background:var(--gold-accent-soft); }
+
+.mir-picker { background:var(--card); border:1px solid var(--gold-accent-border); border-radius:10px; padding:14px 16px; margin-top:14px; box-shadow:var(--dash-shadow); }
+.mir-picker[hidden] { display:none !important; }
+.mir-picker-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.mir-picker-head h4 { margin:0; font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
+.mir-picker-close { cursor:pointer; font-size:18px; line-height:1; color:var(--slate-soft); padding:0 4px; }
+.mir-picker-close:hover { color:var(--slate); }
+.mir-picker-for { font-size:12.5px; font-weight:600; color:var(--gold-accent-text); background:var(--gold-accent-soft); border:1px solid var(--gold-accent-border); border-radius:8px; padding:8px 12px; margin:8px 0 10px; }
+.mir-picker .row { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+.mir-picker input[type="search"] { flex:1; min-width:180px; padding:7px 10px; border:1px solid var(--border-strong); border-radius:7px; font-size:12.5px; font-family:inherit; }
+.mir-picker-secondary { padding:7px 14px; border-radius:7px; border:1px solid var(--border-strong); background:transparent; color:var(--slate-soft); cursor:pointer; font-size:12px; font-weight:600; }
+.mir-picker-secondary:hover { background:var(--gray-soft); color:var(--slate); }
+/* Capped and scrollable: a plant's MIR file runs to ~1,500 rows and the
+   endpoint returns up to 80 documents, which would otherwise push the rest
+   of the modal off screen. */
+.mir-picker-list { max-height:260px; overflow-y:auto; border:1px solid var(--border-soft); border-radius:8px; }
+.mir-cand { padding:8px 12px; border-bottom:1px solid var(--border-soft); cursor:pointer; font-size:12px; }
+.mir-cand:last-child { border-bottom:none; }
+.mir-cand:hover { background:var(--gold-accent-soft); }
+.mir-cand:focus-visible { outline:2px solid var(--gold-accent-text); outline-offset:-2px; }
+.mir-cand-head { color:var(--navy); font-size:12.5px; }
+.mir-cand-date { color:var(--slate-soft); font-weight:600; margin-left:6px; }
+.mir-cand-rows { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; border-radius:99px; padding:2px 7px; margin-left:6px; background:var(--gray-mid-soft); color:var(--slate-soft); }
+.mir-cand-sub { color:var(--slate-soft); margin-top:2px; }
+/* Amber, not red: a document already being used is a real consequence to
+   read before clicking, but it is a legitimate choice, not an error. */
+.mir-cand-claim { margin-top:4px; padding:4px 8px; border-radius:6px; background:var(--amber-soft); color:var(--amber-text); font-weight:600; }
 
 .mat-toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
 .mat-search { flex:1; min-width:220px; padding:9px 13px; border:1px solid var(--border-strong); border-radius:9px; font-size:13px; }

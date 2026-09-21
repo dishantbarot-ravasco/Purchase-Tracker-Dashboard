@@ -986,6 +986,64 @@ Net effect on matching: **zero matches lost at all three plants**, confirmed by 
 numbers are unchanged — as expected, since these rows never matched. What it buys is the same thing the
 PO side's `purchasesWithoutPo` buys: an out-of-scope row stops reading as a matcher failure.
 
+### "No purchase order behind it" is three questions, not one (2026-09-21)
+
+Project owner: *"we have orders without a PO in MIR, which might be true or waiting for a PO to be
+matched with them - can we show info about them too?"* That sentence is the design.
+
+`purchasesWithoutPo` (above) had been a **count with a tooltip** since 2026-09-18. The count is what
+makes the process gap visible; it is not something anyone can act on, because a receipt with no order
+standing behind it is three different situations wearing one number, each owned by a different person:
+
+| Bucket | What it means | Whose fix |
+| --- | --- | --- |
+| `no_po` | MIR names no order at all - blank, or a sentinel like `VERBAL`/`NIL` | Purchasing. Nothing is pending. |
+| `po_unknown` | MIR names an order **we have never received** | Upstream - the PO master CSV generator. This is the one genuinely "waiting for a PO". |
+| `po_known_unmatched` | MIR names an order **we do hold** and the matcher has not linked it | Ours - a qty/description/vendor-spelling drift. |
+
+Live counts (HRS / Achhad / Vapi): **193 / 37 / 247**, **4 / 19 / 134**, **117 / 43 / 291**.
+
+`services/mir_without_po.py` classifies, `make_mir_without_po()` serves
+`GET /api/[<plant>/]mir-without-po` (rows + summary; `?bucket=` narrows, `?download=csv` downloads),
+`frontend/js/no-po-panel.js` renders it as three tabs over one fetch, and `main.js`'s two badges -
+**"N purchased without a PO"** and the new **"N waiting on a PO"** - open it.
+
+Five things are load-bearing:
+
+- **The bucket is decided by the MATCHER's own PO-number logic** (`matching_core.known_po_numbers()` /
+  `_names_known_po()`), not a string compare against the PO table. HRS writes its legacy slashed
+  series five ways (see [Legacy slashed PO numbers](#legacy-slashed-po-numbers-drift-between-the-two-files)),
+  so plain equality puts **~120 HRS rows** in `po_unknown` that the matcher considers perfectly well
+  known - sending somebody upstream to chase orders already in the database. Measured both ways:
+  121 → 4 at HRS once the matcher's own test is used.
+- **`?format=csv` does not work and must not be reintroduced.** `format` is reserved by DRF's content
+  negotiation, which resolves it against the registered renderers and **404s** on an unknown one, so
+  that branch was never reached and the export answered "Not found". It is `?download=csv`.
+- **A `no_po` row the matcher matched anyway stays in the list**, flagged `matched` (the material tier
+  needs no PO number). It is reconciled, so it is not a *matching* problem, but it is still a purchase
+  made without an order - the thing being driven down. It is also what makes this module's `no_po`
+  total reconcile **exactly** with the badge `purchases_without_po_summary()` feeds; a reader who
+  clicks a badge saying 193 and lands on a tab saying 187 has no way to tell which is wrong, and
+  `test_mir_without_po.py` pins the two together.
+- **Two badges, never one combined number.** "How many did we buy without an order" is a figure
+  somebody is driving down; folding a matching backlog into it would inflate it with work that is not
+  purchasing's.
+- **An unknown `?bucket=` is a 400, not an empty list.** An empty list reads as "nothing to fix here",
+  which is the exact wrong answer this whole area exists to stop giving.
+
+`INTERNAL_TRANSFER` parties are excluded from every bucket and reported separately as
+`internalTransfer` - same "suppress the match, never the row" rule as `NO_PO_VENDORS` itself.
+
+**`sync-status` serves its copy of the counts from a 60-second per-plant cache**
+(`_cached_mir_without_po_summary()`). Measured: 135ms/53ms/163ms (HRS/Achhad/Vapi) against a
+`/sync-status` that otherwise answers in ~20-30ms, on the endpoint main.js's freshness watcher polls
+every 60 seconds per selected plant. The cost is `_names_known_po()` scanning every known PO number
+per candidate row - the same shape that makes `_po_number_contradicts()` a hot path in the matcher,
+and **not** something to work around by re-deriving a faster second idea of what a known PO number
+is. What is cached is plant-derived data, not a response, and the permission check still runs per
+request - this is not the [`cache_page` trap](#non-negotiables). `/mir-without-po` itself is
+deliberately uncached: it is opened on purpose, not polled.
+
 #### Reported as one thing, stored as two
 
 `services/rm_untracked.py`'s `rm_untracked_summary()` returns both halves — `byClass` and `byVendor`,
@@ -1401,6 +1459,27 @@ the other one's rows are excluded.
 **If you add a KPI card, decide which of the three it is** - narrows to a subset, clears, or shares an
 existing `filterKey` - and wire it. A card that renders as a button and does nothing is the defect this
 section exists to prevent; it is invisible in review because the markup is identical either way.
+
+**A narrowing click also scrolls the list into view** (`shared.js`'s `revealFilteredList()`). The KPI row
+sits at the very top of the page and the list sits below the chart panels, normally off-screen - so the
+table narrowed correctly and the viewer saw nothing move. Reported immediately after the cards were made
+clickable at all, which is when it became noticeable: the filter working and the filter *appearing* to
+work are two different things.
+
+Three restraints, each deliberate:
+
+- **No scroll when the list is already visible.** Yanking a list the reader is already looking at is
+  worse than not scrolling - they lose their place for no gain. The visibility test is generous (the
+  region's top edge anywhere in the viewport) precisely so a half-scrolled page is left alone.
+- **`prefers-reduced-motion` jumps instead of gliding.** Smooth scrolling over a long page is a real
+  vestibular trigger. The reader still arrives at the list; only the animation is dropped. Same test
+  `wireKpiCountUps()` already uses.
+- **Only on narrowing, never on clearing.** When a click clears the filter, the full list is what the
+  reader was already looking at, and scrolling away from the cards would be the surprise. `total`
+  (both views) and `value` (materials) clear, so they never scroll.
+
+It also `announce()`s the list's own heading - `"Materials by Stock Quantity - showing 4 of 27"` - because
+the visual change starts off-screen and a screen-reader user gets nothing from the scroll itself.
 
 Verified with a throwaway in-browser harness driving real clicks on the real rendered cards (17
 assertions: every card narrows or clears, clicking twice restores, the open-PO pair selects the same
@@ -2395,6 +2474,7 @@ alongside each.
 | Header check stripping whitespace, row lookup not → `KeyError` on a resaved CSV | [Per-plant models](#per-plant-models-not-a-shared-schema--deliberate-dont-fix-it) |
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [PO ↔ MIR](#po--mir) |
 | Vendors with no PO looking like matcher failures for every run | [No-PO vendors](#some-vendors-never-have-a-po--that-is-registered-not-inferred) |
+| `?format=csv` silently 404ing - DRF reserves `format` for content negotiation | [No PO behind it](#no-purchase-order-behind-it-is-three-questions-not-one-2026-09-21) |
 | Exact vendor equality → zero MIR↔Stock matches (city suffix) | [Vendor gate](#vendor-name-is-always-a-hard-gate-never-a-scored-factor) |
 | Letter-for-letter material equality as MIR↔Stock's only rule → 1.6–27% coverage | [MIR ↔ Stock](#mir--stock) |
 | Date+rate identification without a grade-code gate → same-day same-price SKUs cross-matched | [MIR ↔ Stock](#date--rate-is-this-pairings-po-number--behind-two-guards) |

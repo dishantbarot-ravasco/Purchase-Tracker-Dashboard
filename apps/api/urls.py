@@ -46,6 +46,8 @@ urlpatterns = [
 
     path("purchase-orders", hrs_views.purchase_orders, name="hrs-purchase-orders"),
     path("purchase-orders/<str:po_number>/fields", hrs_views.correct_field, name="hrs-correct-field"),
+    path("purchase-orders/<str:po_number>/mir-candidates", hrs_views.mir_candidates, name="hrs-mir-candidates"),
+    path("purchase-orders/<str:po_number>/mir-match", hrs_views.set_mir_match, name="hrs-set-mir-match"),
     path("materials", hrs_views.materials, name="hrs-materials"),
     path("materials/<int:lot_id>/fields", hrs_views.correct_material_field, name="hrs-correct-material-field"),
     path("materials/<int:lot_id>/stock-trend", hrs_views.stock_trend, name="hrs-stock-trend"),
@@ -58,6 +60,11 @@ urlpatterns = [
     # own docstring for why this endpoint is narrower than every other GET
     # here).
     path("stock-snapshots/export", hrs_views.export_stock_snapshots, name="hrs-export-stock-snapshots"),
+    # The "purchased without a PO" drill-down (2026-09-21) - which receipts
+    # have no order behind them, split by whether anything is actually
+    # pending on them. `?bucket=` narrows, `?download=csv` downloads. See
+    # _domestic_base.make_mir_without_po() and services/mir_without_po.py.
+    path("mir-without-po", hrs_views.mir_without_po, name="hrs-mir-without-po"),
     path("sync-status", hrs_views.sync_status, name="hrs-sync-status"),
     # Admin-only - triggers a real Drive sync in the background, see
     # apps/services/sync_trigger.py. Added 2026-09-04 alongside
@@ -80,12 +87,15 @@ urlpatterns = [
     # on their own.
     path("achhad/purchase-orders", achhad_views.purchase_orders, name="achhad-purchase-orders"),
     path("achhad/purchase-orders/<str:po_number>/fields", achhad_views.correct_field, name="achhad-correct-field"),
+    path("achhad/purchase-orders/<str:po_number>/mir-candidates", achhad_views.mir_candidates, name="achhad-mir-candidates"),
+    path("achhad/purchase-orders/<str:po_number>/mir-match", achhad_views.set_mir_match, name="achhad-set-mir-match"),
     path("achhad/materials", achhad_views.materials, name="achhad-materials"),
     path("achhad/materials/<int:lot_id>/fields", achhad_views.correct_material_field, name="achhad-correct-material-field"),
     path("achhad/materials/<int:lot_id>/stock-trend", achhad_views.stock_trend, name="achhad-stock-trend"),
     path("achhad/stock-snapshots/dates", achhad_views.stock_snapshot_dates, name="achhad-stock-snapshot-dates"),
     path("achhad/stock-snapshots", achhad_views.stock_snapshots_for_date, name="achhad-stock-snapshots"),
     path("achhad/stock-snapshots/export", achhad_views.export_stock_snapshots, name="achhad-export-stock-snapshots"),
+    path("achhad/mir-without-po", achhad_views.mir_without_po, name="achhad-mir-without-po"),
     path("achhad/sync-status", achhad_views.sync_status, name="achhad-sync-status"),
     path("achhad/sync-trigger", achhad_views.sync_trigger, name="achhad-sync-trigger"),
     path("achhad/matches/po-mir/<int:match_id>/dismiss", achhad_views.dismiss_po_mir_match, name="achhad-dismiss-po-mir"),
@@ -93,12 +103,15 @@ urlpatterns = [
     path("achhad/purchase-orders/<str:po_number>/flags/dismiss", achhad_views.dismiss_flag, name="achhad-dismiss-flag"),
     path("vapi/purchase-orders", vapi_views.purchase_orders, name="vapi-purchase-orders"),
     path("vapi/purchase-orders/<str:po_number>/fields", vapi_views.correct_field, name="vapi-correct-field"),
+    path("vapi/purchase-orders/<str:po_number>/mir-candidates", vapi_views.mir_candidates, name="vapi-mir-candidates"),
+    path("vapi/purchase-orders/<str:po_number>/mir-match", vapi_views.set_mir_match, name="vapi-set-mir-match"),
     path("vapi/materials", vapi_views.materials, name="vapi-materials"),
     path("vapi/materials/<int:lot_id>/fields", vapi_views.correct_material_field, name="vapi-correct-material-field"),
     path("vapi/materials/<int:lot_id>/stock-trend", vapi_views.stock_trend, name="vapi-stock-trend"),
     path("vapi/stock-snapshots/dates", vapi_views.stock_snapshot_dates, name="vapi-stock-snapshot-dates"),
     path("vapi/stock-snapshots", vapi_views.stock_snapshots_for_date, name="vapi-stock-snapshots"),
     path("vapi/stock-snapshots/export", vapi_views.export_stock_snapshots, name="vapi-export-stock-snapshots"),
+    path("vapi/mir-without-po", vapi_views.mir_without_po, name="vapi-mir-without-po"),
     path("vapi/sync-status", vapi_views.sync_status, name="vapi-sync-status"),
     path("vapi/sync-trigger", vapi_views.sync_trigger, name="vapi-sync-trigger"),
     path("vapi/matches/po-mir/<int:match_id>/dismiss", vapi_views.dismiss_po_mir_match, name="vapi-dismiss-po-mir"),

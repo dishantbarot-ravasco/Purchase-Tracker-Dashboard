@@ -203,7 +203,11 @@ async function openMaterialModal(compositeKey) {
   const totalFlagCount = flaggedMatches.length + materialCritPos.size + dataQualityFlagsHtml.length;
 
   const allMaterialCorrections = [];
-  siblingLots.forEach(l => (l.corrections || []).forEach(c => allMaterialCorrections.push(Object.assign({}, c, { _plantLabel: l._plantLabel }))));
+  // _plantKey/_lotId ride along so a Correction History row can build its
+  // own revert target - this modal's rows span all three plants' separate
+  // lot tables and PATCH endpoints, so a bare field name is not enough.
+  siblingLots.forEach(l => (l.corrections || []).forEach(c => allMaterialCorrections.push(
+    Object.assign({}, c, { _plantLabel: l._plantLabel, _plantKey: l._plantKey, _lotId: l.lotId }))));
   allMaterialCorrections.sort((a, b) => (b.correctedAt || '').localeCompare(a.correctedAt || ''));
 
   const materialFlagsListHtml = totalFlagCount
@@ -214,7 +218,19 @@ async function openMaterialModal(compositeKey) {
       allMaterialCorrections.map(c =>
         '<div class="field-block mb-8">' +
           '<div class="fs-12-5"><b>' + escapeHtml(c._plantLabel) + ' &middot; ' + escapeHtml(c.fieldName) + ':</b> ' +
-          escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
+          escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') +
+          // Gated on THIS row's own plant, not the modal's anchor plant -
+          // a plant-scoped editor may be able to correct one sibling lot
+          // and not another (same reasoning as editableCell()'s own
+          // per-row plantKey argument).
+          (canEditField(c._plantKey)
+            ? '<span class="revert-link" data-field="' + escapeHtml(c.fieldName) + '"' +
+              ' data-label="' + escapeHtml(c._plantLabel + ' ' + c.fieldName) + '"' +
+              ' data-plant="' + escapeHtml(c._plantKey) + '"' +
+              ' data-item="' + escapeHtml(String(c._lotId)) + '"' +
+              ' data-old-value="' + escapeHtml(c.oldValue || '') + '">revert</span>'
+            : '') +
+          '</div>' +
           (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
@@ -222,7 +238,7 @@ async function openMaterialModal(compositeKey) {
       ).join('')
     : '';
   const flagsTabHtml = materialFlagsListHtml + materialCorrectionsHtml +
-    overrideBoxHtml('Click the ✎ icon next to Category/Sub Category (Overview tab) or Category/Rate (Stock by Plant tab) to correct it - no need to know column names.');
+    overrideBoxHtml('Click the ✎ beside Category, Sub Category or Rate to correct it.');
   const stockByPlantHtml = stockTableHtml;
 
   const purchaseActivityHtml =
@@ -238,13 +254,23 @@ async function openMaterialModal(compositeKey) {
 
   const priceTrendHtml =
     '<div class="chart-box" id="matPriceTrendBox"><div class="no-data-note">Loading&hellip;</div></div>' +
-    '<div class="no-data-note mt-8">Moving averages are a trailing calendar-day average of actual PO prices (21/50/100 days back from each PO date) - since POs happen irregularly rather than daily, this smooths the line without inventing prices on days with no PO.</div>';
+    // Readability pass (2026-09-21): this used to be a permanent 38-word
+    // paragraph under the chart. It answers a question a reader only asks
+    // once ("what is the 21/50/100-day line?"), so it is a tooltip on a
+    // short label now rather than standing text competing with the chart.
+    '<div class="no-data-note mt-8" title="' +
+      escapeHtml('A trailing calendar-day average of actual PO prices, looking 21/50/100 days back from each PO date. POs happen irregularly rather than daily, so averaging over calendar days smooths the line without inventing prices for days that had no PO.') +
+      '">Moving averages: 21 / 50 / 100 calendar days &#9432;</div>';
 
   body.innerHTML =
     '<div class="modal-head"><div><h2>' + escapeHtml(anchor.description || anchor.materialCode) + '</h2>' +
     '<div class="modal-meta">' + escapeHtml(category || 'Uncategorized') + ' &middot; rolled up across ' + siblingLots.length + ' plant location' + (siblingLots.length === 1 ? '' : 's') + '</div></div>' +
     '<span class="close-btn">&times;</span></div>' +
-    '<div class="validation-note"><svg class="validation-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></svg> <div>Purchase Activity, Price Trend, Vendors, and "Also known as" are computed by automatically matching this material to purchase order line items by description (and vendor, where known) - not guaranteed-correct identity resolution. <strong>Verify manually before treating a match as ground truth.</strong></div></div>' +
+    matchingDisclaimerHtml(
+      'Purchase Activity, Price Trend, Vendors and "Also known as" are matched automatically.',
+      '<p>These four tie this material to PO line items by description, and by vendor where it is known. That is not guaranteed-correct identity resolution - a similarly worded material can be pulled in, and a differently worded one missed.</p>' +
+      '<p>Verify manually before treating anything here as ground truth.</p>'
+    ) +
     '<div class="modal-tabs" id="matModalTabs" role="tablist">' +
       '<div class="modal-tab active" data-tab="overview" tabindex="0" role="tab" aria-selected="true">Overview</div>' +
       '<div class="modal-tab" data-tab="stockplant" tabindex="0" role="tab" aria-selected="false">Stock by Plant</div>' +
@@ -274,11 +300,14 @@ async function openMaterialModal(compositeKey) {
   // Import PO modals - that's where this modal's own "Submit a Correction"
   // panel lives now (see flagsTabHtml above).
   const switchToFlagsTab = () => { const t = body.querySelector('[data-tab="flags"]'); if (t) t.click(); };
-  wireEditIcons(body, (lineEl) => materialFieldsUrl(lineEl.dataset.plant, lineEl.dataset.item), switchToFlagsTab, async () => {
+  const onMaterialSaved = async () => {
     PLANT_KEYS.forEach(key => { MATERIALS_BY_PLANT[key] = null; });
     await openMaterialModal(compositeKey);
     renderMaterialsView();
-  });
+  };
+  const materialUrlFor = (el) => materialFieldsUrl(el.dataset.plant, el.dataset.item);
+  wireEditIcons(body, materialUrlFor, switchToFlagsTab, onMaterialSaved);
+  wireRevertLinks(body, materialUrlFor, onMaterialSaved);
 
   const panelIds = { overview: 'matModalOverview', stockplant: 'matModalStockPlant', poactivity: 'matModalPoActivity', pricetrend: 'matModalPriceTrend', flags: 'matModalFlags' };
   body.querySelectorAll('[data-tab]').forEach(tab => tab.onclick = () => {

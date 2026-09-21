@@ -24,6 +24,8 @@ from apps.core.models import (
     HRSDomesticPOLineItem,
     HRSPOMirMatch,
     HRSRMLot,
+    ManualMirMatch,
+    SyncRun,
 )
 from apps.services import matching_core
 from apps.services.matching_core import _MatchConfig
@@ -84,6 +86,11 @@ MATCH_CONFIG = _MatchConfig(
     # standing in for Net.
     mir_value=lambda mir: mir.net,
     plant_key="hrs",
+    # Manual MIR pins (2026-09-21) - the model and this plant's SyncRun
+    # value, injected rather than imported inside matching_core so that
+    # module keeps its "no model imports" shape. See ManualMirMatch.
+    manual_match_model=ManualMirMatch,
+    syncrun_plant=SyncRun.Plant.HRS,
     stock_rate_field="basic_rate",
     stock_vendor_field="party_name",
     # Imports identification/financial-check redesign (2026-09, project

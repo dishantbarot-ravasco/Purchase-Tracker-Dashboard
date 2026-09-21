@@ -27,7 +27,7 @@ from apps.core.models import (
     RTPAchhadRMSnapshot,
     SyncRun,
 )
-from apps.services.matching_achhad import run_full_match
+from apps.services.matching_achhad import MATCH_CONFIG, run_full_match
 
 _CONFIG = _base._PlantConfig(
     key="achhad",
@@ -40,6 +40,10 @@ _CONFIG = _base._PlantConfig(
     stock_lot_model=RTPAchhadRMLot,
     stock_snapshot_model=RTPAchhadRMSnapshot,
     run_full_match=run_full_match,
+    # This plant's matcher config, read by the mir_without_po view -
+    # see _domestic_base._PlantConfig.match_config for why the drill-down
+    # borrows the matcher's own PO-number logic rather than re-deriving it.
+    match_config=MATCH_CONFIG,
     # Achhad's own daily Recp./Issue matrix. None for HRS/Vapi (no
     # equivalent in their Stock files). The read path no longer touches it -
     # consumption_ledger._dated_movements() reconciles it into the ledger at
@@ -60,12 +64,16 @@ _CONFIG = _base._PlantConfig(
 
 purchase_orders = _base.make_purchase_orders(_CONFIG)
 correct_field = _base.make_correct_field(_CONFIG)
+# Manual MIR pin (2026-09-21) - see _domestic_base.make_set_mir_match().
+mir_candidates = _base.make_mir_candidates(_CONFIG)
+set_mir_match = _base.make_set_mir_match(_CONFIG)
 materials = _base.make_materials(_CONFIG)
 correct_material_field = _base.make_correct_material_field(_CONFIG)
 stock_trend = _base.make_stock_trend(_CONFIG)
 stock_snapshot_dates = _base.make_stock_snapshot_dates(_CONFIG)
 stock_snapshots_for_date = _base.make_stock_snapshots_for_date(_CONFIG)
 export_stock_snapshots = _base.make_export_stock_snapshots(_CONFIG)
+mir_without_po = _base.make_mir_without_po(_CONFIG)
 sync_status = _base.make_sync_status(_CONFIG)
 sync_trigger = _base.make_sync_trigger(_CONFIG)
 dismiss_po_mir_match = _base.make_dismiss_po_mir_match(_CONFIG)

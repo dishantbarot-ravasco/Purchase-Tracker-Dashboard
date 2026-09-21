@@ -305,6 +305,10 @@ function renderPoList(el) {
     state.statusFilter = (state.statusFilter === key || key === 'total') ? null : key;
     state.tablePage = 1;
     renderPoList(el);
+    // See materials.js's own copy of this - the PO list sits below two chart
+    // panels, so a KPI click that narrows it is otherwise invisible from the
+    // top of the page. 'total' clears rather than narrows, so it never scrolls.
+    if (state.statusFilter) revealFilteredList('poListRegion');
   });
   document.getElementById('legendToggle').onclick = () => { state.legendOpen = !state.legendOpen; renderPoList(el); };
   document.getElementById('applyFilter').onclick = () => {

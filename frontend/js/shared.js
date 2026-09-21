@@ -700,6 +700,46 @@ function wireKpiCountUps(root) {
   });
 }
 
+// ── Automated-matching disclaimer ───────────────────────────────────────
+// Readability pass (project owner, 2026-09-21: "instructions are everywhere
+// on dashboard can we make them simpler, in readable and understandable
+// manner"). Three near-identical 60-word amber banners used to sit
+// permanently above the PO dashboard, the Raw Material list and the
+// Material modal, all saying a version of "matching is automatic, verify
+// manually" - which every confidence badge and flag badge already says on
+// hover. They are now one short line with the detail behind a disclosure,
+// the same "one line visible, detail one click away" shape po-list.js's
+// Data Quality legend already uses (.legend-toggle / state.legendOpen).
+//
+// Built on a native <details>/<summary> rather than a state flag + re-render
+// like the legend's: these three live in three different render paths (one
+// of them a modal that re-renders on every field save), and the browser
+// handles open/close with no wiring, no shared state and no CSP-blocked
+// inline style. Open state resets on re-render, which is correct here - the
+// collapsed one-liner is the intended resting state.
+//
+// `summary` is the single sentence always on screen; `detailHtml` is the
+// full explanation, and is trusted markup supplied by the caller (each call
+// site passes a literal), never user data.
+function matchingDisclaimerHtml(summary, detailHtml) {
+  return '<details class="auto-note">' +
+    // The <summary> itself is the flex row (`display:flex` on it, see
+    // style.css). Verified in the browser that this does not disturb the
+    // native disclosure - body hidden while closed, toggles both ways -
+    // since overriding a <summary>'s `display` has a reputation for doing
+    // exactly that, and an A/B probe against a plain <summary> behaved
+    // identically here.
+    '<summary class="auto-note-summary">' +
+      '<svg class="auto-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/>' +
+      '</svg>' +
+      '<span class="auto-note-line">' + escapeHtml(summary) + '</span>' +
+      '<span class="auto-note-more">How matching works</span>' +
+    '</summary>' +
+    '<div class="auto-note-body">' + detailHtml + '</div>' +
+  '</details>';
+}
+
 // ── Inline "Edit Everywhere" ─────────────────────────────────────────────
 // Shared by the Domestic PO modal (main.js's openPoModal()) and the Import
 // PO modal (main.js's renderImportPoModalBody()) - each backed by its own
@@ -1052,36 +1092,208 @@ function editableCell(plantKey, label, value, fieldName, itemId, fieldType, opti
 // made.
 let SELECTED_FIELD = null;
 
-/** Markup for the override box itself - identical shape across every modal
- * that has one (po-modal.js/import-po.js's Flags & Corrections tab,
- * material-modal.js's Stock by Plant tab), only `hintText` differs since
- * each modal's fields live on a different tab. */
+/** Markup for the correction box - identical shape across every modal that
+ * has one (po-modal.js/import-po.js's Flags & Corrections tab,
+ * material-modal.js's Stock by Plant tab). `hintText` is what it says while
+ * no field is selected.
+ *
+ * The box is rendered once per modal, inside whichever tab its caller puts
+ * it in, and that spot is its RESTING place - see _moveOverrideBoxTo() for
+ * why it does not stay there while a field is being corrected. */
 function overrideBoxHtml(hintText) {
-  return '<div class="override-box">' +
+  return '<div class="override-box" id="overrideBox">' +
     '<h4>Submit a Correction</h4>' +
     '<div class="ov-hint" id="ovHint">' + escapeHtml(hintText) + '</div>' +
     '<div class="ov-selected-field" id="ovSelectedField" hidden></div>' +
     '<div class="row" id="ovValueRow"></div>' +
+    '<div class="ov-error" id="ovError" hidden></div>' +
     '<textarea id="ovReason" placeholder="Why is this wrong / what did you verify it against? (optional)"></textarea>' +
-    '<div class="row mt-8"><button id="ovSubmit" disabled>Save Correction</button></div>' +
+    '<div class="row mt-8">' +
+      '<button id="ovSubmit" disabled>Save Correction</button>' +
+      '<button type="button" id="ovCancel" class="ov-cancel" hidden>Cancel</button>' +
+    '</div>' +
     '<div id="ovStatus"></div>' +
     // Unlike the original artifact this UX is ported from (which queued a
     // request in a Drive folder for a human to apply to the master CSV by
-    // hand - see this function's own header comment), a correction here
-    // writes the real row immediately. But the source CSV/xlsx file on
-    // Drive is untouched - the next sync re-parses that file and will
-    // silently overwrite this correction unless the file itself is also
-    // fixed, since sync_utils.unchanged()'s diff-and-upsert always trusts
-    // the source file as the truth. Said explicitly here rather than left
-    // implicit, since "the dashboard shows the fix" otherwise reads as "the
-    // problem is solved" when it's actually only solved until next sync.
+    // hand), a correction here writes the real row immediately. But the
+    // source CSV/xlsx file on Drive is untouched - the next sync re-parses
+    // that file and will silently overwrite this correction unless the file
+    // itself is also fixed, since sync_utils.unchanged()'s diff-and-upsert
+    // always trusts the source file as the truth. Said here AND repeated in
+    // the success message (wireOverrideBox()) - in fine print at the bottom
+    // of a box it was reliably missed, and "the dashboard shows the fix"
+    // reads as "the problem is solved" when it is only solved until the
+    // next sync.
     '<div class="ov-disclaimer">This updates the database immediately, but not the source file - the CSV/spreadsheet itself still needs to be corrected by the person in charge, or the next sync will overwrite this correction.</div>' +
   '</div>';
 }
 
-/** Builds the right input control for `field.fieldType` into #ovValueRow -
- * same select/date/number/text branch startFieldEdit() used to build
- * inline, just targeting the override box instead of the field's own line. */
+// ── Where the correction box sits while you are using it ────────────────
+// Until 2026-09-21 clicking a field's pencil jumped the reader to a
+// different TAB, where the field being corrected was no longer on screen -
+// you typed a new value with the old one visible only as text in a banner.
+// Reported in a UX review of the edit flow as its single worst problem.
+//
+// The box now MOVES to the field instead: same one element, same wiring,
+// re-parented directly under the line that was clicked, and put back where
+// the caller rendered it once the correction ends. A DOM move rather than a
+// floating popover deliberately - the modal is a scrolling container, and a
+// positioned popover inside one needs scroll/resize/clipping handling that
+// buys nothing here.
+//
+// `_ovHome` remembers the resting place as (parent, nextSibling) rather than
+// an index, so it survives siblings being added or removed around it.
+let _ovHome = null;
+// { value, reason } as they stood the moment a field was selected - the
+// dirty check compares against this, so re-typing the original value is
+// correctly NOT treated as unsaved work.
+let _ovInitial = null;
+
+function _overrideBox() { return document.getElementById('overrideBox'); }
+
+/** Re-parents the box directly after `anchorEl`. A `.cell-editable` lives in
+ * a table cell, where a block-level box cannot legally be inserted, so that
+ * case anchors on the whole table's wrapper instead. */
+function _moveOverrideBoxTo(anchorEl) {
+  const box = _overrideBox();
+  if (!box || !anchorEl) return false;
+  if (!_ovHome) _ovHome = { parent: box.parentNode, nextSibling: box.nextSibling };
+  const inTable = anchorEl.closest('td, th');
+  const target = inTable ? (anchorEl.closest('.table-wrap') || anchorEl.closest('table')) : anchorEl;
+  if (!target || !target.parentNode) return false;
+  target.parentNode.insertBefore(box, target.nextSibling);
+  box.classList.add('ov-anchored');
+  // 'nearest' so a box already fully visible does not jolt the modal.
+  if (box.scrollIntoView) box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  return true;
+}
+
+/** Puts the box back where its modal rendered it. Safe to call when it never
+ * moved. */
+function _restoreOverrideBoxHome() {
+  const box = _overrideBox();
+  if (!box || !_ovHome) return;
+  if (_ovHome.parent && _ovHome.parent.isConnected) {
+    _ovHome.parent.insertBefore(box, _ovHome.nextSibling);
+  }
+  box.classList.remove('ov-anchored');
+  _ovHome = null;
+}
+
+/** True when a field is selected and the reader has typed something that
+ * would be lost. Used by Cancel, by clicking a different pencil, and by
+ * closeModal() - before this, every one of those silently discarded a
+ * half-written correction and its reason. */
+function overrideBoxIsDirty() {
+  if (!SELECTED_FIELD || !_ovInitial) return false;
+  const valueEl = document.getElementById('ovValue');
+  const reasonEl = document.getElementById('ovReason');
+  const value = valueEl ? valueEl.value : _ovInitial.value;
+  const reason = reasonEl ? reasonEl.value.trim() : '';
+  return value !== _ovInitial.value || reason !== _ovInitial.reason;
+}
+
+/** Asks before throwing away a half-written correction. Returns true when it
+ * is safe to proceed. A plain confirm() for the same reason wireDismissLinks()
+ * uses a plain prompt(): this app has no reusable confirm-modal component,
+ * and building one for a single yes/no is not worth it. */
+function confirmDiscardCorrection() {
+  if (!overrideBoxIsDirty()) return true;
+  return window.confirm('Discard the correction you have started for "' + SELECTED_FIELD.label + '"?');
+}
+
+/** Clears the selection and returns the box to its resting state. `force`
+ * skips the are-you-sure (used after a successful save, where there is
+ * nothing to lose). Returns false if the reader declined. */
+function cancelFieldCorrection(force) {
+  if (!force && !confirmDiscardCorrection()) return false;
+  SELECTED_FIELD = null;
+  _ovInitial = null;
+  const hintEl = document.getElementById('ovHint');
+  const selEl = document.getElementById('ovSelectedField');
+  const valueRow = document.getElementById('ovValueRow');
+  const reasonEl = document.getElementById('ovReason');
+  const errEl = document.getElementById('ovError');
+  const submitBtn = document.getElementById('ovSubmit');
+  const cancelBtn = document.getElementById('ovCancel');
+  if (hintEl) hintEl.hidden = false;
+  if (selEl) { selEl.hidden = true; selEl.textContent = ''; }
+  if (valueRow) valueRow.innerHTML = '';
+  if (reasonEl) reasonEl.value = '';
+  if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+  if (submitBtn) submitBtn.disabled = true;
+  if (cancelBtn) cancelBtn.hidden = true;
+  document.querySelectorAll('.editable-line.ov-editing, .cell-editable.ov-editing')
+    .forEach(el => el.classList.remove('ov-editing'));
+  _restoreOverrideBoxHome();
+  return true;
+}
+
+// Advisory only, and deliberately a MIRROR of apps/services/validation.py's
+// GSTIN_RE/EMAIL_RE rather than a stricter client-side rule of its own. The
+// backend treats both as warn-never-block (see that module's docstring), so
+// blocking here would make the two disagree about what is savable. What
+// changes is WHEN the reader is told: _field_warning() runs after the write,
+// so an invalid GSTIN used to be committed and then reported in an
+// after-the-fact "Saved. '...' doesn't look like a standard GSTIN" - already
+// in the database by the time anyone could object.
+const _OV_GSTIN_RE = /^\d{2}[A-Z]{5}\d{4}[A-Z][A-Z0-9]Z[A-Z0-9]$/;
+const _OV_EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const _OV_BLANK_PLACEHOLDERS = ['', 'not available', 'n/a', 'na', 'none'];
+
+/** Returns { error } for something the backend would reject with a 400,
+ * { warn } for something it would save with a warning, or {} for a clean
+ * value. Only `error` blocks the save.
+ *
+ * `inputEl` is the live control, needed for one case the value alone cannot
+ * express - see the badInput branch below. */
+function validateOverrideValue(field, value, inputEl) {
+  const raw = (value == null ? '' : String(value)).trim();
+  // A <input type="number"> does NOT hand back what was typed when the text
+  // is not a number - it reports value === '' and sets validity.badInput.
+  // Found in testing: typing "abc" into Total Value therefore read as an
+  // intentional blank, passed every check, and PATCHed an EMPTY value, which
+  // _coerce_value() stores as NULL. Someone fat-fingering a number silently
+  // erased the figure instead of being told the input was rejected.
+  if (field.fieldType === 'number' && inputEl && inputEl.validity && inputEl.validity.badInput) {
+    return { error: 'Enter a number, for example 1250 or 1250.50.' };
+  }
+  if (field.fieldType === 'number' && raw !== '') {
+    // _coerce_value() raises decimal.InvalidOperation on a non-numeric
+    // string, which the view turns into a 400 - caught here so the reader
+    // gets the message beside the box instead of a round trip.
+    if (!/^-?\d*\.?\d+$/.test(raw)) return { error: 'Enter a number, for example 1250 or 1250.50.' };
+    if (Number(raw) < 0) return { error: 'This cannot be negative.' };
+  }
+  if (field.fieldType === 'date' && raw !== '') {
+    const d = new Date(raw + 'T00:00:00');
+    if (isNaN(d.getTime())) return { error: 'Enter a valid date.' };
+    // A four-digit typo in the year (2062 for 2026) is the realistic slip,
+    // and it would silently reorder every date-sorted view.
+    const year = Number(raw.slice(0, 4));
+    if (year < 2000 || year > 2100) return { error: 'That year looks wrong - check the date.' };
+  }
+  // Clearing a field that had a value is almost never what someone meant to
+  // do, and it is the outcome the number-input case above lands on when
+  // validity.badInput is unavailable (it is only set by real typing, not by
+  // a programmatic value, so it cannot be the only guard). Asking covers
+  // both that and an ordinary accidental clear; a field that was already
+  // blank is left alone, since blanking a blank changes nothing.
+  const hadValue = field.currentValue != null && String(field.currentValue).trim() !== '';
+  if (raw === '' && hadValue) {
+    return { warn: 'Clear "' + field.label + '"? It is currently "' + field.currentValue + '" and will be stored as blank.' };
+  }
+  const blank = _OV_BLANK_PLACEHOLDERS.indexOf(raw.toLowerCase()) !== -1;
+  if (!blank && field.fieldName === 'vendor_gstin' && !_OV_GSTIN_RE.test(raw.toUpperCase())) {
+    return { warn: 'That does not look like a standard 15-character GSTIN. Save it anyway?' };
+  }
+  if (!blank && field.fieldName === 'vendor_email' && !_OV_EMAIL_RE.test(raw)) {
+    return { warn: 'That does not look like a valid email address. Save it anyway?' };
+  }
+  return {};
+}
+
+/** Builds the right input control for `field.fieldType` into #ovValueRow. */
 function renderOverrideValueInput(field) {
   const row = document.getElementById('ovValueRow');
   if (!row) return;
@@ -1105,24 +1317,29 @@ function renderOverrideValueInput(field) {
     input.value = field.currentValue || '';
   }
   input.id = 'ovValue';
+  // Clear a stale validation message as soon as the reader acts on it,
+  // rather than leaving a red line under a value they have already fixed.
+  input.oninput = () => {
+    const errEl = document.getElementById('ovError');
+    if (errEl && !errEl.hidden) { errEl.hidden = true; errEl.textContent = ''; }
+  };
   row.appendChild(input);
   input.focus();
   if (input.select && field.fieldType !== 'select') input.select();
 }
 
-/** Selects one field for correction: stashes it on SELECTED_FIELD and
- * updates the override box's hint/selected-field banner + value input +
- * Submit button. Does NOT switch tabs itself - the caller (wireEditIcons()'s
- * pencil handler) does that immediately after, since only it knows which
- * tab id this modal should jump to. */
-function selectFieldForCorrection(field) {
-  SELECTED_FIELD = field;
+/** Selects one field for correction: stashes it on SELECTED_FIELD, moves the
+ * correction box to sit under `anchorEl`, and fills in its banner/input. */
+function selectFieldForCorrection(field, anchorEl) {
   const hintEl = document.getElementById('ovHint');
   const selEl = document.getElementById('ovSelectedField');
+  if (!hintEl || !selEl) return; // this modal has no correction box in the DOM (shouldn't happen for an edit-enabled field)
+  SELECTED_FIELD = field;
   const reasonEl = document.getElementById('ovReason');
   const statusEl = document.getElementById('ovStatus');
+  const errEl = document.getElementById('ovError');
   const submitBtn = document.getElementById('ovSubmit');
-  if (!hintEl || !selEl) return; // this modal has no override box in the DOM (shouldn't happen for an edit-enabled field)
+  const cancelBtn = document.getElementById('ovCancel');
   hintEl.hidden = true;
   selEl.hidden = false;
   // A 'date' field's currentValue is the raw ISO string (input.value needs
@@ -1134,18 +1351,27 @@ function selectFieldForCorrection(field) {
   selEl.textContent = 'Correcting: ' + field.label + ' (currently: ' + (currentDisplay || 'Not available') + ')';
   if (reasonEl) reasonEl.value = '';
   if (statusEl) { statusEl.textContent = ''; statusEl.className = ''; }
+  if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
   if (submitBtn) submitBtn.disabled = false;
+  if (cancelBtn) cancelBtn.hidden = false;
+  _ovInitial = { value: field.currentValue || '', reason: '' };
+  document.querySelectorAll('.editable-line.ov-editing, .cell-editable.ov-editing')
+    .forEach(el => el.classList.remove('ov-editing'));
+  if (anchorEl) anchorEl.classList.add('ov-editing');
+  _moveOverrideBoxTo(anchorEl);
   renderOverrideValueInput(field);
 }
 
-/** Wires the override box's Submit button, once per modal render. PATCHes
- * via savePoField() using whatever field is currently selected (set by
- * selectFieldForCorrection()), then calls that field's own `onSaved`
- * callback - each PO-type's caller re-fetches/re-renders differently
- * (Domestic invalidates the whole-plant list cache; Import invalidates its
- * own list + per-PO detail cache; Material invalidates every plant's
- * materials cache), so that stays a callback instead of baked in here. */
+/** Wires the correction box's Submit and Cancel buttons, once per modal
+ * render. PATCHes via savePoField() using whatever field is currently
+ * selected, then calls that field's own `onSaved` callback - each PO-type's
+ * caller re-fetches/re-renders differently (Domestic invalidates the
+ * whole-plant list cache; Import invalidates its own list + per-PO detail
+ * cache; Material invalidates every plant's materials cache), so that stays
+ * a callback instead of baked in here. */
 function wireOverrideBox(root) {
+  const cancelBtn = root.querySelector('#ovCancel');
+  if (cancelBtn) cancelBtn.onclick = () => { cancelFieldCorrection(false); };
   const btn = root.querySelector('#ovSubmit');
   if (!btn) return;
   btn.onclick = async () => {
@@ -1153,16 +1379,44 @@ function wireOverrideBox(root) {
     const valueEl = document.getElementById('ovValue');
     const reasonEl = document.getElementById('ovReason');
     const statusEl = document.getElementById('ovStatus');
+    const errEl = document.getElementById('ovError');
     const value = valueEl ? valueEl.value : '';
     const reason = reasonEl ? reasonEl.value.trim() : '';
+
+    const check = validateOverrideValue(SELECTED_FIELD, value, valueEl);
+    if (check.error) {
+      if (errEl) { errEl.hidden = false; errEl.textContent = check.error; }
+      if (valueEl) valueEl.focus();
+      return;
+    }
+    if (check.warn && !window.confirm(check.warn)) {
+      if (valueEl) valueEl.focus();
+      return;
+    }
+    if (errEl) { errEl.hidden = true; errEl.textContent = ''; }
+
     btn.disabled = true;
     statusEl.className = '';
     statusEl.textContent = 'Saving…';
     try {
       const result = await savePoField(SELECTED_FIELD.fieldsUrl, SELECTED_FIELD.itemId, SELECTED_FIELD.fieldName, value, reason);
-      statusEl.className = 'override-status ok';
-      statusEl.textContent = 'Saved.' + (result.warning ? ' ' + result.warning : '');
-      if (SELECTED_FIELD.onSaved) await SELECTED_FIELD.onSaved(SELECTED_FIELD.fieldName, SELECTED_FIELD.itemId);
+      const savedLabel = SELECTED_FIELD.label;
+      const onSaved = SELECTED_FIELD.onSaved;
+      const savedField = SELECTED_FIELD.fieldName;
+      const savedItem = SELECTED_FIELD.itemId;
+      // Clear the selection BEFORE the re-render: onSaved() typically
+      // rebuilds the whole modal, which destroys this box, and leaving
+      // SELECTED_FIELD pointing at a detached element makes the next
+      // closeModal() prompt about a correction that is already saved.
+      cancelFieldCorrection(true);
+      if (statusEl.isConnected) {
+        statusEl.className = 'override-status ok';
+        statusEl.textContent = 'Saved "' + savedLabel + '". ' +
+          (result.warning ? result.warning + ' ' : '') +
+          'Remember to fix the source file too - the next sync overwrites this.';
+      }
+      announce('Correction saved for ' + savedLabel);
+      if (onSaved) await onSaved(savedField, savedItem);
     } catch (e) {
       statusEl.className = 'override-status err';
       statusEl.textContent = 'Could not save: ' + e.message;
@@ -1172,30 +1426,33 @@ function wireOverrideBox(root) {
 }
 
 // Wires every .editable-line/.cell-editable pencil under `container` to
-// select that field for correction (see selectFieldForCorrection() above)
-// and jump to wherever this modal's override box lives, then wires that
-// override box's own Submit button. Replaces the old inline
-// wireEditableLines()/startFieldEdit() swap-to-input behavior.
+// select that field for correction (see selectFieldForCorrection() above),
+// then wires that correction box's own buttons.
 // `fieldsUrl` is either the one URL every line in `container` shares (a
 // single PO's fields endpoint - Domestic/Import's own usage), or a function
 // `(lineEl) => url` for a container whose lines target different endpoints
 // (the material modal's Stock by Plant table, where each row is a different
 // plant's own lot - see editableCell()'s data-plant above and
-// materialFieldsUrl() in shared.js). `switchToTab()` is a callback the
-// caller supplies, since each modal's tab id/attribute differs (po-modal.js
-// uses data-tab="flags", import-po.js uses data-itab="flags",
-// material-modal.js uses data-tab="stockplant" - it has no separate flags
-// tab, see that file's own comment).
+// materialFieldsUrl() in shared.js).
+// `switchToTab` is now only a FALLBACK. The box moves to the clicked field
+// (see _moveOverrideBoxTo()), so no tab change is needed or wanted; the
+// callback is still invoked if that move fails, which is the only case where
+// the box ends up somewhere the reader cannot see. Callers still pass it.
 function wireEditIcons(container, fieldsUrl, switchToTab, onSaved) {
   SELECTED_FIELD = null;
+  _ovHome = null;
+  _ovInitial = null;
   const resolveUrl = typeof fieldsUrl === 'function' ? fieldsUrl : () => fieldsUrl;
   container.querySelectorAll('.editable-line, .cell-editable').forEach(el => {
     const pencil = el.querySelector('.edit-pencil');
     if (!pencil) return;
-    pencil.onclick = () => {
+    const start = () => {
+      // Switching fields mid-correction throws away whatever was typed, so
+      // it asks first - same guard Cancel and closeModal() use.
+      if (SELECTED_FIELD && !confirmDiscardCorrection()) return;
       // A 'date' field's shown text is now human-formatted (dd/mm/yyyy, see
       // editableLine()'s/editableCell()'s own _fieldDisplay() comment) - the
-      // override box's native <input type="date"> needs the real ISO value
+      // correction box's native <input type="date"> needs the real ISO value
       // to pre-fill correctly, so prefer the raw value stashed in
       // data-raw-value over re-parsing the (now reformatted) display text.
       const valueEl = el.querySelector('.line-val');
@@ -1213,11 +1470,56 @@ function wireEditIcons(container, fieldsUrl, switchToTab, onSaved) {
         currentValue: currentValue,
         fieldsUrl: resolveUrl(el),
         onSaved: onSaved,
-      });
-      if (switchToTab) switchToTab();
+      }, el);
+      // _ovHome is set only by a successful move, so an unset one after
+      // selecting means the box is still wherever its tab put it.
+      if (!_ovHome && switchToTab) switchToTab();
+    };
+    pencil.onclick = start;
+    // The pencil was a bare <span>: not reachable by keyboard at all, on a
+    // page that otherwise went through a full accessibility pass. Enter and
+    // Space activate it now, matching every other div-based control here.
+    pencil.setAttribute('role', 'button');
+    pencil.setAttribute('tabindex', '0');
+    pencil.setAttribute('aria-label', 'Correct ' + (el.dataset.label || el.dataset.field || 'this field'));
+    pencil.onkeydown = (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); start(); }
     };
   });
   wireOverrideBox(container);
+}
+
+// ── Revert a correction ─────────────────────────────────────────────────
+// Correction History showed old -> new and was inert, so undoing a mistyped
+// correction meant retyping the old value from memory. `oldValue` is already
+// stored on the audit row and already sent to the frontend, so a revert is
+// just the same PATCH in the other direction - and it writes its own audit
+// row, so the history stays a complete record rather than losing the fact
+// that a value was changed and changed back.
+//
+// Callers render a `.revert-link` carrying data-field / data-item /
+// data-label / data-old-value (see po-modal.js's correctionsHtml()) and call
+// this with the same fieldsUrl and onSaved they gave wireEditIcons().
+function wireRevertLinks(container, fieldsUrl, onSaved) {
+  const resolveUrl = typeof fieldsUrl === 'function' ? fieldsUrl : () => fieldsUrl;
+  container.querySelectorAll('.revert-link').forEach(el => {
+    el.onclick = async () => {
+      const label = el.dataset.label || el.dataset.field;
+      const oldValue = el.dataset.oldValue || '';
+      const shown = oldValue === '' ? 'blank' : '"' + oldValue + '"';
+      if (!window.confirm('Set ' + label + ' back to ' + shown + '?')) return;
+      el.textContent = 'reverting…';
+      try {
+        await savePoField(resolveUrl(el), el.dataset.item || '', el.dataset.field, oldValue,
+          'Reverted an earlier correction.');
+        announce('Reverted ' + label);
+        if (onSaved) await onSaved(el.dataset.field, el.dataset.item || '');
+      } catch (e) {
+        el.textContent = 'revert';
+        window.alert('Could not revert: ' + e.message);
+      }
+    };
+  });
 }
 
 // ── Modal accessibility ─────────────────────────────────────────────────
@@ -1332,6 +1634,14 @@ function openModalA11y(backdrop, dialog) {
   _modalKeydownHandler = function (e) {
     if (e.key === 'Escape') {
       e.preventDefault();
+      // Escape used to close the WHOLE modal even mid-correction, throwing
+      // away a typed value and reason with no prompt. With a field selected
+      // it now backs out of the correction only - the ordinary meaning of
+      // Escape in a form - and a second Escape closes the modal.
+      if (typeof SELECTED_FIELD !== 'undefined' && SELECTED_FIELD) {
+        cancelFieldCorrection(false);
+        return;
+      }
       if (typeof closeModal === 'function') closeModal();
       else { backdrop.classList.remove('open'); closeModalA11y(); }
       return;
@@ -1378,6 +1688,44 @@ function closeModalA11y() {
 // codebase - so a screen-reader user got silence and no way to tell whether
 // an action had done anything. announce() writes into one shared polite
 // live region, created on demand.
+// Brings a just-filtered list into view after a KPI-card click, and says what
+// changed (2026-09-21).
+//
+// THE PROBLEM THIS SOLVES. A KPI card sits in the row at the very top of the
+// page; the list it filters sits below the chart panel, normally off-screen.
+// Clicking a card narrowed the table correctly and the viewer saw NOTHING move
+// - reported right after the cards were made clickable at all, which is when
+// it became noticeable. The filter working and the filter appearing to work
+// are two different things.
+//
+// Three deliberate restraints:
+//   - NO SCROLL WHEN THE LIST IS ALREADY VISIBLE. Yanking a list that the
+//     reader is already looking at is worse than not scrolling: they lose
+//     their place for no gain. "Visible" is generous here (the region's top
+//     edge anywhere in the viewport) precisely so a half-scrolled page is left
+//     alone.
+//   - prefers-reduced-motion JUMPS INSTEAD OF GLIDING. Smooth scrolling over a
+//     long page is a real vestibular trigger. The reader still gets taken to
+//     the list - the motion is what is dropped, not the destination. Same test
+//     wireKpiCountUps() already uses for its count-up animation.
+//   - IT ANNOUNCES. The visual change starts off-screen, so a screen-reader
+//     user gets nothing from the scroll itself; the list's own heading already
+//     reads "... showing 4 of 27", which is exactly the sentence needed.
+function revealFilteredList(regionId) {
+  const region = document.getElementById(regionId);
+  if (!region) return;
+
+  const heading = region.querySelector('.list-toggle-row .section-title');
+  if (heading) announce(heading.textContent.trim());
+
+  const top = region.getBoundingClientRect().top;
+  const alreadyVisible = top >= 0 && top <= window.innerHeight;
+  if (alreadyVisible) return;
+
+  const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  region.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' });
+}
+
 function announce(message) {
   if (!message) return;
   let region = document.getElementById('sr-live-region');

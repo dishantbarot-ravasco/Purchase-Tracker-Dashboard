@@ -29,6 +29,8 @@ from apps.core.models import (
     RTPVapiDomesticPOLineItem,
     RTPVapiPOMirMatch,
     RTPVapiRMLot,
+    ManualMirMatch,
+    SyncRun,
 )
 from apps.services import matching_core
 from apps.services.matching_core import _MatchConfig
@@ -98,6 +100,11 @@ MATCH_CONFIG = _MatchConfig(
     material_match_threshold=MATERIAL_MATCH_THRESHOLD,
     mir_value=lambda mir: mir.taxable_value,
     plant_key="vapi",
+    # Manual MIR pins (2026-09-21) - the model and this plant's SyncRun
+    # value, injected rather than imported inside matching_core so that
+    # module keeps its "no model imports" shape. See ManualMirMatch.
+    manual_match_model=ManualMirMatch,
+    syncrun_plant=SyncRun.Plant.RTP_VAPI,
     stock_rate_field="basic_rate",
     stock_vendor_field="supplier_name",
     # Imports identification/financial-check redesign (2026-09): HRS/Achhad

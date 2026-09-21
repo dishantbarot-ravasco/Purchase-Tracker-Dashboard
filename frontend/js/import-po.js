@@ -376,6 +376,10 @@ function renderImportPoList(el) {
       state.importStatusFilter = (state.importStatusFilter === key || key === 'total') ? null : key;
       state.importTablePage = 1;
       renderImportPoList(el);
+      // Same reasoning as po-list.js/materials.js - the list sits below the
+      // KPI row and the chart panel, so a narrowing click is otherwise
+      // invisible. 'total' clears rather than narrows, so it never scrolls.
+      if (state.importStatusFilter) revealFilteredList('importListRegion');
     };
   });
   document.getElementById('importApplyFilter').onclick = () => {
@@ -853,14 +857,25 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
       po.corrections.map(c =>
         '<div class="field-block mb-8">' +
           '<div class="fs-12-5"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
-          escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
+          escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') +
+          // Unlike Domestic, an Import line item DOES have a real, stable
+          // item_id (ImportPOCorrection keys on it), so an item-level
+          // correction can be reverted here too - see shared.js's
+          // wireRevertLinks() and po-modal.js's narrower version.
+          (canEditField(plantKey)
+            ? '<span class="revert-link" data-field="' + escapeHtml(c.fieldName) + '"' +
+              ' data-label="' + escapeHtml(c.fieldName) + '"' +
+              (c.itemId ? ' data-item="' + escapeHtml(c.itemId) + '"' : '') +
+              ' data-old-value="' + escapeHtml(c.oldValue || '') + '">revert</span>'
+            : '') +
+          '</div>' +
           (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
         '</div>'
       ).join('')
     : '';
-  const correctionBoxHtml = overrideBoxHtml('Click the ✎ icon next to any field in the Overview, Items, or Shipment & License tab to correct it - no need to know column names.');
+  const correctionBoxHtml = overrideBoxHtml('Click the ✎ beside any field to correct it.');
 
   body.innerHTML =
     '<div class="modal-head"><div><h2>' + escapeHtml(po.poNumber) + '</h2>' +
@@ -890,6 +905,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const fieldsUrl = apiBase + '/purchase-orders/' + encodeURIComponent(plantKey) + '/' + encodeURIComponent(poNumber) + '/fields';
   const switchToFlagsTab = () => { const t = body.querySelector('[data-itab="flags"]'); if (t) t.click(); };
   wireEditIcons(body, fieldsUrl, switchToFlagsTab, () => onImportFieldSaved(plantKey, poNumber));
+  wireRevertLinks(body, fieldsUrl, () => onImportFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
   body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () => trackBlNumber(el2.dataset.trackBl));
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));

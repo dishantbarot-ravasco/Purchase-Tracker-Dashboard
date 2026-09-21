@@ -70,15 +70,28 @@ async function openPoModal(compositeKey) {
   const itemsHtml = (po.items || []).length
     ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th><th>MIR Matched</th><th>Material Analysis</th></tr></thead><tbody>' +
         po.items.map(it => {
-          // Domestic line items have no stable item_id in a meaningful
-          // number of real rows (see DomesticPOCorrection's docstring) -
-          // itemId isn't part of _line_item_dict() at all today, so item-
-          // level edits aren't wired up yet; only PO-level fields are
-          // editable for now (Overview tab below).
+          // Domestic line items still have no stable item_id in a meaningful
+          // number of real rows (see DomesticPOCorrection's docstring), so
+          // per-FIELD item edits remain unwired - only PO-level fields are
+          // editable (Overview tab below). The MIR match is the exception:
+          // it is addressed by `itemRef`, the line's position within its PO,
+          // which matching_core and the API both derive the same way (see
+          // ManualMirMatch) precisely because item_id cannot be trusted.
+          const pinned = !!it.manuallyPinned;
+          const changeLink = canEditField(plantKey) && it.itemRef !== undefined
+            ? ' <span class="mir-change-link" role="button" tabindex="0"' +
+              ' data-item-ref="' + escapeHtml(String(it.itemRef)) + '"' +
+              ' data-description="' + escapeHtml(it.description || '') + '"' +
+              ' data-current-mir="' + escapeHtml(it.matchedMirNo || '') + '"' +
+              ' data-pinned="' + (pinned ? '1' : '0') + '">change</span>'
+            : '';
+          const pinnedTag = pinned
+            ? ' <span class="pinned-tag" title="This MIR match was set by hand and is not re-decided by the matcher.">manual</span>'
+            : '';
           return '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '-') +
           '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
           '</td><td>' + escapeHtml(formatDateIN(it.deliveryDate)) + '</td><td>' +
-          matchStatusHtml(it, plantKey) +
+          matchStatusHtml(it, plantKey) + pinnedTag + changeLink +
           '</td><td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in Stock</span>') +
           '</td></tr>';
         }).join('') + '</tbody></table>'
@@ -122,7 +135,11 @@ async function openPoModal(compositeKey) {
 
   const itemStockHtml =
     '<div class="mb-block-16">' + miniStepperHtml(po) + '</div>' +
-    '<div class="section-title mt-0">Material / Product Details</div>' + itemsHtml;
+    '<div class="section-title mt-0">Material / Product Details</div>' +
+    '<div class="table-wrap">' + itemsHtml + '</div>' +
+    // Rendered once per modal and moved under whichever line's "change" was
+    // clicked - same behaviour as the correction box (shared.js).
+    mirPickerHtml();
 
   // Match Accuracy Programme fix 3.G: arithmetic-mismatch flags
   // (dataQualityFlagHtml, flags.js) alongside the existing remarks-derived
@@ -132,12 +149,24 @@ async function openPoModal(compositeKey) {
   const catsHtml = (po._categories || []).length || arithmeticFlagsHtml
     ? po._categories.map(c => poFlagHtml(c, po, plantKey)).join('') + arithmeticFlagsHtml
     : '<div class="empty-note-sm">No data quality flags on this PO.</div>';
+  // "revert" puts the old value back (shared.js's wireRevertLinks()). Shown
+  // only to someone who could have made the correction in the first place,
+  // and only for a PO-level field: an item-level correction is keyed on an
+  // item_id domestic line items do not reliably carry (see this file's own
+  // itemsHtml comment), so reverting one has nothing dependable to address.
+  const canRevert = canEditField(plantKey);
   const correctionsHtml = (po.corrections || []).length
     ? '<div class="section-title mt-18">Correction History</div>' +
       po.corrections.map(c =>
         '<div class="field-block mb-8">' +
           '<div class="fs-12-5"><b>' + escapeHtml(c.fieldName) + (c.itemId ? ' (item ' + escapeHtml(c.itemId) + ')' : '') + ':</b> ' +
-          escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') + '</div>' +
+          escapeHtml(c.oldValue || 'blank') + ' &rarr; ' + escapeHtml(c.newValue || 'blank') +
+          (canRevert && !c.itemId
+            ? '<span class="revert-link" data-field="' + escapeHtml(c.fieldName) + '"' +
+              ' data-label="' + escapeHtml(c.fieldName) + '"' +
+              ' data-old-value="' + escapeHtml(c.oldValue || '') + '">revert</span>'
+            : '') +
+          '</div>' +
           (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
           ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
@@ -145,7 +174,7 @@ async function openPoModal(compositeKey) {
       ).join('')
     : '';
   const flagsTabHtml = catsHtml + correctionsHtml +
-    overrideBoxHtml('Click the ✎ icon next to any field in the Overview or Item & Stock tab to correct it - no need to know column names.');
+    overrideBoxHtml('Click the ✎ beside any field to correct it.');
 
   const backdrop = document.getElementById('modalBackdrop');
   const body = document.getElementById('modalBody');
@@ -185,7 +214,231 @@ async function openPoModal(compositeKey) {
   const fieldsUrl = apiBase + '/purchase-orders/' + encodeURIComponent(poNumber) + '/fields';
   const switchToFlagsTab = () => { const t = body.querySelector('[data-tab="flags"]'); if (t) t.click(); };
   wireEditIcons(body, fieldsUrl, switchToFlagsTab, (fieldName, itemId) => onDomesticFieldSaved(plantKey, poNumber));
+  wireRevertLinks(body, fieldsUrl, () => onDomesticFieldSaved(plantKey, poNumber));
+  // A manual MIR pin re-runs the whole plant's matching, so other POs'
+  // badges can move too - the same full invalidate+reload a field
+  // correction already does, not a modal-only refresh.
+  wireMirPicker(body, plantKey, poNumber, () => onDomesticFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onDomesticFieldSaved(plantKey, poNumber));
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
 }
 
+// ── Change MIR match ────────────────────────────────────────────────────
+// "It would be great if we can edit the MIR number too, and if that was
+// assigned to some other PO then a pop up would appear telling that matching
+// with this would break so and so" (project owner, 2026-09-21).
+//
+// A picker, not a free-text box. Typing a MIR number blind is how you pin a
+// line to a document that does not exist, or to the wrong one with the same
+// digits - the list shows date, party, material and qty/rate so the reader
+// can confirm they have the right receipt before committing, and it is the
+// only place the collision warning can come from (only the backend knows
+// which other line items hold that document's rows).
+//
+// It names a MIR NUMBER, not a row - see ManualMirMatch's docstring for why.
+// The panel moves to sit under the items table, same "come to the thing you
+// clicked" behaviour as the correction box (shared.js's
+// _moveOverrideBoxTo()).
+
+let MIR_PICKER = null;  // { plantKey, poNumber, itemRef, description, onDone }
+
+function mirPickerHtml() {
+  return '<div class="mir-picker" id="mirPicker" hidden>' +
+    '<div class="mir-picker-head">' +
+      '<h4>Change MIR match</h4>' +
+      '<span class="mir-picker-close" id="mirPickerClose" role="button" tabindex="0" title="Close">&times;</span>' +
+    '</div>' +
+    '<div class="mir-picker-for" id="mirPickerFor"></div>' +
+    '<div class="row">' +
+      '<input type="search" id="mirPickerSearch" placeholder="Search MIR number, party or material">' +
+    '</div>' +
+    '<div class="mir-picker-list" id="mirPickerList"></div>' +
+    '<div class="row mt-8">' +
+      '<button type="button" id="mirPickerNone" class="mir-picker-secondary">No MIR - not received</button>' +
+      '<button type="button" id="mirPickerAuto" class="mir-picker-secondary">Back to automatic</button>' +
+    '</div>' +
+    '<div id="mirPickerStatus"></div>' +
+    '<div class="ov-disclaimer">A manual match survives every re-match and re-sync until someone changes it back. It does not alter the MIR or the PO - only which receipt this line is reconciled against.</div>' +
+  '</div>';
+}
+
+/** Who else currently holds rows of this MIR document, as a sentence. Empty
+ * when nothing does. The line item being edited is excluded - re-pinning a
+ * line to the document it already holds is not a collision. */
+function mirClaimSummary(candidate, selfPoNumber, selfItemRef) {
+  const others = (candidate.claimedBy || []).filter(
+    c => !(c.poNumber === selfPoNumber && c.itemRef === selfItemRef));
+  if (!others.length) return '';
+  return others.map(c => 'PO ' + c.poNumber + ', line ' + (Number(c.itemRef) + 1) +
+    ' (' + (c.description || 'no description') + ')' + (c.manuallyPinned ? ' - itself a manual match' : '')).join('; ');
+}
+
+function renderMirCandidates(candidates) {
+  const list = document.getElementById('mirPickerList');
+  if (!list) return;
+  if (!candidates.length) {
+    list.innerHTML = '<div class="empty-note-sm">No MIR entries matched that search.</div>';
+    return;
+  }
+  list.innerHTML = candidates.map(c => {
+    const claim = mirClaimSummary(c, MIR_PICKER.poNumber, MIR_PICKER.itemRef);
+    return '<div class="mir-cand" data-mir-no="' + escapeHtml(c.mirNo) + '" role="button" tabindex="0">' +
+      '<div class="mir-cand-head"><b>' + escapeHtml(c.mirNo) + '</b>' +
+        (c.mirDate ? ' <span class="mir-cand-date">' + escapeHtml(formatDateIN(c.mirDate)) + '</span>' : '') +
+        (c.rowCount > 1 ? ' <span class="mir-cand-rows">' + c.rowCount + ' lines</span>' : '') +
+      '</div>' +
+      '<div class="mir-cand-sub">' + escapeHtml(c.party || 'Unknown party') + ' &middot; ' + escapeHtml(c.material || '') + '</div>' +
+      '<div class="mir-cand-sub">' +
+        (c.qty != null ? escapeHtml(String(c.qty)) + ' ' + escapeHtml(c.uom || '') : 'qty n/a') +
+        (c.rate != null ? ' @ ' + formatInr(c.rate) : '') +
+        (c.invoiceNo ? ' &middot; inv ' + escapeHtml(c.invoiceNo) : '') +
+      '</div>' +
+      (claim ? '<div class="mir-cand-claim">Currently matched to ' + escapeHtml(claim) + '</div>' : '') +
+    '</div>';
+  }).join('');
+  list.querySelectorAll('.mir-cand').forEach(el => {
+    const choose = () => chooseMirCandidate(el.dataset.mirNo, candidates);
+    el.onclick = choose;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); choose(); } };
+  });
+}
+
+/** The popup the project owner asked for. Names exactly what taking this
+ * document costs, and says what happens to the line that loses it -
+ * "re-matched automatically, and it may end up unmatched" rather than a
+ * vague "this will break something", because the matcher really does get
+ * another go at it (matching_core's assignment runs again from scratch). */
+function chooseMirCandidate(mirNo, candidates) {
+  const candidate = candidates.find(c => c.mirNo === mirNo);
+  if (!candidate) return;
+  const claim = mirClaimSummary(candidate, MIR_PICKER.poNumber, MIR_PICKER.itemRef);
+  if (claim) {
+    const msg = 'MIR ' + mirNo + ' is currently matched to ' + claim + '.\n\n' +
+      'Matching it here releases it from that line. That line will be re-matched automatically and may end up with no MIR at all.\n\n' +
+      'Continue?';
+    if (!window.confirm(msg)) return;
+  }
+  applyMirMatch({ mirNo: mirNo });
+}
+
+async function applyMirMatch(opts) {
+  const status = document.getElementById('mirPickerStatus');
+  const p = MIR_PICKER;
+  if (!p) return;
+  status.className = '';
+  status.textContent = 'Saving…';
+  const body = {
+    itemRef: p.itemRef,
+    mirNo: opts.mirNo || '',
+    clear: !!opts.clear,
+    reason: opts.reason || '',
+  };
+  try {
+    const data = await apiForPlant(p.plantKey,
+      '/purchase-orders/' + encodeURIComponent(p.poNumber) + '/mir-match',
+      { method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    status.className = 'override-status ok';
+    status.textContent = opts.clear ? 'Back to automatic matching.'
+      : (body.mirNo ? 'Matched to MIR ' + body.mirNo + '.' : 'Marked as not received.');
+    announce(status.textContent);
+    // A pin re-runs the whole plant's matching, so other rows can move too -
+    // the caller reloads the list, not just this modal.
+    if (p.onDone) await p.onDone();
+  } catch (e) {
+    status.className = 'override-status err';
+    status.textContent = 'Could not save: ' + e.message;
+  }
+}
+
+function closeMirPicker() {
+  const panel = document.getElementById('mirPicker');
+  if (panel) panel.hidden = true;
+  document.querySelectorAll('tr.mir-editing').forEach(tr => tr.classList.remove('mir-editing'));
+  MIR_PICKER = null;
+}
+
+async function loadMirCandidates(q) {
+  const list = document.getElementById('mirPickerList');
+  if (!list || !MIR_PICKER) return;
+  list.innerHTML = '<div class="empty-note-sm">Loading&hellip;</div>';
+  try {
+    const data = await apiForPlant(MIR_PICKER.plantKey,
+      '/purchase-orders/' + encodeURIComponent(MIR_PICKER.poNumber) + '/mir-candidates' +
+      (q ? '?q=' + encodeURIComponent(q) : ''));
+    if (!MIR_PICKER) return;  // closed while the fetch was in flight
+    renderMirCandidates(data.candidates || []);
+  } catch (e) {
+    list.innerHTML = '<div class="empty-note-sm">Could not load MIR entries: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+
+/** Opens the picker for one line item, anchored under its own table. */
+function openMirPicker(ctx) {
+  const panel = document.getElementById('mirPicker');
+  if (!panel) return;
+  MIR_PICKER = ctx;
+  panel.hidden = false;
+  const anchor = ctx.rowEl && (ctx.rowEl.closest('.table-wrap') || ctx.rowEl.closest('table'));
+  if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor.nextSibling);
+  document.querySelectorAll('tr.mir-editing').forEach(tr => tr.classList.remove('mir-editing'));
+  if (ctx.rowEl) ctx.rowEl.classList.add('mir-editing');
+  document.getElementById('mirPickerFor').textContent =
+    'Line ' + (Number(ctx.itemRef) + 1) + ': ' + (ctx.description || 'no description') +
+    ' — currently ' + (ctx.currentMir ? 'MIR ' + ctx.currentMir : 'not matched') +
+    (ctx.manuallyPinned ? ' (set by hand)' : '');
+  document.getElementById('mirPickerStatus').textContent = '';
+  document.getElementById('mirPickerStatus').className = '';
+  const search = document.getElementById('mirPickerSearch');
+  search.value = '';
+  loadMirCandidates('');
+  search.focus();
+  if (panel.scrollIntoView) panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+/** Wires the picker's own controls plus every "change" link under
+ * `container`. Called once per modal render, same as wireEditIcons(). */
+function wireMirPicker(container, plantKey, poNumber, onDone) {
+  MIR_PICKER = null;
+  const search = container.querySelector('#mirPickerSearch');
+  if (search) {
+    // debounceRender() is a FACTORY - it returns the debounced function, so
+    // it is called once here rather than per keystroke (calling it inside
+    // the handler would build a fresh timer each time and debounce nothing).
+    // 250ms, matching search-po's own box: this one awaits a fetch too.
+    search.oninput = debounceRender(() => loadMirCandidates(search.value.trim()), 250);
+  }
+  const closeBtn = container.querySelector('#mirPickerClose');
+  if (closeBtn) {
+    closeBtn.onclick = closeMirPicker;
+    closeBtn.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); closeMirPicker(); } };
+  }
+  const noneBtn = container.querySelector('#mirPickerNone');
+  if (noneBtn) {
+    noneBtn.onclick = () => {
+      if (!window.confirm('Record that this line has NO matching MIR entry?\n\nIt will stay unmatched until someone changes it back, and will not be re-matched automatically.')) return;
+      applyMirMatch({ mirNo: '' });
+    };
+  }
+  const autoBtn = container.querySelector('#mirPickerAuto');
+  if (autoBtn) {
+    autoBtn.onclick = () => {
+      if (!window.confirm('Remove the manual match and let the matcher decide again?')) return;
+      applyMirMatch({ clear: true });
+    };
+  }
+  container.querySelectorAll('.mir-change-link').forEach(el => {
+    const open = () => openMirPicker({
+      plantKey: plantKey,
+      poNumber: poNumber,
+      itemRef: el.dataset.itemRef,
+      description: el.dataset.description,
+      currentMir: el.dataset.currentMir || '',
+      manuallyPinned: el.dataset.pinned === '1',
+      rowEl: el.closest('tr'),
+      onDone: onDone,
+    });
+    el.onclick = open;
+    el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+  });
+}

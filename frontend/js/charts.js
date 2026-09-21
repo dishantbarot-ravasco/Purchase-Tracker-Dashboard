@@ -73,6 +73,14 @@ const centerTextPlugin = {
 };
 
 function closeModal() {
+  // A half-written correction is real work - closing the modal used to drop
+  // it (value AND reason) with nothing asked. cancelFieldCorrection() only
+  // prompts when something was actually typed, so the common case of closing
+  // a modal you were merely reading is unaffected. Guarded by typeof because
+  // charts.js also loads on pages that never render a correction box.
+  if (typeof cancelFieldCorrection === 'function' && typeof SELECTED_FIELD !== 'undefined' && SELECTED_FIELD) {
+    if (!cancelFieldCorrection(false)) return;
+  }
   document.getElementById('modalBackdrop').classList.remove('open');
   destroyModalCharts();
   // Removes the Escape/Tab-trap listeners and returns focus to whatever
