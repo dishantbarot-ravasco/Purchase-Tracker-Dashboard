@@ -15,224 +15,207 @@ apps/api/routers/reports_views.py (Render's free web plan has no built-in
 cron, and Render's own Cron Jobs feature isn't free either) — see that
 view's own module docstring for the shared-secret auth scheme.
 
-Deliberately NOT built on top of apps/api/routers/_domestic_base.py's
-_consumption_by_lot()/_daily_movement_points() even though the underlying
-query overlaps heavily: apps/services must not import from apps/api (the
-dependency only ever flows the other way in this app — see CLAUDE.md's
-"Architecture" section), so this module keeps its own small, report-scoped
-copy of that query instead.
+**Both reports read the MaterialConsumptionDaily ledger (2026-09-21).** They
+used to derive their own figures from *RMSnapshot, keeping a private copy of
+_domestic_base.py's query because apps/services must not import from
+apps/api. Two implementations of one number is a bug waiting to happen, and
+this one had already happened - the two copies disagreed about whether
+`received` was per-day or cumulative. The ledger is written by each plant's
+own `compute_<plant>_consumption` pipeline step, so the emails and the
+dashboard now quote the same rows by construction.
 
-"Issued today" is read from a genuinely per-day source, not every plant's
-same-named field — see CLAUDE.md's "Days-Left Engine" section:
-RTPAchhadRMLot's own `issued` column is a period-to-date summary that resets
-each period, not a daily value, so Achhad's per-day figure has to come from
-RTPAchhadRMDailyMovement instead (parsed from the Stock file's own daily
-Recp./Issue matrix). HRS's and RTP-Vapi's Stock sheets have no such
-period-reset behavior — their RMSnapshot.issued for a given day is already
-a real one-day figure, sourced from a separate Receipt/Issue tab.
+**That migration fixed a real reporting error, not just a duplication.**
+The old "Issued today" read `*RMSnapshot.issued` directly for HRS/Vapi,
+believing only RTP-Achhad's column to be period-to-date. Measured on live
+data: `opening + received - issued == closing` holds on 4,327 of 4,327 rows
+and `opening_stock` is frozen across consecutive snapshots at every plant,
+so **all three** columns are period-to-date cumulative. The daily report was
+printing a running month-to-date total under a heading that said "Issued
+Today", and the monthly report was summing those running totals across the
+month. See CLAUDE.md's "Consumption ledger" section.
 
-"Latest rate" is read from the live *RMLot row's own rate field, not that
-day's snapshot — every plant's *RMLot rate field is overwritten by every
-sync (auto, every 3 hours, or manual), so it always reflects the latest
-successful sync regardless of whether a snapshot happens to exist for today
-for that specific lot.
+Rows are per MATERIAL now, not per stock lot: a material split across
+several vendor lots was previously several rows each holding a fragment of
+the day's issues.
+
+"Latest rate" is still read from the live *RMLot row's own rate field, not
+from history — every plant's *RMLot rate field is overwritten by every sync,
+so it always reflects the latest successful one. Where several lots of a
+material disagree, the highest-value lot's rate wins (see
+_material_display()).
 """
 from __future__ import annotations
 
 import datetime
 import html
-import itertools
 import logging
 
 from django.conf import settings
 from django.core.mail import send_mail
-from django.db.models import Sum
+from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from apps.core.models import (
     HRSRMLot,
-    HRSRMSnapshot,
+    MaterialConsumptionDaily,
     ReportSendLog,
-    RTPAchhadRMDailyMovement,
     RTPAchhadRMLot,
-    RTPAchhadRMSnapshot,
     RTPVapiRMLot,
-    RTPVapiRMSnapshot,
+    SyncRun,
 )
+from apps.services.consumption_engine import SPREAD
+from apps.services.consumption_periods import DEFAULT_WINDOW_DAYS, consumption_rates
+from apps.services.parsers.common import normalize_material
 from apps.services.security_alerts import _admin_emails
-from apps.services.stock_consumption import DEFAULT_WINDOW_DAYS, consumption_stats
 
 log = logging.getLogger(__name__)
 
 # Plant report config - a lighter-weight, services-layer sibling of
 # apps/api/routers/_domestic_base.py's _PlantConfig (see module docstring
 # for why this isn't just imported from there).
+# `snapshot_model`/`daily_movement_model` are gone as of the 2026-09-21
+# read-path migration - this module no longer touches snapshot history at
+# all. Both reports read MaterialConsumptionDaily, which the plant's own
+# `compute_<plant>_consumption` step already reconciled (including Achhad's
+# daily Recp./Issue matrix). `lot_model` remains, purely for the display
+# fields and current stock that are NOT part of the ledger: description,
+# category, the live rate, and today's balance.
 _PLANTS = {
     "hrs": {
         "label": "HRS (Hindustan Rubbers, Silvassa)",
+        "plant": SyncRun.Plant.HRS,
         "lot_model": HRSRMLot,
-        "snapshot_model": HRSRMSnapshot,
         "rate_field": "basic_rate",
-        "daily_movement_model": None,
     },
     "achhad": {
         "label": "RTP-Achhad (Ravasco Transmission and Packing, Achhad)",
+        "plant": SyncRun.Plant.RTP_ACHHAD,
         "lot_model": RTPAchhadRMLot,
-        "snapshot_model": RTPAchhadRMSnapshot,
         "rate_field": "rate",
-        "daily_movement_model": RTPAchhadRMDailyMovement,
     },
     "vapi": {
         "label": "RTP-Vapi (Ravasco Transmission and Packing, Vapi)",
+        "plant": SyncRun.Plant.RTP_VAPI,
         "lot_model": RTPVapiRMLot,
-        "snapshot_model": RTPVapiRMSnapshot,
         "rate_field": "basic_rate",
-        "daily_movement_model": None,
     },
 }
 
 
-def _consumption_stats_by_lot(cfg: dict, window_start: datetime.date) -> dict:
-    """Same shape/logic as _domestic_base._consumption_by_lot() - kept as
-    this module's own copy, see module docstring for why it isn't shared."""
-    rows = (
-        cfg["snapshot_model"].objects
-        .filter(stock_lot__is_active=True, snapshot_date__gte=window_start)
-        .values_list("stock_lot_id", "snapshot_date", "todays_stock", "received", "issued")
-        .order_by("stock_lot_id", "snapshot_date")
-    )
-    points_by_lot: dict[int, list[tuple]] = {
-        lot_id: [(date, stock, received, issued) for _, date, stock, received, issued in group]
-        for lot_id, group in itertools.groupby(rows, key=lambda row: row[0])
-    }
-
-    if cfg["daily_movement_model"] is not None:
-        move_rows = list(
-            cfg["daily_movement_model"].objects
-            .filter(stock_lot__is_active=True, movement_date__gte=window_start)
-            .values_list("stock_lot_id", "movement_date", "received", "issued")
-            .order_by("stock_lot_id", "movement_date")
-        )
-        if move_rows:
-            lot_ids = {r[0] for r in move_rows}
-            openings = dict(cfg["lot_model"].objects.filter(id__in=lot_ids).values_list("id", "opening_stock"))
-            for lot_id, group in itertools.groupby(move_rows, key=lambda row: row[0]):
-                running_stock = openings.get(lot_id) or 0
-                points = []
-                for _, date, received, issued in group:
-                    running_stock = running_stock + received - issued
-                    points.append((date, running_stock, received, issued))
-                points_by_lot.setdefault(lot_id, []).extend(points)
-
-    return {lot_id: consumption_stats(points) for lot_id, points in points_by_lot.items()}
-
-
-def _todays_issued_rows(cfg: dict, today: datetime.date) -> list:
-    """Returns [(lot, issued_qty, is_estimate)] for every active lot with a
-    nonzero issued quantity - see module docstring for why the primary
-    source differs by plant.
-
-    Achhad fallback (2026-09-08, project owner request, after confirming
-    directly against a real exported RM Stock file that its day-matrix can
-    sit blank for the current day at export time - the plant hadn't filled
-    it in yet): a lot with NO RTPAchhadRMDailyMovement row for `today` at
-    all falls back to its own live RTPAchhadRMLot.issued column instead of
-    being silently omitted. That column is a PERIOD-TO-DATE cumulative total
-    that resets each period, not a true daily figure (see module docstring) -
-    this is a deliberately-accepted rough estimate, not a fix for that
-    unreliability, which is why it's flagged `is_estimate=True` and the
-    report/email must say so next to the figure rather than presenting it
-    as an equally-trustworthy same-day number. A lot that DOES have a real
-    dated row for today keeps using that (never overridden by the
-    estimate), so a genuine day-matrix entry is always preferred."""
-    if cfg["daily_movement_model"] is not None:
-        moves = (
-            cfg["daily_movement_model"].objects
-            .filter(movement_date=today, issued__gt=0, stock_lot__is_active=True)
-            .select_related("stock_lot")
-        )
-        confirmed = {m.stock_lot_id: (m.stock_lot, m.issued) for m in moves}
-
-        fallback_lots = (
-            cfg["lot_model"].objects
-            .filter(is_active=True, issued__gt=0)
-            .exclude(id__in=confirmed.keys())
-        )
-
-        rows = [(lot, qty, False) for lot, qty in confirmed.values()]
-        rows += [(lot, lot.issued, True) for lot in fallback_lots]
-        return rows
-
-    snapshots = (
-        cfg["snapshot_model"].objects
-        .filter(snapshot_date=today, issued__gt=0, stock_lot__is_active=True)
-        .select_related("stock_lot")
-    )
-    return [(s.stock_lot, s.issued, False) for s in snapshots]
-
-
-def _month_bounds(year: int, month: int) -> tuple[datetime.date, datetime.date]:
-    """Returns (first day, last day) of the given calendar month, inclusive."""
+def _month_bounds(year: int, month: int) -> tuple:
+    """Returns (first day, last day) of the given calendar month, inclusive.
+    Kept as this module's own copy rather than imported from
+    consumption_periods.month_bounds() only because the monthly report also
+    names the month for display right beside it; the two are identical and
+    either would do."""
     start = datetime.date(year, month, 1)
     end = (datetime.date(year + 1, 1, 1) if month == 12 else datetime.date(year, month + 1, 1)) - datetime.timedelta(days=1)
     return start, end
 
 
-def _month_issued_rows(cfg: dict, month_start: datetime.date, month_end: datetime.date, *, allow_fallback: bool) -> list:
-    """Monthly equivalent of _todays_issued_rows() - returns
-    [(lot, issued_qty, is_estimate)], summing every dated entry within
-    [month_start, month_end] per lot rather than reading a single day.
+def _material_display(cfg: dict) -> dict:
+    """material_key -> {'material', 'category', 'rate'} for display.
 
-    For HRS/Vapi this sums *RMSnapshot.issued across the month - already a
-    genuine per-day figure (see module docstring), so summing it is exactly
-    as trustworthy as the daily report's own single-day read, just added up.
-    A day the scheduler didn't capture a snapshot for (a known, documented
-    gap - see CLAUDE.md's Snapshot Pipeline Rebuild notes) simply isn't
-    counted, same accepted limitation as everywhere else this data is used.
+    Rate comes from the live *RMLot row, not a snapshot - every plant's lot
+    rate field is overwritten by every sync, so it always reflects the
+    latest successful one regardless of whether a snapshot exists for today
+    (unchanged by this migration). Where several lots of one material
+    disagree on rate, the highest-value lot's rate wins: that is the lot
+    dominating the material's stock value, and the alternative is picking
+    whichever row happened to be iterated last.
+    """
+    rate_field = cfg["rate_field"]
+    out = {}
+    best_value = {}
+    for lot in cfg["lot_model"].objects.all():
+        key = normalize_material(lot.description or "")
+        if not key:
+            continue
+        value = float(lot.value or 0)
+        if key in out and value <= best_value.get(key, 0.0):
+            continue
+        best_value[key] = value
+        out[key] = {
+            "material": lot.description,
+            # Blank on a real row (Achhad's own category is a backfilled
+            # section-divider label, not a guaranteed column - see
+            # RTPAchhadRMLot's docstring) becomes "Uncategorized" rather
+            # than an empty group heading.
+            "category": lot.category or "Uncategorized",
+            "rate": getattr(lot, rate_field, None),
+        }
+    return out
 
-    For Achhad this sums RTPAchhadRMDailyMovement.issued across the month -
-    the same dated, reconciliation-confirmed source the daily report already
-    trusts (see achhad_stock.py's parser docstring), not the live period-to-
-    date `issued` column, which would double- or under-count depending on
-    when in the (possibly already-reset) period this runs. `allow_fallback`
-    (only ever True when the requested month IS the current, still-open
-    period - see build_plant_monthly_report()) mirrors the daily report's own
-    Achhad fallback for a lot with ZERO dated rows in the whole month so far:
-    its live `issued` column is that same still-open period's running total,
-    so it's a reasonable rough estimate for "this month so far" - flagged
-    isEstimate=True, exactly like the daily fallback. This must NEVER apply
-    to an already-closed prior month: by then the live column reflects a
-    newer period entirely and would be flatly wrong, not just imprecise."""
-    if cfg["daily_movement_model"] is not None:
-        totals = (
-            cfg["daily_movement_model"].objects
-            .filter(movement_date__gte=month_start, movement_date__lte=month_end, stock_lot__is_active=True)
-            .values("stock_lot_id")
-            .annotate(total_issued=Sum("issued"))
-            .filter(total_issued__gt=0)
-        )
-        lots_by_id = {lot.id: lot for lot in cfg["lot_model"].objects.filter(id__in=[t["stock_lot_id"] for t in totals])}
-        rows = [(lots_by_id[t["stock_lot_id"]], t["total_issued"], False) for t in totals if t["stock_lot_id"] in lots_by_id]
 
-        if allow_fallback:
-            confirmed_ids = {t["stock_lot_id"] for t in totals}
-            fallback_lots = (
-                cfg["lot_model"].objects
-                .filter(is_active=True, issued__gt=0)
-                .exclude(id__in=confirmed_ids)
-            )
-            rows += [(lot, lot.issued, True) for lot in fallback_lots]
-        return rows
+def _current_stock(cfg: dict) -> dict:
+    """material_key -> total current stock across that material's lots.
 
+    Summed across lots for the same reason the ledger is keyed on the
+    material: days-of-cover for "SBR 1502" means all the SBR 1502 on hand,
+    not whichever vendor's lot was looked at first. Only ACTIVE lots count
+    here, unlike the ledger's own history read - a sold-out lot consumed
+    real material once but holds none now.
+    """
+    totals = {}
+    for description, stock in cfg["lot_model"].objects.filter(is_active=True).values_list("description", "todays_stock"):
+        key = normalize_material(description or "")
+        if key:
+            totals[key] = totals.get(key, 0.0) + float(stock or 0)
+    return totals
+
+
+def _ledger_rows(cfg: dict, start: datetime.date, end: datetime.date, qty_key: str) -> list:
+    """The shared row builder for both reports, reading
+    MaterialConsumptionDaily rather than re-deriving anything.
+
+    **This is the read-path migration (2026-09-21) and it fixes a real
+    reporting error, not just a duplicate implementation.** The previous
+    version read `*RMSnapshot.issued` directly as "Issued Today" for
+    HRS/Vapi - but that column is period-to-date cumulative at every plant,
+    not a daily figure (measured: `opening + received - issued == closing`
+    on 4,327 of 4,327 rows, `opening_stock` frozen across snapshots). So the
+    daily report printed a running month-to-date total under a column headed
+    "Issued Today", and the monthly report SUMMED those running totals
+    across the month. See CLAUDE.md's "Consumption ledger" section.
+
+    `isEstimate` keeps its meaning of "do not read this as a confirmed
+    same-day figure", but now marks a genuinely different thing: a quantity
+    interpolated across a snapshot gap (`quality == spread`) rather than
+    observed on a single dated day. That subsumes the old Achhad-only
+    period-to-date fallback - Achhad's daily Recp./Issue matrix is
+    reconciled into the ledger at build time now, so there is no live
+    cumulative column left to fall back to, and the flag applies uniformly
+    at all three plants instead of only one.
+    """
     totals = (
-        cfg["snapshot_model"].objects
-        .filter(snapshot_date__gte=month_start, snapshot_date__lte=month_end, stock_lot__is_active=True)
-        .values("stock_lot_id")
-        .annotate(total_issued=Sum("issued"))
-        .filter(total_issued__gt=0)
+        MaterialConsumptionDaily.objects
+        .filter(plant=cfg["plant"], consumption_date__gte=start, consumption_date__lte=end)
+        .values("material_key")
+        .annotate(qty=Sum("quantity"), spread=Count("id", filter=Q(quality=SPREAD)))
+        .filter(qty__gt=0)
     )
-    lots_by_id = {lot.id: lot for lot in cfg["lot_model"].objects.filter(id__in=[t["stock_lot_id"] for t in totals])}
-    return [(lots_by_id[t["stock_lot_id"]], t["total_issued"], False) for t in totals if t["stock_lot_id"] in lots_by_id]
+    display = _material_display(cfg)
+    rates = consumption_rates(cfg["plant"], today=timezone.localdate())
+    stock_by_material = _current_stock(cfg)
+
+    rows = []
+    for t in totals:
+        key = t["material_key"]
+        meta = display.get(key, {})
+        stats = rates.get(key, {})
+        avg_daily = stats.get("avgDaily")
+        stock = stock_by_material.get(key)
+        rows.append({
+            "material": meta.get("material") or key,
+            "category": meta.get("category") or "Uncategorized",
+            qty_key: t["qty"],
+            "rate": meta.get("rate"),
+            "daysLeft": (stock / avg_daily) if (avg_daily and stock is not None) else None,
+            "confidence": stats.get("confidence", "none"),
+            "isEstimate": t["spread"] > 0,
+        })
+    rows.sort(key=lambda r: r[qty_key], reverse=True)
+    return rows
 
 
 def build_plant_report(plant_key: str, today: datetime.date | None = None) -> dict:
@@ -240,36 +223,25 @@ def build_plant_report(plant_key: str, today: datetime.date | None = None) -> di
     descending (biggest movers first) - _render_report_email() re-groups
     them by category for display, so this order is really "within category"
     order once grouped. Each row: material, category, issuedToday, rate,
-    daysLeft, confidence, isEstimate (True only for Achhad's period-to-date
-    fallback - see _todays_issued_rows()'s own docstring)."""
+    daysLeft, confidence, isEstimate.
+
+    Reads the MaterialConsumptionDaily ledger, written by that plant's own
+    `compute_<plant>_consumption` pipeline step - see _ledger_rows() for
+    what that fixed. A day the ledger holds no rows for reports nothing,
+    rather than falling back to a live cumulative column that would print a
+    month-to-date total under a one-day heading.
+
+    Rows are per MATERIAL now, not per stock lot. A material split across
+    several vendor lots used to appear as several rows each carrying part
+    of the day's issues; it is one row and one figure.
+    """
     cfg = _PLANTS[plant_key]
     today = today or timezone.localdate()
-    window_start = today - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
-
-    consumption_by_lot = _consumption_stats_by_lot(cfg, window_start)
-    issued_rows = _todays_issued_rows(cfg, today)
-
-    rows = []
-    for lot, issued_qty, is_estimate in issued_rows:
-        stats = consumption_by_lot.get(lot.id, {})
-        rate = getattr(lot, cfg["rate_field"], None)
-        rows.append({
-            "material": lot.description,
-            # Same field on all 3 *RMLot models (see apps/core/models.py) -
-            # no per-plant branching needed. Blank on a real row (Achhad's
-            # own category is itself a backfilled section-divider label, not
-            # a guaranteed-present column - see RTPAchhadRMLot's docstring)
-            # becomes "Uncategorized" rather than an empty group heading.
-            "category": lot.category or "Uncategorized",
-            "issuedToday": issued_qty,
-            "rate": rate,
-            "daysLeft": stats.get("daysLeft"),
-            "confidence": stats.get("confidence", "none"),
-            "isEstimate": is_estimate,
-        })
-    rows.sort(key=lambda r: r["issuedToday"], reverse=True)
-
-    return {"label": cfg["label"], "date": today.isoformat(), "rows": rows}
+    return {
+        "label": cfg["label"],
+        "date": today.isoformat(),
+        "rows": _ledger_rows(cfg, today, today, "issuedToday"),
+    }
 
 
 _MONTH_NAMES = [
@@ -285,8 +257,9 @@ def build_plant_monthly_report(
     a whole calendar month instead of one day. Returns {'label', 'month'
     (YYYY-MM), 'monthLabel' (e.g. "September 2026"), 'rows': [...]}. Each
     row: material, category, issuedThisMonth, rate, daysLeft, confidence,
-    isEstimate (see _month_issued_rows()'s own docstring for what triggers
-    it - Achhad only, and only for the current, still-open month).
+    isEstimate (true when any of the month's days was interpolated across a
+    snapshot gap - see _ledger_rows(); it no longer means "Achhad's
+    period-to-date fallback", which the 2026-09-21 migration removed).
 
     Defaults to the most recently COMPLETED month (today's month minus one) -
     the natural target for a report meant to run on the 1st of a new month,
@@ -307,32 +280,12 @@ def build_plant_monthly_report(
         year, month = last_month_end.year, last_month_end.month
 
     month_start, month_end = _month_bounds(year, month)
-    is_current_period = (year, month) == (today.year, today.month)
-
-    window_start = today - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
-    consumption_by_lot = _consumption_stats_by_lot(cfg, window_start)
-    issued_rows = _month_issued_rows(cfg, month_start, month_end, allow_fallback=is_current_period)
-
-    rows = []
-    for lot, issued_qty, is_estimate in issued_rows:
-        stats = consumption_by_lot.get(lot.id, {})
-        rate = getattr(lot, cfg["rate_field"], None)
-        rows.append({
-            "material": lot.description,
-            "category": lot.category or "Uncategorized",
-            "issuedThisMonth": issued_qty,
-            "rate": rate,
-            "daysLeft": stats.get("daysLeft"),
-            "confidence": stats.get("confidence", "none"),
-            "isEstimate": is_estimate,
-        })
-    rows.sort(key=lambda r: r["issuedThisMonth"], reverse=True)
 
     return {
         "label": cfg["label"],
         "month": f"{year:04d}-{month:02d}",
         "monthLabel": f"{_MONTH_NAMES[month - 1]} {year}",
-        "rows": rows,
+        "rows": _ledger_rows(cfg, month_start, month_end, "issuedThisMonth"),
     }
 
 
@@ -384,11 +337,12 @@ def _render_consumption_rows(rows: list, qty_key: str, empty_message: str) -> tu
             days_left = f'{r["daysLeft"]:.1f}' if r["daysLeft"] is not None else "N/A"
             rate = f'{r["rate"]:.2f}' if r["rate"] is not None else "N/A"
             material = html.escape(r["material"])
-            # Achhad fallback rows (see _todays_issued_rows()'s/
-            # _month_issued_rows()'s own docstrings) carry a period-to-date
-            # total, not a true dated figure - marked "(est.)" right next to
+            # A figure interpolated across a snapshot gap (see
+            # _ledger_rows()) is one share of a multi-day interval, not a
+            # confirmed single-day total - marked "(est.)" right next to
             # the number so it's never read as an equally-confirmed figure,
-            # in both the table and the plain-text line.
+            # in both the table and the plain-text line. Before 2026-09-21
+            # this flag meant Achhad's period-to-date fallback instead.
             if r["isEstimate"]:
                 any_estimate = True
                 qty_display = f'{r[qty_key]} (est.)'
@@ -447,11 +401,10 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     </tbody>
   </table>
   <p style="margin:20px 0 0;font-size:11px;color:#718096;">
-    Days Left = that row's current stock &divide; its average daily consumption over the last
-    {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each row is one specific vendor's
-    stock lot, not the material's combined total across every vendor - a low days-left figure
-    applies to that lot only. Figures reflect the most recent successful Drive sync for this plant
-    (automatic or manually triggered).
+    Days Left = that material's total current stock &divide; its average daily consumption over the
+    last {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each row is one material,
+    combining every vendor lot of it this plant holds. Figures reflect the most recent successful
+    Drive sync for this plant (automatic or manually triggered).
   </p>
   <p style="margin:10px 0 0;font-size:11px;color:#718096;">
     <strong>The word in parentheses next to Days Left is NOT a stock-level warning</strong> - it's
@@ -459,10 +412,10 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     confirmed one:
   </p>
   <ul style="margin:4px 0 0;padding-left:18px;font-size:11px;color:#718096;">
-    <li><strong>none</strong> - not enough snapshot history yet to estimate at all</li>
-    <li><strong>low</strong> - thin history (as little as 2 days / 1 usable data point)</li>
-    <li><strong>medium</strong> - moderate history (7+ days / 3+ usable data points)</li>
-    <li><strong>high</strong> - strong history (14+ days / 5+ usable data points)</li>
+    <li><strong>none</strong> - no usable history in the window at all</li>
+    <li><strong>low</strong> - only a small part of the window has data</li>
+    <li><strong>medium</strong> - at least half the window covered, some of it measured day by day</li>
+    <li><strong>high</strong> - nearly the whole window covered, most of it measured day by day</li>
   </ul>
   <p style="margin:6px 0 0;font-size:11px;color:#718096;">
     A material tagged <strong>(low)</strong> can still have a perfectly healthy Days Left number -
@@ -479,11 +432,10 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     text_body = (
         f"{title}\n\n"
         + "\n".join(text_rows)
-        + f"\n\nDays Left = that row's current stock divided by its average daily consumption over "
-        f"the last {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each row is one "
-        "specific vendor's stock lot, not the material's combined total across every vendor - a low "
-        "days-left figure applies to that lot only. Figures reflect the most recent successful Drive "
-        "sync for this plant (automatic or manual).\n"
+        + f"\n\nDays Left = that material's total current stock divided by its average daily "
+        f"consumption over the last {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each "
+        "row is one material, combining every vendor lot of it this plant holds. Figures reflect the "
+        "most recent successful Drive sync for this plant (automatic or manual).\n"
         "\nThe word in parentheses next to Days Left is NOT a stock-level warning - it's how much "
         "snapshot history backs that estimate, shown so a thin estimate is never mistaken for a "
         "confirmed one:\n"

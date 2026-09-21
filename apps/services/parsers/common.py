@@ -418,6 +418,269 @@ def is_no_po_vendor(name: str) -> bool:
     return no_po_vendor_entry(name) is not None
 
 
+# ── Vendors whose goods never reach the RM Stock sheet ────────────────────
+#
+# A SECOND, SEPARATE REGISTRY FROM NO_PO_VENDORS ABOVE, answering a different
+# question about a different pairing. NO_PO_VENDORS says "no purchase order
+# exists for this vendor" and gates PO<->MIR. This one says "this vendor's
+# goods are not tracked in the RM Stock sheet" and gates MIR<->Stock. A vendor
+# can be in either, both, or neither: Madura is properly PO'd (it is the single
+# biggest source of PO<->MIR matches at Vapi) and simply never appears in a
+# stock file, while Tinna Rubber is the reverse - no PO, but its reclaim rubber
+# really does land in stock.
+#
+# Measured 2026-09-21, at the project owner's prompt, across all three plants:
+#
+#     plant    MIR rows from Madura   share of that plant's MIR   RM stock lots
+#     Vapi     703                    47.2%                       0
+#     HRS      112                    22.3%                       0
+#     Achhad    15                     2.3%                       0
+#
+# 830 rows and Rs 30.7 crore of receipts, against ZERO stock lots anywhere -
+# not "a few missing", nothing at all. Deliveries run 2026-04-01 to 2026-09-18,
+# so this is current, not a historical backlog. Madura supplies conveyor fabric
+# (the EE/NN/EP series); the RM sheets hold chemicals and raw rubber, which is
+# a different inventory class. Vapi's Madura rows alone are 703 of the 1,133
+# MIR rows that plant has no stock counterpart for - 62% of its entire
+# MIR<->Stock gap.
+#
+# SAME RULE AS NO_PO_VENDORS: suppress the match, never the row. The rows stay
+# in the MIR table, still reconcile against their purchase orders, and are
+# counted and labelled for the dashboard by services/no_rm_stock_vendors.py.
+# Excluding them silently would recreate exactly the confusion that registry
+# exists to end - an unmatched Madura row and a genuinely failed match are
+# indistinguishable on screen otherwise.
+#
+# DELIBERATELY A VENDOR LIST, AND DELIBERATELY NARROW. The wider question -
+# whether to exclude every material class the RM sheets do not track (conveyor
+# belting, rubber compound, MS crates) - was measured and is NOT implemented
+# here, because it cannot be keyed the same way: "rubber compound" is genuinely
+# stocked at Achhad (27 real matches, most on exact names) and never at Vapi,
+# so a shared material list would destroy real matches. That registry would
+# have to be per-plant and material-keyed, which is a different design; it is
+# on hold pending the project owner's own scope list. Do not widen this dict
+# into that - add the new thing separately.
+#
+# Source: project owner, 2026-09-21.
+
+_NO_RM_STOCK_VENDOR_SOURCE: dict[str, str] = {
+    # Every spelling seen across the three MIR files. Lookup is exact on the
+    # normalized name (same reasoning as no_po_vendor_entry() - a false
+    # positive here removes a real supplier's receipts from stock
+    # reconciliation), so a genuinely different WORD needs its own line.
+    # "Textiles" vs "Textile" folds on its own via the trailing-plural rule;
+    # "Technical Fabrics" does not.
+    "Madura Industrial Textiles Ltd.": "Conveyor fabric - not tracked in any plant's RM Stock sheet.",
+    "Madura Technical Fabrics Ltd.": "Conveyor fabric - Vapi's second spelling for the same supplier.",
+    "Madura Technical Textiles Ltd": "Conveyor fabric - spelling as written in Vapi's PO master.",
+    "Madura Indl Textiles Ltd": "Conveyor fabric - spelling as written in Vapi's MIR.",
+}
+
+# {normalized vendor: reason}, built at import time - same shape and same
+# reasoning as NO_PO_VENDORS above.
+NO_RM_STOCK_VENDORS: dict[str, str] = {
+    _normalize_vendor_for_matching_base(name): reason
+    for name, reason in _NO_RM_STOCK_VENDOR_SOURCE.items()
+}
+
+
+def no_rm_stock_vendor_reason(name: str) -> str | None:
+    """Why `name`'s receipts are excluded from MIR<->Stock matching, or None.
+
+    Exact on the normalized name, and normalized through
+    _normalize_vendor_for_matching_base() rather than
+    normalize_vendor_for_matching() - both for the same reasons
+    no_po_vendor_entry() does it that way; see its docstring."""
+    if not name:
+        return None
+    return NO_RM_STOCK_VENDORS.get(_normalize_vendor_for_matching_base(name))
+
+
+def is_no_rm_stock_vendor(name: str) -> bool:
+    """True when `name`'s goods never reach the RM Stock sheet - see
+    no_rm_stock_vendor_reason()."""
+    return no_rm_stock_vendor_reason(name) is not None
+
+
+# ── Material classes the RM Stock sheet does not track ────────────────────
+#
+# The material-keyed half of the same idea as NO_RM_STOCK_VENDORS above, and
+# the third registry in this file. MIR logs everything that comes through the
+# gate; the RM Stock sheets hold chemicals and raw rubber. What is booked
+# inward but never stocked is listed here so an excluded row reads as
+# "out of scope" rather than as a matcher failure - the same rule, and the
+# same reason, as the two registries above: SUPPRESS THE MATCH, NEVER THE ROW.
+# Counted and labelled for the dashboard by services/rm_untracked.py.
+#
+# Source: project owner's scope list, 2026-09-21.
+#
+# EVERY ENTRY HERE PASSED TWO TESTS AGAINST LIVE DATA, and the second one is
+# what the wording of each pattern is actually for:
+#
+#   A. No stock lot at ANY plant matches the pattern. If a lot exists, the
+#      class is tracked and an unmatched row is a MATCHING gap, not a scope
+#      one - excluding it would hide the very thing worth fixing.
+#   B. No currently-matched MIR row matches the pattern, i.e. adding it
+#      destroys no existing reconciliation.
+#
+# Two classes from the original six-class list were REJECTED by those tests
+# and are deliberately absent. Do not add them back without re-running both:
+#
+#   - "Printing / labels / logo work" (9 Achhad rows) FAILS TEST A. Achhad's
+#     Stock sheet carries 'Lamor Logo 160mm X 70Mic (12290)', and its MIR's
+#     'Lamor Logo Print' rows are that same product. They are unmatched
+#     because the scorer misses the pair, which is a bug to fix, not a class
+#     to exclude.
+#   - "Grease" inside the spares class FAILS TEST A twice over - both HRS's
+#     and Vapi's Stock sheets hold 'GREASE EP 1'. The pattern below therefore
+#     lists the spares words explicitly and omits it.
+#
+# The rubber-compound and packing classes survive only in NARROWED form, for
+# the same reason:
+#
+#   - 'Rubber Compound' as a bare phrase is Vapi's un-stocked semi-finished
+#     goods ('RUBBER COMPOUND (KGS)', 'COMPOUNDED RUBBER UNVULCANISED'), but
+#     Achhad genuinely stocks named compounds ('Rubber Compound-EAR 11560',
+#     'Rubber Compound-SHRC T23') and HRS stocks 'SILSHEET RUBBER'. A blanket
+#     /rubber comp|silsheet/ destroyed 43 real matches. The anchored pattern
+#     below matches ONLY the bare phrase with an optional unit suffix, so a
+#     named grade can never be caught by it.
+#   - Packing narrowed from bags/drums/wooden to CRATES AND PALLETS ONLY. All
+#     three plants stock EVA/LD/BATA bags, and HRS stocks 'WOODEN STOPPER 12"'
+#     and 'WOODEN CIRCLE 4"'. Only MS crates are genuinely untracked.
+#
+# Matched against the RAW description (case-insensitively), not
+# normalize_material()'s output, so a pattern can use punctuation and anchors.
+
+_NOT_STOCKED_MATERIAL_SOURCE: list[tuple[str, str, str]] = [
+    # (class label, regex, reason shown on the dashboard)
+    (
+        "Conveyor fabric",
+        r"\b(?:EE|NN|EP)\s?\d{2,3}\b|rubberi[sz]ed\s+textile|fabric.*(?:polyester|polyster)",
+        "Conveyor fabric (EE/NN/EP series) - not held in any plant's RM Stock sheet.",
+    ),
+    (
+        # NOT a bare /\bbelts?\b/, which is what this was first written as.
+        # That caught Achhad's 'Rubber Compound Cushion Belts' - a COMPOUND
+        # the plant genuinely stocks (lot: 'Rubber Compound-Cushion') that
+        # merely names a belt as its application. One real match destroyed,
+        # and the two safety tests above did not catch it because the row was
+        # unmatched at the moment they ran; it turned up by re-running the
+        # whole matcher with this registry disabled and diffing. Every
+        # genuine belting row at both plants says "conveyor" or "belting"
+        # outright, so requiring one of those costs nothing and closes it.
+        "Conveyor belting",
+        r"conveyor|belting|transmission\s+belt",
+        "Conveyor and transmission belting - a finished good, not a raw material.",
+    ),
+    (
+        "Rubber compound",
+        r"^\s*(?:RM\d+\s+)?rubber\s+compound\s*(?:\(?\s*(?:kgs?|mtrs?)\s*\)?)?\s*$"
+        r"|compounded\s+rubber",
+        "Un-named semi-finished rubber compound - named compounds ARE stocked and are not excluded.",
+    ),
+    (
+        # CRATES ONLY, not pallets. "Pallet" appears in a real Achhad stock
+        # lot - 'Carbon Black Pallets (Majestique)', where it describes the
+        # FORM the carbon black arrives in, not the pallet as the goods. No
+        # plant has a single MIR row naming a pallet as the thing bought, so
+        # the word earns nothing and only creates the risk of excluding that
+        # carbon black if a receipt is ever worded to match. Found by running
+        # the shipped patterns back over each plant's stock sheet separately
+        # (2026-09-21) - the per-plant sweep is worth repeating when this
+        # list changes.
+        "Crates",
+        r"\bcrates?\b",
+        "MS crates - returnable handling equipment, not stock.",
+    ),
+]
+
+# ── The two classes that genuinely differ per plant ───────────────────────
+#
+# SCOPED PER PLANT, unlike NO_PO_VENDORS and NO_RM_STOCK_VENDORS, which are
+# deliberately one shared list each. The difference is real and measured
+# (2026-09-21, per-plant sweep of every class against every plant's own Stock
+# sheet), not defensive: what a plant stocks is a fact about THAT plant's
+# warehouse, whereas whether a vendor is PO'd is a fact about the company.
+#
+# The four classes above are shared because all three plants agree on them -
+# zero stock lots anywhere. These two do not agree:
+#
+#   class     HRS            Achhad                      Vapi
+#   grease    'GREASE EP 1'  -                           'GREASE EP 1'
+#   logo      -              'Lamor Logo 160mm X 70Mic'  -
+#
+# So Achhad may exclude grease and must NOT exclude logo work; HRS and Vapi
+# are the exact opposite on both counts.
+
+_SPARES_WITHOUT_GREASE = (
+    "Spares and services",
+    r"\bspares?\b|\bbearings?\b|\bbolts?\b|\bnuts?\b|\bservice\b|\brepair\b|freight|labour",
+    "Spares, consumables and services - not a material held in stock.",
+)
+_SPARES_WITH_GREASE = (
+    "Spares and services",
+    r"\bspares?\b|\bbearings?\b|\bbolts?\b|\bnuts?\b|grease|\bservice\b|\brepair\b|freight|labour",
+    "Spares, consumables and services - not a material held in stock at this plant.",
+)
+_PRINTING = (
+    "Printing and labels",
+    r"\blogos?\b|\blabels?\b|\bprints?\b|\bprinting\b|\bstickers?\b",
+    "Printing, labels and logo film - not held in this plant's RM Stock sheet.",
+)
+
+# {plant key (matching _PlantConfig.key): [(label, pattern, reason), ...]}.
+_NOT_STOCKED_BY_PLANT: dict[str, list[tuple[str, str, str]]] = {
+    # HRS stocks 'GREASE EP 1', so grease stays matchable here; it has no
+    # logo/label stock and no such MIR rows either, so the printing class is
+    # correct-but-currently-vacuous - carried for when a row appears.
+    "hrs": [*_NOT_STOCKED_MATERIAL_SOURCE, _SPARES_WITHOUT_GREASE, _PRINTING],
+    # Achhad is the mirror image: no grease anywhere in its Stock sheet, but
+    # it DOES stock 'Lamor Logo 160mm X 70Mic (12290)'. Its nine
+    # 'Lamor Logo Print' MIR rows are that same product and are a SCORER miss,
+    # not an out-of-scope receipt - excluding them here would bury the one
+    # genuinely fixable thing in this whole registry. See CLAUDE.md.
+    "achhad": [*_NOT_STOCKED_MATERIAL_SOURCE, _SPARES_WITH_GREASE],
+    # Same as HRS on both counts.
+    "vapi": [*_NOT_STOCKED_MATERIAL_SOURCE, _SPARES_WITHOUT_GREASE, _PRINTING],
+}
+
+NOT_STOCKED_MATERIALS: dict[str, list[tuple[str, "re.Pattern", str]]] = {
+    plant: [(label, re.compile(pattern, re.IGNORECASE), reason)
+            for label, pattern, reason in entries]
+    for plant, entries in _NOT_STOCKED_BY_PLANT.items()
+}
+
+
+def not_stocked_material_entry(description: str, plant_key: str) -> tuple[str, str] | None:
+    """(class label, reason) when `plant_key`'s RM Stock sheet does not track
+    this kind of material, else None.
+
+    `plant_key` is required, not optional with a shared default: an omitted
+    plant would silently fall back to some other plant's scope, which is the
+    one failure mode this split exists to prevent. An UNKNOWN key excludes
+    nothing rather than guessing - a new plant must state its own scope, and
+    until it does, its rows all stay in the pool exactly as they would have
+    before this registry existed.
+
+    First match wins, so order matters: the narrowly-anchored rubber-compound
+    pattern sits after the two broad conveyor ones, so a description naming
+    both ('conveyor belt rubber compound') is reported under the class a
+    reader would expect."""
+    if not description:
+        return None
+    for label, pattern, reason in NOT_STOCKED_MATERIALS.get(plant_key, ()):
+        if pattern.search(description):
+            return label, reason
+    return None
+
+
+def is_not_stocked_material(description: str, plant_key: str) -> bool:
+    """True when `plant_key`'s RM Stock sheet does not track this kind of
+    material - see not_stocked_material_entry()."""
+    return not_stocked_material_entry(description, plant_key) is not None
+
+
 def normalize_material(name: str) -> str:
     """Loose normalization for material-name matching (MIR<->Stock): lowercase,
     strip punctuation/whitespace variance. Deliberately looser than vendor
@@ -449,6 +712,59 @@ def tokenize(text: str) -> list[str]:
     normalized = normalize_material(text)
     split_at_alnum_boundaries = re.sub(r"(?<=[a-z])(?=[0-9])|(?<=[0-9])(?=[a-z])", " ", normalized)
     return [t for t in split_at_alnum_boundaries.split(" ") if t]
+
+
+# ── MIR<->Stock description cleaning (2026-09-21) ─────────────────────────
+#
+# Both files write the SAME material with a fixed piece of bookkeeping noise
+# bolted on, and that noise dominates the token comparison because it is rare
+# vocabulary - exactly what IDF weights most heavily. Stripping it is worth
+# more at Vapi than any scoring change: +27 matched MIR rows on its own, and it
+# is what lifts Vapi's exact-name matches from 24 to 71 (many names simply ARE
+# identical once the noise is gone).
+#
+# Applied ONLY on the MIR<->Stock comparison path, never inside
+# normalize_material() itself - that function's output is a persisted join key
+# (MaterialCategoryReference.normalized_description, stock_identity.py's
+# lot_natural_key()), and changing it would silently re-key existing rows. Same
+# confinement, and the same reason, as tokenize()'s own letter/digit split.
+
+# Vapi's MIR prefixes the SAP material code to the description:
+# "RM00011014 ZINC OXIDE", "RMP001105002 EVA BAG". 173 of its 1,489 rows do
+# this; no Stock sheet carries the code, and HRS/Achhad never write it.
+_SAP_MATERIAL_CODE_RE = re.compile(r"\bRMP?0\d{5,}\b", re.IGNORECASE)
+
+# Vapi's and HRS's Stock sheets append the holding plant/warehouse to the
+# description: "RECLAIM RUBBER 6MPA HRS", "BAYPRENE RUBBER RTP2". It is a
+# location tag, not part of the material name - both files also carry it as its
+# own column (RTPVapiRMLot.plant_tag, HRSRMLot.location_tag). Stripped only
+# from the END, and only as a whole trailing token, so it can never eat into a
+# real name.
+_STOCK_LOCATION_TAGS = frozenset({"hrs", "rtp", "rtp1", "rtp2", "grp"})
+
+
+def clean_mir_material_for_stock(description: str) -> str:
+    """A MIR material description with its SAP code prefix removed.
+
+    Returns the original string when stripping would leave nothing - a row
+    whose description is ONLY a code still has to compare as something."""
+    if not description:
+        return ""
+    stripped = _SAP_MATERIAL_CODE_RE.sub(" ", description).strip()
+    return stripped or description
+
+
+def clean_stock_material(description: str) -> str:
+    """A Stock lot description with any trailing plant/location tag removed.
+
+    Loops because a handful of real rows carry two ("... SILDEC HRS"). Same
+    empty-result guard as above."""
+    if not description:
+        return ""
+    tokens = description.split()
+    while tokens and tokens[-1].lower().replace("-", "") in _STOCK_LOCATION_TAGS:
+        tokens.pop()
+    return " ".join(tokens) or description
 
 
 # Match Accuracy Programme, fix 2.C: built from the actual distinct `uom`

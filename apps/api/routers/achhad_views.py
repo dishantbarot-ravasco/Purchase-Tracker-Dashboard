@@ -40,9 +40,10 @@ _CONFIG = _base._PlantConfig(
     stock_lot_model=RTPAchhadRMLot,
     stock_snapshot_model=RTPAchhadRMSnapshot,
     run_full_match=run_full_match,
-    # Days-Left Engine extension (2026-09-08) - see _domestic_base.py's
-    # _daily_movement_points() docstring. None for HRS/Vapi (no equivalent
-    # daily matrix in their own Stock files).
+    # Achhad's own daily Recp./Issue matrix. None for HRS/Vapi (no
+    # equivalent in their Stock files). The read path no longer touches it -
+    # consumption_ledger._dated_movements() reconciles it into the ledger at
+    # build time - but _PlantConfig still carries it for the sync layer.
     daily_movement_model=RTPAchhadRMDailyMovement,
     # Genuinely differs from HRS's/Vapi's set, not a copy-paste: no
     # sub_category/uom/vendor field at all, and a real msl column neither

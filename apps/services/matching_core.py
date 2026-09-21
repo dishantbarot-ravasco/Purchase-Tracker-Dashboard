@@ -149,9 +149,13 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.services.parsers.common import (
+    clean_mir_material_for_stock,
     clean_po_number,
+    clean_stock_material,
     is_usable_po_reference,
     is_no_po_vendor,
+    is_no_rm_stock_vendor,
+    is_not_stocked_material,
     legacy_po_matches,
     normalize_material,
     normalize_uom,
@@ -225,8 +229,44 @@ class _MatchConfig:
         lambda mir: getattr(mir, "invoice_final_value", None) or getattr(mir, "total_amount", None)
     )
 
+    # Which plant this config is for, as parsers/common.py's
+    # NOT_STOCKED_BY_PLANT keys it ("hrs"/"achhad"/"vapi") and as
+    # _PlantConfig.key already spells it. Required by
+    # is_not_stocked_material(): that registry is scoped per plant because
+    # what a warehouse stocks is a fact about THAT warehouse - Achhad holds
+    # no grease but does hold Lamor logo film, HRS and Vapi the reverse. An
+    # empty key excludes nothing, which is the safe direction: a new plant
+    # keeps every row in the pool until someone states its scope.
+    plant_key: str = ""
+
     stock_rate_field: str = ""  # "basic_rate" (HRS/Vapi) or "rate" (Achhad)
     stock_vendor_field: Optional[str] = None  # "party_name"/"supplier_name", or None (Achhad has no vendor column)
+
+    # ── MIR<->Stock identification, 2026-09-21 ────────────────────────────
+    # Material similarity at/above this counts as "the same material" for
+    # MIR<->Stock. SEPARATE FROM material_match_threshold, which is PO<->MIR's
+    # (0.2-0.3): these are different comparisons over different vocabularies -
+    # PO and MIR descriptions are both order paperwork and read alike, while a
+    # Stock sheet is a warehouse's own shorthand for the same goods. Swept
+    # against real data at 0.35/0.45/0.55/0.65 per plant; 0.45 is where MIR-row
+    # coverage stops rising materially and the same-date rate-agreement check
+    # stops improving. Zero means "material equality only", i.e. the pre-2026-09-21
+    # behaviour.
+    stock_material_threshold: Decimal = Decimal("0")
+    # When True, a MIR row and a Stock lot that agree on BOTH receipt date and
+    # rate identify each other even when their descriptions do not - the
+    # closest thing this pairing has to PO<->MIR's PO-number shortcut. Only
+    # ever admitted behind the grade-code contradiction gate and tier-1
+    # exclusivity; see match_mir_entry_stock()'s docstring for the measured
+    # false positives that make both mandatory.
+    stock_date_rate_path: bool = False
+    # How close two rates must be to count as agreeing on that path, as a
+    # percentage. Deliberately NOT flag_diff_pct's zero tolerance: this is an
+    # identification test ("is this the same delivery"), not a discrepancy
+    # report, and a receipt rounded to the paise on one sheet and the rupee on
+    # the other is still the same receipt. A pair admitted here is still
+    # rate-CHECKED afterwards at the ordinary zero tolerance.
+    stock_rate_identity_tolerance_pct: Decimal = Decimal("2")
 
     # Imports identification/financial-check redesign (2026-09, HRS/Achhad
     # only - see matching_vapi.py's own comment on why Vapi stays out for
@@ -740,6 +780,86 @@ class _StockLotPool:
             else [None] * len(self.rows)
         )
 
+        # ── Material comparison data, 2026-09-21 ──────────────────────────
+        # Precomputed here for the same reason the vendor strings above are:
+        # every one of these is a pure function of the lot row, and the
+        # alternative is recomputing it once per (MIR entry, lot) pair.
+        #
+        # `clean_descriptions` strips the trailing plant/warehouse tag
+        # ("RECLAIM RUBBER 6MPA HRS" -> "RECLAIM RUBBER 6MPA"). Note this is
+        # a DEPARTURE from the note above about `description` deliberately
+        # not being pre-normalized: that note was written when the only test
+        # here was equality against the raw field. There are three comparisons
+        # now, all of which want the cleaned string, so cleaning it once is
+        # the clear reading rather than the clever one.
+        self.clean_descriptions = [clean_stock_material(r.description) for r in self.rows]
+        self.normalized_materials = [normalize_material(d) for d in self.clean_descriptions]
+        self.grade_codes = [_grade_codes(tokenize(d)) for d in self.clean_descriptions]
+        self.scorer = None
+        self.best_describer = {}
+        if config.stock_material_threshold > 0:
+            # Corpus is BOTH sides of this pairing, deliberately not
+            # _material_scorer()'s MIR+PO corpus: IDF is only meaningful
+            # relative to the vocabulary actually being compared, and a
+            # warehouse's shorthand is not the vocabulary a purchase order
+            # uses. fuzzy_tokens=True is opt-in per caller; PO<->MIR does not
+            # get it (see _MaterialScorer.__init__).
+            mir_descriptions = list(
+                config.mir_model.objects.filter(is_active=True)
+                .values_list("material_description", flat=True)
+            )
+            self.scorer = _MaterialScorer(
+                self.clean_descriptions + [clean_mir_material_for_stock(d) for d in mir_descriptions],
+                fuzzy_tokens=True,
+            )
+        if config.stock_date_rate_path:
+            self.best_describer = self._build_best_describer(config)
+
+    def _build_best_describer(self, config: _MatchConfig) -> dict:
+        """lot id -> the id of the MIR row that best describes it, among the
+        rows sharing its receipt date. Tier-1 exclusivity (see
+        match_mir_entry_stock()).
+
+        A lot admitted on date+rate alone must yield to any MIR row that
+        actually names it, or the two same-day, same-price products simply
+        swap: 'Eva Bag 20"X20"' took the 24x36 lot and vice versa, both
+        scoring 0.15, both "identified". Ranking them and keeping only the
+        best describer per lot is what un-swaps that pair.
+
+        Scoped to rows sharing the lot's OWN received_date, which is the only
+        date the date+rate path can fire on - so this is a handful of rows
+        per lot, not the whole MIR table. Cheap enough to build eagerly: one
+        extra query and a few thousand similarity calls per pass, against a
+        pass that already does hundreds of thousands.
+
+        Deliberately does NOT constrain tiers 2 and 3. A lot really does
+        receive two MIR lines of the same material on one day (two invoices
+        against one order), and this pairing is many-to-many by design - see
+        match_mir_entry_stock()'s own docstring."""
+        if self.scorer is None:
+            return {}
+        by_date: dict = {}
+        for entry in config.mir_model.objects.filter(is_active=True).exclude(mir_date=None):
+            by_date.setdefault(entry.mir_date, []).append(entry)
+        best: dict = {}
+        for index, lot in enumerate(self.rows):
+            entries = by_date.get(lot.received_date) if lot.received_date else None
+            if not entries:
+                continue
+            description = self.clean_descriptions[index]
+            best[lot.id] = max(
+                entries,
+                key=lambda e: (
+                    self.scorer.similarity(description, clean_mir_material_for_stock(e.material_description)),
+                    # Ties broken on id so the winner is stable across runs
+                    # rather than depending on queryset ordering - an unstable
+                    # winner would make this pairing's match rows churn on
+                    # every pass for no reason.
+                    -e.id,
+                ),
+            ).id
+        return best
+
 
 def _names_known_po(po_number_raw: str, known_pos) -> bool:
     """True when a MIR row's own PO column names a purchase order we hold.
@@ -840,7 +960,23 @@ class _MaterialScorer:
     _GRADE_BONUS = Decimal("0.25")
     _GRADE_PENALTY = Decimal("0.45")
 
-    def __init__(self, corpus):
+    # Two tokens this similar count as the same word (see similarity()).
+    # OFF by default - only the MIR<->Stock caller passes fuzzy_tokens=True.
+    _TOKEN_SIMILARITY = 0.85
+    # Below this length a near-match is meaningless: at 3 characters an edit
+    # ratio of 0.85 needs an exact match anyway, and shorter tokens are
+    # mostly unit fragments and stray digits where a near-match is noise.
+    _MIN_FUZZY_TOKEN_LEN = 4
+
+    def __init__(self, corpus, fuzzy_tokens: bool = False):
+        # fuzzy_tokens defaults to False so PO<->MIR's behaviour is BYTE
+        # IDENTICAL to before this parameter existed - that pairing's
+        # accuracy figures were measured against the exact-token comparison
+        # and nothing here is authorised to move them. See
+        # _StockLotPool.scorer for the one caller that opts in, and why the
+        # MIR<->Stock side needs it (2026-09-21).
+        self._fuzzy_tokens = fuzzy_tokens
+        self._near_cache: dict[tuple[str, str], bool] = {}
         df: dict[str, int] = {}
         n = 0
         for text in corpus:
@@ -864,6 +1000,43 @@ class _MaterialScorer:
             return self._default
         return math.log((self._n + 1) / (dfreq + 1)) + 1.0
 
+    def _near(self, a: str, b: str) -> bool:
+        """True when two tokens are the same word, one of them misspelled.
+
+        Memoized per instance: the same pair is re-tested once per candidate
+        across a whole pass, and SequenceMatcher is the most expensive thing
+        on this path."""
+        if len(a) < self._MIN_FUZZY_TOKEN_LEN or len(b) < self._MIN_FUZZY_TOKEN_LEN:
+            return False
+        key = (a, b) if a < b else (b, a)
+        cached = self._near_cache.get(key)
+        if cached is None:
+            cached = SequenceMatcher(None, a, b).ratio() >= self._TOKEN_SIMILARITY
+            self._near_cache[key] = cached
+        return cached
+
+    def _fuzzy_shared_weight(self, unmatched_a: set, unmatched_b: set) -> float:
+        """Credit for tokens that are the same word spelled two ways.
+
+        Greedy, heaviest-first, and each right-hand token can be consumed
+        only once, so two different misspellings can never both claim the
+        same correct word. Credit is the MEAN of the two weights rather than
+        either one, so a rare token paired with a common one cannot score
+        higher than the pair genuinely supports."""
+        if not unmatched_a or not unmatched_b:
+            return 0.0
+        used: set = set()
+        extra = 0.0
+        for token in sorted(unmatched_a, key=lambda t: -self._weight(t)):
+            for other in unmatched_b:
+                if other in used:
+                    continue
+                if self._near(token, other):
+                    used.add(other)
+                    extra += (self._weight(token) + self._weight(other)) / 2
+                    break
+        return extra
+
     def similarity(self, a: str, b: str) -> Decimal:
         """Weighted Jaccard in [0, 1], adjusted for grade-code agreement."""
         # Ordered lists for grade-code extraction (a code is a number plus
@@ -872,11 +1045,16 @@ class _MaterialScorer:
         ta, tb = set(list_a), set(list_b)
         if not ta or not tb:
             return Decimal("0")
-        denominator = sum(self._weight(t) for t in ta | tb)
+        shared = ta & tb
+        # A misspelled token counts as shared, and stops counting toward the
+        # union - otherwise "Precipitated Silica" vs "PRECIPITATD SILICA"
+        # scores as one word in common out of three (see _StockLotPool).
+        extra = self._fuzzy_shared_weight(ta - shared, tb - shared) if self._fuzzy_tokens else 0.0
+        denominator = sum(self._weight(t) for t in ta | tb) - extra
         if denominator <= 0:
             return Decimal("0")
-        numerator = sum(self._weight(t) for t in ta & tb)
-        score = Decimal(str(numerator / denominator))
+        numerator = sum(self._weight(t) for t in shared) + extra
+        score = Decimal(str(min(1.0, numerator / denominator)))
 
         codes_a, codes_b = _grade_codes(list_a), _grade_codes(list_b)
         if codes_a and codes_b:
@@ -925,6 +1103,36 @@ def _material_matches(config: _MatchConfig, description: str, mir_description: s
     if scorer is None:
         return _token_overlap(description, mir_description) >= config.material_match_threshold
     return scorer.similarity(description, mir_description) >= config.material_match_threshold
+
+
+def _grade_codes_contradict(codes_a: set, codes_b: set) -> bool:
+    """True when two descriptions name grade codes and share none.
+
+    The MIR<->Stock analogue of _po_number_contradicts() below, and the only
+    reason the date+rate identification path is safe (2026-09-21). That path
+    admits a pair on receipt date plus rate alone, and the failure mode it
+    walks straight into is a supplier delivering several products on one day
+    at one price - real, measured pairs it wrongly bound before this gate
+    existed:
+
+        'NBR 2675'      <-> 'NBR 3345'          both Rs 226.50, same day
+        'AUROBOND 825'  <-> 'AUROAID AR 262'    both Rs 345, matched BOTH ways
+        'Nordel 4770'   <-> 'Nordel 4570'       both Rs 300
+        'Eva Bag 20x20' <-> '24 x 36 Eva Bag'   both Rs 198, swapped
+
+    Every one of them names a code on both sides and agrees on none, so this
+    single condition removes all of them. Measured one-sided: it costs
+    NOTHING on the material paths (identical matched-row counts at all three
+    plants with the gate on and off - the grade PENALTY inside
+    _MaterialScorer already pushes a code disagreement under the threshold
+    there), and on the date+rate path it removes 2 of 4 candidates at HRS,
+    5 of 16 at Achhad, 3 of 6 at Vapi - exactly the pairs above.
+
+    Takes the extracted code SETS rather than the strings, because both
+    callers already hold them (_StockLotPool precomputes the lot side once
+    per pass) and re-tokenizing here would put SequenceMatcher-adjacent work
+    back on a per-candidate path."""
+    return bool(codes_a and codes_b and not (codes_a & codes_b))
 
 
 # ── Hard negative gates (2026-09-12 redesign) ───────────────────────────
@@ -2091,6 +2299,35 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
     return match
 
 
+def _rates_agree(config: _MatchConfig, mir_entry, lot) -> bool:
+    """Whether a MIR row and a Stock lot agree on rate closely enough to be
+    the same delivery - the identification half of the date+rate path.
+
+    Unit-adjusted first, exactly as every other rate comparison in this file
+    is: an unconverted MT-against-KG pair differs by ~1000x and would simply
+    never identify. A non-convertible unit pair, or a missing rate on either
+    side, is NOT agreement - this path exists to admit a pair on positive
+    evidence, so absent evidence has to mean no.
+
+    Calibrated, not guessed: on pairs that are near-certainly the same
+    delivery (descriptions identical AND dates identical), rate agrees on
+    100% of HRS's, 97% of Achhad's and 100% of Vapi's. That is what makes it
+    usable as an identifier at all. Stock's `received` QUANTITY was measured
+    the same way and agrees on ~0% - it is a running-total artifact, which is
+    why qty is not, and must not become, a second identification factor
+    here."""
+    lot_rate = getattr(lot, config.stock_rate_field, None)
+    if mir_entry.rate is None or lot_rate is None:
+        return False
+    _, _, mir_rate_adj, lot_rate_adj, uom_mismatch = _uom_adjust(
+        mir_entry.qty, mir_entry.uom, lot.received, getattr(lot, "uom", None), mir_entry.rate, lot_rate,
+    )
+    if uom_mismatch:
+        return False
+    diff = _diff_pct(mir_rate_adj, lot_rate_adj)
+    return diff is not None and diff <= config.stock_rate_identity_tolerance_pct
+
+
 def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool | None" = None,
                           kept_ids: "set | None" = None):
     """Finds every Stock lot that identifies against one MIR entry and
@@ -2167,10 +2404,40 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool 
     Value here means the DERIVED value of that specific receipt (REC x
     Basic Rate) compared against MIR's own net-value (config.mir_value) -
     the one figure that's actually comparable to a single MIR line."""
-    mir_material = normalize_material(mir_entry.material_description)
+    def _no_matches():
+        """Bail out with no matches, clearing anything written earlier.
+
+        THE CLEANUP IS THE POINT, not tidiness (2026-09-21). Every early exit
+        here used to be a bare `return []`, which in the batch path is
+        harmless (the entry contributes nothing to `kept_ids`, so
+        run_full_match()'s bulk delete removes its rows) but in the
+        STANDALONE path silently left a stale match in place forever - the
+        per-entry DELETE at the bottom of this function was never reached.
+        That is a live path: an "Edit Everywhere" save re-runs matching for
+        one row. Caught by
+        test_mir_stock_pipeline_tiers.py::test_the_exclusion_deletes_a_match_written_before_registration,
+        which registered a vendor whose rows already had matches and found
+        them still there afterwards."""
+        if kept_ids is None:
+            config.mir_stock_match_model.objects.filter(mir_entry=mir_entry).delete()
+        return []
+
+    # Rows the RM Stock sheet has no counterpart for BY DESIGN are dropped
+    # before any gate runs (2026-09-21), by vendor and by material class -
+    # see parsers/common.py's NO_RM_STOCK_VENDORS and NOT_STOCKED_MATERIALS
+    # for the measurements behind each, and services/rm_untracked.py for how
+    # they are reported. Neither suppresses the ROW; both suppress only its
+    # participation in this one pairing.
+    if is_no_rm_stock_vendor(mir_entry.party_name):
+        return _no_matches()
+    if is_not_stocked_material(mir_entry.material_description, config.plant_key):
+        return _no_matches()
+
+    mir_description = clean_mir_material_for_stock(mir_entry.material_description)
+    mir_material = normalize_material(mir_description)
     mir_vendor = normalize_vendor_for_matching(mir_entry.party_name) if config.stock_vendor_field else None
     if not mir_material or (config.stock_vendor_field and not mir_vendor):
-        return []
+        return _no_matches()
 
     # `pool` lets a batch caller (run_full_match) share ONE fetch across every
     # MIR entry instead of re-loading the whole Stock table per entry - see
@@ -2180,23 +2447,107 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool 
     # matching_vapi.py re-export this by name) are unchanged.
     pool = pool or _StockLotPool(config)
 
-    candidates = []  # (lot, material_matched, date_matched)
-    for lot, lot_vendor in zip(pool.rows, pool.normalized_vendors, strict=True):
+    mir_grade_codes = _grade_codes(tokenize(mir_description))
+
+    # (evidence, lot, material_matched, date_matched), where `evidence` is
+    # (tier, material score) and only the BEST evidence survives - see the
+    # filter below the loop.
+    scored = []
+    for index, (lot, lot_vendor) in enumerate(zip(pool.rows, pool.normalized_vendors, strict=True)):
         if config.stock_vendor_field and not _vendor_matches(lot_vendor, mir_vendor):
             continue
-        material_matched = normalize_material(lot.description) == mir_material
-        if not material_matched:
-            # Material is the sole, mandatory identification factor for
-            # every plant - see this function's own docstring for why date
-            # is never allowed to substitute for it here, unlike PO<->MIR.
-            continue
-        date_matched = (
-            config.stock_extended_fields
-            and mir_entry.mir_date is not None
+
+        same_date = (
+            mir_entry.mir_date is not None
             and lot.received_date is not None
             and mir_entry.mir_date == lot.received_date
         )
-        candidates.append((lot, material_matched, date_matched))
+        # date_matched keeps its original meaning and its original gating
+        # role below (it is a stored column); stock_extended_fields is what
+        # decides whether the financial checks exist for this plant at all.
+        date_matched = config.stock_extended_fields and same_date
+
+        # ── Identification, three tiers (2026-09-21) ──────────────────────
+        # Tier 3, the original and only rule until this date: the two
+        # descriptions normalize to the same string.
+        material_matched = pool.normalized_materials[index] == mir_material
+
+        # Tier 2: they are close enough. The IDF scorer that PO<->MIR has
+        # always used, with per-token edit distance turned on, replaces what
+        # was a letter-for-letter equality test - so word order stops
+        # mattering ('8MPA RECLAIM RUBBER' vs 'RECLAIM RUBBER 8MPA') and a
+        # typo is forgiven ('PRECIPITATD SILICA'). This is where nearly all
+        # of the gain is: HRS 135 -> 268 matched MIR rows, Achhad 132 -> 342,
+        # Vapi 24 -> 301 (the last also owing much to the description
+        # cleaning above). Material remains MANDATORY and remains the primary
+        # factor - the docstring above on why date may never substitute for
+        # it still holds; what changed is how generously "the same material"
+        # is read, not whether it is required.
+        if not material_matched and pool.scorer is not None:
+            score = pool.scorer.similarity(pool.clean_descriptions[index], mir_description)
+            if score >= config.stock_material_threshold:
+                if _grade_codes_contradict(mir_grade_codes, pool.grade_codes[index]):
+                    continue
+                scored.append(((2, score), lot, False, date_matched))
+                continue
+
+        # Tier 1, weakest: the descriptions agree on nothing, but the receipt
+        # date and the rate both do. This pairing has no shared key - MIR
+        # carries no item code and Stock's own code has nothing to join to -
+        # so date-plus-rate is the closest thing to PO<->MIR's PO-number
+        # shortcut, and it is what pairs records whose text has nothing in
+        # common at all: 'Kanatol-8A (DOA)' <-> 'DOA Oil', 'JC Magnesium
+        # Hydroxide' <-> 'JH Magnesium Hydroxide MDH', 'RMP001105002 EVA BAG'
+        # <-> 'BATA BAG/EVA BAG 20"X26"X180G'.
+        #
+        # THREE conditions guard it, and all three were shown necessary
+        # against real data - see _grade_codes_contradict() for the pairs
+        # each one removes:
+        #   1. the grade-code contradiction gate;
+        #   2. tier-1 exclusivity - this row must be the best describer of
+        #      that lot among the rows sharing its date (pool.best_describer);
+        #   3. rate agreement within stock_rate_identity_tolerance_pct.
+        if not material_matched:
+            if not (config.stock_date_rate_path and same_date):
+                continue
+            if _grade_codes_contradict(mir_grade_codes, pool.grade_codes[index]):
+                continue
+            if pool.best_describer.get(lot.id) != mir_entry.id:
+                continue
+            if not _rates_agree(config, mir_entry, lot):
+                continue
+            scored.append(((1, Decimal("0")), lot, False, date_matched))
+            continue
+
+        scored.append(((3, Decimal("1")), lot, True, date_matched))
+
+    # ONLY THE BEST EVIDENCE SURVIVES, ties included (2026-09-21).
+    #
+    # This pairing stays many-to-many - the same material genuinely arrives
+    # into several lots over time, and every one of those is an exact-name
+    # candidate at identical evidence, so they all tie and all survive. What
+    # this filter removes is a DIFFERENT shape the scorer introduced: one MIR
+    # row spreading across several lots that are not the same material as
+    # each other, merely each similar enough to clear the threshold.
+    #
+    # Measured on Achhad, the plant with no vendor gate to thin the pool and
+    # so the worst affected: without this, 350 matched MIR rows produce 713
+    # match rows (2.04 lots each) and same-date rate agreement falls to 88%.
+    # With it, essentially the same coverage produces ~400 rows at 1.15 each
+    # and agreement returns to 98%. Same coverage, a third fewer rows, and
+    # the rows that remain are the right ones.
+    #
+    # Ordering is (tier, material score), so an exact-name lot always beats a
+    # merely-similar one and a similar one always beats a date+rate-only one -
+    # a MIR row that can be named never falls back to weaker evidence.
+    candidates = []  # (lot, material_matched, date_matched)
+    if scored:
+        best_evidence = max(evidence for evidence, _, _, _ in scored)
+        candidates = [
+            (lot, material_matched, date_matched)
+            for evidence, lot, material_matched, date_matched in scored
+            if evidence == best_evidence
+        ]
 
     matches = []
     matched_lot_ids = set()
@@ -2209,7 +2560,17 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool 
             value_diff = None
             value_flagged = False
             uom_mismatch = False
-            if material_matched and date_matched:
+            # `date_matched` alone, not `material_matched and date_matched`
+            # (2026-09-21). Exactly equivalent to what this said before:
+            # material used to be mandatory for admission, so every candidate
+            # reaching here already had material_matched=True and the first
+            # half of that condition could never be False. It can now - a
+            # tier-1 or tier-2 pair is identified without the descriptions
+            # being identical - and those pairs need the financial checks
+            # just as much. The real intent was always "only compare figures
+            # against the one Stock snapshot we can confirm is the same
+            # delivery event", which is what date_matched says.
+            if date_matched:
                 # Fix (found during a full-codebase audit, 2026-09-10): this
                 # branch used to compare mir_entry.rate/qty directly against
                 # the Stock lot's own rate/received with no unit conversion

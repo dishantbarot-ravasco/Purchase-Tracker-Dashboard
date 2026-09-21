@@ -620,6 +620,13 @@ function renderViewTabs() {
     renderViewTabs();
     renderPlantTabs();
     renderPurchaseTypeTabs();
+    // Sync status is re-read on a VIEW switch too, not just a plant switch
+    // (2026-09-21). It carries at least one badge that is view-specific now
+    // - "not tracked in RM" shows only under Raw Material Analysis - and
+    // without this the badge row keeps whatever the previously-selected view
+    // rendered, so switching to Raw Material Analysis simply never showed
+    // it. The plant-tab handler right below has always done this.
+    loadSyncStatus();
     await loadAndRender();
   });
 }
@@ -762,6 +769,35 @@ async function loadSyncStatus() {
         noPoBadge = ' <span class="badge stale" title="' + escapeHtml(title) + '">'
           + pwp.total + ' purchased without a PO</span>';
       }
+      // "RM doesn't track these", 2026-09-21 (project owner) - the Raw
+      // Material Analysis counterpart of the badge right above, and the same
+      // idea: a number on screen for rows this view is NOT expected to
+      // reconcile, so they stop reading as matcher failures.
+      //
+      // MIR logs everything received; the RM Stock sheet holds chemicals and
+      // raw rubber. Conveyor belting and fabric, un-named rubber compound,
+      // crates and spares are booked inward and never stocked - plus Madura
+      // by vendor. See services/rm_untracked.py, and parsers/common.py for
+      // which classes qualify and the two tests each had to pass.
+      //
+      // ONLY ON THE RAW MATERIAL view, unlike noPoBadge above: this counts
+      // exclusions from MIR<->Stock, which is what this view reads, and it
+      // would be noise beside a purchase-order list. Rendered as
+      // .badge.stale, reusing existing CSS rather than adding any - same
+      // reasoning as gapBadge and noPoBadge.
+      const rmu = data.rmUntracked;
+      let rmUntrackedBadge = '';
+      if (state.view === 'materials' && rmu && rmu.total > 0) {
+        const lines = (rmu.byClass || []).map(c => c.rowCount + '  ' + c.materialClass)
+          .concat((rmu.byVendor || []).map(v => v.rowCount + '  ' + v.vendor + '  (vendor)'));
+        const crores = (rmu.value || 0) / 10000000;
+        const title = 'Receipts the RM Stock sheet does not hold, so MIR-to-Stock does not try to match them.\n'
+          + 'They still reconcile against their purchase orders.\n'
+          + 'Rs ' + crores.toFixed(2) + ' cr in total.\n\n'
+          + lines.join('\n');
+        rmUntrackedBadge = ' <span class="badge stale" title="' + escapeHtml(title) + '">'
+          + rmu.total + " not tracked in RM</span>";
+      }
       el.innerHTML = Object.keys(labels).map(src => {
         const run = data.sync[src];
         if (!run) return '<span class="badge stale">' + labels[src] + ': never synced</span>';
@@ -776,7 +812,7 @@ async function loadSyncStatus() {
         // something that needs its own dedicated UI.
         const titleAttr = cls === 'failed' && run.errorDetail ? ' title="' + escapeHtml(run.errorDetail) + '"' : '';
         return '<span class="badge ' + cls + '"' + titleAttr + '>' + labels[src] + ': ' + when + '</span>';
-      }).join('') + syncingBadge + gapBadge + noPoBadge;
+      }).join('') + syncingBadge + gapBadge + noPoBadge + rmUntrackedBadge;
     }
   } catch (e) {
     // Logged, and shown as a visible badge rather than silently leaving the

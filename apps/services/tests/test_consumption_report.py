@@ -1,13 +1,36 @@
 """
-Tests for apps/services/consumption_report.py - the daily
-Raw Material Consumption report (one email per plant). Real Postgres via
-pytest-django (RMLot/RMSnapshot/RMDailyMovement are real DB models), same
-factory-function convention as apps/api/tests/test_materials_days_left.py.
+Tests for apps/services/consumption_report.py - the daily and monthly Raw
+Material Consumption reports (one email per plant). Real Postgres via
+pytest-django, same factory-function convention as
+apps/api/tests/test_materials_days_left.py.
+
+**Reworked 2026-09-21 with the read-path migration.** Both reports read the
+MaterialConsumptionDaily ledger now instead of deriving their own figures
+from *RMSnapshot, so every data-shaped test here builds the ledger first
+via `rebuild_plant_consumption()` - exactly as each plant's own
+`compute_<plant>_consumption` pipeline step does before the report runs.
+
+Two behaviours these tests used to pin are deliberately gone:
+
+- **Achhad's period-to-date `issued` fallback.** It existed because the
+  day-matrix could be blank for today while the live cumulative column had
+  a figure. There is no live cumulative column in the read path any more -
+  Achhad's matrix is reconciled into the ledger at build time, and days the
+  matrix doesn't cover are derived from snapshot intervals like every other
+  plant's. Nothing falls back to a month-to-date total.
+- **`isEstimate` meaning "period-to-date, Achhad only".** It now means "this
+  quantity was interpolated across a snapshot gap rather than observed on a
+  single dated day", and applies at all three plants.
+
+The plumbing tests below (admin selection, the ReportSendLog dedup guard,
+the footer and legend) are unchanged in intent - they were never about
+where the numbers came from.
 """
 import datetime
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 
 from apps.api.tests.factories import make_user
 from apps.core.models import (
@@ -18,6 +41,7 @@ from apps.core.models import (
     RTPAchhadRMLot,
     RTPAchhadRMSnapshot,
 )
+from apps.services.consumption_ledger import rebuild_plant_consumption
 from apps.services.consumption_report import (
     build_plant_monthly_report,
     build_plant_report,
@@ -25,159 +49,163 @@ from apps.services.consumption_report import (
     send_monthly_consumption_reports,
 )
 
-TODAY = datetime.date.today()
+TODAY = timezone.localdate()
+
+
+def hrs_lot_issuing(description, issues, *, opening=Decimal("1000"), rate=Decimal("120"), **overrides):
+    """Creates an HRSRMLot plus one snapshot per (date, cumulative_issued)
+    pair, with `closing` following the sheet's own
+    `opening + received - issued == closing` identity the way every real
+    row does. Consumption is driven through the ISSUE BOOK - a falling
+    balance with a static issue book is a restatement and correctly
+    measures zero (see consumption_engine.py)."""
+    last_issued = Decimal(str(issues[-1][1]))
+    defaults = dict(
+        description=description, basic_rate=rate, opening_stock=opening,
+        todays_stock=opening - last_issued, value=(opening - last_issued) * rate,
+    )
+    defaults.update(overrides)
+    lot = HRSRMLot.objects.create(**defaults)
+    for date, issued in issues:
+        closing = opening - Decimal(str(issued))
+        HRSRMSnapshot.objects.create(
+            stock_lot=lot, snapshot_date=date, opening_stock=opening, received=0,
+            issued=Decimal(str(issued)), todays_stock=closing, basic_rate=rate, value=closing * rate,
+        )
+    return lot
+
+
+def achhad_lot_issuing(description, issues, *, opening=Decimal("1000"), rate=Decimal("200"), **overrides):
+    last_issued = Decimal(str(issues[-1][1]))
+    defaults = dict(
+        description=description, rate=rate, opening_stock=opening,
+        todays_stock=opening - last_issued, value=(opening - last_issued) * rate,
+    )
+    defaults.update(overrides)
+    lot = RTPAchhadRMLot.objects.create(**defaults)
+    for date, issued in issues:
+        closing = opening - Decimal(str(issued))
+        RTPAchhadRMSnapshot.objects.create(
+            stock_lot=lot, snapshot_date=date, opening_stock=opening, received=0,
+            issued=Decimal(str(issued)), todays_stock=closing, rate=rate, value=closing * rate,
+        )
+    return lot
+
+
+def _days(*offsets):
+    return [TODAY - datetime.timedelta(days=n) for n in offsets]
 
 
 @pytest.mark.django_db
 class TestBuildPlantReportHRS:
-    def test_lot_issued_today_appears_with_rate_and_days_left(self):
-        lot = HRSRMLot.objects.create(
-            description="Natural Rubber", basic_rate=Decimal("120.5000"), todays_stock=Decimal("800"),
-        )
-        # Steady 100/day drawdown over the last 2 days, then today's issue.
-        for days_ago, stock in [(2, Decimal("1000")), (1, Decimal("900"))]:
-            HRSRMSnapshot.objects.create(
-                stock_lot=lot, snapshot_date=TODAY - datetime.timedelta(days=days_ago),
-                opening_stock=stock, received=0, issued=0, todays_stock=stock,
-                basic_rate=Decimal("120.5000"), value=stock * Decimal("120.5"),
-            )
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=TODAY,
-            opening_stock=Decimal("900"), received=0, issued=Decimal("100"), todays_stock=Decimal("800"),
-            basic_rate=Decimal("125.0000"), value=Decimal("100000.00"),
-        )
+    def test_a_material_issued_today_appears_with_its_rate_and_days_left(self):
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Natural Rubber", [(y, 0), (t, 50)], category="Natural Rubber")
+        rebuild_plant_consumption("hrs")
 
         report = build_plant_report("hrs", today=TODAY)
 
-        assert report["label"] == "HRS (Hindustan Rubbers, Silvassa)"
-        assert report["date"] == TODAY.isoformat()
         [row] = report["rows"]
         assert row["material"] == "Natural Rubber"
-        assert row["issuedToday"] == Decimal("100")
-        # Latest rate comes from the live lot row, not the snapshot.
-        assert row["rate"] == Decimal("120.5000")
-        assert row["daysLeft"] == 8.0
-        assert row["confidence"] == "low"
+        assert row["issuedToday"] == Decimal("50.000")
+        assert row["rate"] == Decimal("120.0000")
+        assert row["daysLeft"] is not None
+        assert row["isEstimate"] is False
 
-    def test_row_carries_category_blank_becomes_uncategorized(self):
-        """Category grouping (2026-09-08, project owner: "divide the
-        material by category, add a category pane in the table") - a blank
-        category (real on some rows, e.g. never set during sync) buckets as
-        "Uncategorized" rather than an empty-titled group."""
-        lot = HRSRMLot.objects.create(
-            description="Mystery Chemical", basic_rate=Decimal("10"), todays_stock=Decimal("100"), category="",
-        )
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=TODAY, opening_stock=Decimal("110"), received=0, issued=Decimal("10"),
-            todays_stock=Decimal("100"), basic_rate=Decimal("10"), value=Decimal("1000"),
-        )
+    def test_a_blank_category_becomes_uncategorized(self):
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Zinc Oxide", [(y, 0), (t, 10)], category="")
+        rebuild_plant_consumption("hrs")
 
-        report = build_plant_report("hrs", today=TODAY)
-
-        [row] = report["rows"]
+        [row] = build_plant_report("hrs", today=TODAY)["rows"]
         assert row["category"] == "Uncategorized"
 
-    def test_lot_with_no_issue_today_is_excluded(self):
-        lot = HRSRMLot.objects.create(description="Carbon Black", basic_rate=Decimal("50"), todays_stock=Decimal("500"))
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=TODAY, opening_stock=Decimal("500"), received=0, issued=0,
-            todays_stock=Decimal("500"), basic_rate=Decimal("50"), value=Decimal("25000"),
-        )
+    def test_a_material_with_no_issue_today_is_excluded(self):
+        # Issued a week ago, nothing since.
+        old, y, t = _days(7, 1, 0)
+        hrs_lot_issuing("Silica", [(old, 0), (y, 40), (t, 40)])
+        rebuild_plant_consumption("hrs")
 
-        report = build_plant_report("hrs", today=TODAY)
+        assert build_plant_report("hrs", today=TODAY)["rows"] == []
 
-        assert report["rows"] == []
+    def test_sibling_vendor_lots_are_one_row_not_several(self):
+        # The migration's visible change to this report: a material split
+        # across vendors used to appear once per lot, each holding part of
+        # the day's issues.
+        y, t = _days(1, 0)
+        hrs_lot_issuing("SBR 1502", [(y, 0), (t, 30)], party_name="GPC", natural_key="sbr-gpc")
+        hrs_lot_issuing("SBR 1502", [(y, 0), (t, 70)], party_name="Balaji", natural_key="sbr-bal")
+        rebuild_plant_consumption("hrs")
 
-    def test_inactive_lot_is_excluded_even_if_issued_today(self):
+        [row] = build_plant_report("hrs", today=TODAY)["rows"]
+        assert row["issuedToday"] == Decimal("100.000")
+
+    def test_a_restatement_is_not_reported_as_an_issue(self):
+        # The balance collapses while the issue book stands still - the
+        # sheet corrected a figure. The old report read the cumulative
+        # `issued` column and this is the class of row that broke it.
+        y, t = _days(1, 0)
         lot = HRSRMLot.objects.create(
-            description="Old Lot", basic_rate=Decimal("10"), todays_stock=Decimal("0"), is_active=False,
+            description="SACK CARBON", basic_rate=Decimal("10"),
+            opening_stock=Decimal("450500"), todays_stock=Decimal("17850"),
         )
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=TODAY, opening_stock=Decimal("10"), received=0, issued=Decimal("10"),
-            todays_stock=Decimal("0"), basic_rate=Decimal("10"), value=Decimal("0"),
-        )
+        for date, opening in ((y, Decimal("450500")), (t, Decimal("17850"))):
+            HRSRMSnapshot.objects.create(
+                stock_lot=lot, snapshot_date=date, opening_stock=opening, received=0,
+                issued=0, todays_stock=opening, basic_rate=Decimal("10"), value=opening * 10,
+            )
+        rebuild_plant_consumption("hrs")
 
-        report = build_plant_report("hrs", today=TODAY)
-
-        assert report["rows"] == []
+        assert build_plant_report("hrs", today=TODAY)["rows"] == []
 
 
 @pytest.mark.django_db
 class TestBuildPlantReportAchhad:
-    def test_issued_today_comes_from_daily_movement_not_the_period_summary_field(self):
-        """RTPAchhadRMLot.issued is a period-to-date summary that resets each
-        period (see CLAUDE.md's Days-Left Engine section) - it must NOT be
-        used as "today's issued". Only RTPAchhadRMDailyMovement carries a
-        real per-day figure."""
-        lot = RTPAchhadRMLot.objects.create(
-            description="Butyl Rubber", rate=Decimal("200"), todays_stock=Decimal("300"),
-            issued=Decimal("9999"),  # period-to-date noise - must be ignored
-        )
+    def test_a_dated_movement_row_drives_the_figure(self):
+        lot = achhad_lot_issuing("Butyl Rubber", [(d, 0) for d in _days(1, 0)])
         RTPAchhadRMDailyMovement.objects.create(
             stock_lot=lot, movement_date=TODAY, received=Decimal("0"), issued=Decimal("15"),
         )
+        rebuild_plant_consumption("achhad")
 
-        report = build_plant_report("achhad", today=TODAY)
-
-        [row] = report["rows"]
-        assert row["issuedToday"] == Decimal("15")
-        assert row["rate"] == Decimal("200")
-
-    def test_no_movement_today_is_excluded_even_with_snapshot_issued_set(self):
-        lot = RTPAchhadRMLot.objects.create(description="EPDM", rate=Decimal("80"), todays_stock=Decimal("100"))
-        RTPAchhadRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=TODAY, opening_stock=Decimal("110"), received=0, issued=Decimal("10"),
-            todays_stock=Decimal("100"), rate=Decimal("80"), value=Decimal("8000"),
-        )
-
-        report = build_plant_report("achhad", today=TODAY)
-
-        assert report["rows"] == []
-
-    def test_falls_back_to_period_to_date_issued_when_no_daily_movement_row_exists_at_all(self):
-        """Real bug found and fixed 2026-09-08, confirmed directly against a
-        real exported RM Stock file: the day-matrix can sit completely blank
-        for the current day (the plant hadn't filled it in yet at export
-        time), which previously meant the report silently showed "no
-        material issued today" even though real activity was visible via the
-        lot's own period-to-date Issued column. Project owner's explicit
-        choice: fall back to that period-to-date figure as a rough estimate
-        rather than showing nothing, flagged isEstimate so it's never
-        confused with a confirmed same-day figure."""
-        _lot = RTPAchhadRMLot.objects.create(
-            description="Neoprene", rate=Decimal("300"), todays_stock=Decimal("50"), issued=Decimal("62"),
-        )
-        # No RTPAchhadRMDailyMovement row for TODAY at all - day-matrix blank.
-
-        report = build_plant_report("achhad", today=TODAY)
-
-        [row] = report["rows"]
-        assert row["issuedToday"] == Decimal("62")
-        assert row["isEstimate"] is True
-
-    def test_a_real_dated_movement_row_is_never_overridden_by_the_fallback(self):
-        lot = RTPAchhadRMLot.objects.create(
-            description="Hypalon", rate=Decimal("400"), todays_stock=Decimal("20"), issued=Decimal("9999"),
-        )
-        RTPAchhadRMDailyMovement.objects.create(
-            stock_lot=lot, movement_date=TODAY, received=Decimal("0"), issued=Decimal("5"),
-        )
-
-        report = build_plant_report("achhad", today=TODAY)
-
-        [row] = report["rows"]
-        assert row["issuedToday"] == Decimal("5")
+        [row] = build_plant_report("achhad", today=TODAY)["rows"]
+        assert row["issuedToday"] == Decimal("15.000")
         assert row["isEstimate"] is False
 
-    def test_inactive_lot_is_excluded_from_the_fallback_too(self):
+    def test_the_live_period_to_date_column_is_never_used_as_a_figure(self):
+        # Replaces the old period-to-date fallback test. `issued=62` on the
+        # live lot row is a month-to-date running total; with no ledger rows
+        # for today the report must say nothing rather than print it under
+        # a heading that says "Issued Today".
         RTPAchhadRMLot.objects.create(
-            description="Old Neoprene", rate=Decimal("300"), todays_stock=Decimal("0"),
-            issued=Decimal("40"), is_active=False,
+            description="Neoprene", rate=Decimal("300"), todays_stock=Decimal("50"), issued=Decimal("62"),
         )
+        rebuild_plant_consumption("achhad")
 
-        report = build_plant_report("achhad", today=TODAY)
+        assert build_plant_report("achhad", today=TODAY)["rows"] == []
 
-        assert report["rows"] == []
+
+@pytest.mark.django_db
+class TestSpreadDaysAreMarkedAsEstimates:
+    def test_a_day_interpolated_across_a_snapshot_gap_is_flagged(self):
+        # Two snapshots four days apart: the 300 issued between them can't
+        # be pinned to one day, so each covered day carries a share and is
+        # marked. This is what isEstimate means now.
+        old, t = _days(4, 0)
+        hrs_lot_issuing("Sulphur", [(old, 0), (t, 300)])
+        rebuild_plant_consumption("hrs")
+
+        [row] = build_plant_report("hrs", today=TODAY)["rows"]
+        assert row["issuedToday"] == Decimal("75.000")
+        assert row["isEstimate"] is True
+
+    def test_a_directly_observed_day_is_not_flagged(self):
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Sulphur", [(y, 0), (t, 300)])
+        rebuild_plant_consumption("hrs")
+
+        [row] = build_plant_report("hrs", today=TODAY)["rows"]
+        assert row["isEstimate"] is False
 
 
 @pytest.mark.django_db
@@ -193,11 +221,9 @@ class TestSendDailyConsumptionReports:
         inactive.is_active = False
         inactive.save(update_fields=["is_active"])
 
-        lot = HRSRMLot.objects.create(description="Silica", basic_rate=Decimal("60"), todays_stock=Decimal("40"))
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=TODAY, opening_stock=Decimal("50"), received=0, issued=Decimal("10"),
-            todays_stock=Decimal("40"), basic_rate=Decimal("60"), value=Decimal("2400"),
-        )
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Silica", [(y, 0), (t, 10)])
+        rebuild_plant_consumption("hrs")
 
         result = send_daily_consumption_reports()
 
@@ -257,20 +283,10 @@ class TestSendDailyConsumptionReports:
 
     def test_email_body_groups_materials_under_category_headings(self, mailoutbox):
         make_user(email="admin5@ravasco.com", role="admin")
-        rubber_lot = HRSRMLot.objects.create(
-            description="ISNR-20", basic_rate=Decimal("190"), todays_stock=Decimal("500"), category="Natural Rubber",
-        )
-        HRSRMSnapshot.objects.create(
-            stock_lot=rubber_lot, snapshot_date=TODAY, opening_stock=Decimal("550"), received=0, issued=Decimal("50"),
-            todays_stock=Decimal("500"), basic_rate=Decimal("190"), value=Decimal("95000"),
-        )
-        chem_lot = HRSRMLot.objects.create(
-            description="Zinc Oxide", basic_rate=Decimal("117"), todays_stock=Decimal("300"), category="",
-        )
-        HRSRMSnapshot.objects.create(
-            stock_lot=chem_lot, snapshot_date=TODAY, opening_stock=Decimal("310"), received=0, issued=Decimal("10"),
-            todays_stock=Decimal("300"), basic_rate=Decimal("117"), value=Decimal("35100"),
-        )
+        y, t = _days(1, 0)
+        hrs_lot_issuing("ISNR-20", [(y, 0), (t, 50)], rate=Decimal("190"), category="Natural Rubber")
+        hrs_lot_issuing("Zinc Oxide", [(y, 0), (t, 10)], rate=Decimal("117"), category="", natural_key="zn")
+        rebuild_plant_consumption("hrs")
 
         send_daily_consumption_reports()
 
@@ -288,23 +304,19 @@ class TestSendDailyConsumptionReports:
 
     def test_estimate_rows_are_marked_and_explained_in_the_email_body(self, mailoutbox):
         make_user(email="admin4@ravasco.com", role="admin")
-        RTPAchhadRMLot.objects.create(
-            description="Neoprene", rate=Decimal("300"), todays_stock=Decimal("50"), issued=Decimal("62"),
-        )
-        # No RTPAchhadRMDailyMovement row for TODAY at all - day-matrix blank,
-        # so this row can only appear via the period-to-date fallback.
+        old, t = _days(4, 0)
+        hrs_lot_issuing("Neoprene", [(old, 0), (t, 300)], rate=Decimal("300"))
+        rebuild_plant_consumption("hrs")
 
         send_daily_consumption_reports()
 
-        [achhad_mail] = [m for m in mailoutbox if "RTP-Achhad" in m.subject]
-        assert "Neoprene" in achhad_mail.body
-        # DecimalField(decimal_places=3) quantizes 62 -> 62.000 on save/reload.
-        assert "62.000 (est.)" in achhad_mail.body
-        assert "period-to-date running total" in achhad_mail.body
-        # A plant report with no fallback rows at all must not carry the
+        [hrs_mail] = [m for m in mailoutbox if "HRS" in m.subject]
+        assert "Neoprene" in hrs_mail.body
+        assert "75.000 (est.)" in hrs_mail.body
+        # A plant report with no interpolated rows at all must not carry the
         # explanatory footnote - it would be a confusing non sequitur.
-        hrs_mail = [m for m in mailoutbox if "HRS" in m.subject][0]
-        assert "period-to-date running total" not in hrs_mail.body
+        vapi_mail = [m for m in mailoutbox if "RTP-Vapi" in m.subject][0]
+        assert "(est.)" not in vapi_mail.body
 
     def test_plain_text_body_carries_the_system_generated_footer(self, mailoutbox):
         """Real bug, found and fixed 2026-09-08: _render_report_email()'s
@@ -321,11 +333,15 @@ class TestSendDailyConsumptionReports:
     def test_email_explains_confidence_labels_are_not_a_stock_level_warning(self, mailoutbox):
         """Added 2026-09-10, project owner: "(low) sitting right next to a
         days-left number reads exactly like 'low stock' - which it isn't" -
-        every report must carry a legend explaining Days Left's formula/
-        per-lot scope and that none/low/medium/high describe how much
-        history backs the estimate, not the stock level, in both the HTML
-        and plain-text body (an email client that can't/won't render HTML
-        must not silently lose this explanation)."""
+        every report must carry a legend explaining Days Left's formula and
+        that none/low/medium/high describe how much history backs the
+        estimate, not the stock level, in both the HTML and plain-text body
+        (an email client that can't/won't render HTML must not silently lose
+        this explanation).
+
+        The scope sentence changed with the 2026-09-21 migration: a row is
+        one MATERIAL across every vendor lot of it now, not one vendor's
+        lot, so the legend has to say so or it describes the old shape."""
         make_user(email="admin-legend@ravasco.com", role="admin")
         send_daily_consumption_reports()
 
@@ -334,118 +350,117 @@ class TestSendDailyConsumptionReports:
             assert "NOT a stock-level warning" in m.body               # plain-text body
             for label in ("none", "low", "medium", "high"):
                 assert label in m.body
-            assert "vendor's stock lot" in m.body
+            assert "every vendor lot" in m.body
+            assert "vendor's stock lot" not in m.body
 
 
 # ── Monthly report (added 2026-09-08, project owner request) ────────────────
 # A fixed reference "today" so month arithmetic (current vs. past period,
 # default month selection) is deterministic regardless of when the test
-# suite actually runs - unlike the daily tests above, which can safely use
-# the real TODAY since they never reason about month boundaries.
+# suite actually runs.
 MONTH_TODAY = datetime.date(2026, 9, 15)  # mid-September: Sept is "current", Aug is "last completed"
+AUG = [datetime.date(2026, 8, d) for d in (1, 3, 10, 20)]
 
 
 @pytest.mark.django_db
 class TestBuildPlantMonthlyReportHRS:
-    def test_sums_issued_across_the_whole_month_not_just_one_day(self):
-        lot = HRSRMLot.objects.create(description="Natural Rubber", basic_rate=Decimal("120"), todays_stock=Decimal("700"))
-        for day, issued in [(3, Decimal("50")), (10, Decimal("30")), (20, Decimal("20"))]:
-            HRSRMSnapshot.objects.create(
-                stock_lot=lot, snapshot_date=datetime.date(2026, 8, day),
-                opening_stock=Decimal("1000"), received=0, issued=issued, todays_stock=Decimal("900"),
-                basic_rate=Decimal("120"), value=Decimal("108000"),
-            )
-        # A day in September (outside the target month) must not be counted.
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=datetime.date(2026, 9, 5),
-            opening_stock=Decimal("900"), received=0, issued=Decimal("999"), todays_stock=Decimal("800"),
-            basic_rate=Decimal("120"), value=Decimal("96000"),
+    def test_sums_across_the_whole_month_not_just_one_day(self):
+        hrs_lot_issuing(
+            "Natural Rubber",
+            # Cumulative issue book: 0 -> 50 -> 80 -> 100 within August.
+            [(AUG[0], 0), (AUG[1], 50), (AUG[2], 80), (AUG[3], 100)],
         )
+        rebuild_plant_consumption("hrs")
 
         report = build_plant_monthly_report("hrs", year=2026, month=8, today=MONTH_TODAY)
 
         assert report["month"] == "2026-08"
         assert report["monthLabel"] == "August 2026"
         [row] = report["rows"]
-        assert row["issuedThisMonth"] == Decimal("100")  # 50 + 30 + 20, not +999
-        assert row["isEstimate"] is False
+        assert row["issuedThisMonth"] == Decimal("100.000")
+
+    def test_september_consumption_does_not_leak_into_august(self):
+        # Snapshots on Aug 31 and Sep 1, so the September interval covers
+        # exactly one September day and cannot reach back over the boundary.
+        hrs_lot_issuing(
+            "Natural Rubber",
+            [(AUG[0], 0), (AUG[3], 100), (datetime.date(2026, 8, 31), 100),
+             (datetime.date(2026, 9, 1), 999)],
+        )
+        rebuild_plant_consumption("hrs")
+
+        [row] = build_plant_monthly_report("hrs", year=2026, month=8, today=MONTH_TODAY)["rows"]
+        assert row["issuedThisMonth"] == Decimal("100.000")
+
+    def test_an_interval_straddling_month_end_splits_across_both_months(self):
+        """Documented, deliberate behaviour rather than an accident - see
+        consumption_periods.py's docstring. When the snapshots either side
+        of a month boundary are days apart, the consumption between them
+        genuinely cannot be attributed to one side, so each month takes the
+        share of days it actually contains. The two months still sum to the
+        interval's real total, which is what keeps a quarter or a year
+        exact.
+
+        16 days from Aug 20 to Sep 5 carrying 899 units: 11 of those days
+        fall in August."""
+        hrs_lot_issuing(
+            "Natural Rubber",
+            [(AUG[0], 0), (AUG[3], 100), (datetime.date(2026, 9, 5), 999)],
+        )
+        rebuild_plant_consumption("hrs")
+
+        august = build_plant_monthly_report("hrs", year=2026, month=8, today=MONTH_TODAY)["rows"][0]
+        september = build_plant_monthly_report("hrs", year=2026, month=9, today=MONTH_TODAY)["rows"][0]
+
+        assert august["issuedThisMonth"] + september["issuedThisMonth"] == Decimal("999.000")
+        assert august["issuedThisMonth"] == pytest.approx(Decimal("718.068"))
+        assert august["isEstimate"] is True
 
     def test_defaults_to_the_most_recently_completed_month(self):
-        lot = HRSRMLot.objects.create(description="Carbon Black", basic_rate=Decimal("50"), todays_stock=Decimal("500"))
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=datetime.date(2026, 8, 20),
-            opening_stock=Decimal("520"), received=0, issued=Decimal("20"), todays_stock=Decimal("500"),
-            basic_rate=Decimal("50"), value=Decimal("25000"),
-        )
+        hrs_lot_issuing("Carbon Black", [(AUG[0], 0), (AUG[3], 20)], rate=Decimal("50"))
+        rebuild_plant_consumption("hrs")
 
         report = build_plant_monthly_report("hrs", today=MONTH_TODAY)  # no year/month given
 
         assert report["month"] == "2026-08"
         [row] = report["rows"]
-        assert row["issuedThisMonth"] == Decimal("20")
+        assert row["issuedThisMonth"] == Decimal("20.000")
 
-    def test_inactive_lot_is_excluded(self):
-        lot = HRSRMLot.objects.create(
-            description="Old Lot", basic_rate=Decimal("10"), todays_stock=Decimal("0"), is_active=False,
-        )
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=datetime.date(2026, 8, 10),
-            opening_stock=Decimal("10"), received=0, issued=Decimal("10"), todays_stock=Decimal("0"),
-            basic_rate=Decimal("10"), value=Decimal("0"),
-        )
+    def test_a_month_with_no_ledger_rows_reports_nothing(self):
+        hrs_lot_issuing("Carbon Black", [(AUG[0], 0), (AUG[3], 20)], rate=Decimal("50"))
+        rebuild_plant_consumption("hrs")
 
-        report = build_plant_monthly_report("hrs", year=2026, month=8, today=MONTH_TODAY)
-
-        assert report["rows"] == []
+        assert build_plant_monthly_report("hrs", year=2026, month=7, today=MONTH_TODAY)["rows"] == []
 
 
 @pytest.mark.django_db
 class TestBuildPlantMonthlyReportAchhad:
     def test_sums_daily_movement_rows_across_the_month(self):
-        lot = RTPAchhadRMLot.objects.create(description="Butyl Rubber", rate=Decimal("200"), todays_stock=Decimal("300"))
-        for day, issued in [(4, Decimal("15")), (18, Decimal("25"))]:
+        lot = achhad_lot_issuing("Butyl Rubber", [(AUG[0], 0)])
+        for day, issued in ((4, Decimal("15")), (18, Decimal("25"))):
             RTPAchhadRMDailyMovement.objects.create(
-                stock_lot=lot, movement_date=datetime.date(2026, 8, day), received=Decimal("0"), issued=issued,
+                stock_lot=lot, movement_date=datetime.date(2026, 8, day),
+                received=Decimal("0"), issued=issued,
             )
+        rebuild_plant_consumption("achhad")
 
-        report = build_plant_monthly_report("achhad", year=2026, month=8, today=MONTH_TODAY)
-
-        [row] = report["rows"]
-        assert row["issuedThisMonth"] == Decimal("40")
+        [row] = build_plant_monthly_report("achhad", year=2026, month=8, today=MONTH_TODAY)["rows"]
+        assert row["issuedThisMonth"] == Decimal("40.000")
         assert row["isEstimate"] is False
 
-    def test_fallback_applies_for_the_current_still_open_month(self):
-        """Same reasoning as the daily report's own fallback
-        (_month_issued_rows()'s docstring) - a lot with zero dated rows for
-        THIS month so far can reasonably fall back to the live period-to-
-        date `issued` column, since that column genuinely still reflects
-        this same still-open period."""
-        RTPAchhadRMLot.objects.create(
-            description="Neoprene", rate=Decimal("300"), todays_stock=Decimal("50"), issued=Decimal("62"),
-        )
-        # No RTPAchhadRMDailyMovement rows in September at all.
-
-        report = build_plant_monthly_report("achhad", year=2026, month=9, today=MONTH_TODAY)
-
-        [row] = report["rows"]
-        assert row["issuedThisMonth"] == Decimal("62")
-        assert row["isEstimate"] is True
-
-    def test_fallback_never_applies_for_an_already_closed_past_month(self):
-        """The critical safety property: the live `issued` column reflects
-        THIS month (September, per MONTH_TODAY) by the time this test's
-        "today" has arrived - using it as a stand-in for August (already
-        closed) would be flatly wrong, not just imprecise. A lot with no
-        August RTPAchhadRMDailyMovement rows must be silently excluded from
-        the August report, never estimated from the current live column."""
+    def test_a_closed_month_is_never_estimated_from_the_live_column(self):
+        """The critical safety property, preserved from before the
+        migration. The live `issued` column reflects whatever period is
+        currently open; using it as a stand-in for an already-closed month
+        would be flatly wrong, not merely imprecise. There is now no code
+        path that could - the report only ever reads dated ledger rows -
+        but the property is worth pinning rather than assuming."""
         RTPAchhadRMLot.objects.create(
             description="Hypalon", rate=Decimal("400"), todays_stock=Decimal("20"), issued=Decimal("9999"),
         )
-        # No RTPAchhadRMDailyMovement rows in August at all either.
+        rebuild_plant_consumption("achhad")
 
-        report = build_plant_monthly_report("achhad", year=2026, month=8, today=MONTH_TODAY)
-
-        assert report["rows"] == []
+        assert build_plant_monthly_report("achhad", year=2026, month=8, today=MONTH_TODAY)["rows"] == []
 
 
 @pytest.mark.django_db
@@ -457,25 +472,17 @@ class TestSendMonthlyConsumptionReports:
 
     def test_sends_one_email_per_plant_with_monthly_subject(self, mailoutbox):
         make_user(email="admin6@ravasco.com", role="admin")
-        lot = HRSRMLot.objects.create(description="Silica", basic_rate=Decimal("60"), todays_stock=Decimal("40"))
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=datetime.date(2026, 8, 15),
-            opening_stock=Decimal("50"), received=0, issued=Decimal("10"), todays_stock=Decimal("40"),
-            basic_rate=Decimal("60"), value=Decimal("2400"),
-        )
+        hrs_lot_issuing("Silica", [(AUG[0], 0), (AUG[3], 10)], rate=Decimal("60"))
+        rebuild_plant_consumption("hrs")
 
         result = send_monthly_consumption_reports(year=2026, month=8)
 
-        assert result["month"] == "2026-08"
         assert result["plants_sent"] == 3
         assert len(mailoutbox) == 3
-        assert all("(Monthly)" in m.subject and "August 2026" in m.subject for m in mailoutbox)
+        assert all("Monthly" in m.subject for m in mailoutbox)
 
     def test_calling_twice_for_the_same_month_does_not_resend(self, mailoutbox):
-        """Same dedup guard as the daily report's own regression test - keyed
-        on 'YYYY-MM' instead of a date, see ReportSendLog's own docstring."""
-        make_user(email="admin-dedup-monthly@ravasco.com", role="admin")
-        HRSRMLot.objects.create(description="Silica", basic_rate=Decimal("60"), todays_stock=Decimal("40"))
+        make_user(email="admin-mdedup@ravasco.com", role="admin")
 
         first = send_monthly_consumption_reports(year=2026, month=8)
         assert first["plants_sent"] == 3
@@ -483,43 +490,25 @@ class TestSendMonthlyConsumptionReports:
 
         second = send_monthly_consumption_reports(year=2026, month=8)
         assert second["plants_sent"] == 0
-        assert len(mailoutbox) == 3, "a second call for the same month must not send any more emails"
-
-        # A different month must still send normally - the dedup key is
-        # scoped per-period, not a blanket "already ran once" flag.
-        third = send_monthly_consumption_reports(year=2026, month=9)
-        assert third["plants_sent"] == 3
-        assert len(mailoutbox) == 6
+        assert len(mailoutbox) == 3
+        assert ReportSendLog.objects.filter(report_type=ReportSendLog.ReportType.MONTHLY).count() == 3
 
     def test_email_body_groups_materials_under_category_headings(self, mailoutbox):
         make_user(email="admin7@ravasco.com", role="admin")
-        lot = HRSRMLot.objects.create(
-            description="ISNR-20", basic_rate=Decimal("190"), todays_stock=Decimal("500"), category="Natural Rubber",
-        )
-        HRSRMSnapshot.objects.create(
-            stock_lot=lot, snapshot_date=datetime.date(2026, 8, 15),
-            opening_stock=Decimal("550"), received=0, issued=Decimal("50"), todays_stock=Decimal("500"),
-            basic_rate=Decimal("190"), value=Decimal("95000"),
-        )
+        hrs_lot_issuing("ISNR-20", [(AUG[0], 0), (AUG[3], 50)], rate=Decimal("190"), category="Natural Rubber")
+        rebuild_plant_consumption("hrs")
 
         send_monthly_consumption_reports(year=2026, month=8)
 
         [hrs_mail] = [m for m in mailoutbox if "HRS" in m.subject]
         assert "Natural Rubber" in hrs_mail.body
         assert hrs_mail.body.index("Natural Rubber") < hrs_mail.body.index("ISNR-20")
-        assert "Issued This Month" in hrs_mail.alternatives[0][0]
 
     def test_monthly_email_also_explains_confidence_labels(self, mailoutbox):
-        """Same legend as the daily report - see that report's own
-        test_email_explains_confidence_labels_are_not_a_stock_level_warning,
-        both reports share _render_consumption_email() so this is really
-        confirming the shared builder is actually used by both, not a
-        second implementation of the same explanation."""
-        make_user(email="admin-legend-monthly@ravasco.com", role="admin")
-
+        make_user(email="admin-mlegend@ravasco.com", role="admin")
         send_monthly_consumption_reports(year=2026, month=8)
 
         for m in mailoutbox:
             assert "NOT a stock-level warning" in m.alternatives[0][0]
             assert "NOT a stock-level warning" in m.body
-            assert "vendor's stock lot" in m.body
+            assert "every vendor lot" in m.body

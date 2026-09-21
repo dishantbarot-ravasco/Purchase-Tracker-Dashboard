@@ -21,7 +21,6 @@ inline here.
 import csv
 import datetime
 import decimal
-import itertools
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Callable, Optional
@@ -37,8 +36,9 @@ from apps.core.models import DataQualityFlag, DomesticPOCorrection, FlagDismissa
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
 from apps.services.no_po_vendors import no_po_vendor_summary, purchases_without_po_summary
+from apps.services.rm_untracked import rm_untracked_summary
 from apps.services.parsers.common import normalize_material
-from apps.services.stock_consumption import DEFAULT_WINDOW_DAYS, consumption_stats
+from apps.services.consumption_periods import consumption_rates
 from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
 from apps.services.validation import is_valid_email, is_valid_gstin
 
@@ -422,7 +422,7 @@ def _category_reference_map() -> dict[str, MaterialCategoryReference]:
     return {ref.normalized_description: ref for ref in MaterialCategoryReference.objects.all()}
 
 
-def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None, category_reference=None,
+def _lot_dict(cfg: _PlantConfig, lot, consumption_by_material=None, category_reference=None,
               corrections_by_lot=None, flags_by_lot=None):
     # N+1 fix (see CLAUDE.md): make_materials() batches these two queries
     # once for the whole queryset and passes per-lot maps in, same reasoning
@@ -441,7 +441,19 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None, category_referenc
             plant=cfg.syncrun_plant, source_type=DataQualityFlag.SourceType.STOCK_LOT, source_id=lot.id,
         )
     rate = getattr(lot, cfg.lot_rate_field)
-    consumption = (consumption_by_lot or {}).get(lot.id)
+    # Consumption is a property of the MATERIAL now, not of this one vendor
+    # lot - every sibling lot of the same material carries the identical
+    # rate. `daysLeft` below is still this lot's own cover (its quantity at
+    # the material's burn rate), because a lot row is what this dict
+    # describes; materials.js's aggregateMaterialsByName() replaces it with
+    # the group's own quantity over that same once-counted rate. **It must
+    # not sum the rate across sibling lots** - that was correct when each
+    # lot carried its own fragment and would now multiply by the lot count.
+    material_key = normalize_material(lot.description)
+    consumption = dict((consumption_by_material or {}).get(material_key) or {}) or None
+    if consumption:
+        avg_daily = consumption.get("avgDaily")
+        consumption["daysLeft"] = float(lot.todays_stock) / avg_daily if avg_daily else None
     # Achhad's Stock sheet has a Minimum Stock Level column HRS/Vapi lack
     # entirely (RTPAchhadRMLot.msl) - getattr's default None means this
     # is always None on HRS/Vapi rows without any per-plant branching, same
@@ -488,12 +500,15 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_lot=None, category_referenc
         # none - getattr's default None reproduces both hrs_views.py's real
         # value and vapi_views.py's/achhad_views.py's hardcoded None.
         "noOfDays": getattr(lot, "no_of_days", None),
-        # See apps/services/stock_consumption.py's module docstring for why
-        # this is drawdown-of-todays_stock based rather than issued/received
-        # based - None when there isn't yet a second snapshot to draw down
-        # from (a brand-new lot, or one whose history reset - see CLAUDE.md's
-        # source_row_ref/is_active notes on lot identity not being stable
-        # across a source-sheet row shift).
+        # Read from the MaterialConsumptionDaily ledger, keyed on the
+        # material - see _consumption_by_material() above and CLAUDE.md's
+        # "Consumption ledger" section. None when this material has no
+        # ledger rows in the window at all (nothing issued, or no snapshot
+        # history yet). `confidence` now reports how much of the window
+        # genuinely carries data rather than how long the span between the
+        # first and last snapshot happens to be, so expect thinner bands
+        # than before until the snapshot job runs daily - that is the
+        # figure getting more honest, not worse.
         "consumption": consumption,
         "daysToMsl": days_to_msl,
         "mirMatched": len(lot.mir_matches.all()) > 0,
@@ -651,82 +666,37 @@ def make_correct_field(cfg: _PlantConfig):
     return correct_field
 
 
-def _daily_movement_points(cfg: _PlantConfig, window_start) -> dict[int, list[tuple]]:
-    """Reconstructs a dense (date, todays_stock, received_cum, issued_cum)
-    series per lot from cfg.daily_movement_model's sparse activity-day rows,
-    anchored on that lot's own `opening_stock` - Days-Left Engine extension,
-    2026-09-08 (see RTPAchhadRMDailyMovement's own docstring for why this is
-    trustworthy, and stock_consumption.py's module docstring for why
-    RTP-Achhad's own `issued` column couldn't be used before this: that
-    concern was about the *monthly* summary resetting each period, not about
-    this daily-dated data underneath it). `received`/`issued` here are
-    running CUMULATIVE totals within this reconstructed window, matching
-    what consumption_stats()'s _issued_cross_check() expects (the same shape
-    a real snapshot's `received`/`issued` columns already have) - not the
-    per-day deltas the source rows themselves store.
+def _consumption_by_material(cfg: _PlantConfig) -> dict[str, dict]:
+    """Every material's trailing-window consumption rate for this plant,
+    keyed on `normalize_material(description)`, read from the materialised
+    ledger in ONE query.
 
-    Returns {} immediately when cfg.daily_movement_model is None (HRS/Vapi -
-    their Stock files have no day-by-day matrix to have parsed in the first
-    place). One query for every active lot's movements, not one per lot -
-    same reasoning as _consumption_by_lot()'s own snapshot query."""
-    if cfg.daily_movement_model is None:
-        return {}
-    rows = list(
-        cfg.daily_movement_model.objects
-        .filter(stock_lot__is_active=True, movement_date__gte=window_start)
-        .values_list("stock_lot_id", "movement_date", "received", "issued")
-        .order_by("stock_lot_id", "movement_date")
-    )
-    if not rows:
-        return {}
-    lot_ids = {r[0] for r in rows}
-    openings = dict(cfg.stock_lot_model.objects.filter(id__in=lot_ids).values_list("id", "opening_stock"))
+    **Replaces `_consumption_by_lot()` and `_daily_movement_points()`
+    (2026-09-21).** Three things changed and each one matters:
 
-    points_by_lot: dict[int, list[tuple]] = {}
-    for lot_id, group in itertools.groupby(rows, key=lambda row: row[0]):
-        running_stock = openings.get(lot_id) or Decimal(0)
-        running_received = Decimal(0)
-        running_issued = Decimal(0)
-        points = []
-        for _, date, received, issued in group:
-            running_stock = running_stock + received - issued
-            running_received += received
-            running_issued += issued
-            points.append((date, running_stock, running_received, running_issued))
-        points_by_lot[lot_id] = points
-    return points_by_lot
+    - **Read, not compute.** The figures come from MaterialConsumptionDaily,
+      written by `compute_<plant>_consumption` on the same qcluster beat as
+      the stock sync. This endpoint no longer replays snapshot history on
+      every request, and it can no longer disagree with the report emails -
+      they read the same rows now. The two used to be separate
+      implementations and had already drifted (see
+      apps/services/consumption_ledger.py's docstring).
+    - **Keyed on the material, not the lot.** `*RMLot.natural_key` is
+      `<code>|<vendor>#<occurrence>`, a shape MIR<->Stock matching needs and
+      consumption does not - see MaterialConsumptionDaily's own docstring
+      for the measured reshuffle that splices two materials' histories
+      together. Sibling lots of one material now share one rate rather than
+      each carrying a fragment of it.
+    - **The arithmetic is different and the old numbers were inflated.**
+      `stock_consumption.py` added the cumulative `received` LEVEL instead
+      of its increment, overstating consumption 1.31x-1.85x per plant. See
+      CLAUDE.md's "Consumption ledger" section.
 
-
-def _consumption_by_lot(cfg: _PlantConfig):
-    """One query for every active lot's snapshot history inside the
-    consumption engine's window, grouped by lot id and run through
-    consumption_stats() - not one query per lot, which would be an N+1
-    across however many hundred lots a plant has. See
-    apps/services/stock_consumption.py for the algorithm itself.
-
-    Days-Left Engine extension (2026-09-08): for plants with a
-    daily_movement_model (Achhad only today), the reconstructed daily-matrix
-    points from _daily_movement_points() are merged in per lot before
-    scoring - consumption_stats() sorts by date internally, so simple
-    concatenation is enough; an overlapping date between a real snapshot and
-    a reconstructed point just costs one wasted interval (gap=0, skipped),
-    not a correctness problem."""
-    window_start = timezone.localdate() - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)
-    rows = (
-        cfg.stock_snapshot_model.objects
-        .filter(stock_lot__is_active=True, snapshot_date__gte=window_start)
-        .values_list("stock_lot_id", "snapshot_date", "todays_stock", "received", "issued")
-        .order_by("stock_lot_id", "snapshot_date")
-    )
-    points_by_lot: dict[int, list[tuple]] = {
-        lot_id: [(date, stock, received, issued) for _, date, stock, received, issued in group]
-        for lot_id, group in itertools.groupby(rows, key=lambda row: row[0])
-    }
-
-    for lot_id, extra_points in _daily_movement_points(cfg, window_start).items():
-        points_by_lot.setdefault(lot_id, []).extend(extra_points)
-
-    return {lot_id: consumption_stats(points) for lot_id, points in points_by_lot.items()}
+    Still one query for the whole plant, not one per lot - the N+1 the old
+    helper was built to avoid, with the same
+    `django_assert_num_queries` regression test guarding it.
+    """
+    return consumption_rates(cfg.syncrun_plant, today=timezone.localdate())
 
 
 def make_materials(cfg: _PlantConfig):
@@ -736,7 +706,7 @@ def make_materials(cfg: _PlantConfig):
             return Response({"error": "You are not permitted to view this plant's materials."}, status=403)
         qs = cfg.stock_lot_model.objects.filter(is_active=True).order_by("-value").prefetch_related("mir_matches")
         lots = list(qs)
-        consumption_by_lot = _consumption_by_lot(cfg)
+        consumption_by_material = _consumption_by_material(cfg)
         category_reference = _category_reference_map()
 
         # Batch every lot's corrections/data-quality-flags in 2 queries total
@@ -755,7 +725,7 @@ def make_materials(cfg: _PlantConfig):
 
         return Response({
             "materials": [
-                _lot_dict(cfg, lot, consumption_by_lot, category_reference, corrections_by_lot, flags_by_lot)
+                _lot_dict(cfg, lot, consumption_by_material, category_reference, corrections_by_lot, flags_by_lot)
                 for lot in lots
             ]
         })
@@ -1073,6 +1043,16 @@ def make_sync_status(cfg: _PlantConfig):
             # services/no_po_vendors.py's purchases_without_po_summary() for
             # why a vendor-level list cannot answer it.
             "purchasesWithoutPo": purchases_without_po_summary(cfg.mir_model),
+            # What MIR<->Stock deliberately skips, 2026-09-21. The MIR<->Stock
+            # counterpart of noPoVendors/purchasesWithoutPo above, and a
+            # genuinely separate question: not "this had no purchase order"
+            # but "the RM Stock sheet does not hold this at all" - conveyor
+            # fabric and belting, un-named rubber compound, crates, spares,
+            # plus Madura by vendor. Reported for the same reason the PO-side
+            # numbers are: an out-of-scope row and a row the matcher failed on
+            # are indistinguishable otherwise. Drives the Raw Material
+            # Analysis badge in main.js. See services/rm_untracked.py.
+            "rmUntracked": rm_untracked_summary(cfg.mir_model, cfg.key),
             # Retired purchase orders, 2026-09-18. An order the master CSV no
             # longer lists is deactivated by the sync rather than deleted (see
             # sync_utils.deactivate_missing_orders()). Surfaced here because

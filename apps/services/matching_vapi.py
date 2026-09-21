@@ -97,6 +97,7 @@ MATCH_CONFIG = _MatchConfig(
     weight_value=_WEIGHT_VALUE,
     material_match_threshold=MATERIAL_MATCH_THRESHOLD,
     mir_value=lambda mir: mir.taxable_value,
+    plant_key="vapi",
     stock_rate_field="basic_rate",
     stock_vendor_field="supplier_name",
     # Imports identification/financial-check redesign (2026-09): HRS/Achhad
@@ -127,6 +128,39 @@ MATCH_CONFIG = _MatchConfig(
     # story. This flag only adds the Qty/Value data-mismatch checks on top
     # of the existing material(+vendor)-only gate.
     stock_extended_fields=True,
+    # MIR<->Stock three-tier identification (2026-09-21). Material is STILL
+    # mandatory and still primary - the '8MPA RECLAIM RUBBER' <-> 'GREASE
+    # EP 1' failure described above is exactly why date alone never gets to
+    # identify, and it still doesn't; the new path needs date AND rate, and
+    # is further guarded by the grade-code contradiction gate and tier-1
+    # exclusivity (see match_mir_entry_stock()).
+    #
+    # VAPI'S GAIN IS MOSTLY TEXT CLEANING, NOT SCORING. Its MIR prefixes the
+    # SAP material code to the description ('RM00011014 ZINC OXIDE', 173 of
+    # 1,489 rows) and its Stock sheet appends the holding plant ('RECLAIM
+    # RUBBER 6MPA HRS') - both rare-vocabulary noise that dominated an
+    # IDF-weighted comparison. clean_mir_material_for_stock()/
+    # clean_stock_material() strip them, worth +27 matched rows on their own
+    # and most of why exact-name matches alone go 24 -> 71 here.
+    #
+    # Measured on live Vapi data: 24 -> 304 matched MIR rows (1.6% -> 20.4%),
+    # of which 230 come from the scorer and 3 from the date+rate path.
+    # Same-date rate agreement 92-93% across 38 -> 45 such pairs.
+    #
+    # 20.4% READS LOW AND IS NOT COMPARABLE TO THE OTHER TWO PLANTS - 1,489 is
+    # the wrong denominator here. 1,133 of Vapi's MIR rows are for materials
+    # that appear in NO plant's RM Stock sheet (conveyor belting, conveyor
+    # fabric, rubber compound, MS crates - finished and semi-finished goods,
+    # while the Stock sheets hold chemicals and raw rubber). Against the 356
+    # rows whose material is actually in the sheet, this matches 304 - 85%,
+    # in line with HRS's 84%. Madura alone accounts for 703 of the excluded
+    # rows and is now registered in NO_RM_STOCK_VENDORS.
+    #
+    # Note Vapi's stock_material_threshold is 0.45 like the others, NOT its
+    # own lowered MATERIAL_MATCH_THRESHOLD of 0.2 - that constant is PO<->MIR's
+    # and was tuned against a different comparison entirely.
+    stock_material_threshold=Decimal("0.45"),
+    stock_date_rate_path=True,
     # Identification 2-of-3 (2026-09-19, project owner) - Achhad and HRS
     # first (2026-09-18), Vapi once its MIR PO coverage was actually
     # measured rather than assumed still-blank (see the module docstring
