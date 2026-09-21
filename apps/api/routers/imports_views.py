@@ -23,6 +23,7 @@ import datetime
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
@@ -35,6 +36,7 @@ from apps.core.models import (
     HRSImportPOMirMatch,
     HRSImportPurchaseOrder,
     ImportPOCorrection,
+    ManualMirMatch,
     RTPAchhadImportPOLineItem,
     RTPAchhadImportPOMirMatch,
     RTPAchhadImportPurchaseOrder,
@@ -45,7 +47,20 @@ from apps.core.models import (
     RodtepUsage,
     SyncRun,
 )
-from apps.api.routers._domestic_base import _category_reference_map, _po_material_categories
+from apps.api.routers._domestic_base import (
+    _category_reference_map,
+    _claims_for_mir_numbers,
+    _mir_row_dict,
+    _po_material_categories,
+)
+# Each plant's own MIR model, for the manual-MIR-match picker. Imports
+# reconcile against the SAME MIR table as that plant's domestic POs (see
+# HRSImportPOMirMatch's docstring) - this router simply never had cause to
+# read it directly before.
+from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
+# The matcher's own line numbering, imported rather than re-derived so the
+# API and matching_core can never disagree about what a pin addresses.
+from apps.services.matching_core import line_item_positions
 from apps.services import bl_tracking
 from apps.services import import_flags as flags
 from apps.services.flag_dismiss import dismiss_po_flag
@@ -67,6 +82,7 @@ from apps.services.sync_trigger import (
 # domestic and import PO line items in one idempotent pass (see
 # matching.py's own docstring), so this doesn't disturb domestic matches.
 _RUN_FULL_MATCH = {"hrs": _hrs_run_full_match, "achhad": _achhad_run_full_match, "vapi": _vapi_run_full_match}
+_MIR_MODEL = {"hrs": HRSMIREntry, "achhad": RTPAchhadMIREntry, "vapi": RTPVapiMIREntry}
 
 # Editing any of these can change an import line item's PO<->MIR match
 # outcome (vendor/material text used for candidate gating, or a value
@@ -192,10 +208,18 @@ def _mir_match_dict(item):
     }
 
 
-def _item_dict(item):
+def _item_dict(item, item_ref=""):
     is_disc, disc_pct = flags.qty_discrepancy(item)
+    match = getattr(item, "mir_match", None)
     return {
         "itemId": item.item_id,
+        # The line's address for a manual MIR pin (matching_core's
+        # line_item_positions()). Import line items DO carry a real item_id,
+        # unlike domestic ones, but the sync deletes and recreates every line
+        # on any change just the same - so a pin uses the same position-based
+        # ref at both, rather than two rules to keep straight.
+        "itemRef": item_ref,
+        "manuallyPinned": bool(match and getattr(match, "manually_pinned", False)),
         "description": item.description,
         "hsn": item.hsn,
         "qtyAsPerPo": _f(item.qty_as_per_po),
@@ -248,7 +272,9 @@ def _flag_dismissal_dict(fd):
 def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_reference=None):
     items = list(po.items.all())
     today = timezone.localdate()
-    item_dicts = [_item_dict(i) for i in items]
+    # Numbered per PO in pk order - the master CSV's own row order, and the
+    # same numbering the matcher uses to resolve a manual MIR pin.
+    item_dicts = [_item_dict(i, str(n)) for n, i in enumerate(sorted(items, key=lambda x: x.id))]
     total_incl_value = sum((i.total_inclusive_value or 0) for i in items)
     # PO-list rows show one BL/country - real POs in the live data ship as
     # one BOE per PO today, so "first item with a value" is representative;
@@ -858,3 +884,161 @@ def advance_license_sync_trigger(request):
     if not started:
         return Response({"status": "already_running"}, status=409)
     return Response({"status": "ok"})
+
+
+# ── Manual MIR match (imports) ────────────────────────────────────────────────
+# The Domestic version of this feature, extended to Import POs on request
+# (project owner, 2026-09-21: "yes do it for imports too"). Same model, same
+# matcher pass, same picker UI - the only real differences are this router's
+# cross-plant URL shape (plant is a path segment, see the module docstring)
+# and ManualMirMatch.po_kind, which keeps an import pin from ever addressing a
+# domestic line that happens to share a PO number.
+#
+# Deliberately NOT factored into _domestic_base's make_* factories: those take
+# a _PlantConfig and build one view per plant, while this router is one view
+# for all three. The two genuinely shared parts - _mir_row_dict() and
+# _claims_for_mir_numbers() - are imported rather than copied.
+
+
+@api_view(["GET"])
+def mir_candidates(request, plant, po_number):
+    """GET /api/imports/purchase-orders/<plant>/<po>/mir-candidates?q=<text>"""
+    resolved = _PLANTS.get(plant)
+    if not resolved:
+        return Response({"error": "Unknown plant."}, status=404)
+    if not user_can_access_plant(request.user, plant):
+        return Response({"error": "Unknown plant."}, status=404)
+    po_model, item_model, sr_plant, _label, match_model = resolved
+    po = po_model.objects.filter(po_number=po_number, is_active=True).first()
+    if not po:
+        return Response({"error": "Purchase order not found."}, status=404)
+
+    mir_model = _MIR_MODEL[plant]
+    q = (request.query_params.get("q") or "").strip()
+    rows = mir_model.objects.filter(is_active=True)
+    if q:
+        rows = rows.filter(
+            Q(mir_no__icontains=q) | Q(party_name__icontains=q) | Q(material_description__icontains=q)
+        )
+    else:
+        rows = rows.filter(Q(po_number_raw__icontains=po_number) | Q(mir_date__isnull=False))
+    rows = list(rows.order_by("-mir_date", "-id")[:80])
+
+    # BOTH kinds of claim, because both compete for the same MIR rows. A
+    # domestic line holding the document is exactly as much a collision as an
+    # import one, and showing only half of that would let a reader take a row
+    # believing nothing was using it.
+    numbers = {r.mir_no for r in rows if r.mir_no}
+    claims = _claims_for_mir_numbers(_domestic_cfg_for(plant), numbers)
+    for mir_no, holders in _import_claims_for_mir_numbers(plant, numbers).items():
+        claims.setdefault(mir_no, []).extend(holders)
+
+    seen: dict = {}
+    for row in rows:
+        if not row.mir_no:
+            continue
+        entry = seen.get(row.mir_no)
+        if entry is None:
+            entry = dict(_mir_row_dict(row))
+            entry["rowCount"] = 0
+            entry["claimedBy"] = claims.get(row.mir_no, [])
+            seen[row.mir_no] = entry
+        entry["rowCount"] += 1
+    return Response({"candidates": list(seen.values())})
+
+
+def _import_claims_for_mir_numbers(plant, mir_numbers):
+    """The import-side half of _claims_for_mir_numbers()."""
+    if not mir_numbers:
+        return {}
+    _po_model, item_model, _sr, _label, match_model = _PLANTS[plant]
+    matches = (
+        match_model.objects
+        .filter(mir_entry__mir_no__in=mir_numbers, po_line_item__purchase_order__is_active=True)
+        .select_related("mir_entry", "po_line_item", "po_line_item__purchase_order")
+    )
+    po_ids = {m.po_line_item.purchase_order_id for m in matches}
+    refs = {}
+    if po_ids:
+        items = list(item_model.objects.filter(purchase_order_id__in=po_ids).select_related("purchase_order"))
+        refs = {item_id: ref for item_id, (_po, ref, _desc) in line_item_positions(items).items()}
+    out: dict = {}
+    for m in matches:
+        out.setdefault(m.mir_entry.mir_no, []).append({
+            "poNumber": m.po_line_item.purchase_order.po_number,
+            "itemRef": refs.get(m.po_line_item_id, ""),
+            "description": m.po_line_item.description,
+            "manuallyPinned": bool(getattr(m, "manually_pinned", False)),
+            "isImport": True,
+        })
+    return out
+
+
+def _domestic_cfg_for(plant):
+    """That plant's domestic _PlantConfig, so the import picker can report
+    domestic claims too. Imported lazily to avoid a circular import at module
+    load (each plant's *_views module imports _domestic_base, which this
+    module already imports from)."""
+    from apps.api.routers import achhad_views, hrs_views, vapi_views
+    return {"hrs": hrs_views, "achhad": achhad_views, "vapi": vapi_views}[plant]._CONFIG
+
+
+@api_view(["PATCH"])
+@permission_classes([IsEditor])
+def set_mir_match(request, plant, po_number):
+    """PATCH /api/imports/purchase-orders/<plant>/<po>/mir-match
+
+    Body: {itemRef, mirNo, reason, clear} - identical to the Domestic
+    endpoint's, see _domestic_base.make_set_mir_match()."""
+    resolved = _PLANTS.get(plant)
+    if not resolved:
+        return Response({"error": "Unknown plant."}, status=404)
+    if not user_can_edit_plant(request.user, plant):
+        return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+    po_model, item_model, sr_plant, _label, _match_model = resolved
+
+    item_ref = str(request.data.get("itemRef") or "").strip()
+    mir_no = (request.data.get("mirNo") or "").strip()
+    reason = (request.data.get("reason") or "").strip()
+    clear = bool(request.data.get("clear"))
+
+    po = po_model.objects.filter(po_number=po_number, is_active=True).first()
+    if not po:
+        return Response({"error": "Purchase order not found."}, status=404)
+
+    items = list(item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+    refs = line_item_positions(items)
+    target = next((i for i in items if refs[i.id][1] == item_ref), None)
+    if target is None:
+        return Response({"error": "Line item not found on this purchase order."}, status=404)
+
+    if clear:
+        ManualMirMatch.objects.filter(
+            plant=sr_plant, po_kind=ManualMirMatch.POKind.IMPORT,
+            po_number=po_number, item_ref=item_ref).delete()
+    else:
+        if mir_no and not _MIR_MODEL[plant].objects.filter(is_active=True, mir_no=mir_no).exists():
+            return Response({"error": f"No active MIR entry numbered {mir_no!r} at this plant."}, status=400)
+        ManualMirMatch.objects.update_or_create(
+            plant=sr_plant,
+            po_kind=ManualMirMatch.POKind.IMPORT,
+            po_number=po_number,
+            item_ref=item_ref,
+            defaults=dict(
+                mir_no=mir_no,
+                item_description=target.description or "",
+                reason=reason,
+                created_by=request.user if getattr(request.user, "pk", None) else None,
+                created_by_email=getattr(request.user, "email", ""),
+            ),
+        )
+
+    result = _RUN_FULL_MATCH[plant]()
+    return Response({
+        "status": "ok",
+        "itemRef": item_ref,
+        "mirNo": "" if clear else mir_no,
+        "cleared": clear,
+        "manualPinsApplied": result.get("manual_pins_applied"),
+        "stalePins": result.get("manual_pins_stale", []),
+    })

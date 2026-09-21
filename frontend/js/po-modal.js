@@ -218,7 +218,15 @@ async function openPoModal(compositeKey) {
   // A manual MIR pin re-runs the whole plant's matching, so other POs'
   // badges can move too - the same full invalidate+reload a field
   // correction already does, not a modal-only refresh.
-  wireMirPicker(body, plantKey, poNumber, () => onDomesticFieldSaved(plantKey, poNumber));
+  wireMirPicker(body, {
+    candidates: (q) => apiForPlant(plantKey,
+      '/purchase-orders/' + encodeURIComponent(poNumber) + '/mir-candidates' +
+      (q ? '?q=' + encodeURIComponent(q) : '')),
+    save: (payload) => apiForPlant(plantKey,
+      '/purchase-orders/' + encodeURIComponent(poNumber) + '/mir-match',
+      { method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  }, poNumber, () => onDomesticFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onDomesticFieldSaved(plantKey, poNumber));
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
 }
@@ -239,8 +247,15 @@ async function openPoModal(compositeKey) {
 // The panel moves to sit under the items table, same "come to the thing you
 // clicked" behaviour as the correction box (shared.js's
 // _moveOverrideBoxTo()).
+//
+// Shared by the Domestic PO modal (this file) and the Import PO modal
+// (import-po.js), which reach genuinely different endpoints: Domestic's is
+// per-plant-prefixed, Import's carries the plant as a path segment under
+// one cross-plant router. The caller therefore hands wireMirPicker() an
+// `api` object with `candidates(q)` and `save(body)`, rather than this
+// file branching on which modal it is running in.
 
-let MIR_PICKER = null;  // { plantKey, poNumber, itemRef, description, onDone }
+let MIR_PICKER = null;  // { api, poNumber, itemRef, description, onDone, ... }
 
 function mirPickerHtml() {
   return '<div class="mir-picker" id="mirPicker" hidden>' +
@@ -334,10 +349,7 @@ async function applyMirMatch(opts) {
     reason: opts.reason || '',
   };
   try {
-    const data = await apiForPlant(p.plantKey,
-      '/purchase-orders/' + encodeURIComponent(p.poNumber) + '/mir-match',
-      { method: 'PATCH', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    await p.api.save(body);
     status.className = 'override-status ok';
     status.textContent = opts.clear ? 'Back to automatic matching.'
       : (body.mirNo ? 'Matched to MIR ' + body.mirNo + '.' : 'Marked as not received.');
@@ -363,9 +375,7 @@ async function loadMirCandidates(q) {
   if (!list || !MIR_PICKER) return;
   list.innerHTML = '<div class="empty-note-sm">Loading&hellip;</div>';
   try {
-    const data = await apiForPlant(MIR_PICKER.plantKey,
-      '/purchase-orders/' + encodeURIComponent(MIR_PICKER.poNumber) + '/mir-candidates' +
-      (q ? '?q=' + encodeURIComponent(q) : ''));
+    const data = await MIR_PICKER.api.candidates(q);
     if (!MIR_PICKER) return;  // closed while the fetch was in flight
     renderMirCandidates(data.candidates || []);
   } catch (e) {
@@ -397,8 +407,10 @@ function openMirPicker(ctx) {
 }
 
 /** Wires the picker's own controls plus every "change" link under
- * `container`. Called once per modal render, same as wireEditIcons(). */
-function wireMirPicker(container, plantKey, poNumber, onDone) {
+ * `container`. Called once per modal render, same as wireEditIcons().
+ * `api` is { candidates(q) -> {candidates:[...]}, save(body) } - see this
+ * section's header comment for why the endpoint is injected. */
+function wireMirPicker(container, api, poNumber, onDone) {
   MIR_PICKER = null;
   const search = container.querySelector('#mirPickerSearch');
   if (search) {
@@ -429,7 +441,7 @@ function wireMirPicker(container, plantKey, poNumber, onDone) {
   }
   container.querySelectorAll('.mir-change-link').forEach(el => {
     const open = () => openMirPicker({
-      plantKey: plantKey,
+      api: api,
       poNumber: poNumber,
       itemRef: el.dataset.itemRef,
       description: el.dataset.description,

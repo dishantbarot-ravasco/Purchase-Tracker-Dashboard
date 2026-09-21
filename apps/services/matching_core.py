@@ -2708,16 +2708,33 @@ def line_item_positions(po_items) -> dict:
     return out
 
 
-def _load_pins(config, positions):
-    """Resolves this plant's pins onto the line items they address.
+# matching_core keeps no model imports (see the module docstring), so the
+# ManualMirMatch.POKind values it filters on are mirrored here as the two
+# literal strings the model stores. Kept beside _load_pins() rather than
+# passed through _MatchConfig: they are the wire values of the pin table, not
+# a per-plant setting, and a plant cannot sensibly override them.
+PIN_KIND_BY_MATCH_KIND = {"po": "domestic", "import": "import"}
 
-    Returns (pins_by_item_id, stale) where `stale` names the pins whose
-    line no longer holds the material it did when the pin was made - see
-    ManualMirMatch's docstring for why a mismatch there means the PO's lines
-    changed underneath the pin. A stale pin is IGNORED, never applied to
-    whatever material now sits at that position, and never deleted either:
-    it is the record of a human decision, and quietly destroying it would be
-    worse than leaving it visible and inert.
+
+def _load_pins(config, positions_by_kind):
+    """Resolves this plant's pins onto the line items they address, across
+    BOTH domestic and import line items.
+
+    `positions_by_kind` is {"po": {...}, "import": {...}}, each the output of
+    line_item_positions(). Returns (pins_by_key, stale) where a key is the
+    (kind, item id) pair the rest of run_full_match() is built on, and
+    `stale` names the pins whose line no longer holds the material it did
+    when the pin was made - see ManualMirMatch's docstring for why a mismatch
+    there means the PO's lines changed underneath the pin. A stale pin is
+    IGNORED, never applied to whatever material now sits at that position,
+    and never deleted either: it is the record of a human decision, and
+    quietly destroying it would be worse than leaving it visible and inert.
+
+    Domestic and import pins are loaded in ONE pass and settle against ONE
+    `claimed_mir_ids` set, because they compete for the same MIR table -
+    exactly as their automatic matches already do (fix 2.B's exclusive
+    claiming considers both kinds together). Loading them separately would
+    let an import pin and a domestic pin each believe they hold the same row.
     """
     if config.manual_match_model is None or not config.syncrun_plant:
         return {}, []
@@ -2730,19 +2747,23 @@ def _load_pins(config, positions):
     rows.sort(key=lambda r: (r.updated_at, r.id), reverse=True)
     by_address = {}
     for row in rows:
-        by_address.setdefault((row.po_number, row.item_ref), row)
-    pins, stale = {}, []
-    order = {(r.po_number, r.item_ref): i for i, r in enumerate(rows)}
-    for item_id, (po_number, item_ref, description) in positions.items():
-        pin = by_address.get((po_number, item_ref))
-        if pin is None:
-            continue
-        if pin.item_description and pin.item_description.strip() != (description or "").strip():
-            stale.append(pin)
-            continue
-        pins[item_id] = pin
-    # Preserve the newest-first ordering for the claiming loop.
-    ordered = sorted(pins.items(), key=lambda kv: order[(kv[1].po_number, kv[1].item_ref)])
+        by_address.setdefault((row.po_kind, row.po_number, row.item_ref), row)
+    order = {(r.po_kind, r.po_number, r.item_ref): n for n, r in enumerate(rows)}
+
+    pins, stale, rank = {}, [], {}
+    for kind, positions in positions_by_kind.items():
+        pin_kind = PIN_KIND_BY_MATCH_KIND[kind]
+        for item_id, (po_number, item_ref, description) in positions.items():
+            pin = by_address.get((pin_kind, po_number, item_ref))
+            if pin is None:
+                continue
+            if pin.item_description and pin.item_description.strip() != (description or "").strip():
+                stale.append(pin)
+                continue
+            key = (kind, item_id)
+            pins[key] = pin
+            rank[key] = order[(pin.po_kind, pin.po_number, pin.item_ref)]
+    ordered = sorted(pins.items(), key=lambda kv: rank[kv[0]])
     return dict(ordered), stale
 
 
@@ -2834,8 +2855,10 @@ def run_full_match(config: _MatchConfig) -> dict:
     # Manual MIR pins for this plant, resolved onto the line items they
     # address. Read once per pass, same reasoning as the scorer/known-PO set
     # below - a pin is a property of the plant, not of any one line item.
-    positions = line_item_positions(po_items)
-    pins, stale_pins = _load_pins(config, positions)
+    pins, stale_pins = _load_pins(config, {
+        "po": line_item_positions(po_items),
+        "import": line_item_positions(import_items),
+    })
 
     # Same reasoning, for import items - feeds _import_matchable()'s own
     # single-line-item-PO check (only relevant when config.
@@ -2924,23 +2947,25 @@ def run_full_match(config: _MatchConfig) -> dict:
     # MANUAL PINS SETTLE FIRST - before groups, before the optimal
     # assignment - so a row a human named can never be taken out from under
     # them by a better-scoring automatic pair. See _load_pins() above.
-    pinned_item_ids: set[int] = set()
+    # `pinned_keys` holds (kind, item id) pairs, so a domestic and an import
+    # line item that happen to share a database id are never confused.
+    pinned_keys: set = set()
     pinned_mir_no = {p.mir_no.strip() for p in pins.values() if p.mir_no.strip()}
     pin_rows_by_no: dict[str, list] = {}
     if pinned_mir_no:
         for row in config.mir_model.objects.filter(is_active=True, mir_no__in=pinned_mir_no):
             pin_rows_by_no.setdefault((row.mir_no or "").strip(), []).append(row)
     # Iterated in _load_pins()'s OWN order (newest decision first), not in
-    # po_items order - that ordering is the whole tie-break when two pins
-    # name the same single-row MIR document, and iterating the item list
-    # instead silently threw it away.
-    po_items_by_id = {item.id: item for item in po_items}
-    for item_id, pin in pins.items():
-        item = po_items_by_id.get(item_id)
+    # item order - that ordering is the whole tie-break when two pins name
+    # the same single-row MIR document, and iterating the item list instead
+    # silently threw it away.
+    items_by_kind_id = {("po", item.id): item for item in po_items}
+    items_by_kind_id.update({("import", item.id): item for item in import_items})
+    for key, pin in pins.items():
+        item = items_by_kind_id.get(key)
         if item is None:
             continue
-        pinned_item_ids.add(item.id)
-        key = ("po", item.id)
+        pinned_keys.add(key)
         # An empty mir_no is the explicit "leave this line unmatched"
         # instruction, not a missing value - the item is simply never
         # assigned, and the write loop below deletes whatever match it had.
@@ -2962,7 +2987,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             for row in rows
         ]
         best = max(candidates, key=lambda c: (_pair_weight(c), c.mir.id))
-        candidates_by_key[("po", item.id, best.mir.id)] = best
+        candidates_by_key[(key[0], key[1], best.mir.id)] = best
         assigned[key] = (best.mir, best.score, best.coverage, None)
         claimed_mir_ids.add(best.mir.id)
     # A GROUP THAT LOSES ITS ROWS FALLS BACK TO SINGLE ROWS (2026-09-18) - it
@@ -2988,7 +3013,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     # it would have done had _shipment_group() never found a group.
     demoted_keys: list[tuple[str, int]] = []
     grouped_keys = [k for k in sorted(groups_by_key, key=lambda k: (-edges[k][0][1], str(k)))
-                    if not (k[0] == "po" and k[1] in pinned_item_ids)]
+                    if k not in pinned_keys]
     for key in grouped_keys:
         primary_id = edges[key][0][0]
         members = group_members[(key[0], key[1], primary_id)]
@@ -3005,7 +3030,7 @@ def run_full_match(config: _MatchConfig) -> dict:
         # A pinned line item is already settled (or deliberately left
         # unmatched) above, so it must not re-enter the optimization - it
         # would otherwise be handed a second, automatic row.
-        if key not in groups_by_key and not (key[0] == "po" and key[1] in pinned_item_ids)
+        if key not in groups_by_key and key not in pinned_keys
     }
     for key in demoted_keys:
         remaining = [(mir_id, weight) for mir_id, weight in row_edges[key] if mir_id not in claimed_mir_ids]
@@ -3053,7 +3078,7 @@ def run_full_match(config: _MatchConfig) -> dict:
                 # Derived from whether a pin currently applies, NOT preserved
                 # across runs the way dismissed_* is - removing the pin has to
                 # clear the badge on the next run. See ManualMirMatch.
-                manually_pinned=item.id in pinned_item_ids,
+                manually_pinned=("po", item.id) in pinned_keys,
                 tier=tier,
                 match_score=score.quantize(Decimal("0.0001")),
                 qty_diff_pct=qty_diff,
@@ -3102,6 +3127,10 @@ def run_full_match(config: _MatchConfig) -> dict:
         ) = _diffs_and_flag(config, matchable, mir, qty_override=qty_override, rate_override=rate_override, value_override=value_override)
         defaults = dict(
             mir_entry=mir,
+            # Derived from whether a pin currently applies, NOT preserved
+            # across runs the way dismissed_* is - removing the pin has to
+            # clear the badge. Same as the domestic loop above.
+            manually_pinned=("import", item.id) in pinned_keys,
             tier=tier,
             match_score=score.quantize(Decimal("0.0001")),
             qty_diff_pct=qty_diff,
@@ -3171,7 +3200,7 @@ def run_full_match(config: _MatchConfig) -> dict:
         # so it was ignored this run - that is a thing a human needs to know
         # about and re-decide, and the whole reason the detection exists
         # instead of applying the pin to whatever now sits at that position.
-        "manual_pins_applied": len(pinned_item_ids),
+        "manual_pins_applied": len(pinned_keys),
         "manual_pins_stale": [
             {"poNumber": p.po_number, "itemRef": p.item_ref, "mirNo": p.mir_no} for p in stale_pins
         ],

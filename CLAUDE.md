@@ -1686,14 +1686,19 @@ if we can edit the MIR number too, and if that was assigned to some other PO
 then a pop up would appear telling that matching with this would break so and
 so."*
 
-`ManualMirMatch` (migration `0055`) is one shared table with a `plant` column -
-the `FlagDismissal`/`MaterialConsumptionDaily` case, not the per-plant MIR/Stock
-case, since nothing in it comes from a plant's spreadsheet. Endpoints are
-`GET .../purchase-orders/<po>/mir-candidates` and
-`PATCH .../purchase-orders/<po>/mir-match`, generated per plant by
-`_domestic_base.py`'s `make_mir_candidates()`/`make_set_mir_match()`. **Domestic
-only** - imports match against the same MIR table through their own cross-plant
-router and nothing has asked for it there.
+`ManualMirMatch` (migrations `0055`/`0056`) is one shared table with a `plant`
+column - the `FlagDismissal`/`MaterialConsumptionDaily` case, not the per-plant
+MIR/Stock case, since nothing in it comes from a plant's spreadsheet.
+**Domestic AND Import**, on a follow-up request the same day ("yes do it for
+imports too"): `_domestic_base.py`'s `make_mir_candidates()`/
+`make_set_mir_match()` generate the per-plant Domestic pair, and
+`imports_views.py` has its own `mir_candidates`/`set_mir_match` for the
+cross-plant Import router (plant as a path segment, 404-not-403 for an
+out-of-scope plant, matching that module's existing conventions). The two
+genuinely shared pieces - `_mir_row_dict()` and `_claims_for_mir_numbers()` -
+are imported by the imports router rather than copied; the views themselves are
+not factored together, because one is a `_PlantConfig` factory producing three
+views and the other is a single view for all three plants.
 
 **It names a MIR NUMBER, not a MIR row, and that is the central decision.** One
 MIR document routinely covers several material lines, so `mir_no` is not unique
@@ -1731,8 +1736,13 @@ position no longer matches, the PO's lines have changed, and the pin is ignored
 and reported in `run_full_match()`'s `manual_pins_stale` rather than applied to
 whatever material now occupies that slot. It is never deleted - it is the record
 of a human decision. `matching_core.line_item_positions()` is the one
-implementation, imported by `_domestic_base.py` rather than re-derived, so the
-API and the matcher can never disagree about what a pin points at.
+implementation, imported by `_domestic_base.py` and `imports_views.py` rather
+than re-derived, so the API and the matcher can never disagree about what a pin
+points at. **Import line items use the same position-based ref even though they
+DO carry a real `item_id`** (`ImportPOCorrection` keys on it): the import sync
+deletes and recreates every line on any change just as the domestic one does, so
+the id buys no extra stability here, and one rule is better than two to keep
+straight.
 
 **Pins settle before groups and before the optimal assignment**, so a row a
 human named cannot be taken out from under them by a better-scoring automatic
@@ -1743,8 +1753,28 @@ is load-bearing: the first version computed it in `_load_pins()` and then
 iterated `po_items` instead, silently throwing it away. A test pins two lines to
 one row and fails if the older one wins.
 
-`manually_pinned` on the three domestic `*POMirMatch` models is **derived, not
-preserved** - unlike `dismissed_by_override`, it is rewritten on every run, so
+**`po_kind` is part of the unique key, not a bare tag.** Domestic and Import POs
+live in separate tables, each with its own `po_number` unique constraint, so one
+number really can exist as both - without it, a domestic pin would silently
+address an import line or the reverse. A test creates that exact collision and
+fails if either pin reaches the wrong table.
+
+**Both kinds of pin load in ONE pass and settle against ONE `claimed_mir_ids`
+set**, because they compete for the same MIR table - exactly as their automatic
+matches already do (fix 2.B's exclusive claiming considers both kinds together).
+Loading them separately would let an import pin and a domestic pin each believe
+they hold the same row. `pinned_keys` therefore holds `(kind, item id)` pairs
+rather than bare ids, so a domestic and an import line item that happen to share
+a database id are never confused. Two tests drive the cross-kind collision in
+both directions.
+
+The same reasoning drives the Import picker's `claimedBy`: it reports
+**domestic holders as well as import ones** (`_claims_for_mir_numbers()` plus
+`_import_claims_for_mir_numbers()`). Showing only half the holders would let a
+reader take a row believing nothing was using it.
+
+`manually_pinned` on the three domestic AND the three import `*POMirMatch`
+models is **derived, not preserved** - unlike `dismissed_by_override`, it is rewritten on every run, so
 removing a pin clears the badge. Getting this backwards would leave a badge
 claiming a human stands behind a match nobody chose.
 
@@ -1752,6 +1782,13 @@ claiming a human stands behind a match nobody chose.
 shape: `manual_match_model` and `syncrun_plant` are injected by the three
 `matching*.py` modules. Both default to `None`/`""`, which is also what keeps
 the existing tests - which build a `_MatchConfig` by hand - working unchanged.
+
+**One picker, two routers.** `po-modal.js`'s `wireMirPicker()` takes an `api`
+object (`candidates(q)` / `save(body)`) rather than branching on which modal it
+is in - Domestic's endpoint is per-plant-prefixed and reached through
+`apiForPlant()`, Import's carries the plant as a path segment and goes through
+`apiImports()`. Injecting the two calls is what lets the panel, the collision
+popup and every keyboard path be one implementation.
 
 **The frontend is a picker, not a free-text box.** Typing a MIR number blind is
 how you pin a line to a document that does not exist, or to the wrong one with
@@ -1765,15 +1802,21 @@ names the holder and says what happens to it: *"That line will be re-matched
 automatically and may end up with no MIR at all"* - which is true, the assignment
 really does run again from scratch.
 
-Covered by `apps/services/tests/test_manual_mir_match.py` (11 pipeline tests:
+Covered by `apps/services/tests/test_manual_mir_match.py` (11 domestic pipeline tests:
 pin beats a PO-number-confirmed row, survives three re-matches, clears on
 removal, still flags arithmetic, forced-unmatched releases its row to another
 line, collision displaces the holder, newest pin wins, stale pin ignored but
 kept, unknown number leaves the line unmatched, best row within a multi-row
 document) and `apps/api/tests/test_manual_mir_match_api.py` (19 HTTP tests:
 permissions, plant scoping, validation, upsert-not-duplicate, retired PO, and
-the `claimedBy`/`itemRef` response shape the popup depends on). The picker UI
-itself was verified with a throwaway in-browser harness (29 assertions),
+the `claimedBy`/`itemRef` response shape the popup depends on), plus
+`test_manual_mir_match_imports.py` (8 pipeline tests: import pins, `po_kind`
+keeping a shared PO number apart, and the cross-kind collision in both
+directions) and `test_manual_mir_match_imports_api.py` (15 HTTP tests,
+including `clear` deleting only the import pin and the picker reporting a
+domestic holder). The picker UI was verified with throwaway in-browser
+harnesses - 29 assertions for the Domestic wiring, then 17 for the Import
+`api` object and 5 re-checking Domestic after the two were factored together -
 deleted after.
 
 ### Dismiss / override a flagged match or flag
@@ -2705,6 +2748,7 @@ alongside each.
 | Duplicate CSS custom properties across two stylesheets | below |
 | A `<input type="number">` reporting `''` for typed garbage, saving a NULL over a real figure | [Validation before the write](#validation-runs-before-the-write-not-after) |
 | A newest-first pin order computed and then thrown away by iterating the wrong list | [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21) |
+| One PO number existing as both a Domestic and an Import order, so a pin addresses the wrong table | [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21) |
 
 **Timezone: use `timezone.localdate()`, never `date.today()`.** Four sites computed "today" in the
 *server* process's timezone. Render runs containers in UTC while `TIME_ZONE` is `Asia/Kolkata`, so every

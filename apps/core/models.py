@@ -1779,6 +1779,10 @@ class HRSImportPOMirMatch(models.Model):
     # plant, so match_import_po_mir_line_item() runs the same 2-of-3 rule and
     # _vendor_matched_field() hands this keyword to both models or neither.
     vendor_matched = models.BooleanField(default=True)
+    # Set by a human, not the matcher (2026-09-21) - see ManualMirMatch and
+    # HRSPOMirMatch.manually_pinned. Recomputed on every run_full_match()
+    # rather than preserved like dismissed_*.
+    manually_pinned = models.BooleanField(default=False)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -1978,6 +1982,10 @@ class RTPAchhadImportPOMirMatch(models.Model):
     # plant still on the vendor-mandatory rule, reads correctly without a
     # backfill.
     vendor_matched = models.BooleanField(default=True)
+    # Set by a human, not the matcher (2026-09-21) - see ManualMirMatch and
+    # HRSPOMirMatch.manually_pinned. Recomputed on every run_full_match()
+    # rather than preserved like dismissed_*.
+    manually_pinned = models.BooleanField(default=False)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -2185,6 +2193,10 @@ class RTPVapiImportPOMirMatch(models.Model):
     # and _vendor_matched_field() hands this keyword to both models or
     # neither.
     vendor_matched = models.BooleanField(default=True)
+    # Set by a human, not the matcher (2026-09-21) - see ManualMirMatch and
+    # HRSPOMirMatch.manually_pinned. Recomputed on every run_full_match()
+    # rather than preserved like dismissed_*.
+    manually_pinned = models.BooleanField(default=False)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
@@ -2436,7 +2448,17 @@ class ManualMirMatch(models.Model):
     split (genuinely different column layouts) does not apply.
     """
 
+    class POKind(models.TextChoices):
+        DOMESTIC = "domestic", "Domestic purchase order"
+        IMPORT = "import", "Import purchase order"
+
     plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    # Domestic and Import POs live in separate tables, each with its own
+    # `po_number` unique constraint - so one number can exist as both, and
+    # (plant, po_number) alone would let a domestic pin silently address an
+    # import line or the reverse. Part of the unique key rather than a bare
+    # tag for exactly that reason.
+    po_kind = models.CharField(max_length=10, choices=POKind.choices, default=POKind.DOMESTIC)
     po_number = models.CharField(max_length=100)
     item_ref = models.CharField(
         max_length=50,
@@ -2460,16 +2482,17 @@ class ManualMirMatch(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["plant", "po_number", "item_ref"], name="uniq_manual_mir_match")
+            models.UniqueConstraint(
+                fields=["plant", "po_kind", "po_number", "item_ref"], name="uniq_manual_mir_match")
         ]
         indexes = [
-            models.Index(fields=["plant", "po_number"]),
+            models.Index(fields=["plant", "po_kind", "po_number"]),
             models.Index(fields=["plant", "mir_no"]),
         ]
 
     def __str__(self):
         target = self.mir_no or "(unmatched)"
-        return f"{self.plant}/{self.po_number}#{self.item_ref} -> {target}"
+        return f"{self.plant}/{self.po_kind}/{self.po_number}#{self.item_ref} -> {target}"
 
 
 class MaterialCategoryReference(models.Model):

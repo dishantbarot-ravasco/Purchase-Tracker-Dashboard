@@ -810,16 +810,36 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
           // Only 3 possible states, not an arbitrary color - a fixed CSS
           // class per state instead of a dynamic style="..." attribute.
           const varianceCls = it.qtyDiscrepancy ? (it.qtyDiscrepancyPct >= 0 ? 'variance-up' : 'variance-down') : '';
+          // "change" opens the shared MIR picker (po-modal.js) against this
+          // router's own endpoint - an import line addresses itself by the
+          // same position-based `itemRef` a domestic one does, even though
+          // it carries a real item_id, since the sync recreates every line
+          // on change either way. See ManualMirMatch.
+          const pinned = !!it.manuallyPinned;
+          const changeLink = canEditField(plantKey) && it.itemRef !== undefined
+            ? ' <span class="mir-change-link" role="button" tabindex="0"' +
+              ' data-item-ref="' + escapeHtml(String(it.itemRef)) + '"' +
+              ' data-description="' + escapeHtml(it.description || '') + '"' +
+              ' data-current-mir="' + escapeHtml((it.mirMatch && it.mirMatch.mirNo) || '') + '"' +
+              ' data-pinned="' + (pinned ? '1' : '0') + '">change</span>'
+            : '';
+          const pinnedTag = pinned
+            ? ' <span class="pinned-tag" title="This MIR match was set by hand and is not re-decided by the matcher.">manual</span>'
+            : '';
           return '<tr><td>' + escapeHtml(it.itemId || '-') + '</td><td>' + escapeHtml(it.description || '') + '</td><td>' + escapeHtml(it.hsn || '-') +
             '</td><td>' + (it.qtyAsPerPo != null ? it.qtyAsPerPo : '-') + ' ' + escapeHtml(it.uom || '') +
             '</td><td>' + (it.qtyAsPerBoe != null ? it.qtyAsPerBoe : '-') + ' ' + escapeHtml(it.uom || '') +
             '</td><td class="fw-700 ' + varianceCls + '">' + variance + '</td>' +
             '<td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') + '</td><td>' + (it.netValue != null ? formatInr(it.netValue) : '-') + '</td>' +
-            '<td>' + importMatchStatusHtml(it, plantKey) + '</td>' +
+            '<td>' + importMatchStatusHtml(it, plantKey) + pinnedTag + changeLink + '</td>' +
             '<td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in Stock</span>') + '</td></tr>';
         }).join('') + '</tbody></table>'
     : '<div class="fs-12-5 text-slate-soft">No line items recorded.</div>';
-  const itemsTabHtml = '<div class="section-title mt-0">Material / Product Details</div>' + itemsHtml;
+  const itemsTabHtml = '<div class="section-title mt-0">Material / Product Details</div>' +
+    '<div class="table-wrap">' + itemsHtml + '</div>' +
+    // Rendered once and moved under whichever line's "change" was
+    // clicked - shared with the Domestic modal (po-modal.js).
+    mirPickerHtml();
 
   const shipmentTabHtml = '<div class="mb-block-16">' + shipmentStepperHtml(po) + '</div>' +
     (po.items || []).map(it =>
@@ -906,6 +926,16 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const switchToFlagsTab = () => { const t = body.querySelector('[data-itab="flags"]'); if (t) t.click(); };
   wireEditIcons(body, fieldsUrl, switchToFlagsTab, () => onImportFieldSaved(plantKey, poNumber));
   wireRevertLinks(body, fieldsUrl, () => onImportFieldSaved(plantKey, poNumber));
+  // A manual MIR pin re-runs the whole plant's matching (domestic AND import
+  // line items compete for the same MIR table), so the full invalidate+reload
+  // is the right refresh here, not a modal-only one.
+  const mirBase = '/purchase-orders/' + encodeURIComponent(plantKey) + '/' + encodeURIComponent(poNumber);
+  wireMirPicker(body, {
+    candidates: (q) => apiImports(mirBase + '/mir-candidates' + (q ? '?q=' + encodeURIComponent(q) : '')),
+    save: (payload) => apiImports(mirBase + '/mir-match',
+      { method: 'PATCH', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  }, poNumber, () => onImportFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
   body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () => trackBlNumber(el2.dataset.trackBl));
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
