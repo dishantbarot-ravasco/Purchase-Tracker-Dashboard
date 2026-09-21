@@ -229,6 +229,29 @@ risk**: the link still opens the PO for whoever follows it, once. The clear runs
 a link that missed or threw is consumed too — otherwise the failure message replays on every
 refresh, which is the more confusing half of it.
 
+**One line visible, detail one click away (2026-09-21).** Reported as
+*"instructions are everywhere on dashboard can we make them simpler"*. Three
+near-identical 60-word amber `.validation-note` banners sat permanently above
+the PO dashboard, the Raw Material list and the Material modal, all saying a
+version of "matching is automatic, verify manually" - which every confidence
+badge and flag badge already says on hover. `shared.js`'s
+`matchingDisclaimerHtml()` replaces all three with one sentence plus a
+**How matching works** disclosure, reusing the shape po-list.js's Data Quality
+legend already had. Built on a native `<details>`/`<summary>` rather than a
+state flag + re-render like the legend's: the three live in three different
+render paths (one a modal that re-renders on every field save), and the browser
+handles open/close with no wiring, no shared state and no CSP-blocked inline
+style. `.validation-note` survives for its one remaining real use, the
+deep-link miss message.
+
+`DISCREPANCY_LEGEND` entries gained an optional `detail`, so the one-sentence
+definition stays on the first line and the causes/caveats drop to a muted
+second line - six entries ran 60+ words with the definition buried mid-sentence.
+The moving-average explainer under the price chart became a tooltip, and the
+three "Click the pencil... no need to know column names" hints were shortened
+rather than deleted: the hint is what explains an otherwise-empty correction
+box, so it goes only when pencil discoverability makes it redundant.
+
 **CSS:** `brand.css` owns the shared top nav (gold/navy, ported from TDS); `style.css` owns the
 dashboard's separate navy/blue/red palette; each page layers its own `css/<page>-page.css`.
 `index.html` is the only page loading both — **do not merge the two palettes**, that separation is
@@ -1575,6 +1598,184 @@ correction history too, not just flags.
 don't exist on domestic models at all (domestic POs never clear customs). Don't add one without a
 real schema change first.
 
+#### The correction box comes to the field (2026-09-21)
+
+Clicking a pencil used to **switch tabs** - to Flags & Corrections, where the
+field being corrected was no longer on screen, so you typed a new value with
+the old one visible only as text in a banner. Reported in a UX review of the
+edit flow as its single worst problem.
+
+`overrideBoxHtml()` still renders once, inside whichever tab its caller puts it
+in, but that is now only its RESTING place: `selectFieldForCorrection()` calls
+`_moveOverrideBoxTo()`, which re-parents the same element directly under the
+clicked line and `_restoreOverrideBoxHome()` puts it back when the correction
+ends. `switchToTab` survives as a **fallback only**, invoked when the move
+fails; all three callers still pass it.
+
+A DOM move rather than a floating popover, deliberately: the modal is a
+scrolling container, and a positioned popover inside one needs scroll/resize/
+clipping handling that buys nothing here. A `.cell-editable` anchors on its
+`.table-wrap` instead of itself, since a block-level box cannot legally be
+inserted inside a `<td>`.
+
+Four guards came with it, each closing a real silent-loss path:
+
+- **Cancel exists.** There was no way to deselect a field at all.
+- **A half-written correction is not thrown away silently.** `closeModal()`,
+  Escape, and clicking a different pencil all route through
+  `confirmDiscardCorrection()`, which only prompts when the value or reason
+  actually differs from what was there when the field was selected - so
+  closing a modal you were merely reading is unaffected.
+- **Escape backs out of the correction first**, and only closes the modal on a
+  second press. It used to close the whole modal mid-edit.
+- **The pencil is keyboard-reachable** (`role="button"`, `tabindex="0"`, Enter/
+  Space) and no longer hover-only at `.35` opacity, on a page that otherwise
+  went through a full accessibility pass.
+
+#### Validation runs BEFORE the write, not after
+
+`_field_warning()` (GSTIN/email) runs *after* `target.save()`, so an invalid
+GSTIN was committed and then reported in an after-the-fact `"Saved. '...'
+doesn't look like a standard GSTIN"` - already in the database by the time
+anyone could object. `shared.js`'s `validateOverrideValue()` returns
+`{error}` (blocks) or `{warn}` (confirm-then-save) and runs first. Its
+GSTIN/email regexes are a **deliberate mirror** of `apps/services/
+validation.py`'s, not a stricter client rule: the backend is warn-never-block
+by design, so a stricter client would make the two disagree about what is
+savable. What changed is *when* the reader is told, not *what* is allowed.
+
+**A `<input type="number">` does not hand back what was typed.** Found in
+testing: typing `abc` into Total Value leaves `input.value === ''` and sets
+`validity.badInput`, so the value read as an intentional blank, passed every
+check, and PATCHed an empty value that `_coerce_value()` stores as NULL -
+someone fat-fingering a number silently erased the figure. Two guards, because
+neither is sufficient alone: `validity.badInput` gives the right message but is
+only set by real typing (never by a programmatic value, so it is untestable
+from a harness), and a **clear-confirm** fires whenever a field that had a
+value is about to be saved blank, which covers both that and an ordinary
+accidental clear.
+
+#### Revert, and what the success message says
+
+Correction History showed `old -> new` and was inert, so undoing a mistyped
+correction meant retyping the old value from memory. `wireRevertLinks()` PATCHes
+`oldValue` back - which **writes its own audit row**, so the history stays a
+complete record rather than losing the fact that a value was changed and changed
+back. Domestic offers it for PO-level fields only: an item-level correction is
+keyed on an `item_id` domestic line items do not reliably carry. Import offers it
+for both (its `item_id` is real), Material gates each row on **that row's own
+plant**, since a plant-scoped editor may be able to revert one sibling lot and
+not another.
+
+The sync-overwrite caveat now also rides on the success message
+("Remember to fix the source file too - the next sync overwrites this"). In
+11.5px grey type at the bottom of the box it was reliably missed, and it is the
+single most important thing about a correction.
+
+Verified with a throwaway in-browser harness (52 assertions: anchoring and
+restore, the table-cell case, no tab switch, every dirty-guard path in both
+directions, the blocking and warning branches of validation, the clear-confirm,
+revert including its reason, keyboard activation). Same convention and reason as
+the freshness-watcher and header-filter work - there is no Node here. Harness
+deleted after.
+
+### Editing which MIR a PO line matched (2026-09-21)
+
+Project owner: *"the edit option - I think in purchase order it would be great
+if we can edit the MIR number too, and if that was assigned to some other PO
+then a pop up would appear telling that matching with this would break so and
+so."*
+
+`ManualMirMatch` (migration `0055`) is one shared table with a `plant` column -
+the `FlagDismissal`/`MaterialConsumptionDaily` case, not the per-plant MIR/Stock
+case, since nothing in it comes from a plant's spreadsheet. Endpoints are
+`GET .../purchase-orders/<po>/mir-candidates` and
+`PATCH .../purchase-orders/<po>/mir-match`, generated per plant by
+`_domestic_base.py`'s `make_mir_candidates()`/`make_set_mir_match()`. **Domestic
+only** - imports match against the same MIR table through their own cross-plant
+router and nothing has asked for it there.
+
+**It names a MIR NUMBER, not a MIR row, and that is the central decision.** One
+MIR document routinely covers several material lines, so `mir_no` is not unique
+in a plant's MIR table. The unique column is `source_row_ref` - which is the
+**openpyxl row index**, and shifts the moment a row is inserted above it. That
+is exactly the instability `stock_identity.lot_natural_key()` exists to avoid
+for stock lots, and pinning a row number would silently re-point itself at a
+different material on the next sync. Naming the number says what a person
+actually knows ("this line came in under MIR 96/05") and leaves the existing
+qty/rate/material scoring to pick among that document's own rows - a judgement
+the matcher is better at than a human reading a dropdown. A test pins a
+two-row document and asserts the right row wins.
+
+**An empty `mir_no` is a real instruction, not a missing value:** "no MIR
+matches this line, leave it unmatched." Without it there is no way to correct a
+confidently-wrong match except by pointing it at some other wrong row.
+
+**A pin OUTRANKS identification**, which is the whole point of having one - the
+realistic reason to reach for it is that the automatic rule got the row wrong,
+and the commonest cause of that is precisely the evidence identification runs on
+(a party name typed two ways, a material worded differently, a missing PO
+number). Gating a pin on that evidence would make it useless in every case it
+exists for. `_forced_candidate()` therefore skips `_identification_pool()`
+entirely - but measures everything else honestly, so **arithmetic still flags**:
+a manual match whose qty and rate disagree still raises Quantity/Rate Mismatch.
+A pin overrides identification, never the financial check.
+
+**`item_ref` is the line's zero-based position within its PO**, ordered by pk -
+the master CSV's own row order. Domestic line items have no stable natural key
+at all (`item_id` is neither required nor unique, and one real code is reused
+across three unrelated materials), and a sync **deletes and recreates** every
+line item on any change, so a primary key is no good either. `item_description`
+is stored alongside as a **staleness tripwire**: when the description at that
+position no longer matches, the PO's lines have changed, and the pin is ignored
+and reported in `run_full_match()`'s `manual_pins_stale` rather than applied to
+whatever material now occupies that slot. It is never deleted - it is the record
+of a human decision. `matching_core.line_item_positions()` is the one
+implementation, imported by `_domestic_base.py` rather than re-derived, so the
+API and the matcher can never disagree about what a pin points at.
+
+**Pins settle before groups and before the optimal assignment**, so a row a
+human named cannot be taken out from under them by a better-scoring automatic
+pair; pinned items are then excluded from `grouped_keys` and `ungrouped_edges`
+so they cannot also be handed a second, automatic row. Two pins naming the same
+single-row document are resolved **newest-decision-first** - and that ordering
+is load-bearing: the first version computed it in `_load_pins()` and then
+iterated `po_items` instead, silently throwing it away. A test pins two lines to
+one row and fails if the older one wins.
+
+`manually_pinned` on the three domestic `*POMirMatch` models is **derived, not
+preserved** - unlike `dismissed_by_override`, it is rewritten on every run, so
+removing a pin clears the badge. Getting this backwards would leave a badge
+claiming a human stands behind a match nobody chose.
+
+`matching_core.py` keeps its "no model imports, everything through the config"
+shape: `manual_match_model` and `syncrun_plant` are injected by the three
+`matching*.py` modules. Both default to `None`/`""`, which is also what keeps
+the existing tests - which build a `_MatchConfig` by hand - working unchanged.
+
+**The frontend is a picker, not a free-text box.** Typing a MIR number blind is
+how you pin a line to a document that does not exist, or to the wrong one with
+the same digits; the list shows date, party, material and qty/rate so the reader
+can confirm the receipt before committing. It is also the only place the
+collision warning can come from - only the backend can see which other line
+items hold that document's rows, and `claimedBy` is read from the **match
+table**, not from the pins, because a row held by an ordinary automatic match is
+just as much worth warning about as one held by someone else's pin. The popup
+names the holder and says what happens to it: *"That line will be re-matched
+automatically and may end up with no MIR at all"* - which is true, the assignment
+really does run again from scratch.
+
+Covered by `apps/services/tests/test_manual_mir_match.py` (11 pipeline tests:
+pin beats a PO-number-confirmed row, survives three re-matches, clears on
+removal, still flags arithmetic, forced-unmatched releases its row to another
+line, collision displaces the holder, newest pin wins, stale pin ignored but
+kept, unknown number leaves the line unmatched, best row within a multi-row
+document) and `apps/api/tests/test_manual_mir_match_api.py` (19 HTTP tests:
+permissions, plant scoping, validation, upsert-not-duplicate, retired PO, and
+the `claimedBy`/`itemRef` response shape the popup depends on). The picker UI
+itself was verified with a throwaway in-browser harness (29 assertions),
+deleted after.
+
 ### Dismiss / override a flagged match or flag
 
 Two mechanisms, because the two things are stored differently:
@@ -2502,6 +2703,8 @@ alongside each.
 | `decimal.InvalidOperation` escaping as a 500 | below |
 | `[hidden]` losing a CSS specificity tie | below |
 | Duplicate CSS custom properties across two stylesheets | below |
+| A `<input type="number">` reporting `''` for typed garbage, saving a NULL over a real figure | [Validation before the write](#validation-runs-before-the-write-not-after) |
+| A newest-first pin order computed and then thrown away by iterating the wrong list | [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21) |
 
 **Timezone: use `timezone.localdate()`, never `date.today()`.** Four sites computed "today" in the
 *server* process's timezone. Render runs containers in UTC while `TIME_ZONE` is `Asia/Kolkata`, so every
