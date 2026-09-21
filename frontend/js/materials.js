@@ -458,6 +458,13 @@ function renderMaterialsView() {
   const totalValue = filtered.reduce((s, m) => s + (m.value || 0), 0);
   const inTransitValue = linkage.reduce((s, l) => s + l.openLinks.reduce((s2, x) => s2 + (x.item.netPrice != null && x.item.qty != null ? x.item.netPrice * x.item.qty : 0), 0), 0);
   const qtyOrderedOpen = linkage.reduce((s, l) => s + l.openLinks.reduce((s2, x) => s2 + (x.item.qty || 0), 0), 0);
+  // The material set behind BOTH "Inventory Value in Transit" and "Quantity
+  // Ordered" - the two cards are different aggregates over the same rows, so
+  // clicking either one filters the table to exactly this set (2026-09-21).
+  // Until then both cards were rendered as buttons (role="button",
+  // tabindex="0", pointer cursor, aria-pressed) and clicking them did
+  // nothing at all - see the click handler below.
+  const openPoMats = linkage.filter(l => l.openLinks.length > 0);
   const qtyDiscMats = linkage.filter(l => l.qtyFlag);
   const rateDiscMats = linkage.filter(l => l.rateFlag);
   // Redefined 2026-09-08 (Data Quality Flags clarity pass, same day as
@@ -487,16 +494,24 @@ function renderMaterialsView() {
   const cardDef = [
     { key: 'total', cls: '', label: 'Materials Tracked', raw: totalMaterials, fmt: 'int', tip: 'Distinct materials with current stock, summed across every vendor lot.' },
     { key: 'value', cls: '', label: 'Total Inventory Value (Warehouse)', raw: totalValue, fmt: 'inr', tip: 'Current stock quantity x rate, summed across every lot in the selected plant(s).' },
-    { key: 'transit', cls: 'partial', label: 'Inventory Value in Transit (Open POs)', raw: inTransitValue, fmt: 'inr', tip: 'Value of ordered-but-not-yet-received line items linked to this material.' },
-    { key: 'qtyordered', cls: 'partial', label: 'Quantity Ordered (Open POs)', raw: qtyOrderedOpen, fmt: 'locale', tip: 'Total quantity still open on purchase orders linked to this material.' },
+    { key: 'transit', filterKey: 'openpo', cls: 'partial', label: 'Inventory Value in Transit (Open POs)', raw: inTransitValue, fmt: 'inr', tip: 'Value of ordered-but-not-yet-received line items linked to this material.' },
+    { key: 'qtyordered', filterKey: 'openpo', cls: 'partial', label: 'Quantity Ordered (Open POs)', raw: qtyOrderedOpen, fmt: 'locale', tip: 'Total quantity still open on purchase orders linked to this material.' },
     { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', raw: qtyDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: a linked PO line item\'s quantity differs from its matched MIR entry.' },
     { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', raw: rateDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: a linked PO line item\'s rate differs from its matched MIR entry.' },
     { key: 'lowstock', cls: 'critical', label: 'Low Stock (Reorder Soon)', raw: lowStockMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Under 15 days of cover at the current consumption rate, or already at/below Achhad\'s minimum stock level.' },
     { key: 'flags', cls: 'flags', label: 'Data Quality Flags', raw: flaggedMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on a linked PO line item for this material - quantity/rate mismatch, PO not found in MIR, tax type/net/taxable/final value mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
   ];
-  const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.matStatusFilter === c.key ? 'active' : '') + '" data-matkpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.matStatusFilter === c.key) + '">' +
+  const kpiHtml = cardDef.map(c => {
+    // `filterKey` is what a click sets, `key` is the card's own identity.
+    // They differ only for the two open-PO cards, which are two aggregates
+    // over ONE row set - so selecting either lights up both, which is honest
+    // about what the table is now showing.
+    const fk = c.filterKey || c.key;
+    const on = !!c.filterKey ? state.matStatusFilter === fk : state.matStatusFilter === c.key;
+    return '<div class="kpi-card ' + c.cls + ' ' + (on ? 'active' : '') + '" data-matkpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + on + '">' +
     (c.flag ? flagIconHtml(c.flag) : '') +
-    '<div class="val" data-count-target="' + c.raw + '" data-count-fmt="' + c.fmt + '">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>').join('');
+    '<div class="val" data-count-target="' + c.raw + '" data-count-fmt="' + c.fmt + '">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>';
+  }).join('');
 
   // Everything below the chart is rendered by materialsListRegionHtml()
   // from this context, so a Material-search keystroke can rebuild the list
@@ -508,7 +523,7 @@ function renderMaterialsView() {
   // while the box under the cursor went blank. The option LISTS are safe to
   // carry: they depend on the category/sub-category filters, which take the
   // full render anyway.
-  MAT_LIST_CTX = { linkage: linkage, linkageByKey: linkageByKey, filtered: filtered, qtyDiscMats: qtyDiscMats, rateDiscMats: rateDiscMats, lowStockMats: lowStockMats, flaggedMats: flaggedMats, catOptions: catOptions, subCatOptions: subCatOptions };
+  MAT_LIST_CTX = { linkage: linkage, linkageByKey: linkageByKey, filtered: filtered, openPoMats: openPoMats, qtyDiscMats: qtyDiscMats, rateDiscMats: rateDiscMats, lowStockMats: lowStockMats, flaggedMats: flaggedMats, catOptions: catOptions, subCatOptions: subCatOptions };
 
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
@@ -565,9 +580,26 @@ function renderMaterialsView() {
   wireKpiCountUps();
   wireMaterialsListRegion();
 
+  // KPI-CARD CLICK (fixed 2026-09-21). Every card here renders as a button -
+  // role="button", tabindex="0", aria-pressed, pointer cursor - but FOUR of
+  // the eight did nothing when clicked, because this line forced the filter
+  // to null for them. Reported as "the KPIs clicking is not working".
+  //
+  //   total, value    -> correctly a no-op-ish CLEAR: both count the whole
+  //                      filtered set, so there is no narrower set to show.
+  //                      Same as Purchase Orders' own "Total PO's Created".
+  //   transit,        -> NOT a clear. Both count materials with at least one
+  //   qtyordered         open PO line item, which is a real subset, and
+  //                      clicking them now shows exactly those rows.
+  //
+  // A card with a `filterKey` toggles that shared key; a card without one
+  // toggles its own, or clears when it has no narrower set to offer.
+  const KPI_FILTER_KEYS = Object.fromEntries(cardDef.map(c => [c.key, c.filterKey || null]));
+  const KPI_CLEARS = new Set(['total', 'value']);
   document.querySelectorAll('[data-matkpi]').forEach(c => c.onclick = () => {
     const key = c.dataset.matkpi;
-    state.matStatusFilter = (state.matStatusFilter === key || key === 'total' || key === 'value' || key === 'transit' || key === 'qtyordered') ? null : key;
+    const target = KPI_FILTER_KEYS[key] || key;
+    state.matStatusFilter = (KPI_CLEARS.has(key) || state.matStatusFilter === target) ? null : target;
     state.matTablePage = 1;
     renderMaterialsView();
   });
@@ -610,7 +642,8 @@ function materialsListRegionHtml() {
   // category/sub-category-filtered picture regardless of which status chip
   // is selected, exactly like PO's Quantity/Rate Discrepancy cards.
   let tableRecs = ctx.filtered;
-  if (state.matStatusFilter === 'qtydisc') tableRecs = ctx.qtyDiscMats.map(l => l.material);
+  if (state.matStatusFilter === 'openpo') tableRecs = ctx.openPoMats.map(l => l.material);
+  else if (state.matStatusFilter === 'qtydisc') tableRecs = ctx.qtyDiscMats.map(l => l.material);
   else if (state.matStatusFilter === 'ratedisc') tableRecs = ctx.rateDiscMats.map(l => l.material);
   else if (state.matStatusFilter === 'lowstock') tableRecs = ctx.lowStockMats;
   else if (state.matStatusFilter === 'flags') tableRecs = ctx.flaggedMats.map(l => l.material);

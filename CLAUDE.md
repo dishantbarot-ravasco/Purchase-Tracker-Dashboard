@@ -1374,6 +1374,40 @@ real HRS POs' `po_number` field (confirmed on 5 real rows, e.g. `'3000001104 (Ch
 Order)'`), written by the CSV extraction process. `po_csv.py` captures it verbatim and the frontend
 displays it verbatim. **If you see this and think "I should build amendment detection" — don't.**
 
+### KPI cards are filter buttons - all of them, or none of them
+
+Every card in both KPI rows renders as a button: `role="button"`, `tabindex="0"`, `aria-pressed`, a
+pointer cursor, and an `.active` style. Clicking one narrows the list below to the rows behind that
+number. `state.statusFilter` (Purchase Orders) / `state.matStatusFilter` (Raw Material Analysis) is the
+single source of truth, shared with the "Filter by Flags" bar and the table's own Status header select,
+so the three can never disagree.
+
+**Four of Raw Material Analysis's eight cards did nothing when clicked until 2026-09-21** - reported as
+"the KPIs clicking is not working". The handler forced the filter to `null` for
+`total`/`value`/`transit`/`qtyordered`. Two of those are correct and stay:
+
+- **`total` and `value` CLEAR.** Both count the whole category-filtered set, so there is no narrower
+  set to show; clicking clears any active filter. Purchase Orders' own `total` behaves the same way and
+  is the only card on that side that is not a narrowing filter.
+- **`transit` and `qtyordered` were a real bug.** Both count materials with at least one OPEN PO line
+  item - a genuine subset - and clicking them now filters to exactly those rows (`openpo`, backed by
+  `MAT_LIST_CTX.openPoMats`, which is just `linkage.filter(l => l.openLinks.length > 0)`).
+
+**The two open-PO cards share one filter key** via `cardDef`'s `filterKey`, because they are two
+different aggregates (a value and a quantity) over ONE row set. Selecting either lights up both and
+sets `aria-pressed` on both - the alternative, highlighting only the card that was clicked, would imply
+the other one's rows are excluded.
+
+**If you add a KPI card, decide which of the three it is** - narrows to a subset, clears, or shares an
+existing `filterKey` - and wire it. A card that renders as a button and does nothing is the defect this
+section exists to prevent; it is invisible in review because the markup is identical either way.
+
+Verified with a throwaway in-browser harness driving real clicks on the real rendered cards (17
+assertions: every card narrows or clears, clicking twice restores, the open-PO pair selects the same
+rows and highlights together, an unrelated card does not, Enter activates, the Clear button appears).
+Same convention and same reason as the freshness watcher and header filters above - there is no Node
+here. Harness deleted after.
+
 ### Data Quality Flags
 
 `flags.js`'s `FLAG_CATEGORY_RULES`/`categorizeFlag()`/`DISCREPANCY_LEGEND` started as a direct port of
