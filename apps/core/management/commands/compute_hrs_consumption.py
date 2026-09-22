@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/compute_hrs_consumption.py — rebuilds HRS's
+apps/core/management/commands/compute_hrs_consumption.py - rebuilds HRS's
 raw-material consumption ledger (MaterialConsumptionDaily +
 ConsumptionEvent) from the *RMSnapshot history already in Postgres.
 

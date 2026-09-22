@@ -1,5 +1,5 @@
 """
-apps/services/security_alerts.py — admin-facing security event emails.
+apps/services/security_alerts.py - admin-facing security event emails.
 
 Added 2026-09-05 (hardening pass), closing the "logging/monitoring/
 alerting" gap a security review flagged as this app's weakest area:
@@ -149,9 +149,9 @@ def notify_admins_sync_failure(plant_key: str, cmd_name: str, detail: str = "") 
     regardless (SyncRun + logs), so nothing is lost.
 
     Deliberately NOT sent to every admin (unlike this module's other
-    alerts) - restricted to a single fixed recipient per an explicit
-    request, 2026-09-07."""
-    admin_emails = ["dishant.barot@ravasco.com"]
+    alerts) - restricted to a fixed recipient list per an explicit
+    request, 2026-09-07 (masira.balouch@ravasco.com added 2026-09-22)."""
+    admin_emails = ["dishant.barot@ravasco.com", "masira.balouch@ravasco.com"]
 
     now = timezone.now().strftime("%Y-%m-%d %H:%M UTC")
     subject = f"[Purchase Tracker Admin Alert] Sync Failure: {plant_key} / {cmd_name}"

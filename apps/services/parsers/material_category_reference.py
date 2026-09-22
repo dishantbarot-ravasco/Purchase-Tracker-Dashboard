@@ -1,5 +1,5 @@
 """
-apps/services/parsers/material_category_reference.py — parses the plant
+apps/services/parsers/material_category_reference.py - parses the plant
 manager's Category/Subcategory reference list (a CSV with columns "SAP Item
 Code, Description, HSN Code, Category, Subcategory (SAP Product Group),
 UOM") into rows ready to upsert into MaterialCategoryReference.

@@ -1,5 +1,5 @@
 /**
- * frontend/js/auth.js — gates every protected page behind a valid session
+ * frontend/js/auth.js - gates every protected page behind a valid session
  * and renders the shared top-nav chrome (user badge, nav tabs).
  *
  * Must load first on every protected page (index.html, home.html,

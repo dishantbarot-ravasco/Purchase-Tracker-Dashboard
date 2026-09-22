@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/match_vapi.py — runs the PO<->MIR and
+apps/core/management/commands/match_vapi.py - runs the PO<->MIR and
 MIR<->Stock reconciliation passes over every synced RTP-Vapi record.
 Intended to run after sync_vapi_po_csv/sync_vapi_mir/sync_vapi_stock.
 

@@ -1,5 +1,5 @@
 """
-apps/services/parsers/common.py — shared cell/CSV-value coercion and name-
+apps/services/parsers/common.py - shared cell/CSV-value coercion and name-
 normalization helpers used by every plant's parser module (mir/stock/po_csv
 and their achhad_/vapi_ variants).
 

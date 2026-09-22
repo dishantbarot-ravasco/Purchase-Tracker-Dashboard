@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_po_csv.py — syncs
+apps/core/management/commands/sync_po_csv.py - syncs
 Master_HRS_SILVASSA_Domestic_Purchase_Data.csv from Drive into
 HRSDomesticPurchaseOrder / HRSDomesticPOLineItem.
 

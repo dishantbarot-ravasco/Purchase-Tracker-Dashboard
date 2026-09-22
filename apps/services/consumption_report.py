@@ -1,5 +1,5 @@
 """
-apps/services/consumption_report.py — Daily "Raw Material
+apps/services/consumption_report.py - Daily "Raw Material
 Consumption" report, one email per plant (HRS / RTP-Achhad / RTP-Vapi),
 listing every material actually issued that day with its days-left estimate
 and latest rate. Also builds the Monthly Raw Material Consumption report
@@ -9,10 +9,10 @@ _render_monthly_report_email() below).
 
 Triggered by an external free scheduler (cron-job.org) hitting
 apps/api/routers/reports_views.py's trigger_daily_report once a day (e.g.
-20:30 IST), and trigger_monthly_report on the 1st of each month — same
+20:30 IST), and trigger_monthly_report on the 1st of each month - same
 reasoning and pattern as the TDS Automation App's own
 apps/api/routers/reports_views.py (Render's free web plan has no built-in
-cron, and Render's own Cron Jobs feature isn't free either) — see that
+cron, and Render's own Cron Jobs feature isn't free either) - see that
 view's own module docstring for the shared-secret auth scheme.
 
 **Both reports read the MaterialConsumptionDaily ledger (2026-09-21).** They
@@ -39,7 +39,7 @@ several vendor lots was previously several rows each holding a fragment of
 the day's issues.
 
 "Latest rate" is still read from the live *RMLot row's own rate field, not
-from history — every plant's *RMLot rate field is overwritten by every sync,
+from history - every plant's *RMLot rate field is overwritten by every sync,
 so it always reflects the latest successful one. Where several lots of a
 material disagree, the highest-value lot's rate wins (see
 _material_display()).

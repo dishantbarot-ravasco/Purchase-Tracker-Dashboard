@@ -1,12 +1,12 @@
 """
-apps/api/permissions.py — Custom DRF permission classes.
+apps/api/permissions.py - Custom DRF permission classes.
 
 Ported from the TDS Automation App's apps/api/permissions.py (same design,
 renamed for this app's role set):
   IsEditor  → role in ('admin', 'editor')
   IsAdmin   → role == 'admin'
 
-'viewer' is intentionally excluded from both — a viewer can only read the
+'viewer' is intentionally excluded from both - a viewer can only read the
 dashboard (search/view POs, materials, sync status), never anything that
 writes (dismissing a flagged match once that endpoint exists, managing
 users).

@@ -1,5 +1,5 @@
 """
-apps/services/parsers/achhad_stock.py — parses RAVASCO ACHHAD RM STOCK
+apps/services/parsers/achhad_stock.py - parses RAVASCO ACHHAD RM STOCK
 FILE.xlsx into a flat list of row dicts ready to upsert into
 RTPAchhadRMLot.
 

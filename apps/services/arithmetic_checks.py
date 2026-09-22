@@ -1,5 +1,5 @@
 """
-apps/services/arithmetic_checks.py — Match Accuracy Programme, fix 3.G:
+apps/services/arithmetic_checks.py - Match Accuracy Programme, fix 3.G:
 arithmetic self-validation of the source sheets, independent of any
 matching pass. Catches a class of error nothing else in this app can see -
 a real typo in the spreadsheet itself (a transposed digit, a rate typed as

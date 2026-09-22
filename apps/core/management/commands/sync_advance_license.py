@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_advance_license.py — syncs the
+apps/core/management/commands/sync_advance_license.py - syncs the
 Advance License Data Google Sheet into AdvanceLicense / AdvanceLicenseMaterial.
 
 Company-wide, not per-plant (see SyncRun.Plant.COMPANY's own comment on

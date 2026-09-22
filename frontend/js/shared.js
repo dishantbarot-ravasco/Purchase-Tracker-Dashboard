@@ -1,5 +1,5 @@
 /**
- * frontend/js/shared.js — cross-page constants and helpers.
+ * frontend/js/shared.js - cross-page constants and helpers.
  *
  * Loaded on every protected page (index.html, home.html, search-po.html,
  * admin.html) right after auth.js and before that page's own script. Holds

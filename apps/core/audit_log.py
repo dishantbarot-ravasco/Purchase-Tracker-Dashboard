@@ -1,5 +1,5 @@
 """
-apps/core/audit_log.py — Lightweight audit trail for authentication and
+apps/core/audit_log.py - Lightweight audit trail for authentication and
 user-management events.
 
 Ported from the TDS Automation App's apps/core/audit_log.py, originally
@@ -51,13 +51,13 @@ class PTAuditLog(models.Model):
     """Append-only audit trail - one row per login/logout event.
 
     Fields:
-      timestamp    — UTC datetime of the action
-      action       — one of the ACTION_* constants below
-      actor_id     — PTUser.pk of the person who triggered the action
-      actor_email  — denormalised for readability (survives account changes)
-      ip_address   — from X-Forwarded-For or REMOTE_ADDR (see
+      timestamp    - UTC datetime of the action
+      action       - one of the ACTION_* constants below
+      actor_id     - PTUser.pk of the person who triggered the action
+      actor_email  - denormalised for readability (survives account changes)
+      ip_address   - from X-Forwarded-For or REMOTE_ADDR (see
                      apps/services/device_service.py's get_client_ip)
-      detail       — free-text (e.g. which login path: trusted device,
+      detail       - free-text (e.g. which login path: trusted device,
                      new device OTP, Google OAuth)
     """
 
@@ -109,11 +109,11 @@ def log_pt_action(request, action, detail="", actor=None):
         log_pt_action(request, PTAuditLog.ACTION_LOGOUT, actor=request.user)
 
     Args:
-        request — DRF/Django request (provides IP always, and the actor
+        request - DRF/Django request (provides IP always, and the actor
                   too when `actor` isn't passed explicitly)
-        action  — one of PTAuditLog.ACTION_* constants
-        detail  — optional free-text annotation (which login path, etc.)
-        actor   — PTUser instance to credit. Required at every login call
+        action  - one of PTAuditLog.ACTION_* constants
+        detail  - optional free-text annotation (which login path, etc.)
+        actor   - PTUser instance to credit. Required at every login call
                   site (request.user is still anonymous - the JWT that
                   would authenticate it doesn't exist until *after* login
                   succeeds). Falls back to request.user for logout, which

@@ -1,5 +1,5 @@
 """
-apps/services/validation.py — lightweight format checks for manually-corrected
+apps/services/validation.py - lightweight format checks for manually-corrected
 fields (inline "Edit Everywhere" feature).
 
 Kept dependency-free (no Django imports), same convention as

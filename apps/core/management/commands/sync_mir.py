@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_mir.py — syncs HRS MIR FILE
+apps/core/management/commands/sync_mir.py - syncs HRS MIR FILE
 2026-2027.xlsx ('RAW MATERIAL' sheet) from Drive into HRSMIREntry, keyed by
 source_row_ref (the sheet row number).
 

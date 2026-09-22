@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_hrs_imports_po_csv.py — syncs
+apps/core/management/commands/sync_hrs_imports_po_csv.py - syncs
 Master_HRS_SILVASSA_Imports_Purchase_Data.csv from Drive into
 HRSImportPurchaseOrder / HRSImportPOLineItem.
 

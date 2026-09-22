@@ -1,5 +1,5 @@
 """
-apps/services/data_quality.py — the DB-touching layer behind
+apps/services/data_quality.py - the DB-touching layer behind
 apps/services/arithmetic_checks.py's pure check functions (Match Accuracy
 Programme, fix 3.G). Kept separate from arithmetic_checks.py so that module
 can stay fully dependency-free (no Django imports at all), same reasoning

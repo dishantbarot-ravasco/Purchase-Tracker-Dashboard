@@ -1,10 +1,10 @@
 """
-apps/core/management/commands/create_pt_user.py — create or update a PTUser
+apps/core/management/commands/create_pt_user.py - create or update a PTUser
 account (bcrypt-hashes the password).
 
 This is the only way to create the first admin account: without at least one
 PTUser row, nobody can log in, and logging in is the only way to reach the
-in-app admin Users panel (or Django Admin) to create further accounts — a
+in-app admin Users panel (or Django Admin) to create further accounts - a
 bootstrap chicken-and-egg problem this command exists solely to break.
 
 Deliberately idempotent via update_or_create() keyed on email, rather than
@@ -12,7 +12,7 @@ erroring on an existing address: re-running it against an existing email
 updates that user's password/role/full_name/designation in place instead of
 raising an IntegrityError. That makes it double as a password-reset / role-
 promotion tool for an admin with shell access, not just a first-run bootstrap
-step — no separate "reset password" command was needed.
+step - no separate "reset password" command was needed.
 
 Usage:
     python manage.py create_pt_user --email dishant.barot@ravasco.com --password '...' --role admin

@@ -1,5 +1,5 @@
 """
-apps/api/routers/google_oauth_urls.py — URL routes for Google OAuth 2.0 login.
+apps/api/routers/google_oauth_urls.py - URL routes for Google OAuth 2.0 login.
 
 Included in apps/api/urls.py under the /api/ prefix.
 """

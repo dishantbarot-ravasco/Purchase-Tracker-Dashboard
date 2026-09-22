@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/report_retired_pos.py — lists purchase orders
+apps/core/management/commands/report_retired_pos.py - lists purchase orders
 that are no longer in their plant's master CSV, so the deactivation the sync
 now performs can be reviewed BEFORE it happens, and audited after.
 

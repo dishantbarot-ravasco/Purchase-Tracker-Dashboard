@@ -1,5 +1,5 @@
 /**
- * frontend/js/flags.js — PO status, match-confidence badges, and Data
+ * frontend/js/flags.js - PO status, match-confidence badges, and Data
  * Quality Flag rendering shared across po-list.js, po-modal.js,
  * import-po.js, and material-modal.js. Split out of main.js - see that
  * file's own header comment for the module map.

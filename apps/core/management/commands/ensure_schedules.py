@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/ensure_schedules.py — Snapshot Pipeline
+apps/core/management/commands/ensure_schedules.py - Snapshot Pipeline
 Rebuild, Phase B (see CLAUDE.md): idempotently creates/updates the one
 django-q2 Schedule row this app needs, so the raw-material snapshot capture
 actually runs on its own instead of only ever happening as a side effect of

@@ -1,5 +1,5 @@
 """
-apps/services/plant_mismatch_report.py — Per-plant Data Correction email
+apps/services/plant_mismatch_report.py - Per-plant Data Correction email
 (added 2026-09-08, project owner request) - sent individually to each
 plant's own plant head, not to the internal admin list every other alert in
 this app goes to (see security_alerts.py/consumption_report.py) - these are

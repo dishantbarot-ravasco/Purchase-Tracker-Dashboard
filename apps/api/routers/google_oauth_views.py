@@ -1,5 +1,5 @@
 """
-apps/api/routers/google_oauth_views.py — Google OAuth 2.0 login.
+apps/api/routers/google_oauth_views.py - Google OAuth 2.0 login.
 
 Ported from the TDS Automation App's apps/api/routers/google_oauth_views.py.
 

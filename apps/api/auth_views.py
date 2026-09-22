@@ -1,11 +1,11 @@
 """
-apps/api/auth_views.py — Authentication endpoints.
+apps/api/auth_views.py - Authentication endpoints.
 
 Endpoints
 ---------
-POST /api/auth/login          — credentials -> device-trust / email-OTP intermediate state
-POST /api/auth/token/refresh  — refresh an expiring access token
-POST /api/auth/token/verify   — verify a token is still valid
+POST /api/auth/login          - credentials -> device-trust / email-OTP intermediate state
+POST /api/auth/token/refresh  - refresh an expiring access token
+POST /api/auth/token/verify   - verify a token is still valid
 
 Logout (POST /api/auth/logout) and device-verify (POST /api/auth/device-verify)
 live in apps/api/routers/device_views.py, not here.

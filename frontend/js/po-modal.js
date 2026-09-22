@@ -395,7 +395,7 @@ function openMirPicker(ctx) {
   if (ctx.rowEl) ctx.rowEl.classList.add('mir-editing');
   document.getElementById('mirPickerFor').textContent =
     'Line ' + (Number(ctx.itemRef) + 1) + ': ' + (ctx.description || 'no description') +
-    ' — currently ' + (ctx.currentMir ? 'MIR ' + ctx.currentMir : 'not matched') +
+    ' - currently ' + (ctx.currentMir ? 'MIR ' + ctx.currentMir : 'not matched') +
     (ctx.manuallyPinned ? ' (set by hand)' : '');
   document.getElementById('mirPickerStatus').textContent = '';
   document.getElementById('mirPickerStatus').className = '';

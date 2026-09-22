@@ -1,5 +1,5 @@
 """
-apps/services/match_accuracy.py — the Match Accuracy Programme's scoring
+apps/services/match_accuracy.py - the Match Accuracy Programme's scoring
 layer (doc 03, 1.3), extracted 2026-09-22 so the management panel on
 review.html and `manage.py report_match_accuracy` report the SAME numbers
 from the SAME code. Before the panel existed this all lived inside the

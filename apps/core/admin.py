@@ -1,5 +1,5 @@
 """
-apps/core/admin.py — Django Admin registrations for the core models.
+apps/core/admin.py - Django Admin registrations for the core models.
 
 This is a developer/debugging surface, not the app's real user-facing admin
 UX - end users manage PTUsers and inline PO/material corrections through the

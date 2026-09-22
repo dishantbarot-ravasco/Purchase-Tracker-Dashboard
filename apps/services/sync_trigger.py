@@ -1,5 +1,5 @@
 """
-apps/services/sync_trigger.py — background task runner for the dashboard's
+apps/services/sync_trigger.py - background task runner for the dashboard's
 "Refresh Data" button, wired 2026-09-04 so it triggers a real Google Drive
 sync instead of only re-reading whatever Postgres already has.
 

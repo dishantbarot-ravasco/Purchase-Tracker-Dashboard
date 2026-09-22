@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/match_hrs.py — runs the PO<->MIR and
+apps/core/management/commands/match_hrs.py - runs the PO<->MIR and
 MIR<->Stock reconciliation passes over every synced HRS record. Intended to
 run after sync_po_csv/sync_mir/sync_stock (and sync_hrs_imports_po_csv for
 the import-PO<->MIR pass).

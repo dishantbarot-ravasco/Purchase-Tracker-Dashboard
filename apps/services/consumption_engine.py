@@ -1,5 +1,5 @@
 """
-apps/services/consumption_engine.py — pure, dependency-free derivation of
+apps/services/consumption_engine.py - pure, dependency-free derivation of
 **what was actually consumed between two stock snapshots**, and the
 classification of everything that looks like consumption but isn't.
 

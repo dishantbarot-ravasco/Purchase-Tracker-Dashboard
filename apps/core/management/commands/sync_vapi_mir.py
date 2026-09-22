@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_vapi_mir.py — syncs RTP VAPI MIR FILE
+apps/core/management/commands/sync_vapi_mir.py - syncs RTP VAPI MIR FILE
 2026-27.xlsx (' MIR FILE 26-27 RM' sheet) from Drive into RTPVapiMIREntry,
 keyed by source_row_ref (the sheet row number).
 

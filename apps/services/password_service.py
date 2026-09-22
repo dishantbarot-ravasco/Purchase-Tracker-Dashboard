@@ -1,5 +1,5 @@
 """
-apps/services/password_service.py — OTP email for self-service password
+apps/services/password_service.py - OTP email for self-service password
 change (project owner, 2026-09-07: "add the change password for all users
 and add the otp to it for verification like we do for 1st time devices").
 

@@ -1,5 +1,5 @@
 """
-apps/api/routers/users_urls.py — URL routes for in-app user management.
+apps/api/routers/users_urls.py - URL routes for in-app user management.
 
 Included in apps/api/urls.py under the /api/ prefix. See users_views.py's
 module docstring for the endpoints' own behavior/history - this file only

@@ -1,5 +1,5 @@
 /**
- * frontend/js/main.js — the PO<->MIR<->Stock reconciliation dashboard
+ * frontend/js/main.js - the PO<->MIR<->Stock reconciliation dashboard
  * ("/"), for HRS, RTP-Achhad, and RTP-Vapi.
  */
 //

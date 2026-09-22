@@ -1,5 +1,5 @@
 """
-apps/api/exceptions.py — Custom DRF exception handler.
+apps/api/exceptions.py - Custom DRF exception handler.
 
 Ported from the TDS Automation App's apps/api/exceptions.py (unchanged
 design). Wired in via REST_FRAMEWORK['EXCEPTION_HANDLER'] in

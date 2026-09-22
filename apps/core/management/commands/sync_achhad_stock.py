@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_achhad_stock.py — syncs RAVASCO ACHHAD RM
+apps/core/management/commands/sync_achhad_stock.py - syncs RAVASCO ACHHAD RM
 STOCK FILE.xlsx from Drive into RTPAchhadRMLot, keyed by natural_key (a
 stable business identity - see apps/services/stock_identity.py), and
 captures today's RTPAchhadRMSnapshot for every lot synced.

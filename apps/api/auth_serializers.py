@@ -1,5 +1,5 @@
 """
-apps/api/auth_serializers.py — Custom JWT token serializer.
+apps/api/auth_serializers.py - Custom JWT token serializer.
 
 Ported from the TDS Automation App's apps/api/auth_serializers.py.
 

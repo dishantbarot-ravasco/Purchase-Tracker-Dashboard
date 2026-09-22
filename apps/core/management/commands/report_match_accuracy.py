@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/report_match_accuracy.py — Match Accuracy
+apps/core/management/commands/report_match_accuracy.py - Match Accuracy
 Programme, Phase 1 (doc 03, 1.3). Prints precision/recall/F1 over the review
 screen's MatchReview rows (apps/api/routers/review_views.py), split by plant,
 match type, tier and field-coverage band, so every fix in Phase 2 can be

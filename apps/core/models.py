@@ -1,5 +1,5 @@
 """
-apps/core/models.py — Django ORM models for every plant's PO/MIR/Stock data,
+apps/core/models.py - Django ORM models for every plant's PO/MIR/Stock data,
 their reconciliation (*Match) tables, and the auth/audit/correction tables.
 
 Deliberately NOT one shared schema with a `plant` discriminator column.
@@ -2835,10 +2835,18 @@ class ReportSendLog(models.Model):
     class ReportType(models.TextChoices):
         DAILY = "daily", "Daily Consumption Report"
         MONTHLY = "monthly", "Monthly Consumption Report"
+        ADV_LICENSE_IMPORT = "adv_import", "Advance License Import Validity Expiry"
+        ADV_LICENSE_EXPORT = "adv_export", "Advance License Export Validity Expiry"
 
     report_type = models.CharField(max_length=10, choices=ReportType.choices)
     plant = models.CharField(max_length=20)
-    period_key = models.CharField(max_length=20, help_text="Daily report: ISO date. Monthly report: 'YYYY-MM'.")
+    period_key = models.CharField(
+        max_length=20,
+        help_text=(
+            "Daily report: ISO date. Monthly report: 'YYYY-MM'. "
+            "Advance License expiry reports: the license_number (plant is 'all')."
+        ),
+    )
     sent_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

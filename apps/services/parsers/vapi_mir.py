@@ -1,5 +1,5 @@
 """
-apps/services/parsers/vapi_mir.py — parses RTP VAPI MIR FILE 2026-27.xlsx,
+apps/services/parsers/vapi_mir.py - parses RTP VAPI MIR FILE 2026-27.xlsx,
 ' MIR FILE 26-27 RM' sheet (note the leading space - confirmed against the
 live file), into a flat list of row dicts ready to upsert into
 RTPVapiMIREntry.

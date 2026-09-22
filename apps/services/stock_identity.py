@@ -1,5 +1,5 @@
 """
-apps/services/stock_identity.py — stable, sheet-row-independent identity for
+apps/services/stock_identity.py - stable, sheet-row-independent identity for
 a stock lot, replacing `source_row_ref` (the openpyxl row index) as the
 upsert key for HRSRMLot/RTPAchhadRMLot/RTPVapiRMLot.
 

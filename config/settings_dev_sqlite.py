@@ -1,5 +1,5 @@
 """
-config/settings_dev_sqlite.py — DEV-ONLY settings override for local
+config/settings_dev_sqlite.py - DEV-ONLY settings override for local
 smoke-testing the sync management commands without a local Postgres/Docker
 install.
 

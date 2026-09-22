@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_vapi_imports_po_csv.py — syncs
+apps/core/management/commands/sync_vapi_imports_po_csv.py - syncs
 Master_RTP_VAPI_Imports_Purchase_Data.csv from Drive into
 RTPVapiImportPurchaseOrder / RTPVapiImportPOLineItem.
 

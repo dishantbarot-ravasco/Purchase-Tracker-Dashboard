@@ -1,5 +1,5 @@
 """
-apps/api/routers/device_urls.py — URL routes for device-aware 2FA.
+apps/api/routers/device_urls.py - URL routes for device-aware 2FA.
 
 Included in apps/api/urls.py under the /api/ prefix.
 

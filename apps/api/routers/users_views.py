@@ -1,5 +1,5 @@
 """
-apps/api/routers/users_views.py — In-app user management (Admin Panel).
+apps/api/routers/users_views.py - In-app user management (Admin Panel).
 
 Ported from the TDS Automation App's apps/api/routers/users_views.py, same
 design: a real create/edit/activate/deactivate UI backed by these endpoints,

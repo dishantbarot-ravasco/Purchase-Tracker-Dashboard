@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/compute_vapi_consumption.py — rebuilds RTP-Vapi's
+apps/core/management/commands/compute_vapi_consumption.py - rebuilds RTP-Vapi's
 raw-material consumption ledger (MaterialConsumptionDaily +
 ConsumptionEvent) from the *RMSnapshot history already in Postgres.
 

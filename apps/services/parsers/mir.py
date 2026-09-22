@@ -1,5 +1,5 @@
 """
-apps/services/parsers/mir.py — parses HRS's MIR FILE 2026-2027.xlsx,
+apps/services/parsers/mir.py - parses HRS's MIR FILE 2026-2027.xlsx,
 'RAW MATERIAL' sheet, into a flat list of row dicts ready to upsert into
 HRSMIREntry.
 

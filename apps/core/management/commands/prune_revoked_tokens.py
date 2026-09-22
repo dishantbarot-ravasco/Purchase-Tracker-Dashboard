@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/prune_revoked_tokens.py — deletes
+apps/core/management/commands/prune_revoked_tokens.py - deletes
 RevokedRefreshToken rows past their own expires_at.
 
 Added 2026-09-05 (hardening pass). apps/services/token_revocation.py writes

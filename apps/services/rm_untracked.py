@@ -1,5 +1,5 @@
 """
-apps/services/rm_untracked.py — the DB-touching layer over the two registries
+apps/services/rm_untracked.py - the DB-touching layer over the two registries
 that keep rows out of MIR<->Stock matching: parsers/common.py's
 NO_RM_STOCK_VENDORS (by vendor) and NOT_STOCKED_MATERIALS (by material class).
 

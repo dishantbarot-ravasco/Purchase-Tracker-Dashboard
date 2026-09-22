@@ -1,5 +1,5 @@
 """
-apps/services/parsers/import_po_csv.py — parses a plant's "Imports
+apps/services/parsers/import_po_csv.py - parses a plant's "Imports
 Purchase Data" master CSV (Master_HRS_SILVASSA_Imports_Purchase_Data.csv /
 Master_RTP_Achhad_Imports_Purchase_Data.csv /
 Master_RTP_VAPI_Imports_Purchase_Data.csv) into one record per PO, ready

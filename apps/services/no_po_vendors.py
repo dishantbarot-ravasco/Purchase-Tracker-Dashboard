@@ -1,5 +1,5 @@
 """
-apps/services/no_po_vendors.py — the DB-touching layer over
+apps/services/no_po_vendors.py - the DB-touching layer over
 parsers/common.py's NO_PO_VENDORS registry (same split as data_quality.py
 over arithmetic_checks.py: the registry itself stays dependency-free and
 unit-testable as plain Python, the queries live here).

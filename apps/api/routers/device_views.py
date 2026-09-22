@@ -1,5 +1,5 @@
 """
-apps/api/routers/device_views.py — Device trust endpoints.
+apps/api/routers/device_views.py - Device trust endpoints.
 
 Ported from the TDS Automation App's apps/api/routers/device_views.py.
 

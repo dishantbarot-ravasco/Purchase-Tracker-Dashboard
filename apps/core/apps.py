@@ -1,5 +1,5 @@
 """
-apps/core/apps.py — Django AppConfig for the `core` app.
+apps/core/apps.py - Django AppConfig for the `core` app.
 
 `apps.core` is deliberately just models + migrations (see models.py's
 module docstring) - the one ready() hook here (added 2026-09-05, hardening

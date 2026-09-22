@@ -10,7 +10,7 @@ Restores real CSRF protection for Django Admin without touching the JWT API.
 
 Every /api/ endpoint authenticates via a JWT bearer token or the httpOnly
 pt_access cookie (SameSite=Lax), never via Django's session-based CSRF
-token, so full CsrfViewMiddleware is not enabled app-wide — Django's
+token, so full CsrfViewMiddleware is not enabled app-wide - Django's
 CsrfViewMiddleware doesn't know anything about JWT auth and would 403 every
 unsafe-method (POST/PUT/PATCH/DELETE) API call regardless of how that view
 authenticates (confirmed as a real failure mode in the TDS Automation App
@@ -50,7 +50,7 @@ def frontend_cache_headers(headers, path, url):
 class NoCacheMiddleware:
     """Dev-only: stamp every response with headers that forbid caching at all.
 
-    Only inserted into MIDDLEWARE when DEBUG=True (see settings.py) — in
+    Only inserted into MIDDLEWARE when DEBUG=True (see settings.py) - in
     production, static assets should cache; in dev, a stale cached copy of a
     frontend .js/.css file masking an in-progress edit is a worse failure
     mode than always refetching.

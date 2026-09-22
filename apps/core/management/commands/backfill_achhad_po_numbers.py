@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/backfill_achhad_po_numbers.py — one-off,
+apps/core/management/commands/backfill_achhad_po_numbers.py - one-off,
 read-only tool: proposes PO numbers for blank 'Purchase Order. No.' cells in
 a real Achhad MIR xlsx, using the SAME identification logic the production
 matcher uses (vendor mandatory + material token-overlap >=

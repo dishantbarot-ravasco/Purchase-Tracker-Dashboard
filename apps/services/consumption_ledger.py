@@ -1,5 +1,5 @@
 """
-apps/services/consumption_ledger.py — the DB layer over
+apps/services/consumption_ledger.py - the DB layer over
 apps/services/consumption_engine.py: reads one plant's stock history, runs
 the pure engine over it, and materialises the result into
 MaterialConsumptionDaily + ConsumptionEvent.

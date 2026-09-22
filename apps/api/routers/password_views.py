@@ -1,5 +1,5 @@
 """
-apps/api/routers/password_views.py — Self-service password change, OTP-
+apps/api/routers/password_views.py - Self-service password change, OTP-
 gated the same way a new-device login is (project owner, 2026-09-07: "add
 the change password for all users and add the otp to it for verification
 like we do for 1st time devices").

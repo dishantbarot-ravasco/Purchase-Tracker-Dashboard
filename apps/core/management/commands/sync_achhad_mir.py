@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_achhad_mir.py — syncs RTP ACHHAD MIR FILE
+apps/core/management/commands/sync_achhad_mir.py - syncs RTP ACHHAD MIR FILE
 2026-27.xlsx ('R.M. ' sheet - note the trailing space) from Drive into
 RTPAchhadMIREntry, keyed by source_row_ref (the sheet row number).
 

@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_achhad_imports_po_csv.py — syncs
+apps/core/management/commands/sync_achhad_imports_po_csv.py - syncs
 Master_RTP_Achhad_Imports_Purchase_Data.csv from Drive into
 RTPAchhadImportPurchaseOrder / RTPAchhadImportPOLineItem.
 

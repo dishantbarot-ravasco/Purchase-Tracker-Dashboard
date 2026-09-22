@@ -262,7 +262,7 @@ async function loadNext() {
       CURRENT_BATCH = [];
       progress.textContent = REVIEWED_COUNT + ' reviewed this session.';
       renderGoal();
-      area.innerHTML = '<div class="review-done">Every current match has been reviewed. Nice work &mdash; the <b>Accuracy</b> tab above has what the sample says.</div>';
+      area.innerHTML = '<div class="review-done">Every current match has been reviewed. Nice work - the <b>Accuracy</b> tab above has what the sample says.</div>';
       return;
     }
     CURRENT_BATCH = data.matches;
@@ -487,7 +487,7 @@ function renderStats(report) {
   const area = document.getElementById('statsArea');
   if (!report.reviewsRecorded) {
     area.innerHTML = '<div class="review-done">No matches have been reviewed yet, so there is nothing to measure. ' +
-      'Start in the <b>Review queue</b> tab &mdash; the figures here need about ' + report.target +
+      'Start in the <b>Review queue</b> tab - the figures here need about ' + report.target +
       ' judgements spread across the plants before they mean much.</div>';
     return;
   }
@@ -497,7 +497,7 @@ function renderStats(report) {
 
   let html = '<p class="stat-intro">Of the matches a reviewer could judge either way, <b>precision</b> is how many were ' +
     'right. <b>Recall</b> counts an "unsure" against the total, so it is the share of everything sampled that came back a ' +
-    'confident yes. These describe the matches the algorithm <i>made</i> &mdash; a pair it never proposed cannot be sampled ' +
+    'confident yes. These describe the matches the algorithm <i>made</i> - a pair it never proposed cannot be sampled ' +
     'here, so this is not a statement about what it missed.</p>';
 
   html += '<div class="stat-kpis">' +
@@ -509,11 +509,11 @@ function renderStats(report) {
 
   if (o.smallSample) {
     html += '<div class="stat-warn">Fewer than ' + report.minSample + ' matches reviewed in total. ' +
-      'Treat every figure on this page as provisional &mdash; one verdict either way still moves them by tens of per cent.</div>';
+      'Treat every figure on this page as provisional - one verdict either way still moves them by tens of per cent.</div>';
   }
   if (report.staleVerdicts) {
     html += '<div class="stat-warn">' + report.staleVerdicts + ' verdict(s) are excluded because the match they judged no ' +
-      'longer exists &mdash; a later <code>match_*</code> run deleted or re-pointed the pair.</div>';
+      'longer exists - a later <code>match_*</code> run deleted or re-pointed the pair.</div>';
   }
 
   html += statTableHtml('By plant and match type', 'The cut that says which pairing at which plant is the weak one. A cell with no sample is a hole in the evidence, not a pass.', report.byPlantAndType, report.minSample);
@@ -523,7 +523,7 @@ function renderStats(report) {
     html += statTableHtml('By match type and tier', 'Tier-1 (po_number) matches rest on the MIR citing the PO itself; weighted ones rest on the score alone.', report.byTier, report.minSample);
   }
 
-  html += '<div class="stat-block"><h3>Who reviewed</h3><p class="stat-sub">Not a leaderboard &mdash; it answers "is this one person\'s judgement?", which changes how much the figures above are worth.</p><ul class="stat-list">' +
+  html += '<div class="stat-block"><h3>Who reviewed</h3><p class="stat-sub">Not a leaderboard - it answers "is this one person\'s judgement?", which changes how much the figures above are worth.</p><ul class="stat-list">' +
     report.reviewers.map(r => '<li><span>' + escapeHtml(r.reviewer) + '</span><b>' + r.count + '</b></li>').join('') +
     '</ul>' + (report.lastReviewedAt ? '<p class="stat-sub">Last reviewed ' + escapeHtml(formatDateIN(report.lastReviewedAt.slice(0, 10))) + '.</p>' : '') + '</div>';
 

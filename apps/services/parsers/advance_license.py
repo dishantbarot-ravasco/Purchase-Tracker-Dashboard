@@ -1,5 +1,5 @@
 """
-apps/services/parsers/advance_license.py — parses the Advance License Data
+apps/services/parsers/advance_license.py - parses the Advance License Data
 Google Sheet (one fixed file, referenced directly by Drive file id -
 settings.ADVANCE_LICENSE_FILE_ID - maintained by hand by the project owner,
 see google_client.download_spreadsheet_bytes_by_id()) into a list of

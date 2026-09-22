@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_stock.py — syncs HRS RAW MATERIAL
+apps/core/management/commands/sync_stock.py - syncs HRS RAW MATERIAL
 STOCK.xlsx ('Stock' sheet) from Drive into HRSRMLot, keyed by
 natural_key (a stable business identity - material code/description +
 vendor, see apps/services/stock_identity.py), and captures today's

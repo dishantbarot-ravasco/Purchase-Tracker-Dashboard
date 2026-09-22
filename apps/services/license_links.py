@@ -1,5 +1,5 @@
 """
-apps/services/license_links.py — the ONE place that decides how an import
+apps/services/license_links.py - the ONE place that decides how an import
 PO line item's own "Export Incentive / License Scheme" columns
 (`license_type` / `license_number`, straight from each plant's Imports
 Purchase Data master CSV) map onto the two company-wide licence ledgers:

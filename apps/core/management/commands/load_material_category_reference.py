@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/load_material_category_reference.py — loads/
+apps/core/management/commands/load_material_category_reference.py - loads/
 updates MaterialCategoryReference from a CSV the plant manager provides
 (columns: SAP Item Code, Description, HSN Code, Category, Subcategory (SAP
 Product Group), UOM).

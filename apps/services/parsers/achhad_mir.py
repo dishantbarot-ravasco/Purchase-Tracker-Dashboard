@@ -1,5 +1,5 @@
 """
-apps/services/parsers/achhad_mir.py — parses RTP ACHHAD MIR FILE
+apps/services/parsers/achhad_mir.py - parses RTP ACHHAD MIR FILE
 2026-27.xlsx, 'R.M. ' sheet (note the trailing space - confirmed against
 the live file), into a flat list of row dicts ready to upsert into
 RTPAchhadMIREntry.

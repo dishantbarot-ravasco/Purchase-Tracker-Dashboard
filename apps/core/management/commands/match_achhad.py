@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/match_achhad.py — runs the PO<->MIR and
+apps/core/management/commands/match_achhad.py - runs the PO<->MIR and
 MIR<->Stock reconciliation passes over every synced RTP-Achhad record.
 Intended to run after sync_achhad_po_csv/sync_achhad_mir/sync_achhad_stock.
 

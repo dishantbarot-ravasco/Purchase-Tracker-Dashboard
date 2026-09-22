@@ -1,5 +1,5 @@
 """
-apps/api/auth_backend.py — Custom Django authentication backend + JWT authentication.
+apps/api/auth_backend.py - Custom Django authentication backend + JWT authentication.
 
 Ported from the TDS Automation App's apps/api/auth_backend.py (same design,
 PTUser instead of TDSUser). Three classes:
@@ -17,20 +17,20 @@ PTUser instead of TDSUser). Three classes:
    to the Authorization: Bearer header (for non-browser API clients).
 
 4. pt_user_authentication_rule
-   SIMPLE_JWT['USER_AUTHENTICATION_RULE'] — checks PTUser.is_active rather
+   SIMPLE_JWT['USER_AUTHENTICATION_RULE'] - checks PTUser.is_active rather
    than auth.User.is_active.
 
-**AUTH_USER_MODEL is deliberately left at Django's default (auth.User) —
+**AUTH_USER_MODEL is deliberately left at Django's default (auth.User) -
 this app's real user model, PTUser, is a plain, unrelated model, not a
 Django auth user.** Every real authentication path below resolves PTUser
 directly instead of touching get_user_model()/AUTH_USER_MODEL at all. Any
-new code — or any djangorestframework-simplejwt upgrade — that calls
+new code - or any djangorestframework-simplejwt upgrade - that calls
 django.contrib.auth.get_user_model() will silently resolve to auth.User,
 not PTUser, and almost certainly do the wrong thing or crash outright. This
 bit the TDS Automation App in production: simplejwt's stock
 TokenRefreshSerializer.validate() calls
 get_user_model().objects.get(**{api_settings.USER_ID_FIELD: user_id}) to
-re-check the user is still active before issuing a refreshed access token —
+re-check the user is still active before issuing a refreshed access token -
 since SIMPLE_JWT['USER_ID_FIELD'] is 'user_id' (correct for PTUser's PK,
 wrong for auth.User's 'id'), every POST /api/auth/token/refresh crashed
 with FieldError: Cannot resolve keyword 'user_id' into field. Fixed here the
@@ -39,7 +39,7 @@ overrides validate() to resolve PTUser directly via
 pt_user_authentication_rule instead of get_user_model(), wired in via
 PTTokenRefreshView.serializer_class (apps/api/auth_views.py). Before
 adopting any simplejwt/DRF upgrade, grep it for new get_user_model() call
-sites — that is the recurring failure mode this whole class of bug comes
+sites - that is the recurring failure mode this whole class of bug comes
 from.
 """
 

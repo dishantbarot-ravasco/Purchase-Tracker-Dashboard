@@ -1,5 +1,5 @@
 """
-apps/services/parsers/stock.py — parses HRS's RAW MATERIAL STOCK.xlsx,
+apps/services/parsers/stock.py - parses HRS's RAW MATERIAL STOCK.xlsx,
 'Stock' sheet, into a flat list of row dicts ready to upsert into
 HRSRMLot.
 

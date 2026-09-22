@@ -1,5 +1,5 @@
 """
-apps/services/otp_service.py — PostgreSQL-backed OTP store with TTL.
+apps/services/otp_service.py - PostgreSQL-backed OTP store with TTL.
 
 Ported from the TDS Automation App's apps/services/otp_service.py (unchanged
 design, PTUser's `pt_otp_codes` table instead of TDS's `otp_codes`).

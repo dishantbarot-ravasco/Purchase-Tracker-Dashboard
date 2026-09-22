@@ -1,5 +1,5 @@
 """
-apps/services/consumption_periods.py — period rollups over the daily
+apps/services/consumption_periods.py - period rollups over the daily
 consumption ledger: day, month, quarter, financial year, or any explicit
 date range, for one plant or all three.
 

@@ -1,5 +1,5 @@
 """
-apps/api/urls.py — URL routing for the `apps.api` app, mounted under /api/.
+apps/api/urls.py - URL routing for the `apps.api` app, mounted under /api/.
 
 Auth endpoints are defined directly here (auth_views.py); everything
 plant-specific is deliberately split into its own router module under
@@ -26,6 +26,11 @@ urlpatterns = [
     path("internal/send-monthly-report", reports_views.trigger_monthly_report, name="trigger-monthly-report"),
     path("internal/send-mismatch-report", reports_views.trigger_mismatch_report, name="trigger-mismatch-report"),
     path("internal/prune-revoked-tokens", reports_views.trigger_prune_revoked_tokens, name="trigger-prune-revoked-tokens"),
+    path(
+        "internal/send-advance-license-expiry-report",
+        reports_views.trigger_advance_license_expiry_report,
+        name="trigger-advance-license-expiry-report",
+    ),
 
     # ── Authentication ────────────────────────────────────────────────────
     path("auth/login", PTLoginView.as_view(), name="auth-login"),

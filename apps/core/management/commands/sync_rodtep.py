@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_rodtep.py — syncs every RoDTEP scrip
+apps/core/management/commands/sync_rodtep.py - syncs every RoDTEP scrip
 ledger file from the "Purchase Orders HO/RODTEP SCRIPT LICENSE" Drive folder
 into RodtepScrollEntry.
 

@@ -1,5 +1,5 @@
 /**
- * frontend/js/charts.js — Chart.js lifecycle/plugin helpers shared across
+ * frontend/js/charts.js - Chart.js lifecycle/plugin helpers shared across
  * the dashboard (PO list, PO modal, import PO list, material modal).
  * Split out of main.js (was a single 3,400+ line file) - see main.js's own
  * header comment for the module map.

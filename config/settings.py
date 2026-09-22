@@ -91,7 +91,7 @@ if SENTRY_DSN:
 # No django-cors-headers app/middleware anywhere in this file, deliberately:
 # the frontend is same-origin (WhiteNoise serves frontend/ from the same
 # process the API runs on), so there is no cross-origin request for CORS to
-# solve here — unlike the TDS Automation App, which historically ran its
+# solve here - unlike the TDS Automation App, which historically ran its
 # frontend from a separate dev origin. Don't add it back without a real
 # cross-origin use case first.
 INSTALLED_APPS = [
@@ -194,7 +194,7 @@ else:
 # above a permission check, and the view it wraps must be AllowAny.
 # cache_page short-circuits on a cache hit and returns the stored response
 # without re-invoking the view at all, so a permission check inside the view
-# body only actually runs on the request that misses the cache — every
+# body only actually runs on the request that misses the cache - every
 # request after that gets served the same cached response regardless of who
 # they are or whether they're authenticated. This bit the TDS Automation App
 # in production on a real endpoint; don't repeat it here.

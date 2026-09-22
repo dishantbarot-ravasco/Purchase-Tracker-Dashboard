@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/sync_vapi_stock.py — syncs RAVASCO VAPI RM
+apps/core/management/commands/sync_vapi_stock.py - syncs RAVASCO VAPI RM
 STOCK FILE.xlsx from Drive into RTPVapiRMLot, keyed by natural_key (a
 stable business identity - see apps/services/stock_identity.py), and
 captures today's RTPVapiRMSnapshot for every lot synced.

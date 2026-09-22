@@ -1,5 +1,5 @@
 """
-apps/services/mir_without_po.py — the drill-down behind the "purchased
+apps/services/mir_without_po.py - the drill-down behind the "purchased
 without a PO" number: WHICH receipts have no purchase order behind them,
 and, for each one, whether that is the final answer or only the current one.
 

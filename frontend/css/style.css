@@ -1,4 +1,4 @@
-/* frontend/css/style.css — the PO<->MIR<->Stock reconciliation dashboard's
+/* frontend/css/style.css - the PO<->MIR<->Stock reconciliation dashboard's
    own stylesheet (index.html + js/main.js), separate navy/blue/red palette
    from brand.css's Gold/Navy top-nav chrome - the two are loaded together
    but deliberately not merged (see brand.css's own header comment).
@@ -474,7 +474,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    control) get a centered placeholder dash instead of staying blank, so an
    empty cell reads as "no filter here" rather than a missing/broken column -
    same reasoning .list-header-row.col-filter-row-grid's empty cells follow. */
-.col-filter-row th:empty::after, .col-filter-row-grid > div:empty::after { content:'—'; display:block; text-align:center; color:var(--border-strong); font-size:12px; }
+.col-filter-row th:empty::after, .col-filter-row-grid > div:empty::after { content:'-'; display:block; text-align:center; color:var(--border-strong); font-size:12px; }
 
 /* "N filters active - Clear" chip next to "Purchase Orders (Latest first)" -
    summarizes every table-only filter currently narrowing the list (chart

@@ -1,5 +1,5 @@
 """
-apps/services/device_service.py — Device trust and email OTP for new-device login.
+apps/services/device_service.py - Device trust and email OTP for new-device login.
 
 Ported from the TDS Automation App's apps/services/device_service.py (same
 design; pt_* cookie names instead of tds_*). Implements Instagram/Google-

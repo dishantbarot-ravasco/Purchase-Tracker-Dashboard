@@ -1,5 +1,5 @@
 """
-apps/core/checks.py — custom Django system checks (added 2026-09-05,
+apps/core/checks.py - custom Django system checks (added 2026-09-05,
 hardening pass).
 
 Both checks below run as part of `manage.py check --deploy --fail-level

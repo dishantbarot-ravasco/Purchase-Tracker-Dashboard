@@ -1,5 +1,5 @@
 """
-apps/core/management/commands/compute_achhad_consumption.py — rebuilds RTP-Achhad's
+apps/core/management/commands/compute_achhad_consumption.py - rebuilds RTP-Achhad's
 raw-material consumption ledger (MaterialConsumptionDaily +
 ConsumptionEvent) from the *RMSnapshot history already in Postgres.
 

@@ -1,5 +1,5 @@
 /**
- * frontend/js/login.js — drives login.html: password step -> optional
+ * frontend/js/login.js - drives login.html: password step -> optional
  * email-OTP device-verify step -> redirect to home.html. Also picks up
  * the Google OAuth redirect's query params (?oauth_ready=1 / ?step=device_verify
  * / ?oauth_error=...). No imports - plain script tag.

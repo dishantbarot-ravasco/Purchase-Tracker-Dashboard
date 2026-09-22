@@ -1,15 +1,15 @@
 """
-config/security_headers.py — Adds hardened HTTP security headers to every response.
+config/security_headers.py - Adds hardened HTTP security headers to every response.
 
 Ported from the TDS Automation App's config/security_headers.py.
 
 Wire into settings.py MIDDLEWARE list BEFORE WhiteNoise: Django's middleware
 list is outermost-first for the request phase, so a LATER entry is more
-INNER — WhiteNoiseMiddleware, being earlier (outer), short-circuits
+INNER - WhiteNoiseMiddleware, being earlier (outer), short-circuits
 static-file requests (every frontend HTML/CSS/JS response) by returning
 directly without ever calling further down the chain. Putting this
 middleware before WhiteNoise makes it outer, so it wraps and can add
-headers to WhiteNoise's response too — the TDS app shipped with this
+headers to WhiteNoise's response too - the TDS app shipped with this
 ordering backwards for a while and every static HTML page (i.e. every page
 a browser actually renders and executes) carried none of these headers,
 so the CSP was providing zero real protection on the pages that mattered
@@ -76,7 +76,7 @@ CSP notes:
     failure mode (2026-09-03), not a hypothetical one. If another CDN
     script is ever added, its origin needs the same treatment here or it
     will fail exactly the same way, silently, in every browser at once.
-  - Google Fonts is explicitly allowed (fonts.googleapis.com, fonts.gstatic.com) —
+  - Google Fonts is explicitly allowed (fonts.googleapis.com, fonts.gstatic.com) -
     ported for parity even though this frontend doesn't currently reference one.
   - frame-ancestors 'none' blocks embedding in other pages.
   - object-src 'none' blocks Flash and other plugin objects entirely.

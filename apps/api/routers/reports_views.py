@@ -1,5 +1,5 @@
 """
-apps/api/routers/reports_views.py — Endpoints for a free external scheduler
+apps/api/routers/reports_views.py - Endpoints for a free external scheduler
 to trigger this app's time-based jobs (report emails + the one housekeeping
 job that needs a periodic sweep), since:
   - Render's free web service plan has no built-in cron scheduler, and
@@ -9,21 +9,25 @@ Instead, a free external pinger (cron-job.org) hits trigger_daily_report once
 a day (e.g. 20:30 IST), trigger_monthly_report once a month (the 1st, any time
 after 00:00 IST - see send_monthly_consumption_reports()'s own default month
 selection), trigger_mismatch_report on whatever interval is chosen (e.g.
-10:30 IST daily), and trigger_prune_revoked_tokens once a day. Because the
-caller has no login session or JWT, all four are protected by a shared-secret
-query param / header instead - REPORT_CRON_SECRET, set as a Render
-environment variable and given only to the scheduler config, never to a
-browser or the frontend. Four separate endpoints (not one with a mode flag)
-since each runs on its own independent schedule with a real external
-scheduler - one cron job per endpoint is simpler to configure than one job
-with a parameter that must vary by call.
+10:30 IST daily), trigger_prune_revoked_tokens once a day, and
+trigger_advance_license_expiry_report once a day (see
+apps/services/advance_license_report.py - it dedupes per license, so a daily
+hit is enough without risking a repeat alert). Because the caller has no
+login session or JWT, all five are protected by a shared-secret query param /
+header instead - REPORT_CRON_SECRET, set as a Render environment variable and
+given only to the scheduler config, never to a browser or the frontend. Five
+separate endpoints (not one with a mode flag) since each runs on its own
+independent schedule with a real external scheduler - one cron job per
+endpoint is simpler to configure than one job with a parameter that must vary
+by call.
 
 The daily report endpoint's auth scheme was ported byte-for-byte (auth
 scheme only - the report itself is this app's own) from the TDS Automation
 App's own apps/api/routers/reports_views.py - same reasoning, same
 shared-secret scheme, don't diverge without a reason. The monthly report
-endpoint (added 2026-09-08), the mismatch report endpoint, and
-trigger_prune_revoked_tokens (both added 2026-09-09) all reuse the exact
+endpoint (added 2026-09-08), the mismatch report endpoint,
+trigger_prune_revoked_tokens (both added 2026-09-09), and
+trigger_advance_license_expiry_report (added 2026-09-22) all reuse the exact
 same scheme, not a new one per endpoint.
 """
 import hmac
@@ -35,6 +39,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 
+from apps.services.advance_license_report import send_advance_license_expiry_reports
 from apps.services.consumption_report import send_daily_consumption_reports, send_monthly_consumption_reports
 from apps.services.plant_mismatch_report import send_plant_mismatch_reports
 from apps.services.token_revocation import prune_expired_revoked_tokens
@@ -188,3 +193,32 @@ def trigger_prune_revoked_tokens(request):
     deleted = prune_expired_revoked_tokens()
     log.info("trigger_prune_revoked_tokens: pruned %s expired row(s)", deleted)
     return Response({"status": "ok", "deleted": deleted})
+
+
+@api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+def trigger_advance_license_expiry_report(request):
+    """
+    GET/POST /api/internal/send-advance-license-expiry-report?secret=<REPORT_CRON_SECRET>
+    (or header 'X-Report-Secret: <REPORT_CRON_SECRET>')
+
+    Runs send_advance_license_expiry_reports() - two consolidated alert
+    emails (Import Validity / Export Validity, each independent) to every
+    active admin plus import@ravasco.com, listing every AdvanceLicense whose
+    relevant validity date falls within the next 30 days and hasn't already
+    been alerted on (see apps/services/advance_license_report.py's own
+    dedup reasoning). Same shared-secret scheme as the other endpoints in
+    this file - run it on whatever daily interval the external scheduler is
+    configured for.
+    """
+    denied = _check_report_secret(request)
+    if denied is not None:
+        return denied
+
+    result = send_advance_license_expiry_reports()
+    log.info(
+        "trigger_advance_license_expiry_report: import=%s(%s licenses) export=%s(%s licenses)",
+        result.get("importSent"), result.get("importLicenses"),
+        result.get("exportSent"), result.get("exportLicenses"),
+    )
+    return Response({"status": "ok", **result})

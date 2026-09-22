@@ -1,5 +1,5 @@
 """
-apps/services/email_service.py — Shared content builder for every outgoing
+apps/services/email_service.py - Shared content builder for every outgoing
 email in the app (device-login OTP, new-device notifications, admin alerts).
 
 Ported from the TDS Automation App's apps/services/email_service.py

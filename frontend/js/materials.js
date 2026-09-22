@@ -250,7 +250,7 @@ function daysLeftCellHtml(m) {
   const confidence = (c && c.confidence) || 'none';
   const dotClass = CONF_DOT_CLASS[confidence] || CONF_DOT_CLASS.none;
   if (confidence === 'none' || !c) {
-    return '<span class="days-left-cell"><span class="days-left-value">&mdash;</span>' +
+    return '<span class="days-left-cell"><span class="days-left-value">-</span>' +
       '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="Not enough snapshot history yet" tabindex="0"></span></span>';
   }
   const valueText = c.daysLeft != null ? Math.round(c.daysLeft).toLocaleString('en-IN') + ' d' : 'No movement';
