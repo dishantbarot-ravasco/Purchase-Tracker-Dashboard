@@ -545,9 +545,37 @@ command's own module docstring. `next_run` is deliberately never reset on a cade
 the first fire after a change may land at a stale timestamp left over from the previous cadence,
 then self-corrects to the new cron boundaries.
 
-The three report emails run on an **external free scheduler** (cron-job.org) hitting shared-secret
-endpoints, since Render's free plan has no built-in cron. `prune_revoked_tokens` has its own trigger
-endpoint too.
+The report emails run on an **external scheduler** (cron-job.org) hitting shared-secret endpoints,
+since Render has no built-in cron on this plan. Three jobs are configured (2026-09-22), all in
+**Asia/Kolkata** - which matches `TIME_ZONE`, so the cron times and the dates printed in the reports
+agree with no offset arithmetic (unlike the django-q2 sync schedule above, which IS evaluated in UTC):
+
+| Job | Endpoint | Cron | Time |
+| --- | --- | --- | --- |
+| Daily RM consumption | `/api/internal/send-daily-report` | `30 20 * * *` | 20:30 IST daily |
+| Monthly RM consumption | `/api/internal/send-monthly-report` | `0 10 1 * *` | 10:00 IST on the 1st (reports the month just ended) |
+| Advance Licence expiry | `/api/internal/send-advance-license-expiry-report` | `0 10 * * *` | 10:00 IST daily |
+
+**The licence job runs daily on purpose** - the 30-day window is enforced in code, not by the
+schedule. See `advance_license_report.py`'s module docstring: each licence claims a `ReportSendLog`
+row the first time it is seen inside the window, so a daily run means "alerted within a day of
+crossing 30 days out" with no dependence on one specific run firing. Scheduling it to fire only on a
+licence's 30-days-out date would need a job per licence and would miss one entirely on any skipped run.
+
+The secret is passed as an `X-Report-Secret` header rather than `?secret=` so it stays out of
+cron-job.org's execution history and Render's access logs. Note that `REPORT_CRON_SECRET` is
+base64-ish and can contain `+`, which decodes as a space in a query string - a URL-embedded secret
+must be percent-encoded, another reason to prefer the header.
+
+**Never use cron-job.org's "test run" on these.** They are not dry runs: daily/monthly mail every
+admin and burn that period's dedup slot (so the real run silently skips), and the licence job
+permanently claims every in-window licence, which cannot be undone. Validate URL and secret against
+`/api/internal/prune-revoked-tokens` instead - same secret, sends no email, idempotent. It has no
+cadence configured.
+
+The plant data correction report (`/api/internal/send-mismatch-report`) is deliberately NOT scheduled
+while `MISMATCH_REPORT_PLANT_HEADS_ENABLED` is False - it would return `plant_heads_disabled: true`
+every run.
 
 ### Sync resilience rules
 
@@ -2752,8 +2780,23 @@ it crosses 30 days out.** The latter would silently miss a license entirely if t
 scheduler run didn't fire (a network hiccup, a deploy window), and the license would then age past
 its validity date having never been alerted at all. Dedup reuses `ReportSendLog`
 (`ReportType.ADV_LICENSE_IMPORT`/`ADV_LICENSE_EXPORT`, `plant="all"` since this isn't a per-plant
-concept, `period_key=license_number`) - same claim-before-send/release-on-failure pattern as the
-daily/monthly consumption reports.
+concept, `period_key="<license_number>@<validity date>"`) - same claim-before-send/release-on-failure
+pattern as the daily/monthly consumption reports.
+
+**An extended validity re-arms the alert (2026-09-22, migration `0058`).** The key was a bare
+`license_number`, which meant the first alert burned that license permanently - and since an Advance
+License's validity is routinely EXTENDED (the export side especially, sometimes more than once), the
+new deadline would then come and go in total silence, which is exactly the case the alert exists for.
+Putting the date being alerted on INTO the key keeps both guarantees at once: an unchanged date
+re-claims the same row on every daily run and so never repeats, while a genuinely new date is a new
+claim and alerts once on its own merits. Import and export are already separate `report_type`s, so
+each side extends and re-alerts independently. `0058` widens `period_key` to 64 chars (a 50-char
+`license_number` plus `@` plus an ISO date) and rewrites existing bare-number rows to the new format
+so nothing already alerted fires a duplicate on the first run after deploy.
+
+**Consequence for the daily cron:** the job runs every day, but a given license emails exactly once
+per deadline. A day on which every in-window license is already claimed builds no rows and sends no
+email at all, rather than an empty one.
 
 **Materials are joined into one semicolon-separated cell, not repeated as one row per material.** A
 license can carry several `AdvanceLicenseMaterial` rows (one per BOE usage, same

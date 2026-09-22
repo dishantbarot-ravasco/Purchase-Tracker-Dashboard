@@ -80,9 +80,51 @@ class TestSendAdvanceLicenseExpiryReports:
         assert first["importLicenses"] == 1
         assert second["importLicenses"] == 0
         assert len(mail.outbox) == 1
+        expected_key = f"0311051817@{(TODAY + datetime.timedelta(days=20)).isoformat()}"
         assert ReportSendLog.objects.filter(
-            report_type=ReportSendLog.ReportType.ADV_LICENSE_IMPORT, period_key="0311051817",
+            report_type=ReportSendLog.ReportType.ADV_LICENSE_IMPORT, period_key=expected_key,
         ).count() == 1
+
+    def test_extending_import_validity_re_alerts_once_on_the_new_date(self):
+        """Project owner, 2026-09-22: an Advance License's validity gets
+        extended, sometimes repeatedly, and the extended deadline must alert
+        again - the original alert must not burn that license forever. The
+        date is part of the dedup key, so a NEW date is a new claim."""
+        make_user(email="admin-ext@ravasco.com", role="admin")
+        lic = _make_license(days_to_import=20)
+
+        first = send_advance_license_expiry_reports()
+        assert first["importLicenses"] == 1
+
+        # Extended by a month, still inside the 30-day window.
+        lic.import_validity_date = TODAY + datetime.timedelta(days=25)
+        lic.save(update_fields=["import_validity_date"])
+
+        second = send_advance_license_expiry_reports()
+        third = send_advance_license_expiry_reports()
+
+        assert second["importLicenses"] == 1, "extended deadline must alert once"
+        assert third["importLicenses"] == 0, "and then never repeat on the new date either"
+        assert len(mail.outbox) == 2
+        assert ReportSendLog.objects.filter(
+            report_type=ReportSendLog.ReportType.ADV_LICENSE_IMPORT,
+            period_key__startswith="0311051817@",
+        ).count() == 2
+
+    def test_extending_export_validity_re_alerts_independently_of_import(self):
+        """Same guarantee on the export side, which is the one actually
+        expected to be extended repeatedly."""
+        make_user(email="admin-ext2@ravasco.com", role="admin")
+        lic = _make_license(days_to_import=None, days_to_export=15)
+
+        assert send_advance_license_expiry_reports()["exportLicenses"] == 1
+        lic.export_validity_date = TODAY + datetime.timedelta(days=28)
+        lic.save(update_fields=["export_validity_date"])
+        after = send_advance_license_expiry_reports()
+
+        assert after["exportLicenses"] == 1
+        assert after["importLicenses"] == 0, "import side untouched by an export extension"
+        assert len(mail.outbox) == 2
 
     def test_license_with_no_materials_shows_placeholder(self):
         make_user(email="admin@ravasco.com", role="admin")

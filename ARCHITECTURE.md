@@ -131,9 +131,13 @@ here.
   running `sync_trigger.run_daily_sync_all_plants()` hourly from 9:00 AM to 8:00 PM IST. It covers
   all three plants' domestic and import pipelines plus the company-wide RoDTEP and Advance Licence
   syncs. Admin- and dashboard-triggered `sync-trigger` endpoints run the same pipelines on demand.
-- **Report emails** - the daily and monthly RM consumption reports and the plant data correction
-  report are each triggered by an external scheduler (cron-job.org) hitting its own
-  shared-secret-protected endpoint under `/api/internal/`, since Render's free plan has no cron.
+- **Report emails** - the daily and monthly RM consumption reports, the Advance Licence expiry
+  alerts and the plant data correction report are each triggered by an external scheduler
+  (cron-job.org) hitting its own shared-secret-protected endpoint under `/api/internal/`, since
+  Render has no built-in cron on this plan. Three are scheduled as of 2026-09-22 (consumption 20:30
+  IST daily, monthly 10:00 IST on the 1st, licence expiry 10:00 IST daily) - see CLAUDE.md's
+  scheduling section for the cron expressions and why the licence job runs daily rather than on each
+  licence's 30-days-out date. The mismatch report is unscheduled while its feature flag is off, and
   `prune_revoked_tokens` has such an endpoint too, with no cadence currently configured.
 - **Email dispatch** - sent from the web process through two bounded thread pools (one lane reserved
   for OTPs), deliberately not through django-q2. CLAUDE.md explains why queueing them would make

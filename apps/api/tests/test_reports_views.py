@@ -38,10 +38,12 @@ class TestTriggerDailyReport:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
-        # No admins seeded in this test - send_daily_consumption_reports()
-        # short-circuits to 0/0 rather than building/sending anything.
-        assert body["plants_sent"] == 0
-        assert body["admins_notified"] == 0
+        # No admins seeded in this test, but as of 2026-09-22 the report still
+        # goes to the fixed purchasing mailbox (consumption_report's
+        # _FIXED_RECIPIENT), so all 3 plants send to that 1 recipient - it no
+        # longer short-circuits to 0/0 on an empty admin list.
+        assert body["plants_sent"] == 3
+        assert body["admins_notified"] == 1
 
     def test_correct_secret_via_header(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
@@ -78,8 +80,10 @@ class TestTriggerMonthlyReport:
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
-        assert body["plants_sent"] == 0
-        assert body["admins_notified"] == 0
+        # Same as the daily case above - the fixed purchasing mailbox keeps
+        # this sending even with no admins seeded.
+        assert body["plants_sent"] == 3
+        assert body["admins_notified"] == 1
         assert "month" in body  # e.g. "2026-08" - defaults to last completed month
 
     def test_year_and_month_override_the_default_target_month(self, settings):

@@ -2823,6 +2823,18 @@ class ReportSendLog(models.Model):
     columns since the two report types never share a period shape and
     nothing here needs to query by date range.
 
+    The Advance License expiry reports use '<license_number>@<validity date>'
+    (widened from a bare license_number on 2026-09-22, project owner request).
+    The date is IN the key deliberately: an Advance License's validity can be
+    extended, sometimes more than once, and a bare-number key meant the very
+    first alert burned that license forever - the extended date would then
+    come and go in silence, which is precisely the case the alert exists for.
+    Keying on the date being alerted on keeps the "never repeat while the
+    same deadline is pending" guarantee (an unchanged date re-claims the same
+    row on every daily run) while letting a genuinely NEW deadline alert once
+    on its own merits. Import and export are already separate report_types,
+    so each side of a license extends and re-alerts independently.
+
     Deliberately NOT applied to the Plant Data Correction (mismatch) report
     (apps/services/plant_mismatch_report.py) - project owner's explicit
     decision (2026-09-10): that report has no fixed cadence by design ("no
@@ -2841,10 +2853,11 @@ class ReportSendLog(models.Model):
     report_type = models.CharField(max_length=10, choices=ReportType.choices)
     plant = models.CharField(max_length=20)
     period_key = models.CharField(
-        max_length=20,
+        max_length=64,
         help_text=(
             "Daily report: ISO date. Monthly report: 'YYYY-MM'. "
-            "Advance License expiry reports: the license_number (plant is 'all')."
+            "Advance License expiry reports: 'license_number@YYYY-MM-DD', the validity date "
+            "being alerted on (plant is 'all')."
         ),
     )
     sent_at = models.DateTimeField(auto_now_add=True)

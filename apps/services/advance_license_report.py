@@ -17,9 +17,13 @@ fire (a network hiccup, a deploy window) - the license would then age past
 its validity date having never been alerted at all. Dedup is the same
 ReportSendLog table the daily/monthly consumption reports already use
 (report_type=ADV_LICENSE_IMPORT/ADV_LICENSE_EXPORT, plant="all" since this
-isn't a per-plant concept, period_key=license_number) - a license claims its
-row before it's included in an email, so a license already alerted once
-(even if it's still inside the window on the next run) is never repeated.
+isn't a per-plant concept, period_key="<license_number>@<validity date>") -
+a license claims its row before it's included in an email, so a license
+already alerted once (even if it's still inside the window on the next run)
+is never repeated for that deadline. **Extending a license's validity
+re-arms its alert** (2026-09-22): the new date makes a new key, so the
+extended deadline is alerted once on its own merits rather than being
+silently suppressed by the original alert - see ReportSendLog's docstring.
 If sending then fails, every row claimed in that run is released so the
 next run retries them - same "claim before send, release on failure"
 pattern as send_daily_consumption_reports().
@@ -84,8 +88,9 @@ def _claim_expiring_licenses(kind: str, today: datetime.date) -> tuple:
 
     Only licenses whose relevant validity date falls in [today, today+30]
     AND have not already claimed a ReportSendLog row for this report_type
-    are included - see module docstring for why this is "first time seen
-    in-window", not "exactly 30 days out"."""
+    AND THIS VALIDITY DATE are included - see module docstring for why this
+    is "first time seen in-window", not "exactly 30 days out", and why the
+    date belongs in the key."""
     cfg = _REPORT_CONFIG[kind]
     window_end = today + datetime.timedelta(days=_EXPIRY_WINDOW_DAYS)
     date_field = cfg["date_field"]
@@ -99,14 +104,19 @@ def _claim_expiring_licenses(kind: str, today: datetime.date) -> tuple:
     rows = []
     claimed_logs = []
     for lic in qs:
+        validity_date = getattr(lic, date_field)
+        # '<number>@<validity date>', not a bare number - see ReportSendLog's
+        # own docstring: a license whose validity is EXTENDED must be able to
+        # alert again on its new date, while an unchanged date keeps re-
+        # claiming this same row and so never repeats.
         log_row, created = ReportSendLog.objects.get_or_create(
-            report_type=cfg["report_type"], plant="all", period_key=lic.license_number,
+            report_type=cfg["report_type"], plant="all",
+            period_key=f"{lic.license_number}@{validity_date.isoformat()}",
         )
         if not created:
             continue
         claimed_logs.append(log_row)
 
-        validity_date = getattr(lic, date_field)
         materials = sorted({
             m.material_description.strip()
             for m in lic.materials.all()
