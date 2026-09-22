@@ -71,6 +71,24 @@ from apps.services.security_alerts import _admin_emails
 
 log = logging.getLogger(__name__)
 
+# Fixed extra recipient on both consumption reports (project owner,
+# 2026-09-22), alongside every active admin - same convention as
+# advance_license_report.py's own _FIXED_RECIPIENT (imports@ravasco.com).
+# Kept as a module constant rather than folded into _admin_emails(), which
+# is shared with the security alerts: a purchasing mailbox has no business
+# receiving account-lockout or login-burst alerts.
+_FIXED_RECIPIENT = "purchase@ravasco.com"
+
+
+def _report_recipients() -> list:
+    """Every active admin plus _FIXED_RECIPIENT, de-duplicated (an admin
+    PTUser whose own address IS the purchasing mailbox must not be mailed
+    twice) while keeping a stable order for the log lines below."""
+    out = list(_admin_emails())
+    if _FIXED_RECIPIENT not in out:
+        out.append(_FIXED_RECIPIENT)
+    return out
+
 # Plant report config - a lighter-weight, services-layer sibling of
 # apps/api/routers/_domestic_base.py's _PlantConfig (see module docstring
 # for why this isn't just imported from there).
@@ -540,7 +558,8 @@ def _render_monthly_report_email(report: dict) -> tuple:
 def send_daily_consumption_reports() -> dict:
     """Builds and emails all 3 plants' consumption reports to every active
     admin (PTUser role=admin, apps/services/security_alerts.py's own
-    _admin_emails() - reused rather than duplicated) - one email per plant,
+    _admin_emails() - reused rather than duplicated) plus the fixed
+    purchasing mailbox - see _report_recipients() - one email per plant,
     not one combined email, so each stays a manageable size and a plant with
     nothing issued today doesn't bury the other two in one thread.
 
@@ -571,11 +590,11 @@ def send_daily_consumption_reports() -> dict:
     retryable (by the next scheduled trigger, or a manual one) rather than
     permanently burning that day's slot the way an unconditional claim
     would."""
-    admin_emails = _admin_emails()
+    admin_emails = _report_recipients()
     today = timezone.localdate()
 
     if not admin_emails:
-        log.warning("send_daily_consumption_reports: no active admin recipients, nothing sent")
+        log.warning("send_daily_consumption_reports: no recipients at all, nothing sent")
         return {"date": today.isoformat(), "plants_sent": 0, "admins_notified": 0}
 
     sent = 0
@@ -624,7 +643,7 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
     Dedup guard: same reasoning/mechanism as send_daily_consumption_reports()'s
     own - see that function's docstring - keyed on (MONTHLY, plant_key,
     "YYYY-MM") instead of a date."""
-    admin_emails = _admin_emails()
+    admin_emails = _report_recipients()
     today = timezone.localdate()
     if year is None or month is None:
         first_of_this_month = today.replace(day=1)
@@ -633,7 +652,7 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
     month_str = f"{year:04d}-{month:02d}"
 
     if not admin_emails:
-        log.warning("send_monthly_consumption_reports: no active admin recipients, nothing sent")
+        log.warning("send_monthly_consumption_reports: no recipients at all, nothing sent")
         return {"month": month_str, "plants_sent": 0, "admins_notified": 0}
 
     sent = 0

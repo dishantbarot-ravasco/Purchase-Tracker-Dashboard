@@ -2667,11 +2667,11 @@ none use an em dash in body content** (this app's convention is a plain `" - "` 
 | 5 | Account locked (`security_alerts.notify_admins_account_locked()`) | every other active admin, once, when lockout fires |
 | 6 | Unusual login activity (`record_failed_login_and_maybe_alert()`) | every active admin |
 | 7 | Sync failure (`notify_admins_sync_failure()`) | `dishant.barot@ravasco.com` and `masira.balouch@ravasco.com` only - a fixed list per an explicit request, unlike 3/5/6/8 |
-| 8 | Daily RM Consumption Report (×3, one per plant) | every active admin |
-| 9 | Monthly RM Consumption Report (×3) | every active admin |
+| 8 | Daily RM Consumption Report (×3, one per plant) | every active admin plus the fixed `purchase@ravasco.com` |
+| 9 | Monthly RM Consumption Report (×3) | every active admin plus the fixed `purchase@ravasco.com` |
 | 10 | Plant Data Correction Report (×3) | a fixed plant head each, CC'ing every admin |
-| 11 | Advance License Import Validity Expiry (`advance_license_report.send_advance_license_expiry_reports()`) | every active admin plus the fixed `import@ravasco.com` |
-| 12 | Advance License Export Validity Expiry (same function) | every active admin plus the fixed `import@ravasco.com` |
+| 11 | Advance License Import Validity Expiry (`advance_license_report.send_advance_license_expiry_reports()`) | every active admin plus the fixed `imports@ravasco.com` |
+| 12 | Advance License Export Validity Expiry (same function) | every active admin plus the fixed `imports@ravasco.com` |
 
 **8 - Daily RM Consumption Report.** Triggered by the external scheduler hitting
 `POST /api/internal/send-daily-report` (shared-secret `REPORT_CRON_SECRET`). A real HTML table

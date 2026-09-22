@@ -45,7 +45,7 @@ class TestSendAdvanceLicenseExpiryReports:
         msg = mail.outbox[0]
         assert "Import Validity" in msg.subject
         assert "admin@ravasco.com" in msg.to
-        assert "import@ravasco.com" in msg.to
+        assert "imports@ravasco.com" in msg.to
         assert "0311051817" in msg.body
         # materials render deduped and alphabetically sorted for determinism
         assert "Carbon Black N330; Natural Rubber Sheet" in msg.body

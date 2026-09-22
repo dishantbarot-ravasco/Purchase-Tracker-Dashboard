@@ -35,7 +35,7 @@ apps/services/license_links.py's module docstring on why a multi-licence
 CSV cell is slash-joined rather than exploded into rows there.
 
 Recipients: every active admin (security_alerts._admin_emails(), reused
-rather than duplicated) plus the fixed address import@ravasco.com - unlike
+rather than duplicated) plus the fixed address imports@ravasco.com - unlike
 plant_mismatch_report.py's plant-head emails, there is no per-plant
 individual here since AdvanceLicense isn't plant-scoped at all.
 """
@@ -55,7 +55,7 @@ from apps.services.security_alerts import _admin_emails
 log = logging.getLogger(__name__)
 
 _EXPIRY_WINDOW_DAYS = 30
-_FIXED_RECIPIENT = "import@ravasco.com"
+_FIXED_RECIPIENT = "imports@ravasco.com"
 
 _REPORT_CONFIG = {
     "import": {

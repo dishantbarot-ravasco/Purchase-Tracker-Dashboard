@@ -204,7 +204,7 @@ def trigger_advance_license_expiry_report(request):
 
     Runs send_advance_license_expiry_reports() - two consolidated alert
     emails (Import Validity / Export Validity, each independent) to every
-    active admin plus import@ravasco.com, listing every AdvanceLicense whose
+    active admin plus imports@ravasco.com, listing every AdvanceLicense whose
     relevant validity date falls within the next 30 days and hasn't already
     been alerted on (see apps/services/advance_license_report.py's own
     dedup reasoning). Same shared-secret scheme as the other endpoints in

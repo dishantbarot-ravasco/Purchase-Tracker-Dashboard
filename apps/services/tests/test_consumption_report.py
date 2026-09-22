@@ -43,6 +43,7 @@ from apps.core.models import (
 )
 from apps.services.consumption_ledger import rebuild_plant_consumption
 from apps.services.consumption_report import (
+    _FIXED_RECIPIENT,
     build_plant_monthly_report,
     build_plant_report,
     send_daily_consumption_reports,
@@ -210,10 +211,15 @@ class TestSpreadDaysAreMarkedAsEstimates:
 
 @pytest.mark.django_db
 class TestSendDailyConsumptionReports:
-    def test_no_admins_sends_nothing(self):
+    def test_no_admins_still_reaches_the_fixed_purchasing_mailbox(self, mailoutbox):
+        """With no admin PTUsers at all the report must still go out to
+        _FIXED_RECIPIENT (2026-09-22) - the purchasing mailbox is a real
+        recipient in its own right, not a CC on the admin list, so an empty
+        admin list is no longer a reason to send nothing."""
         result = send_daily_consumption_reports()
-        assert result["plants_sent"] == 0
-        assert result["admins_notified"] == 0
+        assert result["plants_sent"] == 3
+        assert result["admins_notified"] == 1
+        assert all(m.to == [_FIXED_RECIPIENT] for m in mailoutbox)
 
     def test_sends_one_email_per_plant_to_every_active_admin(self, mailoutbox):
         make_user(email="admin1@ravasco.com", role="admin")
@@ -228,9 +234,10 @@ class TestSendDailyConsumptionReports:
         result = send_daily_consumption_reports()
 
         assert result["plants_sent"] == 3
-        assert result["admins_notified"] == 1  # inactive admin excluded
+        # 1 active admin (the inactive one is excluded) + the fixed purchasing mailbox
+        assert result["admins_notified"] == 2
         assert len(mailoutbox) == 3
-        assert all(m.to == ["admin1@ravasco.com"] for m in mailoutbox)
+        assert all(m.to == ["admin1@ravasco.com", _FIXED_RECIPIENT] for m in mailoutbox)
         subjects = {m.subject for m in mailoutbox}
         assert any("HRS" in s for s in subjects)
         assert any("RTP-Achhad" in s for s in subjects)
@@ -465,10 +472,12 @@ class TestBuildPlantMonthlyReportAchhad:
 
 @pytest.mark.django_db
 class TestSendMonthlyConsumptionReports:
-    def test_no_admins_sends_nothing(self):
+    def test_no_admins_still_reaches_the_fixed_purchasing_mailbox(self, mailoutbox):
+        """Monthly equivalent of the daily test of the same name."""
         result = send_monthly_consumption_reports(year=2026, month=8)
-        assert result["plants_sent"] == 0
-        assert result["admins_notified"] == 0
+        assert result["plants_sent"] == 3
+        assert result["admins_notified"] == 1
+        assert all(m.to == [_FIXED_RECIPIENT] for m in mailoutbox)
 
     def test_sends_one_email_per_plant_with_monthly_subject(self, mailoutbox):
         make_user(email="admin6@ravasco.com", role="admin")
