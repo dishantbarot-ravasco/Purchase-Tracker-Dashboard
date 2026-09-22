@@ -605,27 +605,16 @@ function poListRegionHtml() {
       '</div>' +
     '</div>' +
     (() => {
-      // One colored flag icon per category on this PO (not a "2 critical /
-      // 1 flag" text count) - see categoryColor()/CATEGORY_COLORS for the
-      // color-per-category scheme and DISCREPANCY_LEGEND for what each one
-      // means.
-      const rowFlags = po => {
-        // Only a 'critical' category gets a row icon (2026-09-10, project
-        // owner: keep the flag symbol only for red/critical flags near
-        // status - an 'info' category still counts toward the Data Quality
-        // Flags KPI/filter, it just doesn't clutter the status cell with a
-        // row of icons for every minor note).
-        const cats = (po._categories || []).filter(c => c.severity === 'critical');
-        return cats.map(c =>
-          // data-tooltip + CSS (.row-flag-wrap::after, see style.css) instead
-          // of a native title attribute - title tooltips have a ~1s hover
-          // delay and are easy to dismiss with the slightest mouse movement,
-          // which read as "hovering isn't working" per the project owner's
-          // 2026-09-04 report. The CSS tooltip shows immediately and
-          // reliably instead.
-          ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
-        ).join('');
-      };
+      // Four buckets, one icon each - see flags.js's rowFlagsHtml() for what
+      // they are and what this replaced (one identical red icon per critical
+      // category). 'pending' is the status computeStatus() gives an order
+      // with a delivery date still ahead of it; 'overdue' deliberately gets
+      // no delivery-state flag, since the pill beside it is already red.
+      const rowFlags = po => rowFlagsHtml({
+        partial: po._status === 'partial',
+        onOrder: po._status === 'pending',
+        categories: po._categories,
+      });
       if (showingAll) {
         const colFilterRow = '<tr class="col-filter-row">' + filterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
         // 10 rows/page instead of dumping the whole filtered result set at

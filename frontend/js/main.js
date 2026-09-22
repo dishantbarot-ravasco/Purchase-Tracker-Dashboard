@@ -524,16 +524,21 @@ async function triggerRealSyncAndRefresh(btn) {
     // triggered either of these at all - the only way to sync them was the
     // RoDTEP panel's own dedicated "Sync Now" button, so a plain "Refresh
     // Data" click could look up to date while these two silently weren't.
-    try {
-      await apiImports('/rodtep/sync-trigger', { method: 'POST' });
-    } catch (e) {
-      if (e.status !== 409) throw e;
-    }
-    try {
-      await apiImports('/advance-license/sync-trigger', { method: 'POST' });
-    } catch (e) {
-      if (e.status !== 409) throw e;
-    }
+    // Those panel buttons are gone as of 2026-09-22 and this is now the only
+    // path, which is also why the two run in PARALLEL rather than one after
+    // the other: unlike every plant trigger above, both of these endpoints
+    // run their sync SYNCHRONOUSLY server-side (see rodtep_sync_trigger's
+    // own docstring on why they are not queued), so awaiting them in
+    // sequence made the click wait for one download before starting the
+    // other for no reason - they touch different Drive files and hold
+    // different locks. Same Promise.all shape the per-plant loop above uses.
+    await Promise.all(['/rodtep/sync-trigger', '/advance-license/sync-trigger'].map(async path => {
+      try {
+        await apiImports(path, { method: 'POST' });
+      } catch (e) {
+        if (e.status !== 409) throw e;
+      }
+    }));
   } catch (e) {
     console.error('sync-trigger failed:', e);
     btn.disabled = false;

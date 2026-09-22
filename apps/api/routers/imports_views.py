@@ -20,7 +20,7 @@ exception, deliberately, per the build spec's inline-correction requirement).
 """
 
 import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import Q
@@ -63,6 +63,7 @@ from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 from apps.services.matching_core import line_item_positions
 from apps.services import bl_tracking
 from apps.services import import_flags as flags
+from apps.services import license_links
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
 from apps.services.matching import run_full_match as _hrs_run_full_match
@@ -627,6 +628,13 @@ def dismiss_flag(request, plant, po_number):
 # /api/imports/rodtep, not per-plant, same reasoning imports_views.py's own
 # cross-plant purchase_orders()/sync_status() above already established for
 # genuinely shared (not per-plant) data.
+#
+# BOTH ledgers below are joined to the import side through
+# services/license_links.py (2026-09-22), reading the `License Type` /
+# `License Number` columns each plant's Imports Purchase Data master CSV has
+# always carried. Read that module's header before changing anything here:
+# the two panels were originally built believing no such link existed, and
+# it is the reason RodtepUsage was ever hand-entered.
 
 _BOE_LINE_ITEM_MODELS = [HRSImportPOLineItem, RTPAchhadImportPOLineItem, RTPVapiImportPOLineItem]
 
@@ -670,47 +678,150 @@ def _rodtep_usage_dict(u: RodtepUsage) -> dict:
     }
 
 
+# ── The import side of both licence ledgers ─────────────────────────────────
+
+def _citation_dict(c) -> dict:
+    """One import PO line item's claim on one licence, as the panels show it.
+    `sharedWith` is what stops `landedValue` being read as this licence's own
+    share of the line - see license_links.citation_totals()."""
+    return {
+        "plantKey": c.plant_key,
+        "plant": c.plant_label,
+        "poNumber": c.po_number,
+        "itemId": c.item_id,
+        "description": c.description,
+        "boeNumber": c.boe_number,
+        "qty": c.qty,
+        "uom": c.uom,
+        "landedValue": c.landed_value,
+        "licenseNumberRaw": c.license_number_raw,
+        "licenseTypeRaw": c.license_type_raw,
+        "sharedWith": list(c.shared_with),
+    }
+
+
+def _license_citations(scheme: str) -> tuple[dict, list]:
+    """Every import-side citation for one scheme, grouped by normalised
+    licence number, plus the citations naming a licence under NO recognised
+    scheme at all.
+
+    One pass over the three plants' line items serves both - the unclassified
+    list is returned by each ledger rather than living in a third endpoint,
+    because it is the same one action either reader can take (fill in the
+    `License Type` column) and neither panel can be sure the other was
+    opened."""
+    citations = license_links.collect_citations()
+    scoped = [c for c in citations if c.scheme == scheme]
+    unclassified = [c for c in citations if c.scheme == license_links.SCHEME_UNKNOWN]
+    return license_links.citations_by_license(scoped), unclassified
+
+
+def _unrecognised_license_rows(by_license: dict, known_numbers: set) -> list:
+    """Licences the imports CSV cites that the ledger does not hold - the
+    RoDTEP/Advance-Licence analogue of `mir_without_po`'s PO_UNKNOWN bucket,
+    and actionable in the same upstream direction: either the scrip/licence
+    file has not been added to Drive yet, or the number in the CSV is wrong.
+    Reported as its own list, never folded in among real ledger rows with
+    zero sanctioned against them."""
+    rows = []
+    for number in sorted(set(by_license) - known_numbers):
+        citations = by_license[number]
+        rows.append({
+            "licenseNumber": number,
+            "licenseNumbersRaw": sorted({c.license_number_raw for c in citations}),
+            **license_links.citation_totals(citations),
+            "citations": [_citation_dict(c) for c in citations],
+        })
+    return rows
+
+
 @api_view(["GET"])
 def rodtep_ledger(request):
-    """GET /api/imports/rodtep - one row per Script Number, with total
-    credit sanctioned (from the auto-synced RodtepScrollEntry ledger),
-    total used (from the manually-entered RodtepUsage log), and the
-    resulting balance. Any role can read (same as every other GET in this
-    file) - see rodtep_usage_create below for the write side."""
-    from django.db.models import Sum
+    """GET /api/imports/rodtep - one row per Script Number: the credit
+    sanctioned against it (auto-synced RodtepScrollEntry), and which imports
+    were actually cleared under it (derived from the imports master CSV via
+    license_links.py). Any role can read, same as every other GET here.
 
-    sanctioned_by_script = {
-        row["script_no"]: row["total"]
-        for row in RodtepScrollEntry.objects.values("script_no").annotate(total=Sum("sanctioned_amount"))
+    There is deliberately NO "balance remaining" derived from the import
+    side: the CSV says WHICH scrip was applied to a line, never how much
+    credit that debited, and no synced source carries the amount. The
+    `totalUsed`/`balance` pair below reads the legacy hand-entered
+    RodtepUsage table only, and `summary.hasLoggedUsage` tells the frontend
+    whether those two columns mean anything at all - with that table empty
+    they would otherwise render a Balance equal to Sanctioned on every row,
+    which reads as "none of this scrip has been used" when in fact several
+    imports have been cleared under it."""
+    from django.db.models import Count, Max, Min, Sum
+
+    # One row per script - Min("location")/Min("script_date") rather than a
+    # per-script follow-up query, since one RODTEP-JNPT-<N>.xlsx file holds
+    # exactly one script and repeats both values down every row of it (see
+    # parsers/rodtep.py's own header).
+    ledger_by_script = {
+        row["script_no"]: row
+        for row in RodtepScrollEntry.objects.values("script_no").annotate(
+            total_sanctioned=Sum("sanctioned_amount"),
+            entry_count=Count("id"),
+            script_date=Min("script_date"),
+            sb_from=Min("sb_date"),
+            sb_to=Max("sb_date"),
+            location=Min("location"),
+        )
     }
     used_by_script = {
         row["script_no"]: row["total"]
         for row in RodtepUsage.objects.values("script_no").annotate(total=Sum("used_amount"))
     }
+    by_license, unclassified = _license_citations(license_links.SCHEME_RODTEP)
+
     # A script might have usage entered before its own ledger file has been
     # synced yet (see RodtepUsage's own docstring on why there's no FK) -
     # union both key sets so that script still shows up, with 0 sanctioned
-    # rather than being silently dropped.
-    all_scripts = sorted(set(sanctioned_by_script) | set(used_by_script))
+    # rather than being silently dropped. Scrips the imports CSV cites and
+    # the ledger doesn't hold are NOT unioned in here; they go to
+    # `unknownScrips`, where the fix (add the file to Drive, or correct the
+    # CSV) is a different one from anything a ledger row implies.
+    all_scripts = sorted(set(ledger_by_script) | set(used_by_script))
 
     scripts = []
     for script_no in all_scripts:
-        sanctioned = sanctioned_by_script.get(script_no) or 0
+        ledger = ledger_by_script.get(script_no) or {}
+        sanctioned = ledger.get("total_sanctioned") or 0
         used = used_by_script.get(script_no) or 0
-        entries = RodtepScrollEntry.objects.filter(script_no=script_no).order_by("sb_date")
+        citations = by_license.get(script_no, [])
+        script_date = ledger.get("script_date")
+        sb_from, sb_to = ledger.get("sb_from"), ledger.get("sb_to")
         scripts.append({
             "scriptNo": script_no,
-            "scriptDate": entries.first().script_date.isoformat() if entries and entries.first().script_date else None,
-            "location": entries.first().location if entries else "",
-            "entryCount": entries.count(),
+            "scriptDate": script_date.isoformat() if script_date else None,
+            "location": ledger.get("location") or "",
+            "entryCount": ledger.get("entry_count") or 0,
+            "sbDateFrom": sb_from.isoformat() if sb_from else None,
+            "sbDateTo": sb_to.isoformat() if sb_to else None,
             "totalSanctioned": sanctioned,
             "totalUsed": used,
             "balance": sanctioned - used,
+            "imports": license_links.citation_totals(citations),
         })
 
+    total_sanctioned = sum((s["totalSanctioned"] for s in scripts), Decimal("0"))
     last_run = SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.RODTEP).order_by("-finished_at").first()
     return Response({
         "scripts": scripts,
+        "summary": {
+            "scripCount": len(scripts),
+            "totalSanctioned": total_sanctioned,
+            # Idle credit: a scrip we hold that no import has been cleared
+            # under. The one number here somebody can act on directly.
+            "scripsCited": len([s for s in scripts if s["imports"]["lineCount"]]),
+            "scripsNeverCited": len([s for s in scripts if not s["imports"]["lineCount"]]),
+            "importLines": sum(s["imports"]["lineCount"] for s in scripts),
+            "importLandedValue": sum((s["imports"]["landedValue"] for s in scripts), Decimal("0")),
+            "hasLoggedUsage": bool(used_by_script),
+            "totalLoggedUsed": sum(used_by_script.values(), Decimal("0")),
+        },
+        "unknownScrips": _unrecognised_license_rows(by_license, set(ledger_by_script)),
+        "unclassifiedCitations": [_citation_dict(c) for c in unclassified],
         "lastSync": {
             "status": last_run.status,
             "finishedAt": last_run.finished_at.isoformat() if last_run and last_run.finished_at else None,
@@ -726,54 +837,28 @@ def rodtep_ledger(request):
 
 @api_view(["GET"])
 def rodtep_script_detail(request, script_no):
-    """GET /api/imports/rodtep/<script_no> - every Shipping Bill row (the
-    auto-synced ledger) and every manually-entered usage row for one
-    script, for the drill-down panel."""
+    """GET /api/imports/rodtep/<script_no> - the export side (every Shipping
+    Bill row that earned this scrip's credit), the import side (every line
+    item the CSV says was cleared under it), and any legacy hand-entered
+    usage rows, for the drill-down panel.
+
+    A scrip the CSV cites but the ledger has no file for still resolves here
+    rather than 404ing - that row is reachable from the ledger's own
+    `unknownScrips` list, and answering "not found" for something the panel
+    just linked to would be the wrong answer to the question being asked."""
     entries = RodtepScrollEntry.objects.filter(script_no=script_no).order_by("sb_date")
     usages = RodtepUsage.objects.filter(script_no=script_no)
-    if not entries.exists() and not usages.exists():
+    by_license, _ = _license_citations(license_links.SCHEME_RODTEP)
+    citations = by_license.get(license_links.normalize_license_number(script_no), [])
+    if not entries.exists() and not usages.exists() and not citations:
         return Response({"error": "No RoDTEP data found for this Script Number."}, status=404)
     return Response({
         "scriptNo": script_no,
         "entries": [_rodtep_entry_dict(e) for e in entries],
         "usages": [_rodtep_usage_dict(u) for u in usages],
+        "imports": [_citation_dict(c) for c in citations],
+        "importTotals": license_links.citation_totals(citations),
     })
-
-
-@api_view(["POST"])
-@permission_classes([IsEditor])
-def rodtep_usage_create(request):
-    """POST /api/imports/rodtep/usage - log that some of a script's credit
-    was used against a specific import. Body: {scriptNo, usedAmount,
-    boeNumber?, importPoNumber?, usedDate?, notes?}. IsEditor-gated (a
-    viewer can look but not touch, same split as every other write endpoint
-    in this file) - not plant-scoped, since RoDTEP itself isn't a
-    single-plant resource (see this section's own header comment)."""
-    script_no = (request.data.get("scriptNo") or "").strip()
-    if not script_no:
-        return Response({"error": "scriptNo is required."}, status=400)
-    try:
-        used_amount = Decimal(str(request.data.get("usedAmount")))
-    except (TypeError, ValueError, InvalidOperation):
-        return Response({"error": "usedAmount must be a number."}, status=400)
-
-    used_date = None
-    if request.data.get("usedDate"):
-        try:
-            used_date = datetime.date.fromisoformat(request.data["usedDate"])
-        except ValueError:
-            return Response({"error": "usedDate must be YYYY-MM-DD."}, status=400)
-
-    usage = RodtepUsage.objects.create(
-        script_no=script_no,
-        used_amount=used_amount,
-        boe_number=(request.data.get("boeNumber") or "").strip(),
-        import_po_number=(request.data.get("importPoNumber") or "").strip(),
-        used_date=used_date,
-        notes=(request.data.get("notes") or "").strip(),
-        entered_by=request.user,
-    )
-    return Response(_rodtep_usage_dict(usage), status=201)
 
 
 @api_view(["POST"])
@@ -793,7 +878,13 @@ def rodtep_sync_trigger(request):
     complexity of a background task + polling isn't justified here the way
     it is for a full plant's multi-file MIR/Stock pipeline (see
     sync_trigger.py's own module docstring for why THAT one needs to be
-    async)."""
+    async).
+
+    No longer reachable from the RoDTEP panel itself (2026-09-22) - both
+    ledgers sync with everything else through the dashboard's "Refresh
+    Data" button, which fires this endpoint and its Advance Licence
+    counterpart in parallel. The endpoint stays: it is what that button,
+    and run_daily_sync_all_plants(), actually call."""
     from apps.services.sync_trigger import trigger_rodtep_sync
 
     started = trigger_rodtep_sync()
@@ -806,9 +897,27 @@ def rodtep_sync_trigger(request):
 # Company-wide (see AdvanceLicense's own docstring), lives under
 # /api/imports/advance-license - same reasoning as RoDTEP directly above:
 # scoped to Import Purchases only, not per-plant, not a new top-level tab.
-# Unlike RoDTEP, there is no manual-usage-entry side here - the source
-# workbook the project owner maintains by hand already carries the usage
-# columns (BOE/import PO/qty/value), synced as-is onto each material row.
+#
+# Two independent accounts of the same thing, deliberately kept apart rather
+# than reconciled into one number:
+#
+#   `usage`   the project owner's own hand-maintained workbook, which carries
+#             BOE/PO/qty/value per material row. The ONLY source with the
+#             VALUE drawn against a licence, so it is the only thing
+#             utilisation can be computed from.
+#   `imports` the imports master CSV's own `License Number` column, via
+#             license_links.py. Has no value-drawn column, but is generated
+#             from the same file the whole Import dashboard runs on.
+#
+# `boeCrossCheck` is what makes having both worth it: a BOE in one and not
+# the other is a real bookkeeping gap in whichever side is missing it, and
+# nothing else in this app could see it.
+
+# Fewer than 90 days of export obligation left. Not a threshold with a
+# measurement behind it - a stated review horizon, which is why it is named
+# here rather than inlined at the comparison.
+_LICENSE_EXPIRY_SOON_DAYS = 90
+
 
 def _advance_license_material_dict(m) -> dict:
     return {
@@ -822,20 +931,79 @@ def _advance_license_material_dict(m) -> dict:
         "importPoNumber": m.import_po_number,
         "qtyImported": m.qty_imported,
         "valueImported": m.value_imported,
+        # Whether this workbook row's BOE is one the Import dashboard
+        # actually holds - the same check RodtepUsage's own boeVerified
+        # makes, and the reason a typo'd BOE stops being invisible here.
+        "boeVerified": _boe_exists(m.boe_number),
     }
 
 
-def _advance_license_dict(lic) -> dict:
+def _material_rollup(materials) -> list:
+    """One row per input material, with its usage rows folded in - the
+    workbook repeats a material once per import drawn against it (see
+    AdvanceLicenseMaterial's own docstring), so the authorised qty is taken
+    from ONE of those rows and never summed, while the imported qty/value
+    are summed across all of them. Summing the authorisation instead would
+    multiply it by however many times the material has been imported."""
+    rollup: dict[str, dict] = {}
+    for m in materials:
+        row = rollup.setdefault(m.material_description, {
+            "materialDescription": m.material_description,
+            "itchsCode": m.itchs_code,
+            "qtyAuthorized": m.qty_authorized,
+            "cifValueAuthorized": m.cif_value_authorized,
+            "dutySavedPct": m.duty_saved_pct,
+            "qtyImported": Decimal("0"),
+            "valueImported": Decimal("0"),
+            "usageRows": 0,
+        })
+        # A later row of the same material can carry the authorisation where
+        # the first left it blank; take the first non-null rather than
+        # letting a blank first row report the material as unauthorised.
+        for field, value in (
+            ("qtyAuthorized", m.qty_authorized),
+            ("cifValueAuthorized", m.cif_value_authorized),
+            ("dutySavedPct", m.duty_saved_pct),
+            ("itchsCode", m.itchs_code),
+        ):
+            if not row[field]:
+                row[field] = value
+        if m.qty_imported is not None:
+            row["qtyImported"] += m.qty_imported
+        if m.value_imported is not None:
+            row["valueImported"] += m.value_imported
+        if m.boe_number or m.qty_imported is not None or m.value_imported is not None:
+            row["usageRows"] += 1
+
+    for row in rollup.values():
+        authorized = row["qtyAuthorized"]
+        row["qtyRemaining"] = (authorized - row["qtyImported"]) if authorized is not None else None
+    return list(rollup.values())
+
+
+def _advance_license_dict(lic, citations: list, today) -> dict:
     # Field order matches the project owner's own requested view order:
     # License Number -> Export Product Description -> CIF Value Authorized
     # -> FOB Export Target -> Export Validity -> Material Description(s).
+    materials = list(lic.materials.all())
+    material_rows = _material_rollup(materials)
+    value_imported = sum((m.value_imported for m in materials if m.value_imported is not None), Decimal("0"))
+    cif_authorized = lic.cif_value_authorized or Decimal("0")
+    workbook_boes = {m.boe_number for m in materials if m.boe_number}
+    csv_boes = {c.boe_number for c in citations if c.boe_number}
+
+    def _days_left(date_value):
+        return (date_value - today).days if date_value else None
+
+    export_days_left = _days_left(lic.export_validity_date)
+    import_days_left = _days_left(lic.import_validity_date)
     return {
         "licenseNumber": lic.license_number,
         "exportProductDescription": lic.export_product_description,
         "cifValueAuthorized": lic.cif_value_authorized,
         "fobValueExportTarget": lic.fob_value_export_target,
         "exportValidityDate": lic.export_validity_date.isoformat() if lic.export_validity_date else None,
-        "materials": [_advance_license_material_dict(m) for m in lic.materials.all()],
+        "materials": [_advance_license_material_dict(m) for m in materials],
         # Extra fields kept alongside (not part of the requested view, but
         # already computed by the sync - no reason to withhold them from the
         # payload; the frontend simply doesn't render them today).
@@ -843,22 +1011,81 @@ def _advance_license_dict(lic) -> dict:
         "iec": lic.iec,
         "importValidityDate": lic.import_validity_date.isoformat() if lic.import_validity_date else None,
         "status": lic.status,
+        # ── Derived (2026-09-22) ──
+        "materialRollup": material_rows,
+        "usage": {
+            "valueImported": value_imported,
+            "cifRemaining": cif_authorized - value_imported,
+            # None, not 0, when nothing was authorised - a percentage of zero
+            # is not "0% used", it is a question about the source row.
+            "cifUtilisedPct": (value_imported / cif_authorized * 100) if cif_authorized else None,
+            "materialCount": len(material_rows),
+            "usageRows": sum(r["usageRows"] for r in material_rows),
+        },
+        "validity": {
+            "exportDaysLeft": export_days_left,
+            "importDaysLeft": import_days_left,
+            "exportExpired": export_days_left is not None and export_days_left < 0,
+            "importExpired": import_days_left is not None and import_days_left < 0,
+            "exportExpiringSoon": export_days_left is not None and 0 <= export_days_left <= _LICENSE_EXPIRY_SOON_DAYS,
+        },
+        "imports": license_links.citation_totals(citations),
+        "importCitations": [_citation_dict(c) for c in citations],
+        "boeCrossCheck": {
+            # A BOE the workbook records against this licence that no import
+            # line cites it for, and the reverse. Either direction is a real
+            # gap: the first says the CSV's License Number column was left
+            # blank, the second that the workbook has not been updated.
+            "workbookOnly": sorted(workbook_boes - csv_boes),
+            "csvOnly": sorted(csv_boes - workbook_boes),
+        },
     }
 
 
 @api_view(["GET"])
 def advance_license_ledger(request):
-    """GET /api/imports/advance-license - every synced Advance License, each
-    with its Export Product Description/CIF Value Authorized/FOB Export
-    Target/Export Validity plus its input materials' descriptions. Any role
-    can read (same as every other GET in this file)."""
+    """GET /api/imports/advance-license - every synced Advance License with
+    its own fields, its input materials rolled up (authorised vs imported
+    qty), CIF utilisation from the workbook's own usage columns, validity
+    countdowns, and the import lines the master CSV says were cleared under
+    it. Any role can read (same as every other GET in this file)."""
+    # timezone.localdate(), never date.today() - the server runs UTC on
+    # Render while TIME_ZONE is Asia/Kolkata, so between 00:00 and 05:29 IST
+    # the server's date is still yesterday and every countdown here would be
+    # a day out. See CLAUDE.md's timezone trap.
+    today = timezone.localdate()
+    by_license, unclassified = _license_citations(license_links.SCHEME_ADVANCE)
     licenses = AdvanceLicense.objects.prefetch_related("materials").order_by("license_number")
+
+    rows, known_numbers = [], set()
+    for lic in licenses:
+        number = license_links.normalize_license_number(lic.license_number)
+        known_numbers.add(number)
+        rows.append(_advance_license_dict(lic, by_license.get(number, []), today))
+
     last_run = (
         SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.ADVANCE_LICENSE)
         .order_by("-finished_at").first()
     )
+    cif_authorized = sum((r["cifValueAuthorized"] or Decimal("0") for r in rows), Decimal("0"))
+    cif_imported = sum((r["usage"]["valueImported"] for r in rows), Decimal("0"))
     return Response({
-        "licenses": [_advance_license_dict(lic) for lic in licenses],
+        "licenses": rows,
+        "summary": {
+            "licenseCount": len(rows),
+            "cifAuthorized": cif_authorized,
+            "cifImported": cif_imported,
+            "cifRemaining": cif_authorized - cif_imported,
+            "cifUtilisedPct": (cif_imported / cif_authorized * 100) if cif_authorized else None,
+            "fobExportTarget": sum((r["fobValueExportTarget"] or Decimal("0") for r in rows), Decimal("0")),
+            "exportExpired": len([r for r in rows if r["validity"]["exportExpired"]]),
+            "exportExpiringSoon": len([r for r in rows if r["validity"]["exportExpiringSoon"]]),
+            "neverCited": len([r for r in rows if not r["imports"]["lineCount"]]),
+            "boeGaps": sum(len(r["boeCrossCheck"]["workbookOnly"]) + len(r["boeCrossCheck"]["csvOnly"]) for r in rows),
+            "expirySoonDays": _LICENSE_EXPIRY_SOON_DAYS,
+        },
+        "unknownLicenses": _unrecognised_license_rows(by_license, known_numbers),
+        "unclassifiedCitations": [_citation_dict(c) for c in unclassified],
         "lastSync": {
             "status": last_run.status,
             "finishedAt": last_run.finished_at.isoformat() if last_run and last_run.finished_at else None,
@@ -877,14 +1104,14 @@ def advance_license_sync_trigger(request):
     sync_advance_license via trigger_advance_license_sync(), same
     lock-protected "already running -> 409" contract as rodtep_sync_trigger
     above, for the same reasons (one small file, well under gunicorn's 30s
-    worker timeout, run synchronously rather than backgrounded)."""
+    worker timeout, run synchronously rather than backgrounded). Reached
+    from "Refresh Data", not from the panel - see rodtep_sync_trigger."""
     from apps.services.sync_trigger import trigger_advance_license_sync
 
     started = trigger_advance_license_sync()
     if not started:
         return Response({"status": "already_running"}, status=409)
     return Response({"status": "ok"})
-
 
 # ── Manual MIR match (imports) ────────────────────────────────────────────────
 # The Domestic version of this feature, extended to Import POs on request

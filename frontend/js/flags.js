@@ -41,6 +41,110 @@ function flagIconHtml(hexColor, cls) {
     '<path d="M14.4 6L14 4H5v17h2v-7h5.6l.4 2h7V6h-4.6z"/></svg>';
 }
 
+// ── Row flags: four buckets, one icon each ──────────────────────────────
+// Project owner, 2026-09-22: "keeping 1-4 flags aside of status seem too
+// much - I was thinking of keeping only red for any mismatches, blue for
+// partial delivery, yellow for on order and purple for all data quality
+// issues."
+//
+// What it replaces: each list view rendered ONE ICON PER CRITICAL CATEGORY.
+// All five critical categories are `#dc2626` in CATEGORY_COLORS, so a PO
+// with a qty AND a rate mismatch showed two identical red flags, and one
+// that was also over-delivered showed three - repetition that carried no
+// information the tooltip did not already hold. Info-severity categories,
+// meanwhile, had no row icon at all (2026-09-10), so a paperwork problem was
+// invisible until you opened the PO.
+//
+// The four buckets are deliberately the colours this app ALREADY uses for
+// these meanings, not new ones: KPI_FLAG_COLORS.partial/pending/critical/
+// quality are the same values the KPI cards and the status pills use
+// (.status-partial is blue, .status-pending amber, .status-overdue red).
+//
+// NOTHING IS LOST BY COLLAPSING - the specific category names move into the
+// tooltip, which is where a reader looked for them anyway. Keep it that way
+// if you add a bucket: an icon that cannot say WHICH flag it stands for is
+// strictly worse than the list it replaced.
+//
+// Overdue is deliberately NOT a bucket. It is an overlay, not a delivery
+// state (see computeStatus()), and the status pill beside these icons
+// already turns red for it - a fifth flag would say it twice.
+const ROW_FLAG_BUCKETS = {
+  partial: { color: KPI_FLAG_COLORS.partial, label: 'Partial delivery' },
+  onorder: { color: KPI_FLAG_COLORS.pending, label: 'On order' },
+  mismatch: { color: KPI_FLAG_COLORS.critical, label: 'Mismatch' },
+  quality: { color: KPI_FLAG_COLORS.quality, label: 'Data quality' },
+};
+
+function _rowFlagHtml(bucket, detail) {
+  const tip = detail && detail.length ? bucket.label + ': ' + detail.join('; ') : bucket.label;
+  // data-tooltip + CSS (.row-flag-wrap::after, see style.css) instead of a
+  // native title attribute - title tooltips have a ~1s hover delay and are
+  // easy to dismiss with the slightest mouse movement, which read as
+  // "hovering isn't working" (project owner, 2026-09-04). The CSS tooltip
+  // shows immediately and reliably instead.
+  return ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(tip) + '">' +
+    flagIconHtml(bucket.color, 'row-flag-icon') + '</span>';
+}
+
+/**
+ * The flags shown beside a row's status pill, in every list view.
+ * @param {object} opts
+ *   partial    - something arrived but the order is not complete
+ *   onOrder    - nothing has arrived yet and it is not yet overdue
+ *   categories - this row's flag categories ({label, severity}), the same
+ *                shape computePoFlags()/importCategoriesFor()/
+ *                computeMaterialPoLinkage() already produce
+ *
+ * Order matches the four buckets as listed above: delivery state, then
+ * mismatch, then data quality. `partial` wins over `onOrder` when a caller
+ * can report both (Import can - see importRowFlags()) because it is the more
+ * specific fact: part of it HAS arrived.
+ */
+function rowFlagsHtml(opts) {
+  opts = opts || {};
+  const cats = opts.categories || [];
+  // "PO Not Found in MIR" is NOT a mismatch on an order that is not due yet -
+  // it is the same fact the yellow flag already states, and it fires on
+  // EVERY such order by construction (computePoFlags() raises it whenever no
+  // line item has matched; CLAUDE.md's Data Quality Flags section notes the
+  // same density effect for Import and Materials). Left in the red bucket it
+  // put a red flag on almost every on-order row, which is how a colour stops
+  // meaning anything - measured while building this: a perfectly ordinary
+  // not-yet-due PO carries exactly this one critical category and nothing
+  // else.
+  //
+  // Suppressed ONLY while on order. An OVERDUE row gets no delivery flag at
+  // all (the pill is already red), so there the same category is real news -
+  // it should have arrived and there is no receipt - and it still counts.
+  const suppressed = opts.onOrder && !opts.partial ? 'PO Not Found in MIR' : null;
+  const critical = cats
+    .filter(c => c.severity === 'critical' && c.label !== suppressed)
+    .map(c => c.label);
+  const info = cats.filter(c => c.severity !== 'critical').map(c => c.label);
+  let out = '';
+  if (opts.partial) out += _rowFlagHtml(ROW_FLAG_BUCKETS.partial);
+  else if (opts.onOrder) out += _rowFlagHtml(ROW_FLAG_BUCKETS.onorder);
+  if (critical.length) out += _rowFlagHtml(ROW_FLAG_BUCKETS.mismatch, critical);
+  if (info.length) out += _rowFlagHtml(ROW_FLAG_BUCKETS.quality, info);
+  return out;
+}
+
+/** The colour key shown above the Data Quality legend - the row flags are
+ * their own four-colour vocabulary now, distinct from the legend's
+ * per-category dots below it (which stay one hue per category, so a reader
+ * can still tell two categories apart there). */
+function rowFlagKeyHtml() {
+  const item = (bucket, meaning) =>
+    '<span class="flag-key-item">' + flagIconHtml(bucket.color, 'row-flag-icon') +
+    '<b>' + escapeHtml(bucket.label) + '</b> ' + escapeHtml(meaning) + '</span>';
+  return '<div class="flag-key">' +
+    item(ROW_FLAG_BUCKETS.mismatch, 'qty, rate or a receipt that could not be found') +
+    item(ROW_FLAG_BUCKETS.partial, 'some of the order has arrived') +
+    item(ROW_FLAG_BUCKETS.onorder, 'nothing has arrived yet') +
+    item(ROW_FLAG_BUCKETS.quality, 'paperwork and data problems') +
+  '</div>';
+}
+
 // Separate qty/rate/value badges (previously one blended "review" flag) so a
 // normal partial delivery (qty differs, rate/value line up) doesn't read the
 // same as a genuine price/value discrepancy. Value is suppressed when qty is
@@ -479,7 +583,12 @@ function renderLegendHtml() {
   const criticalCount = DISCREPANCY_LEGEND.filter(d => d.severity === 'critical').length;
   const infoCount = DISCREPANCY_LEGEND.length - criticalCount;
   return '<div class="legend-box" id="legendBox"' + (state.legendOpen ? '' : ' hidden') + '>' +
-    '<h4>What each flag means (' + DISCREPANCY_LEGEND.length + ' categories total: ' + criticalCount + ' critical, ' + infoCount + ' informational)</h4>' +
+    // The four row-flag colours first: that is the vocabulary a reader
+    // actually meets in the list, and the per-category glossary below is
+    // what they consult once one of them prompts a question.
+    '<h4>The flags beside a status</h4>' +
+    rowFlagKeyHtml() +
+    '<h4 class="mt-14">What each flag means (' + DISCREPANCY_LEGEND.length + ' categories total: ' + criticalCount + ' critical, ' + infoCount + ' informational)</h4>' +
     '<div class="legend-sub">Critical flags are computed directly from PO versus actual goods receipt data and need action first. Informational flags come from data quality notes recorded when each PO was extracted, and are process or paperwork issues rather than money or quantity problems.</div>' +
     '<ul class="legend-list">' + rows + '</ul>' +
   '</div>';

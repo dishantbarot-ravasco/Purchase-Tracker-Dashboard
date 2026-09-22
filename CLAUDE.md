@@ -86,7 +86,8 @@ Every `sync_*` command accepts `--file <path>` to parse a local copy instead of 
   dicts from the ORM or call into `apps/services`. No business logic beyond what a view needs.
 - **`apps/services`** — Drive access (`google_client.py`), per-plant parsers (`parsers/`), the
   matching engines (`matching.py` / `matching_achhad.py` / `matching_vapi.py` over the shared
-  `matching_core.py`), change-detection (`sync_utils.py`), and the auth-adjacent services
+  `matching_core.py`), change-detection (`sync_utils.py`), the licence<->import join (`license_links.py`), and the
+  auth-adjacent services
   (`device_service.py`, `otp_service.py`, `email_service.py`, `password_service.py`,
   `token_revocation.py`, `security_alerts.py`).
 
@@ -1548,6 +1549,72 @@ materials/import POs. That is expected and consistent, not a bug to suppress.
 inconsistency" rule via a bare `/vendor code/i` test even though that's not quite the right bucket.
 Known, accepted, carried over as-is — not a new bug.
 
+### Row flags are four buckets, one icon each (2026-09-22)
+
+Project owner: *"keeping 1-4 flags aside of status seem too much - I was
+thinking of keeping only red for any mismatches, blue for partial delivery,
+yellow for on order and purple for all data quality issues."*
+
+All three list views rendered **one icon per critical category**, and all five
+critical categories are `#dc2626` in `CATEGORY_COLORS` - so a PO with a qty and
+a rate mismatch showed two *identical* red flags, three if it was also
+over-delivered. The repetition carried nothing the tooltip did not already
+hold. Info-severity categories had no row icon at all (2026-09-10), so a
+paperwork problem stayed invisible until you opened the PO.
+
+`flags.js`'s `rowFlagsHtml({partial, onOrder, categories})` is now the one
+implementation, called by `po-list.js`, `import-po.js` and `materials.js`:
+
+| Colour | Bucket | Source |
+| --- | --- | --- |
+| blue | Partial delivery | Domestic `_status === 'partial'`; Import `partialDelivery`; Materials `computeMaterialStatus() === 'partial'` |
+| yellow | On order | Domestic `_status === 'pending'`; Import `deliveryDateStatus === 'On Order'`; Materials `'onorder'` |
+| red | Mismatch | any `severity === 'critical'` category |
+| purple | Data quality | any `severity !== 'critical'` category |
+
+**The colours are the ones this app already used for these meanings** -
+`KPI_FLAG_COLORS.partial/pending/critical/quality`, the same values the KPI
+cards and `.status-partial`/`.status-pending`/`.status-overdue` carry. No new
+palette.
+
+Four things are load-bearing:
+
+- **The specific category names move into the tooltip, not away.** An icon that
+  cannot say WHICH flag it stands for is strictly worse than the list it
+  replaced. `Mismatch: Quantity Mismatch in MIR; Rate Mismatch in MIR`.
+- **"PO Not Found in MIR" is suppressed from the red bucket while a row is ON
+  ORDER**, and only then. It is `critical`, and `computePoFlags()` raises it
+  whenever no line item has matched - which is *every* not-yet-due order, by
+  construction. Measured while building this: a perfectly ordinary future-dated
+  PO carries exactly that one critical category and nothing else, so leaving it
+  in put a red flag on nearly every on-order row and red would have stopped
+  meaning "mismatch" on day one. On an **overdue** row it still counts, because
+  there it is real news (it should have arrived and there is no receipt) and
+  overdue gets no delivery-state flag of its own. On a **partial** row it also
+  still counts - some of it arrived and a line still has no receipt.
+- **Overdue is deliberately not a fifth bucket.** It is an overlay, not a
+  delivery state (see `computeStatus()`), and the status pill beside these
+  icons already turns red for it.
+- **`partial` wins over `onOrder`** when a caller can report both. Only Import
+  can: `partialDelivery` is per-item while `deliveryDateStatus` is a date
+  comparison, so a PO with one item landed and another still due is both.
+  Partial is the more specific fact.
+
+`categoryColor()`/`CATEGORY_COLORS` are **untouched** and still give the legend
+dots and the in-modal flag chips one hue per category - that is a glossary,
+where telling two categories apart is the point, and the 2026-09-10 decision
+behind those hues ("the flag color should match the error it represents") was
+not what this request was about. `rowFlagKeyHtml()` puts the four row-flag
+colours above the glossary so the two vocabularies are not confused.
+
+Verified with a throwaway in-browser harness (38 assertions: each bucket alone,
+four criticals collapsing to one red with all four named in the tooltip, bucket
+ORDER, the partial-beats-on-order rule, every branch of the PO-Not-Found
+suppression, a hostile category label staying inert, `importRowFlags()` driven
+directly, and `computeStatus()`/`computePoFlags()` run end to end on real-shaped
+POs). Harness deleted after - same convention and reason as everything else in
+this file, there is no Node here.
+
 ### Inline "Edit Everywhere"
 
 Every PO detail modal (Domestic and Import) and the Raw Material Analysis modal have per-field
@@ -1875,11 +1942,88 @@ before then would be guessing at a problem that may never appear.
 
 **RoDTEP** (`RodtepScrollEntry`, `RodtepUsage`) and **Advance Licence** (`AdvanceLicense`,
 `AdvanceLicenseMaterial`) are company-wide ledgers surfaced by `rodtep-panel.js` /
-`advance-license-panel.js` under the Imports view, each with its own "Sync Now" trigger. Both are also
-covered by the dashboard's "Refresh Data" button — triggered **once per click, not once per selected
-plant**, since they are company-wide with one shared lock each, and `pollSyncUntilDone()` waits on the
+`advance-license-panel.js` under the Imports view. Both are synced by the dashboard's "Refresh Data"
+button — triggered **once per click, not once per selected plant**, since they are company-wide with
+one shared lock each, and `pollSyncUntilDone()` waits on the
 `rodtepInProgress`/`advanceLicenseInProgress` flags from `GET /api/imports/sync-status` before
-finishing.
+finishing. Since 2026-09-22 the two triggers fire in **parallel** (`Promise.all`), not one after the
+other: unlike every plant trigger, both of these endpoints run their sync **synchronously**
+server-side (see `rodtep_sync_trigger`'s docstring on why they are not queued), so awaiting them in
+sequence made the click wait for one Drive download before starting the other, for nothing — they
+touch different files and hold different locks.
+
+### Licences: the import side was in the CSV all along (2026-09-22)
+
+Both panels were built (2026-09-09) on the belief that the import side of a licence was not knowable
+from any synced source. `RodtepScrollEntry`'s own docstring still says *"Drive has no structured link
+between a script and which import it was later used against"*, and `RodtepUsage` — a hand-entered
+table with a "Log Usage" form — existed to carry that link.
+
+**That premise was wrong, for both schemes.** Each plant's Imports Purchase Data master CSV has
+carried `License Type` and `License Number` per line item since the first import sync
+(`parsers/import_po_csv.py`, the models' `license_type`/`license_number`, rendered in the modal's
+"Export Incentive / License Scheme" block). Nothing ever joined on them. Measured against real synced
+data: `license_type` is `''` on 43 rows, `'ADVANCE'` on 6, `'RODTEP'` on 3, and **every RoDTEP number
+an import cites (`2603043916`, `2603044111`) is a Script No `RodtepScrollEntry` already holds — a
+100% join on an exact identifier**, which is a far stronger key than anything else in this app
+(contrast [MIR ↔ Stock](#mir--stock)). The hand-entry form had **never been used once** (0 rows).
+
+`apps/services/license_links.py` is the one place that join lives — read its header before changing
+anything in either panel. Two normalisation rules, both forced by real data:
+
+- **Multi-licence cells split, behind a guard.** One line can name several licences slash-joined
+  (`'0311051817/0311055303'`, and one real cell naming six). The split only happens when **every**
+  resulting token looks like a licence number (7–12 digits); otherwise the cell is left whole,
+  unmatched but intact. Unguarded splitting is how the multi-PO hyphen work went wrong before it was
+  guarded — a cell of an unexpected shape shreds into tokens matching nothing, and the damage is
+  invisible because the result is "no match" either way. **The hyphen is deliberately not a
+  separator here**, since it appears inside other identifier series in this data.
+- **Zero-pad to 10 digits.** The CSV writes the same authorisation both ways — `'311051817'` on one
+  line and `'0311051817'` inside a slash-joined cell on another. Left alone the live data reads as 10
+  distinct authorisations where there are 9. Harmless for RoDTEP scrips, already 10 digits.
+
+`license_number_raw` on every citation is the verbatim cell, so nothing here hides what was synced.
+Citations come from **active POs only**, the same `is_active` filter everything downstream of the PO
+sync uses.
+
+**What the CSV gives and does not give.** It gives WHICH licence was applied to WHICH line (plant,
+PO, BOE, material, landed value). It does **not** give the AMOUNT of credit debited — no column
+carries it, on either scheme. So:
+
+- **RoDTEP shows no remaining balance.** The `Total Used`/`Balance` columns now render **only when
+  `RodtepUsage` actually holds rows** (`summary.hasLoggedUsage`). With that table empty they showed
+  Balance == Sanctioned on every row, which reads as *"none of this scrip has been spent"* while the
+  CSV says several imports were cleared under it. Saying nothing is honest; saying "full balance" is
+  not.
+- **Advance Licence utilisation is real**, because the owner's own workbook carries
+  `Value Imported / Duty Saved` per usage row. That number comes from the workbook, never from the
+  CSV join.
+
+**A line's landed value is never apportioned between the licences it names.** Nothing in any source
+says how to split it, so a shared line is flagged `shared` with the other licences named in its
+tooltip, and `sharedLines` rides on every rollup so the panel can say the column is not additive.
+Inventing a split (equal shares? by qty?) would put a made-up number next to real ones.
+
+**The insight each panel now leads with is where a licence is NOT being used**, which is the half
+nobody could see before: a scrip or authorisation we hold that no import cites (idle credit), a
+number an import cites that we hold no file for (`unknownScrips`/`unknownLicenses` — the upstream fix,
+same shape as `mir_without_po`'s `PO_UNKNOWN` bucket, and deliberately **not** folded in among real
+ledger rows with zero sanctioned against them), and a line naming a licence with `License Type` left
+blank (`unclassifiedCitations`, returned by **both** ledgers since it is one instruction either
+reader can act on). Advance Licence adds `boeCrossCheck`: a BOE the workbook records that no import
+line cites, or the reverse — a real bookkeeping gap in whichever side is missing it, and something
+nothing else in this app could see. Its `_material_rollup()` takes each material's **authorised**
+figures once and sums only the imported ones; the workbook repeats the authorisation on every usage
+row of the same material, so summing it would multiply the authorisation by the number of imports.
+
+**Both panels are read-only now** (project owner: *"remove log usage and sync now from both the
+license tabs and make them sync simultaneously like we have for csv's and refresh data"*).
+`POST /api/imports/rodtep/usage` and its route are gone with the form; **the `RodtepUsage` model and
+its read path stay** — those rows record a real human decision, are still displayed when present, and
+dropping the table is irreversible in a way removing a button is not. The two `sync-trigger`
+endpoints stay too: "Refresh Data" and `run_daily_sync_all_plants()` are what call them.
+
+Validity countdowns use `timezone.localdate()`, never `date.today()` — see the timezone trap.
 
 ### Days-Left engine
 
@@ -2719,6 +2863,9 @@ alongside each.
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [PO ↔ MIR](#po--mir) |
 | Vendors with no PO looking like matcher failures for every run | [No-PO vendors](#some-vendors-never-have-a-po--that-is-registered-not-inferred) |
 | `?format=csv` silently 404ing - DRF reserves `format` for content negotiation | [No PO behind it](#no-purchase-order-behind-it-is-three-questions-not-one-2026-09-21) |
+| A licence number written with and without its leading zero reading as two authorisations | [Licences](#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
+| Splitting a multi-value cell without a guard, shredding an unexpected shape into tokens matching nothing | [Licences](#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
+| A Balance column equal to Sanctioned reading as "nothing spent" when the usage table is simply empty | [Licences](#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
 | Exact vendor equality → zero MIR↔Stock matches (city suffix) | [Vendor gate](#vendor-name-is-always-a-hard-gate-never-a-scored-factor) |
 | Letter-for-letter material equality as MIR↔Stock's only rule → 1.6–27% coverage | [MIR ↔ Stock](#mir--stock) |
 | Date+rate identification without a grade-code gate → same-day same-price SKUs cross-matched | [MIR ↔ Stock](#date--rate-is-this-pairings-po-number--behind-two-guards) |
@@ -2749,6 +2896,7 @@ alongside each.
 | A `<input type="number">` reporting `''` for typed garbage, saving a NULL over a real figure | [Validation before the write](#validation-runs-before-the-write-not-after) |
 | A newest-first pin order computed and then thrown away by iterating the wrong list | [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21) |
 | One PO number existing as both a Domestic and an Import order, so a pin addresses the wrong table | [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21) |
+| A `critical` category that fires on every not-yet-due order, putting a red flag on nearly every row | [Row flags are four buckets](#row-flags-are-four-buckets-one-icon-each-2026-09-22) |
 
 **Timezone: use `timezone.localdate()`, never `date.today()`.** Four sites computed "today" in the
 *server* process's timezone. Render runs containers in UTC while `TIME_ZONE` is `Asia/Kolkata`, so every

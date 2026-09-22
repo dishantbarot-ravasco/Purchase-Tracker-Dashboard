@@ -5,15 +5,37 @@ convention as test_rodtep_api.py - APIClient.force_authenticate() with a
 plain PTUser, real Postgres, no mocking.
 """
 
+import datetime
 from decimal import Decimal
 
 import pytest
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
-from apps.core.models import AdvanceLicense, AdvanceLicenseMaterial
+from apps.core.models import (
+    AdvanceLicense,
+    AdvanceLicenseMaterial,
+    HRSImportPOLineItem,
+    HRSImportPurchaseOrder,
+)
 
 LEDGER_URL = "/api/imports/advance-license"
+
+
+def _make_import_line(po_number="1000001519", license_number="0311051817", **overrides):
+    po, _ = HRSImportPurchaseOrder.objects.get_or_create(
+        po_number=po_number,
+        defaults=dict(po_drive_folder_name=po_number, vendor_name="Test Vendor"),
+    )
+    defaults = dict(
+        purchase_order=po, item_id="1", description="Synthetic Rubber SBR-1502",
+        license_type="ADVANCE", license_number=license_number,
+        boe_number="3448562", qty_as_per_boe="100.000", uom="KG",
+        total_inclusive_value="20135304.00",
+    )
+    defaults.update(overrides)
+    return HRSImportPOLineItem.objects.create(**defaults)
 
 
 def _make_license(license_number="0311047672", **overrides):
@@ -107,3 +129,152 @@ class TestAdvanceLicenseSyncTrigger:
         resp = self.client.post(f"{LEDGER_URL}/sync-trigger")
         assert resp.status_code == 409
         assert resp.data["status"] == "already_running"
+
+
+@pytest.mark.django_db
+class TestAdvanceLicenseDerivedInsights:
+    """Everything added 2026-09-22: utilisation from the workbook's own usage
+    columns, validity countdowns, the import-side join, and the cross-check
+    between the two sources."""
+
+    def setup_method(self):
+        self.client = APIClient()
+        self.client.force_authenticate(user=make_user(role="viewer"))
+
+    def _license_row(self):
+        return self.client.get(LEDGER_URL).data["licenses"][0]
+
+    def test_cif_utilisation_sums_the_workbooks_value_imported_column(self):
+        lic = _make_license(cif_value_authorized=Decimal("1000.00"))
+        AdvanceLicenseMaterial.objects.create(
+            license=lic, material_description="SBR 1502", value_imported=Decimal("250.00"),
+        )
+        AdvanceLicenseMaterial.objects.create(
+            license=lic, material_description="SBR 1502", value_imported=Decimal("150.00"),
+        )
+        usage = self._license_row()["usage"]
+        assert usage["valueImported"] == Decimal("400.00")
+        assert usage["cifRemaining"] == Decimal("600.00")
+        assert usage["cifUtilisedPct"] == Decimal("40")
+
+    def test_utilisation_pct_is_null_not_zero_when_nothing_was_authorised(self):
+        """A percentage of zero is a question about the source row, not
+        '0% used' - rendering it as 0% would state the opposite."""
+        _make_license(cif_value_authorized=Decimal("0"))
+        assert self._license_row()["usage"]["cifUtilisedPct"] is None
+
+    def test_the_authorised_qty_is_taken_once_per_material_never_summed(self):
+        """The workbook repeats the licence-level and material-level
+        authorisation on every usage row of the same material (see
+        AdvanceLicenseMaterial's docstring). Summing it would multiply the
+        authorisation by the number of times the material was imported."""
+        lic = _make_license()
+        for imported in ("10.000", "15.000"):
+            AdvanceLicenseMaterial.objects.create(
+                license=lic, material_description="SBR 1502",
+                qty_authorized=Decimal("100.000"), qty_imported=Decimal(imported),
+                boe_number="BOE" + imported,
+            )
+        rollup = self._license_row()["materialRollup"]
+        assert len(rollup) == 1
+        assert rollup[0]["qtyAuthorized"] == Decimal("100.000")
+        assert rollup[0]["qtyImported"] == Decimal("25.000")
+        assert rollup[0]["qtyRemaining"] == Decimal("75.000")
+        assert rollup[0]["usageRows"] == 2
+
+    def test_a_blank_first_usage_row_does_not_report_the_material_unauthorised(self):
+        lic = _make_license()
+        AdvanceLicenseMaterial.objects.create(license=lic, material_description="SBR 1502")
+        AdvanceLicenseMaterial.objects.create(
+            license=lic, material_description="SBR 1502", qty_authorized=Decimal("100.000"),
+        )
+        assert self._license_row()["materialRollup"][0]["qtyAuthorized"] == Decimal("100.000")
+
+    def test_validity_countdown_is_in_plant_time_and_flags_expiry(self):
+        today = timezone.localdate()
+        _make_license(export_validity_date=today + datetime.timedelta(days=30))
+        validity = self._license_row()["validity"]
+        assert validity["exportDaysLeft"] == 30
+        assert validity["exportExpired"] is False
+        assert validity["exportExpiringSoon"] is True
+
+    def test_an_expired_export_obligation_is_reported_as_expired(self):
+        today = timezone.localdate()
+        _make_license(export_validity_date=today - datetime.timedelta(days=5))
+        validity = self._license_row()["validity"]
+        assert validity["exportDaysLeft"] == -5
+        assert validity["exportExpired"] is True
+        assert validity["exportExpiringSoon"] is False
+        assert self.client.get(LEDGER_URL).data["summary"]["exportExpired"] == 1
+
+    def test_a_licence_with_no_validity_date_reports_null_not_a_countdown(self):
+        _make_license(export_validity_date=None)
+        validity = self._license_row()["validity"]
+        assert validity["exportDaysLeft"] is None
+        assert validity["exportExpired"] is False
+
+    def test_imports_citing_a_licence_are_joined_from_the_master_csv(self):
+        _make_license(license_number="0311051817")
+        _make_import_line(license_number="0311051817")
+        row = self._license_row()
+        assert row["imports"]["lineCount"] == 1
+        assert row["importCitations"][0]["poNumber"] == "1000001519"
+        assert self.client.get(LEDGER_URL).data["summary"]["neverCited"] == 0
+
+    def test_a_short_licence_number_in_the_csv_still_joins(self):
+        """The leading-zero rule. The CSV writes this authorisation both as
+        '311051817' and '0311051817'; unnormalised it reads as a licence we
+        do not hold."""
+        _make_license(license_number="0311051817")
+        _make_import_line(license_number="311051817")
+        assert self._license_row()["imports"]["lineCount"] == 1
+        assert self.client.get(LEDGER_URL).data["unknownLicenses"] == []
+
+    def test_a_cited_licence_we_do_not_hold_goes_to_its_own_bucket(self):
+        _make_license(license_number="0311051817")
+        _make_import_line(license_number="0311099999")
+        data = self.client.get(LEDGER_URL).data
+        assert data["licenses"][0]["imports"]["lineCount"] == 0
+        assert [u["licenseNumber"] for u in data["unknownLicenses"]] == ["0311099999"]
+
+    def test_boe_cross_check_reports_each_side_the_other_is_missing(self):
+        lic = _make_license(license_number="0311051817")
+        AdvanceLicenseMaterial.objects.create(
+            license=lic, material_description="SBR 1502", boe_number="WORKBOOK-ONLY",
+        )
+        _make_import_line(license_number="0311051817", boe_number="CSV-ONLY")
+        row = self._license_row()
+        assert row["boeCrossCheck"]["workbookOnly"] == ["WORKBOOK-ONLY"]
+        assert row["boeCrossCheck"]["csvOnly"] == ["CSV-ONLY"]
+        assert self.client.get(LEDGER_URL).data["summary"]["boeGaps"] == 2
+
+    def test_a_boe_both_sources_agree_on_is_not_a_gap(self):
+        lic = _make_license(license_number="0311051817")
+        AdvanceLicenseMaterial.objects.create(
+            license=lic, material_description="SBR 1502", boe_number="3448562",
+        )
+        _make_import_line(license_number="0311051817", boe_number="3448562")
+        row = self._license_row()
+        assert row["boeCrossCheck"] == {"workbookOnly": [], "csvOnly": []}
+        # And that BOE really is one the Import dashboard holds.
+        assert row["materials"][0]["boeVerified"] is True
+
+    def test_summary_rolls_up_across_licences(self):
+        _make_license(license_number="0311047672", cif_value_authorized=Decimal("1000.00"))
+        lic = _make_license(license_number="0311051817", cif_value_authorized=Decimal("3000.00"))
+        AdvanceLicenseMaterial.objects.create(
+            license=lic, material_description="SBR 1502", value_imported=Decimal("1000.00"),
+        )
+        summary = self.client.get(LEDGER_URL).data["summary"]
+        assert summary["licenseCount"] == 2
+        assert summary["cifAuthorized"] == Decimal("4000.00")
+        assert summary["cifImported"] == Decimal("1000.00")
+        assert summary["cifRemaining"] == Decimal("3000.00")
+        assert summary["cifUtilisedPct"] == Decimal("25")
+        assert summary["neverCited"] == 2
+
+    def test_no_licences_synced_yet_still_returns_a_usable_summary(self):
+        data = self.client.get(LEDGER_URL).data
+        assert data["licenses"] == []
+        assert data["summary"]["licenseCount"] == 0
+        assert data["summary"]["cifUtilisedPct"] is None

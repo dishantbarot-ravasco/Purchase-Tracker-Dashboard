@@ -722,23 +722,16 @@ function materialsListRegionHtml() {
   const stockAllPlantsSuffix = isAllPlants() ? ' (All Plants)' : '';
 
   // Colored flag-icon cluster per material row, identical pattern to PO's
-  // own rowFlags() in renderPoList() (categoryColor()/CATEGORY_COLORS +
-  // .row-flag-wrap's CSS hover tooltip) - built from computeMaterialPoLinkage()'s
-  // `categories` list. Rendered next to the status pill below (see
-  // computeMaterialStatus()), same "pill + flags" combo as PO's own Status
-  // column.
-  // Only a 'critical' category gets a row icon (2026-09-10, project owner:
-  // keep the flag symbol only for red/critical flags near status - an
-  // 'info' category still counts toward the Data Quality Flags KPI/filter,
-  // it just doesn't clutter the status cell with a row of icons for every
-  // minor note).
-  const rowFlags = entry => {
-    const cats = (entry ? entry.categories : []).filter(c => c.severity === 'critical');
-    if (!cats.length) return '';
-    return cats.map(c =>
-      '<span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
-    ).join('');
-  };
+  // own rowFlags() in renderPoList() - the same four buckets, see flags.js's
+  // rowFlagsHtml(). Categories come from computeMaterialPoLinkage()'s
+  // `categories` list; the delivery state comes from computeMaterialStatus(),
+  // which is computed per row beside the pill, so rowFlags() takes it as an
+  // argument rather than recomputing that whole linkage a second time.
+  const rowFlags = (entry, status) => rowFlagsHtml({
+    partial: status === 'partial',
+    onOrder: status === 'onorder',
+    categories: entry ? entry.categories : [],
+  });
 
   const pageButtons = totalPages <= 10
     ? Array.from({ length: totalPages }, (_, i) => i + 1)
@@ -781,7 +774,7 @@ function materialsListRegionHtml() {
           '<td>' + formatInr(m.value || 0) + '</td>' +
           '<td>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</td>' +
           '<td>' + daysLeftCellHtml(m) + '</td>' +
-          (() => { const st = computeMaterialStatus(m, entry); return '<td><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry) + '</td>'; })() +
+          (() => { const st = computeMaterialStatus(m, entry); return '<td><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry, st) + '</td>'; })() +
           '<td>' + materialStepperHtml(m) + '</td>' +
           '<td><span class="row-link" data-lot="' + key + '">View analysis</span></td></tr>';
         }).join('') +
@@ -802,7 +795,7 @@ function materialsListRegionHtml() {
             '<div>' + formatInr(m.value || 0) + '</div>' +
             '<div>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</div>' +
             '<div>' + daysLeftCellHtml(m) + '</div>' +
-            '<div><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry) + '</div>' +
+            '<div><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry, st) + '</div>' +
             '<div>' + materialStepperHtml(m) + '</div>' +
             '<div><span class="row-link" data-lot="' + key + '">View analysis</span></div></div>';
         }).join('') + '</div>';

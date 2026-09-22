@@ -26,21 +26,21 @@ function shipmentStepperHtml(po) {
     '<div class="mini-stepper-labels">Placed / Shipped / Cleared</div></div>';
 }
 
-// Same as renderPoList()'s rowFlags() (Domestic) - one color-coded icon per
-// category in po._categories (importCategoriesFor(), set once per render in
-// renderImportPoList()), not just the F1-F7 codes. Previously read
-// po.dataQualityFlags directly instead, which meant the qty/rate/PO-not-
-// found/tax-type/value-mismatch categories had no row-level icon at all,
-// only a KPI-card count - fixed 2026-09-08 alongside extending Data Quality
-// Flags to cover those categories here in the first place.
-// Only a 'critical' category gets a row icon (2026-09-10, project owner:
-// keep the flag symbol only for red/critical flags near status - an 'info'
-// category still counts toward the Data Quality Flags KPI/filter, it just
-// doesn't clutter the status cell with a row of icons for every minor note).
+// The same four buckets Domestic uses - see flags.js's rowFlagsHtml().
+// Categories come from po._categories (importCategoriesFor(), set once per
+// render in renderImportPoList()), not the raw F1-F7 codes.
+//
+// Import is the one view that can report BOTH partial delivery and "on
+// order" at once: `partialDelivery` is per-item (import_flags.py's
+// partial_delivery()) while `deliveryDateStatus` is a date comparison, so a
+// PO with one item landed and another still due is both. rowFlagsHtml()
+// resolves that in favour of partial, the more specific fact.
 function importRowFlags(po) {
-  return (po._categories || []).filter(c => c.severity === 'critical').map(c =>
-    ' <span class="row-flag-wrap" data-tooltip="' + escapeHtml(c.label) + '">' + flagIconHtml(categoryColor(c.label), 'row-flag-icon') + '</span>'
-  ).join('');
+  return rowFlagsHtml({
+    partial: !!po.partialDelivery,
+    onOrder: po.deliveryDateStatus === 'On Order',
+    categories: po._categories,
+  });
 }
 
 // Short, stable label per import_flags.py flag code (F1-F7) - that module's

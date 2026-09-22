@@ -136,7 +136,6 @@ urlpatterns = [
     # it's specifically an import-duty-offset mechanism, same reasoning the
     # project owner gave for scoping this to Imports only.
     path("imports/rodtep", imports_views.rodtep_ledger, name="imports-rodtep-ledger"),
-    path("imports/rodtep/usage", imports_views.rodtep_usage_create, name="imports-rodtep-usage-create"),
     path("imports/rodtep/sync-trigger", imports_views.rodtep_sync_trigger, name="imports-rodtep-sync-trigger"),
     path("imports/rodtep/<str:script_no>", imports_views.rodtep_script_detail, name="imports-rodtep-script-detail"),
 
