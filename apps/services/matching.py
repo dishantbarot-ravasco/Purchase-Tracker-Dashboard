@@ -93,6 +93,8 @@ MATCH_CONFIG = _MatchConfig(
     syncrun_plant=SyncRun.Plant.HRS,
     stock_rate_field="basic_rate",
     stock_vendor_field="party_name",
+    stock_code_field="sap_item_code",
+    stock_uom_field="uom",
     # Imports identification/financial-check redesign (2026-09, project
     # owner: same treatment as domestic for HRS/Achhad - see
     # matching_core.py's _MatchConfig docstring. Vapi was added the same

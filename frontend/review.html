@@ -7,6 +7,21 @@
   The design goal is throughput (roughly 200 reviews spread across plants
   and tiers), not a full audit UI.
 
+  Each side does carry its row's identifiers (PO/MIR numbers, dates, UOM,
+  item code) and the matcher's own evidence as "why these were paired"
+  pills - see review_views.py's module docstring for why that is the
+  minimum for a verdict to mean anything, and not a step toward an audit
+  UI. The paragraph below the title states what Correct/Incorrect/Unsure
+  mean, so two reviewers' verdicts land in the same precision figure
+  (report_match_accuracy) meaning the same thing.
+
+  Two views behind this one nav tab: the queue, and Accuracy - the same
+  precision/recall/F1 report_match_accuracy prints, from the same code
+  (apps/services/match_accuracy.py), so nobody needs shell access to find
+  out whether this app's matches can be trusted. Verdicts are keyboard-
+  driven (1/2/3, U to undo, N for the next batch) because the goal is ~200
+  judgements in as few interactions as possible.
+
   Deliberately self-contained, same reasoning as search-po.html's own header
   comment - this page fetches from apps/api/routers/review_views.py directly
   rather than depending on js/main.js's per-plant caches or modal, since a
@@ -50,8 +65,42 @@
   <div class="page-wrap" id="main-content" role="main" tabindex="-1">
     <div class="section-title">Review Matches</div>
     <div class="review-wrap">
-      <div class="review-progress" id="reviewProgress">Loading...</div>
-      <div id="reviewArea"></div>
+      <!-- Two views behind one nav tab rather than a fourth top-level tab:
+           the queue is where the evidence is produced and Accuracy is what it
+           produces, and management asking "can we trust the matches" should
+           land on the same screen as the work that answers it. -->
+      <div class="review-viewtabs" role="tablist" aria-label="Review views">
+        <button type="button" class="review-viewtab active" id="tabQueue" role="tab" aria-selected="true" aria-controls="viewQueue">Review queue</button>
+        <button type="button" class="review-viewtab" id="tabStats" role="tab" aria-selected="false" aria-controls="viewStats">Accuracy</button>
+      </div>
+
+      <div id="viewQueue" role="tabpanel" aria-labelledby="tabQueue">
+        <p class="review-howto">
+          Each card is one pair the matcher believes is the same delivery. Judge
+          the <b>pairing</b>, not the paperwork: <b>Correct</b> means these two rows
+          really are the same goods on the same delivery &mdash; a quantity or rate
+          difference between them is a finding, not a wrong match. <b>Incorrect</b>
+          means they are different deliveries, materials or vendors. <b>Unsure</b>
+          when the rows do not carry enough to tell; it is a real answer and is
+          counted as one.
+        </p>
+        <div class="review-goal" id="reviewGoal" hidden>
+          <div class="goal-head">
+            <span id="reviewGoalText"></span>
+            <span class="goal-keys">
+              <kbd>1</kbd> correct &middot; <kbd>2</kbd> incorrect &middot; <kbd>3</kbd> unsure
+              &middot; <kbd>U</kbd> undo &middot; <kbd>N</kbd> next batch
+            </span>
+          </div>
+          <div class="goal-bar"><span id="reviewGoalFill"></span></div>
+        </div>
+        <div class="review-progress" id="reviewProgress">Loading...</div>
+        <div id="reviewArea"></div>
+      </div>
+
+      <div id="viewStats" role="tabpanel" aria-labelledby="tabStats" hidden>
+        <div id="statsArea"></div>
+      </div>
     </div>
   </div>
 

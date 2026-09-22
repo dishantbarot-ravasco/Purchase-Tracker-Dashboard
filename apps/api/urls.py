@@ -149,5 +149,11 @@ urlpatterns = [
     # Cross-plant like imports_views.py above, not per-plant-prefixed - see
     # review_views.py's own module docstring.
     path("review/next", review_views.next_review, name="review-next"),
+    # Accuracy panel + undo (2026-09-22). "review/stats" is declared BEFORE
+    # the bare "review" route for readability only - they differ by path, not
+    # by prefix, so order is not load-bearing here.
+    path("review/stats", review_views.review_stats, name="review-stats"),
+    path("review/stats/export", review_views.export_review_stats, name="review-stats-export"),
+    path("review/<int:review_id>", review_views.undo_review, name="review-undo"),
     path("review", review_views.submit_review, name="review-submit"),
 ]

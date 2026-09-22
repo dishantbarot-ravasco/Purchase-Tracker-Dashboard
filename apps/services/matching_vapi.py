@@ -107,6 +107,8 @@ MATCH_CONFIG = _MatchConfig(
     syncrun_plant=SyncRun.Plant.RTP_VAPI,
     stock_rate_field="basic_rate",
     stock_vendor_field="supplier_name",
+    stock_code_field="",
+    stock_uom_field="uom",
     # Imports identification/financial-check redesign (2026-09): HRS/Achhad
     # first, Vapi added the same day (project owner: "use HRS/Achhad's
     # settings for Vapi imports too, but vapi's MIR file structure is quite

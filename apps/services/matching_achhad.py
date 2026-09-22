@@ -69,6 +69,8 @@ MATCH_CONFIG = _MatchConfig(
     syncrun_plant=SyncRun.Plant.RTP_ACHHAD,
     stock_rate_field="rate",
     stock_vendor_field=None,
+    stock_code_field="sap_code",
+    stock_uom_field="",
     # Imports identification/financial-check redesign (2026-09, project
     # owner: same treatment as domestic for HRS/Achhad, Vapi excluded for
     # now) - see matching_core.py's _MatchConfig docstring.

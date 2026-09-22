@@ -1349,6 +1349,79 @@ router, like `imports_views.py`) and reuses each plant's own `MATCH_CONFIG` as t
 truth for model classes and lot field names rather than re-deriving a second mapping. Any
 authenticated role can review — this is data collection, not a privileged write.
 
+**A card carries both rows' identifiers and the matcher's own evidence** (2026-09-22). The first
+version showed description/qty/rate/value/vendor only, which is not enough to judge the pairing:
+a Tier-1 match could not be checked against the PO number it was made *on*, `500 KG` against
+`500 MTR` read as agreement, and there was no key with which to find the row in the source sheet.
+Each side now carries its identifying fields (PO number and date, line, HSN, UOM, delivery date /
+MIR number and date, the PO the MIR itself cites, invoice number and date / the lot's item code
+and received date), a UOM disagreement is highlighted red on both sides, and the matcher's
+identification booleans (`po_number_matched`/`vendor_matched`/`material_matched`/`manually_pinned`,
+and MIR↔Stock's `material_matched`/`date_matched`/`uom_mismatch`) render as plain-English "why
+these were paired" pills. That is not audit-UI scope creep — filtering, search and bulk actions
+are still deliberately absent, and would also bias the random sample the accuracy figure depends
+on. The lot's item-code/UOM column names are two more `MATCH_CONFIG` fields (`stock_code_field`,
+`stock_uom_field`; HRS `sap_item_code`, Achhad `sap_code`, Vapi neither, and no UOM column at
+Achhad), not a second per-plant mapping in the view.
+
+Two display fixes came with it. **Import cards show INR, not the PO's own currency**: an import
+line item is priced in USD etc. while MIR is always INR, and the matcher scores it through
+`_import_rate_value_inr()` — the card was showing the raw `net_price`, so at a ~90x USD/INR rate
+a *correct* match looked like an obvious rate discrepancy and invited a wrong "Incorrect"
+verdict. The original-currency rate and the exchange rate stay on the card as ref fields. And the
+review card **deliberately does not use `formatInr()`**: that helper rounds to whole rupees and
+abbreviates at a lakh, so ₹12.4567 and ₹12.46 both rendered as "₹12" — it rounded away the exact
+comparison the verdict depends on. `apps/api/tests/test_review_card_payload.py` pins all of this.
+
+**The accuracy figures are in the browser now, not only in a terminal** (2026-09-22). `review.html`
+has two views behind the one existing nav tab — **Review queue** and **Accuracy** — because the
+figures and the work that produces them belong on the same screen, and "can we trust the matches"
+should not require shell access. `GET /api/review/stats` serves precision/recall/F1 overall and by
+plant, match type, **plant × match type** and tier, plus who reviewed how much and the latest
+reviewer notes (which were being written to the database and read by nobody);
+`/api/review/stats/export` is the same tables as a CSV through `SafeCsvWriter`.
+
+**The scoring itself moved to `apps/services/match_accuracy.py`** and `manage.py
+report_match_accuracy` is now a renderer over it. Two implementations of precision/recall that could
+drift is not affordable for the only measured accuracy statement this app makes. Four things the
+module does that a re-derivation would likely get wrong:
+
+- **`byPlantAndType` materialises all 9 cells, including `n=0` ones.** An unsampled cell is a hole in
+  the evidence; a table that omits it reads as though the ground is covered. The panel renders those
+  as "not sampled yet", never as 0%.
+- **A verdict whose match row no longer exists is dropped and counted as `staleVerdicts`**, not
+  scored — a later `match_*` run deletes and re-points pairs, so it is a statement about a pair that
+  no longer exists.
+- **It resolves tiers with one query per (plant, match_type) group**, not one per review. The
+  per-review lookup it replaced is fine at 20 reviews and is 200+ queries at the programme's own
+  target — the same avoidable shape as the [Raw Material Analysis render](#performance-the-raw-material-analysis-render-was-quadratic-too).
+- **`precision` ignores "unsure" and `recall` counts it against the total**, as the module docstring
+  states. `null` (nothing judged either way) renders as an en dash, never 0%.
+
+**Throughput polish, same date.** Keyboard verdicts (`1`/`2`/`3`), `U` to undo, `N` for the next
+batch, and a progress bar against the programme's ~200-match target (counted in **distinct matches** —
+re-reviewing one is a correction, not progress). Three things are load-bearing:
+
+- **Undo deletes the row, and only ever the caller's own** (`DELETE /api/review/<id>`). The data model
+  always allowed a correction — no unique constraint, latest verdict wins — but the screen disabled
+  the buttons permanently, so the realistic outcome of a misclick was a wrong label sitting in the
+  sample forever. Not even an admin can delete someone else's verdict; quietly rewriting another
+  person's judgement out of a measurement harness defeats the point of having one.
+- **The batch no longer auto-advances** when the fifth verdict lands. It used to, which made Undo
+  unreachable for exactly the card most likely to be a misclick — the one whose verdict makes the
+  screen jump. An explicit "Next 5" costs one keypress per five reviews.
+- **`_pending` is set synchronously before the POST**, and `firstUnreviewedIdx()` skips a pending card
+  as well as a recorded one. Without it, a reviewer holding `1` down sends the second keypress long
+  before the first round trip returns and **every one of them lands on the same card** — five verdicts
+  on one match, four matches skipped. Found by driving the real page from the keyboard, not by reading
+  it; a 10ms stubbed latency was enough to reproduce it.
+
+Keyboard handling is inert while the note textarea has focus (typing "1 pallet short" must not record
+a verdict) and while the Accuracy view is open. `apps/api/tests/test_review_stats_and_undo.py` pins
+the scoring semantics, the stale/unsampled handling and both undo permissions; the UI was verified by
+driving the real page in the browser with a stubbed `apiReview` (there is no Node here — same
+convention as everywhere else in this file).
+
 **Getting plant staff to reliably fill MIR's own PO-number field was considered and rejected as a
 lever** — that is a training/process fix, not this app's to solve. Vapi in particular will likely keep
 running on the weighted score alone indefinitely; don't assume Tier-1 coverage will improve on its
@@ -2976,7 +3049,10 @@ elsewhere. Check the file or section it points at directly.
   else — auth, inline edits, dismissals, password reset, exports, reports, and `run_full_match()`
   itself — has real coverage. Verification for the Drive layer stays manual/smoke-level.
 - **No measured match accuracy.** `MATCH_THRESHOLD = 0.55` was picked, not measured, and there is no
-  precision/recall check. `review.html` exists to collect the labelled data that would enable one.
+  precision/recall check **over a sample big enough to act on**. The harness is complete — `review.html`
+  collects the labelled data and its Accuracy tab reports precision/recall/F1 per plant and match type
+  (`apps/services/match_accuracy.py`) — so what is missing now is reviews, not code. The panel's own
+  small-sample flags say which cells are still empty.
 - **ESLint has never been executed** (no Node in this development environment). Its first CI run
   establishes the baseline.
 - **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git HISTORY** (untracked going forward;

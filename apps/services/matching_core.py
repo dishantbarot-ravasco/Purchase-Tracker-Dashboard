@@ -251,6 +251,17 @@ class _MatchConfig:
 
     stock_rate_field: str = ""  # "basic_rate" (HRS/Vapi) or "rate" (Achhad)
     stock_vendor_field: Optional[str] = None  # "party_name"/"supplier_name", or None (Achhad has no vendor column)
+    # Display-only, for the match-review screen (review_views.py): the item
+    # code and UOM columns a plant's RM sheet happens to carry, so a reviewer
+    # judging a MIR<->Stock pair can see WHICH lot it is rather than just its
+    # description. Named here for the same reason stock_rate_field is - these
+    # are genuine per-plant schema differences ("sap_item_code" at HRS,
+    # "sap_code" at Achhad, neither at Vapi; no UOM column at Achhad), and
+    # this config is where this codebase keeps them instead of a second
+    # per-plant mapping in the view. Empty string means the column does not
+    # exist on that plant's lot model and the field is simply not shown.
+    stock_code_field: str = ""
+    stock_uom_field: str = ""
 
     # ── MIR<->Stock identification, 2026-09-21 ────────────────────────────
     # Material similarity at/above this counts as "the same material" for
