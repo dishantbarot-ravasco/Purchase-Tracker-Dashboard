@@ -40,8 +40,9 @@ below, which now also clears the old `minutes` value.
 
 get_or_create() on `name` alone (not unique at the DB level, but this
 command is the only code path that ever creates a Schedule row here) makes
-re-running this safe - a container restart re-running render.yaml's
-buildCommand/docker-entrypoint.sh must not create a second, duplicate job.
+re-running this safe - every deploy re-running release.sh (render.yaml's
+preDeployCommand, or docker-compose's app entrypoint) must not create a
+second, duplicate job.
 Deliberately get_or_create(), not update_or_create(): once the row exists,
 this command only corrects `func`/`schedule_type`/`cron` if they've drifted
 and never touches `next_run` again - django-q2 owns advancing that field

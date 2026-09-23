@@ -33,45 +33,33 @@ databases:
 services:
   - type: web
     name: purchase-tracker-dashboard
-    runtime: python
+    # Docker since 2026-09-23 (was `runtime: python`). Changing the runtime of
+    # an EXISTING service is supported through a Blueprint sync, so this keeps
+    # the service - and its "-pqgi" hostname, which ALLOWED_HOSTS and the
+    # OAuth redirect below are pinned to. Recreating the service instead would
+    # hand out a new hostname and break Google sign-in until both are updated.
+    #
+    # The Dockerfile pins the interpreter (python:3.12-slim + UV_PYTHON), which
+    # retires the old native-runtime workaround: PYTHON_VERSION plus
+    # `--python 3.12` on every `uv` call, needed because Render's native build
+    # could not satisfy this repo's .python-version (3.14) and crash-looped on
+    # "No interpreter found for Python 3.14" when one call was left unpinned.
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: starter
     region: oregon
     branch: main
     healthCheckPath: /
-    # --python 3.12 on every `uv` invocation below: this repo's own
-    # .python-version pins 3.14 (deliberately - see that file's own comment/
-    # CLAUDE.md's ".env gotchas" section for why local dev stays on whatever
-    # a developer's machine has, same reasoning the Dockerfile's own
-    # python:3.12-slim base already documents). Render's native (non-Docker)
-    # build only ever installs the PYTHON_VERSION above and has managed
-    # Python downloads disabled - left to its own defaults, `uv` honors
-    # .python-version and fails outright ("No interpreter found for Python
-    # 3.14 ... Python downloads are set to 'never'") since 3.14 was never
-    # installed and can't be fetched. The explicit --python flag overrides
-    # that file for this build only, without touching it (or anyone's local
-    # dev environment) - pyproject.toml's own `requires-python = ">=3.12"` is
-    # satisfied. Minor-version only ("3.12", not "3.12.8") deliberately -
-    # matches whatever patch PYTHON_VERSION below actually installs without
-    # needing the two to stay in exact lockstep if Render's own image ever
-    # bumps the patch version on its own.
-    buildCommand: >-
-      pip install uv &&
-      uv sync --frozen --python 3.12 &&
-      uv run --python 3.12 python manage.py collectstatic --noinput &&
-      uv run --python 3.12 python manage.py migrate --noinput &&
-      uv run --python 3.12 python manage.py ensure_schedules &&
-      uv run --python 3.12 python manage.py createcachetable
-    # --python 3.12 here too - startCommand is a separate process invocation
-    # from buildCommand above (gunicorn, run every deploy AND every restart),
-    # and hits the exact same .python-version-vs-installed-interpreter issue
-    # if left unpinned. A real miss, caught from the actual Render deploy
-    # log: build succeeded (buildCommand was already fixed), then this
-    # startCommand crash-looped on "No interpreter found for Python 3.14".
-    startCommand: uv run --python 3.12 gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2
+    # Migrate + ensure_schedules + createcachetable, once per deploy, after the
+    # image builds and before the new version takes traffic - a failure here
+    # aborts the deploy and the old version keeps serving, same as a failed
+    # buildCommand used to. Web service ONLY, deliberately: the worker below
+    # does not run it, so the two services never migrate the shared Postgres
+    # at the same moment. No dockerCommand here - the Dockerfile's CMD
+    # (gunicorn on $PORT, 2 workers) is the web default.
+    preDeployCommand: /app/release.sh
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.8"
-
       # ── Django core ──────────────────────────────────────────────────────
       # Generated ONCE here - the qcluster worker below does NOT generate
       # its own copy; it references this exact value via `fromService`
@@ -226,19 +214,20 @@ services:
   # the sync-in-progress cache lock times out, with nothing having synced.
   - type: worker
     name: purchase-tracker-qcluster
-    runtime: python
+    # Same image as the web service (see its runtime comment), different
+    # command. No preDeployCommand on purpose - release tasks run once, on the
+    # web service. As before the switch, this worker can start the new code a
+    # little before the web service's migration finishes; a qcluster task
+    # touching a not-yet-migrated table fails and is retried by the next
+    # scheduled run, the same exposure the native runtime had.
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: python manage.py qcluster
     plan: starter
     region: oregon
     branch: main
-    # --python 3.12 - see the web service's own buildCommand comment above
-    # for why (this repo's .python-version pins 3.14, deliberately left
-    # untouched; Render's native build only has the PYTHON_VERSION below
-    # installed).
-    buildCommand: pip install uv && uv sync --frozen --python 3.12
-    startCommand: uv run --python 3.12 python manage.py qcluster
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.8"
       # Reads the WEB service's own generated DJANGO_SECRET_KEY directly,
       # rather than generating an independent value here - see that key's
       # own comment on the web service above for the full reasoning

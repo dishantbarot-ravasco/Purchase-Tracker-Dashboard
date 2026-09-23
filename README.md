@@ -68,13 +68,13 @@ secrets in `.env`. `.env` is gitignored, but OneDrive doesn't respect `.gitignor
 
 ### Docker (optional)
 
-Runs Postgres + the app + a worker together, matching Render's Python 3.12/gunicorn/qcluster
-setup. Local dev only - it does not replace `render.yaml`'s deploy pipeline.
+Runs Postgres + the app + a worker together, built from the same `Dockerfile` Render deploys
+(`render.yaml` uses `runtime: docker` for both services).
 
 ```bash
 cp .env.example .env
 docker compose up -d
-docker compose exec app uv run python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
+docker compose exec app python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
 # -> http://localhost:8000/login.html
 ```
 

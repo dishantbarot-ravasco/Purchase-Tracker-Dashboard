@@ -1,0 +1,5 @@
+# Shell scripts run inside the Linux image (docker-entrypoint.sh, release.sh)
+# must keep LF endings. core.autocrlf=true on a Windows checkout would give
+# them CRLF in the working tree, and a local `docker build` copies the
+# working tree - `/bin/sh^M: not found` at container start.
+*.sh text eol=lf

@@ -38,7 +38,8 @@ jobs:
       GOOGLE_CLIENT_SECRET: ci-placeholder
       # Pins the interpreter `uv sync` builds the venv with - UV_PYTHON wins
       # over the repo's .python-version (3.14, a local-dev convenience). 3.12
-      # matches render.yaml's PYTHON_VERSION (3.12.8) and the Dockerfile.
+      # matches production, which runs the Dockerfile's python:3.12-slim image
+      # (render.yaml, runtime: docker, since 2026-09-23).
       # Fixed 2026-09-23 (audit pass): this used to be `python-version: '3.12'`
       # on the setup-uv step (then @v3), an input v3 did not have - every run
       # logged "Unexpected input(s) 'python-version'", ignored it, and fell
@@ -103,6 +104,100 @@ jobs:
         # green, which is the one change that turns a ratchet back into a
         # decoration.
         run: uv run pytest --cov=apps --cov=config --cov-report=term --cov-fail-under=92
+
+  # The production image, built and booted exactly as Render will (2026-09-23:
+  # render.yaml moved both services to runtime: docker). The django job above
+  # tests the code; this tests the packaging - a Dockerfile, entrypoint or
+  # release.sh mistake passes every pytest and then fails the deploy. There is
+  # no Docker on the development machine, so this job is the only place the
+  # image is ever built before Render builds it.
+  docker-image:
+    runs-on: ubuntu-22.04
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: pt_ci
+          POSTGRES_PASSWORD: pt_ci
+          POSTGRES_DB: pt_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pt_ci"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build production image
+        run: docker build -t pt-dashboard:ci .
+
+      - name: Write container env file
+        # Same dummy values as the django job. --network host below, so
+        # localhost reaches the postgres service container.
+        run: |
+          cat > ci.env <<'EOF'
+          DJANGO_SECRET_KEY=ci-only-secret-key-not-used-in-production-0123456789
+          JWT_SIGNING_KEY=ci-only-jwt-signing-key-not-used-in-production-0123456789
+          DJANGO_DEBUG=false
+          DJANGO_ALLOWED_HOSTS=localhost
+          DATABASE_URL=postgres://pt_ci:pt_ci@localhost:5432/pt_ci
+          ALLOWED_EMAIL_DOMAIN=ravasco.com
+          GOOGLE_SERVICE_ACCOUNT_JSON=
+          GOOGLE_CLIENT_ID=ci-placeholder
+          GOOGLE_CLIENT_SECRET=ci-placeholder
+          EOF
+
+      - name: Image invariants
+        # Each line fails on the specific regression it names.
+        run: |
+          docker run --rm --env-file ci.env pt-dashboard:ci sh -c '
+            set -e
+            [ "$(id -u)" != "0" ] || { echo "image runs as root"; exit 1; }
+            python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
+            if python -c "import pytest" 2>/dev/null; then echo "dev dependencies shipped in the image"; exit 1; fi
+            touch logs/.write-test || { echo "logs/ not writable by the runtime user"; exit 1; }
+            # Plain StaticFilesStorage, so there is no staticfiles.json to look
+            # for (see config/settings.py) - check collectstatic actually ran:
+            # a frontend asset and a third-party app asset are both collected.
+            test -f staticfiles/js/main.js || { echo "collectstatic did not run: staticfiles/js/main.js missing"; exit 1; }
+            test -d staticfiles/admin || { echo "collectstatic did not run: staticfiles/admin missing"; exit 1; }
+          '
+
+      - name: Release tasks (render.yaml preDeployCommand)
+        run: docker run --rm --network host --env-file ci.env pt-dashboard:ci /app/release.sh
+
+      - name: Release tasks are re-runnable
+        # Render runs them on EVERY deploy against the same database.
+        run: docker run --rm --network host --env-file ci.env pt-dashboard:ci /app/release.sh
+
+      - name: Boot the web CMD on a Render-style PORT and serve a request
+        # PORT deliberately not 8000, so a CMD that ignores $PORT fails here.
+        # X-Forwarded-Proto mirrors Render's TLS proxy; without it
+        # SECURE_SSL_REDIRECT answers 301 instead of serving.
+        run: |
+          docker run -d --name pt-web --network host --env-file ci.env -e PORT=10000 pt-dashboard:ci
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' http://localhost:10000/api/health || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          docker logs pt-web
+          [ "$code" = "200" ] || { echo "/api/health answered '$code', expected 200"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Proto: https' http://localhost:10000/)
+          [ "$code" = "200" ] || { echo "/ (Render healthCheckPath) answered '$code', expected 200"; exit 1; }
+
+      - name: Boot the worker command
+        # render.yaml's dockerCommand. qcluster must still be running after a
+        # few seconds - an import error or bad entrypoint exits immediately.
+        run: |
+          docker run -d --name pt-worker --network host --env-file ci.env pt-dashboard:ci python manage.py qcluster
+          sleep 10
+          docker logs pt-worker
+          [ "$(docker inspect -f '{{.State.Running}}' pt-worker)" = "true" ] || { echo "qcluster exited"; exit 1; }
 
   frontend-lint:
     runs-on: ubuntu-22.04

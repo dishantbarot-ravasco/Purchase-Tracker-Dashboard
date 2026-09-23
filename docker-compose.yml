@@ -1,7 +1,8 @@
-# Local-dev only - does not replace render.yaml's own Render deployment.
+# Local dev. Builds the SAME Dockerfile Render deploys (render.yaml,
+# runtime: docker), so what runs here is what runs in production.
 # `docker compose up` gives a developer a real Postgres + this app running
 # together without installing Python/uv/Postgres directly. See CLAUDE.md's
-# "Docker (local dev)" and README.md's "Docker alternative" for setup steps.
+# "Deployment, Docker, and `.env`" and README.md's "Docker" for setup steps.
 #
 # Reuses .env.example as the single source of truth for app secrets/config
 # (Google/SMTP/JWT vars etc.) - copy it to .env before running `docker
@@ -32,6 +33,10 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://purchase_tracker:purchase_tracker@db:5432/purchase_tracker
+      # Runs release.sh (migrate, ensure_schedules, createcachetable) before
+      # gunicorn starts - the local stand-in for render.yaml's
+      # preDeployCommand. `app` only; the worker must not also migrate.
+      RUN_RELEASE_TASKS: "1"
     ports:
       - "8000:8000"
     depends_on:
@@ -43,10 +48,17 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql://purchase_tracker:purchase_tracker@db:5432/purchase_tracker
-    command: ["uv", "run", "python", "manage.py", "qcluster"]
+    # Plain `python`, not `uv run python`: the venv is on PATH and root-owned,
+    # and the container runs as a non-root user (see the Dockerfile).
+    command: ["python", "manage.py", "qcluster"]
+    # Can come up before `app` has finished migrating a fresh database; if
+    # qcluster exits on a missing table, restart it rather than leave it down.
+    restart: on-failure
     depends_on:
       db:
         condition: service_healthy
+      app:
+        condition: service_started
 
 volumes:
   pt_postgres_data:

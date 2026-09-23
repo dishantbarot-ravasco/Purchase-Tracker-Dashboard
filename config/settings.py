@@ -268,7 +268,19 @@ USE_TZ = True
 # ---------------------------------------------------------------------------
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+# Static storage is Django's default StaticFilesStorage - plain copies, no
+# hashed filenames, no manifest, no pre-compressed .gz files. This line used
+# to read STATICFILES_STORAGE = "whitenoise.storage.
+# CompressedManifestStaticFilesStorage", but Django 5.1 REMOVED that setting
+# and this app runs 5.2, so it was silently ignored and production has never
+# run the manifest storage it named. Found 2026-09-23 when CI's docker-image
+# job asserted the manifest existed. The line was deleted, not "fixed" in
+# place: switching to the manifest storage (via STORAGES["staticfiles"]) is a
+# real behaviour change - hashed URLs from index.html's {% static %} tags,
+# far-future cache headers, and a missing file becoming a 500 at render - and
+# it was kept out of the Docker migration on purpose. collectstatic under
+# CompressedManifestStaticFilesStorage was checked to succeed on 2026-09-23 if
+# it is taken up later. See CLAUDE.md's "Deployment, Docker, and `.env`".
 WHITENOISE_ROOT = BASE_DIR / "frontend"
 STATICFILES_DIRS = [BASE_DIR / "frontend"]
 # Forces .html/.js/.css to always revalidate with the server instead of
