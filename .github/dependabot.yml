@@ -21,6 +21,20 @@ updates:
     open-pull-requests-limit: 10
     cooldown:
       default-days: 7
+    # Django MAJOR versions are a deliberate upgrade, not a dependency bump
+    # (added 2026-09-23). PR #4 widened pyproject's pin to <7.0 without
+    # touching uv.lock, so CI - which installs from the lockfile - passed
+    # while never running Django 6 at all, and merging it would have left
+    # pyproject and uv.lock disagreeing until the next `uv lock` silently
+    # moved the app to 6.x. A major needs its own change: re-lock, grep
+    # DRF/simplejwt for new get_user_model() calls (CLAUDE.md, Auth &
+    # security), and check for settings the new version silently stops
+    # reading (STATICFILES_STORAGE was one - removed in 5.1, ignored here
+    # without a warning until CI's docker-image job caught it). Minor and
+    # patch releases within the current major still come through.
+    ignore:
+      - dependency-name: "django"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
