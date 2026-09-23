@@ -40,17 +40,17 @@ jobs:
       # over the repo's .python-version (3.14, a local-dev convenience). 3.12
       # matches render.yaml's PYTHON_VERSION (3.12.8) and the Dockerfile.
       # Fixed 2026-09-23 (audit pass): this used to be `python-version: '3.12'`
-      # on the setup-uv@v3 step below, an input v3 does not have - every run
+      # on the setup-uv step (then @v3), an input v3 did not have - every run
       # logged "Unexpected input(s) 'python-version'", ignored it, and fell
       # back to .python-version, so CI had been testing on 3.14 while
       # production ran 3.12.
       UV_PYTHON: "3.12"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v7
 
       - name: Install dependencies
         run: uv sync
@@ -94,7 +94,8 @@ jobs:
 
       - name: Run test suite (with coverage floor)
         # --cov-fail-under is a RATCHET, not a target. It was set to 90 when
-        # coverage was measured at 92% (2026-09-15, audit pass), leaving a
+        # coverage was measured at 92% (2026-09-15, audit pass), and raised to
+        # 92 when it was measured at 94% (2026-09-23, audit pass), leaving a
         # couple of points of headroom so an ordinary refactor that moves code
         # around does not fail the build - while a change that deletes or
         # bypasses a meaningful chunk of tested code still does. Raise it when
@@ -106,11 +107,11 @@ jobs:
   frontend-lint:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: '20'
+          node-version: '22'
 
       # Zero-config, dependency-free syntax gate - node's own parser, no
       # ESLint install involved. This app's frontend has no build step (see
@@ -124,30 +125,16 @@ jobs:
           done
 
       - name: Lint frontend JS (ESLint)
-        # NON-BLOCKING ON PURPOSE, and this is meant to be temporary.
+        # A REAL GATE since 2026-09-23 - a finding fails the build, same as
+        # `ruff check .`. It spent its first week non-blocking
+        # (continue-on-error) while its baseline was unknown, and that week
+        # showed why such a flag must be temporary: every run crashed with
+        # exit code 2 (a top-level "//" key in .eslintrc.json that ESLint 8's
+        # schema rejects) and the job still reported green. Once the config
+        # was fixed, the first genuine run (CI #102, commit 165360b) was clean,
+        # so the flag was removed. Don't add it back; fix the finding, or
+        # narrow the rule with a recorded reason in .eslintrc.json.
         #
-        # This config has never been executed: the environment it was authored
-        # in (2026-09-15) had no Node and no npm, so there was no way to drive
-        # it to zero the way `ruff check .` was. Shipping it as a hard gate
-        # would mean a push failing CI for a reason nobody has verified is
-        # real - so it reports instead of blocking, for exactly one cycle.
-        #
-        # ACTION: after the first green-or-not run, look at the output. Fix
-        # what it found (or narrow a rule with a recorded reason), then DELETE
-        # this continue-on-error line so it becomes a real gate. A permanently
-        # non-blocking lint step is a decoration, not a check - the only thing
-        # that makes this acceptable is that it is scheduled to stop being one.
-        #
-        # UPDATE 2026-09-23 (audit pass): that "one cycle" never produced a
-        # baseline. Every run from 2026-09-15 on ended "Process completed with
-        # exit code 2" - ESLint's CONFIGURATION-error code, not its lint-
-        # findings code (1) - because .eslintrc.json kept its notes in a
-        # top-level "//" key that ESLint 8's schema rejects, so it crashed
-        # before linting a line, and this flag reported the job green. The
-        # config is fixed (notes moved into a real comment). The NEXT run is
-        # the first genuine baseline: read this step's output (exit 0 = clean,
-        # 1 = real findings), then delete this line.
-        continue-on-error: true
         # `node --check` above catches only unparseable files. This catches
         # what actually bites in a no-bundler codebase: a function declared
         # twice in one file, a duplicated object key, an unreachable branch,
@@ -155,10 +142,5 @@ jobs:
         # narrow - see .eslintrc.json's own notes, in particular WHY no-undef
         # is off (all 14 files share one global scope by design, so ESLint
         # cannot resolve cross-file calls without a drifting globals list).
-        #
-        # This step has NOT been run locally - the environment it was authored
-        # in has no Node - so this first CI run establishes the baseline. If it
-        # reports findings, fix them or narrow a rule with a recorded reason;
-        # do not delete or soften the step to get a green build.
         run: |
           npx --yes eslint@8 frontend/js --ext .js --max-warnings 0

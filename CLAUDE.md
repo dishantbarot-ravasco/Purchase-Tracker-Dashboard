@@ -3013,17 +3013,22 @@ a real defect (`F`, `E4/E7/E9`, `B`, `DTZ`, `RUF013`, `PLE`) and was **driven to
 **Adding a rule later is fine - drive it to zero in the same commit that selects it. Never add a rule
 and leave existing violations behind; a lint gate with a known-failing baseline stops being a gate.**
 
-**ESLint has never been executed locally** - there is no Node in this development environment, so
-`.eslintrc.json` is unproven and its first CI run establishes the baseline. If it reports findings, fix
-them or narrow a rule with a recorded reason; **don't delete the step to get a green build.**
+**ESLint cannot run locally** - there is no Node in this development environment - so CI is where it
+runs. If it reports findings, fix them or narrow a rule with a recorded reason; **don't delete the step
+to get a green build.**
 
 **Until 2026-09-23 it had never executed in CI either.** Every run since 2026-09-15 ended with exit
 code **2** - ESLint's configuration-error code, not its findings code (1) - because the config kept its
 notes in a top-level `"//"` key, which ESLint 8's schema rejects. `continue-on-error` showed the job
 green the whole time. The notes are a real `/* */` comment now (ESLint's JSON config allows comments;
-**don't move them back into a key**). The next CI run is the first genuine baseline - read that step's
-output, fix or narrow, then delete `continue-on-error`. A non-blocking step whose exit code nobody
-reads can hide a crash as easily as a finding.
+**don't move them back into a key**). The first genuine run (CI #102, commit `165360b`) was **clean**,
+so `continue-on-error` was removed the same day: **ESLint is a real red/green gate now**, like ruff.
+A non-blocking step whose exit code nobody reads can hide a crash as easily as a finding - don't add
+the flag back; fix the finding or narrow the rule with a recorded reason.
+
+**CI actions run on Node 24** (`actions/checkout@v5`, `actions/setup-node@v5`, `astral-sh/setup-uv@v7`,
+2026-09-23): the v4/v4/v3 versions targeted the deprecated Node 20 runtime and warned on every run.
+`setup-uv@v6` is still Node 20 - v7 is the first on Node 24. ESLint itself runs on Node 22 LTS.
 `no-undef` is deliberately OFF and the config records why: all frontend files share one global scope by
 design, so ESLint can't resolve cross-file calls without an exhaustive hand-maintained globals list
 that would itself become a second source of truth.
@@ -3284,9 +3289,6 @@ elsewhere. Check the file or section it points at directly.
   collects the labelled data and its Accuracy tab reports precision/recall/F1 per plant and match type
   (`apps/services/match_accuracy.py`) - so what is missing now is reviews, not code. The panel's own
   small-sample flags say which cells are still empty.
-- **ESLint's first real baseline is the next CI run** - it crashed on a config error until 2026-09-23
-  (see [Testing, lint, CI](#testing-lint-ci)). Read that step's output, then remove its
-  `continue-on-error`.
 - **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git HISTORY** (untracked going forward;
   `.gitignore`'s `*.sqlite3` never matched the `.bak_` suffix, now widened to `*.sqlite3.*`). It carried
   4 dev/test `pt_users` rows with bcrypt hashes. History rewriting was deliberately not attempted - if
