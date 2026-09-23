@@ -3132,9 +3132,20 @@ Four things about the image and how Render runs it:
 
 **CI's `docker-image` job is the only place the image is built before Render builds it** - there is no
 Docker on the development machine. It builds the image, asserts the invariants above (non-root, 3.12, no
-dev deps, `logs/` writable, collectstatic manifest present), runs `release.sh` twice against a real
+dev deps, `logs/` writable, collected static files present), runs `release.sh` twice against a real
 Postgres (it must be re-runnable), boots the web `CMD` on `PORT=10000` and requires a 200 from both
 `/api/health` and `/`, and checks `qcluster` is still running after ten seconds.
+
+**Static storage is plain `StaticFilesStorage`, and always has been in production.** `settings.py`
+named `STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"`, but Django
+5.1 removed that setting and this app runs 5.2, so it was silently ignored - no manifest, no hashed
+names, no `.gz` files, ever. That job's first run caught it by asserting `staticfiles.json` existed.
+The dead line was deleted rather than revived, because switching (via `STORAGES["staticfiles"]`) is a
+behaviour change that was kept out of the Docker migration: hashed URLs from `index.html`'s 19
+`{% static %}` tags, far-future cache headers, and a file missing from the manifest becoming a 500.
+`collectstatic` under the manifest storage was checked to succeed on 2026-09-23. **A setting Django
+no longer reads raises no warning** - check the effective value
+(`django.contrib.staticfiles.storage.staticfiles_storage`) rather than the settings file.
 
 ### Docker (local dev)
 

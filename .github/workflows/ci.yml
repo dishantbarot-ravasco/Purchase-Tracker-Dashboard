@@ -160,7 +160,11 @@ jobs:
             python -c "import sys; assert sys.version_info[:2] == (3, 12), sys.version"
             if python -c "import pytest" 2>/dev/null; then echo "dev dependencies shipped in the image"; exit 1; fi
             touch logs/.write-test || { echo "logs/ not writable by the runtime user"; exit 1; }
-            test -f staticfiles/staticfiles.json || { echo "collectstatic manifest missing"; exit 1; }
+            # Plain StaticFilesStorage, so there is no staticfiles.json to look
+            # for (see config/settings.py) - check collectstatic actually ran:
+            # a frontend asset and a third-party app asset are both collected.
+            test -f staticfiles/js/main.js || { echo "collectstatic did not run: staticfiles/js/main.js missing"; exit 1; }
+            test -d staticfiles/admin || { echo "collectstatic did not run: staticfiles/admin missing"; exit 1; }
           '
 
       - name: Release tasks (render.yaml preDeployCommand)

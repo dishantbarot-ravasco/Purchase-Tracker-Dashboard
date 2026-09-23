@@ -51,9 +51,9 @@ COPY . .
 RUN uv sync --frozen --no-dev
 
 # Static files don't depend on a live DB - safe to bake into the image at
-# build time rather than at container start. STATICFILES_STORAGE is
-# whitenoise's CompressedManifestStaticFilesStorage (config/settings.py),
-# which raises on missing manifest entries if this step is ever skipped.
+# build time rather than at container start. Storage is Django's plain
+# StaticFilesStorage (see config/settings.py's STATIC_ROOT comment for why
+# it is not the whitenoise manifest storage the old comment here claimed).
 # DJANGO_SECRET_KEY/DATABASE_URL aren't needed for collectstatic - the
 # dev-only SECRET_KEY fallback in settings.py covers this build step. No
 # ARG lines anywhere in this file on purpose: Render only forwards a
