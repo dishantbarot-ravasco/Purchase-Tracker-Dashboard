@@ -528,8 +528,8 @@ survives a description being reworded in the sheet (which happens).
 ### Scheduling
 
 Every plant's sync+match pipeline runs on its own via a single `django_q.models.Schedule` row
-created/corrected idempotently by `manage.py ensure_schedules` (wired into `render.yaml`'s
-`buildCommand` and `docker-entrypoint.sh`). `Schedule.CRON`, `cron="0 9-20 * * *"` - **9:00 AM
+created/corrected idempotently by `manage.py ensure_schedules` (wired into `release.sh`, which runs
+as `render.yaml`'s `preDeployCommand` and as docker-compose's `app` entrypoint). `Schedule.CRON`, `cron="0 9-20 * * *"` - **9:00 AM
 through 8:00 PM IST, hourly, 12 runs/day**, requiring `croniter`. **The cron is evaluated in
 `settings.TIME_ZONE`, not UTC** (django-q2's `Schedule.calculate_next_run()` calls Django's
 `localtime()` first), so those hours are IST as written - the stored `next_run` is displayed in UTC
@@ -3039,7 +3039,7 @@ that would itself become a second source of truth.
 deploy check is Warning-level - so `--fail-level WARNING` is what makes it real), the test suite with
 the coverage ratchet, and ESLint.
 
-**CI runs Python 3.12 via `UV_PYTHON`, matching Render (3.12.8) and the Dockerfile.** It used to pass
+**CI runs Python 3.12 via `UV_PYTHON`, matching production (the Dockerfile's `python:3.12-slim`).** It used to pass
 `python-version: '3.12'` to `setup-uv@v3`, an input v3 does not have: every run logged "Unexpected
 input(s) 'python-version'", ignored it, and let uv fall back to `.python-version` (3.14) - so CI tested
 on 3.14 while production ran 3.12. `UV_PYTHON` overrides `.python-version`, which stays 3.14 for local
@@ -3094,25 +3094,64 @@ bug shape already fixed for `DJANGO_SECRET_KEY`), harmless only because the work
 verifies a token. `DJANGO_ALLOWED_HOSTS` is pinned to this service's own hostname, not `.onrender.com`,
 which matches every other Render customer.
 
-### Docker (local dev only)
+**Both services run `runtime: docker` since 2026-09-23** - one image, built from the repo's
+`Dockerfile`, the same one `docker compose` builds locally. The runtime was changed **in place via a
+Blueprint sync**, which Render supports for an existing service; recreating the services instead would
+have handed out a new hostname and broken `ALLOWED_HOSTS` and the Google OAuth redirect, both pinned to
+`-pqgi`. If a Blueprint sync ever refuses the runtime change, stop there - do not delete and recreate.
 
-Does **not** replace `render.yaml`'s deploy pipeline. It exists so a developer can run a real Postgres +
-this app without installing Python/uv/Postgres directly, and so local dev matches Render's actual
-runtime. **The `Dockerfile` pins `python:3.12-slim` to match `render.yaml`'s `PYTHON_VERSION: "3.12.8"`,
-deliberately not this repo's own `.python-version` (`3.14`)** - parity with the deployed environment is
-what matters here.
+The move retired the native-runtime workaround for `.python-version` (`3.14`): `PYTHON_VERSION` plus
+`--python 3.12` on every `uv` call, one of which, left unpinned, once crash-looped a deploy. The image
+pins the interpreter instead (`python:3.12-slim`, `UV_PYTHON=3.12`, `UV_PYTHON_DOWNLOADS=never`).
+**`UV_PYTHON` is load-bearing, not belt-and-braces**: `COPY . .` brings `.python-version` into the
+image, and without it uv would honour that file over the base image's Python.
+
+**The base image is pinned by digest** (`python:3.12-slim@sha256:...`) and Dependabot's `docker` entry
+bumps that digest weekly, ignoring minor/major Python versions. On the native runtime Render patched the
+OS; on Docker it is this repo's job, and a tag-only `FROM` plus Render's layer cache can build on a stale
+OS indefinitely. **Merge those Dependabot PRs** - they are the OS security updates.
+
+Four things about the image and how Render runs it:
+
+- **Release tasks run once per deploy, on the web service only.** `release.sh` (migrate,
+  `ensure_schedules`, `createcachetable || true`) is the web service's `preDeployCommand`; a failure
+  aborts the deploy and the old version keeps serving. They used to run from `docker-entrypoint.sh` on
+  **every** container start, which was fine for local dev but in production would have had the web and
+  worker containers migrating the shared Postgres at the same moment on every deploy, and again on every
+  restart. The entrypoint now runs them only when `RUN_RELEASE_TASKS=1`, which only docker-compose's
+  `app` sets. **Do not add a `preDeployCommand` to the worker.**
+- **Non-root.** The container runs as `app` (uid 10001), which owns only `logs/` - the one path written
+  at runtime (`settings.py` creates it at import; `RotatingFileHandler` appends to it; nothing else under
+  `BASE_DIR` is written, checked 2026-09-23). If you add a runtime write anywhere else in the tree, give
+  that path to `app` in the Dockerfile or it fails with a permission error in production only.
+- **No `uv run` at runtime.** The venv is on `PATH` and root-owned; `uv run` re-syncs before every
+  command, which as a non-root user is wasted startup at best and a crash at worst. Commands inside the
+  container are plain `python manage.py ...`. `UV_NO_SYNC=1` is set as a backstop.
+- **`--no-dev`** keeps pytest/ruff/coverage out of the image, and the web `CMD` is shell-form so it binds
+  Render's `$PORT` (default 8000 for compose). The worker's command is `render.yaml`'s `dockerCommand`.
+
+**CI's `docker-image` job is the only place the image is built before Render builds it** - there is no
+Docker on the development machine. It builds the image, asserts the invariants above (non-root, 3.12, no
+dev deps, `logs/` writable, collectstatic manifest present), runs `release.sh` twice against a real
+Postgres (it must be re-runnable), boots the web `CMD` on `PORT=10000` and requires a 200 from both
+`/api/health` and `/`, and checks `qcluster` is still running after ten seconds.
+
+### Docker (local dev)
+
+The same image, plus a Postgres, via `docker-compose.yml`. It exists so a developer can run the real
+stack without installing Python/uv/Postgres directly.
 
 ```bash
 docker compose up -d
-docker compose exec app uv run python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
+docker compose exec app python manage.py create_pt_user --email you@ravasco.com --password '...' --role admin
 docker compose logs app
 ```
 
-`Dockerfile` bakes `uv sync --frozen` and `collectstatic --noinput` in at build time (static files don't
-need a live DB). `docker-entrypoint.sh` runs `migrate --noinput` then `createcachetable` - the latter
-guarded with `|| true`, since Django's `createcachetable` isn't safely re-runnable and a container
-restart would otherwise error - before handing off to the CMD (gunicorn for `app`, `manage.py qcluster`
-for `worker`; same image, different command).
+`app` sets `RUN_RELEASE_TASKS=1`, so it migrates before gunicorn starts - the local stand-in for the
+`preDeployCommand`. `worker` depends on `app` having started and restarts on failure, since on a fresh
+database it can come up before the migration finishes. `.gitattributes` pins `*.sh` to LF: a
+`core.autocrlf` checkout would otherwise give the scripts CRLF endings, and a local build copies the
+working tree (`/bin/sh^M: not found`).
 
 `psycopg[binary]` ships a prebuilt wheel, so the image needs no `libpq-dev`/build toolchain. **Keep it
 that way** - if a future dependency needs compiling, add build deps deliberately rather than by reflex.
@@ -3293,9 +3332,6 @@ elsewhere. Check the file or section it points at directly.
   `.gitignore`'s `*.sqlite3` never matched the `.bak_` suffix, now widened to `*.sqlite3.*`). It carried
   4 dev/test `pt_users` rows with bcrypt hashes. History rewriting was deliberately not attempted - if
   any of those passwords was ever reused on a real account, rotate it.
-- **The Dockerfile still runs as root.** Local-dev only (Render builds its own way), and Docker was not
-  available to verify a `USER` change on 2026-09-23 - add a non-root user plus a `chown` of `/app`
-  (`settings.py` creates `logs/` at import) where it can be tested.
 - **`prune_revoked_tokens` has a trigger endpoint but no fixed cadence** configured.
 - **`cache_page` infrastructure exists and nothing uses it** - every current endpoint is real business
   data behind auth, not the public reference data `cache_page` is safe in front of.

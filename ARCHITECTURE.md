@@ -145,9 +145,9 @@ here.
 
 ## Local dev with Docker
 
-`docker compose up -d` runs the app, a `qcluster` worker, and a real Postgres. Local dev only - it
-does not replace `render.yaml`'s deploy pipeline. The `Dockerfile` pins `python:3.12-slim` to match
-Render's actual runtime rather than this repo's own `.python-version` (`3.14`), and
+`docker compose up -d` runs the app, a `qcluster` worker, and a real Postgres, from the same image
+Render deploys (`render.yaml`, `runtime: docker`). The `Dockerfile` pins `python:3.12-slim` rather
+than this repo's own `.python-version` (`3.14`), and
 `docker-compose.yml` sets `DATABASE_URL` itself pointed at its own `db` service, so no `.env` edits
 are needed. See CLAUDE.md's "Deployment, Docker, and `.env`".
 

@@ -27,3 +27,18 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+  # The Dockerfile's base image (added 2026-09-23, when render.yaml moved to
+  # runtime: docker - the OS layer is now ours to patch, not Render's). The
+  # FROM line is pinned by digest, so this proposes a new digest of the SAME
+  # python:3.12-slim tag as Debian security fixes land. Minor/major Python
+  # bumps (3.13, 4.x) are ignored: changing the interpreter is a deliberate
+  # decision, not a dependency update - it moves CI's UV_PYTHON with it.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
