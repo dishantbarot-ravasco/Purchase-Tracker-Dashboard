@@ -554,8 +554,12 @@ stock, **match and consumption** (the two derive-from-DB steps that look healthy
 has not completed (`success`/`partial`) within `HEALTH_SYNC_STALE_HOURS` (default **26**: the schedule
 leaves a 13h overnight gap by design, so a shorter window would alarm every night), and 503 `down` if
 the DB is unreachable. Unauthenticated and minimal (step names only, no data); `authentication_classes`
-is empty so a monitor sending a stale cookie never gets a 401. **Point an external uptime monitor at it
-- nothing polls it yet.** Deliberately NOT Render's `healthCheckPath` (that stays `/`): a stale sync is
+is empty so a monitor sending a stale cookie never gets a 401. **UptimeRobot polls it every 5 minutes
+(set up 2026-09-23, free plan, on the project owner's account)** and emails on any non-200, then again
+on recovery. A site or DB outage therefore alerts within minutes; a dead worker or a failing plant step
+only after the 26h window, by design. When it alerts, open the URL: `stale` names the plant/step, and
+every step stale at once means the qcluster worker is down. The live endpoint returned 200 with
+nothing stale on the day it was set up. Deliberately NOT Render's `healthCheckPath` (that stays `/`): a stale sync is
 no reason to restart the web service. On the local box it reports all 15 steps stale, which is the
 point.
 
