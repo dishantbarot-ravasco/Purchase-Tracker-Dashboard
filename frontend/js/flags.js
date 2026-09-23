@@ -253,7 +253,20 @@ function importMatchStatusHtml(it, plantKey) {
 function mirStockMatchHtml(lot, plantKey) {
   const matches = lot.mirStockMatches || [];
   const flagged = matches.filter(m => m.isFlagged);
-  if (!flagged.length) return matches.length ? '<span class="conf-badge conf-high">matched</span>' : '-';
+  // A unit clash (MIR in MT, stock in KG, and no conversion between their
+  // families) makes the matcher SKIP the qty/rate comparison and store
+  // is_flagged=False - see match_mir_entry_stock()'s uom_mismatch branch in
+  // matching_core.py. Until 2026-09-23 that fell through to the green
+  // "matched" badge below, telling the reader a pair had reconciled when its
+  // figures were never compared at all. It gets its own amber badge now.
+  // CLAUDE.md listed this as a known gap ("uom_mismatch on MIR<->Stock
+  // matches has no frontend badge yet").
+  const uomBadge = matches.some(m => m.uomMismatch) ? uomMismatchBadgeHtml(lot) : '';
+  const compared = matches.filter(m => !m.uomMismatch);
+  if (!flagged.length) {
+    if (!matches.length) return '-';
+    return (compared.length ? '<span class="conf-badge conf-high">matched</span>' : '') + uomBadge;
+  }
   return flagged.map(m => {
     const dismissedCls = m.dismissedByOverride ? ' dismissed' : '';
     const parts = [];
@@ -274,7 +287,19 @@ function mirStockMatchHtml(lot, plantKey) {
       badge += ' <span class="dismiss-link" data-match-id="' + m.matchId + '" data-match-type="mir-stock" data-plant="' + plantKey + '" data-dismiss="true">dismiss</span>';
     }
     return badge;
-  }).join(' ');
+  }).join(' ') + uomBadge;
+}
+
+// The amber "units differ" badge for a MIR<->Stock pairing whose qty/rate
+// could not be compared - see mirStockMatchHtml()'s comment. Deliberately
+// NOT a flag (no dismiss link, not red): nothing is known to be wrong, the
+// check simply could not run. Only the stock lot's own unit is on the
+// payload, so the tooltip names that one.
+function uomMismatchBadgeHtml(lot) {
+  const unit = lot.uom ? ' (' + lot.uom + ')' : '';
+  const tip = 'Units differ: the matched MIR entry records this material in a different unit from this stock lot' + unit +
+    ', and the two cannot be converted, so quantity and rate were not compared. Check the unit in both files.';
+  return ' <span class="conf-badge conf-medium" title="' + escapeHtml(tip) + '">units differ</span>';
 }
 
 // Wires every .dismiss-link under `container` (rendered by matchStatusHtml()
@@ -459,6 +484,21 @@ function materialFlagHtml(m) {
     ' <span class="lg-label critical">CRITICAL</span> ' +
     '<b' + (dismissed ? ' class="strike"' : '') + '>' + escapeHtml(m._plantLabel) + ' &middot; MIR&harr;Stock Mismatch</b>: ' +
     escapeHtml(parts.join(', ') || 'flagged') + dismissTag + link +
+  '</div>';
+}
+
+// Material modal's INFO note for a sibling lot whose MIR<->Stock pairing hit
+// a unit clash - the modal-tab counterpart of uomMismatchBadgeHtml(). Same
+// field-block shape as materialFlagHtml() above but INFO, not CRITICAL, and
+// no dismiss link: nothing is known to be wrong, the comparison could not run.
+function materialUomNoteHtml(lot) {
+  const unit = lot.uom ? ' (stock unit: ' + lot.uom + ')' : '';
+  return '<div class="field-block mb-8">' +
+    flagIconHtml(KPI_FLAG_COLORS.quality, 'row-flag-icon') +
+    ' <span class="lg-label info">INFO</span> ' +
+    '<b>' + escapeHtml(lot._plantLabel || '') + ' &middot; MIR&harr;Stock units differ</b>' + escapeHtml(unit) +
+    '<div class="mt-4 fs-11-5 text-slate-soft">The matched MIR entry uses a unit that cannot be converted to the stock lot\'s, ' +
+    'so quantity and rate were not compared. Check the unit in both files.</div>' +
   '</div>';
 }
 

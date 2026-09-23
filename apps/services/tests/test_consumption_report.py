@@ -30,6 +30,7 @@ import datetime
 from decimal import Decimal
 
 import pytest
+from django.core import mail
 from django.utils import timezone
 
 from apps.api.tests.factories import make_user
@@ -49,6 +50,7 @@ from apps.services.consumption_report import (
     send_daily_consumption_reports,
     send_monthly_consumption_reports,
 )
+from apps.services.tests.refusing_email_backends import LOCMEM, REFUSE_ALL
 
 TODAY = timezone.localdate()
 
@@ -288,6 +290,28 @@ class TestSendDailyConsumptionReports:
         second = send_daily_consumption_reports()
         assert second["plants_sent"] == 1, "hrs must be retryable after the earlier failure; achhad/vapi stay deduped"
 
+    def test_a_failed_delivery_does_not_permanently_block_retry(self, settings):
+        """The test above covers a BUILD failure, which always released its
+        claim. A DELIVERY failure did not, while send_mail() was called with
+        fail_silently=True: the SMTP fault returned normally and the claim
+        stayed. The failure is injected at the backend, which honours
+        fail_silently exactly as the real SMTP backend does, so this fails
+        if the sender ever regresses to True - see
+        refusing_email_backends.py."""
+        make_user(email="admin-smtp@ravasco.com", role="admin")
+
+        settings.EMAIL_BACKEND = REFUSE_ALL
+        failed = send_daily_consumption_reports()
+
+        assert failed["plants_sent"] == 0
+        assert not ReportSendLog.objects.filter(report_type=ReportSendLog.ReportType.DAILY).exists(), \
+            "an undelivered report's claim must be released, not left behind"
+
+        settings.EMAIL_BACKEND = LOCMEM
+        retried = send_daily_consumption_reports()
+        assert retried["plants_sent"] == 3
+        assert len(mail.outbox) == 3
+
     def test_email_body_groups_materials_under_category_headings(self, mailoutbox):
         make_user(email="admin5@ravasco.com", role="admin")
         y, t = _days(1, 0)
@@ -501,6 +525,22 @@ class TestSendMonthlyConsumptionReports:
         assert second["plants_sent"] == 0
         assert len(mailoutbox) == 3
         assert ReportSendLog.objects.filter(report_type=ReportSendLog.ReportType.MONTHLY).count() == 3
+
+    def test_a_failed_delivery_does_not_block_the_month(self, settings):
+        """Monthly equivalent of the daily delivery-failure test. A kept claim
+        here would block the whole month's report, not one day's."""
+        make_user(email="admin-msmtp@ravasco.com", role="admin")
+
+        settings.EMAIL_BACKEND = REFUSE_ALL
+        failed = send_monthly_consumption_reports(year=2026, month=8)
+
+        assert failed["plants_sent"] == 0
+        assert not ReportSendLog.objects.filter(report_type=ReportSendLog.ReportType.MONTHLY).exists()
+
+        settings.EMAIL_BACKEND = LOCMEM
+        retried = send_monthly_consumption_reports(year=2026, month=8)
+        assert retried["plants_sent"] == 3
+        assert len(mail.outbox) == 3
 
     def test_email_body_groups_materials_under_category_headings(self, mailoutbox):
         make_user(email="admin7@ravasco.com", role="admin")

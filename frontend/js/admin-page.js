@@ -74,7 +74,7 @@ function switchAdminTab(tab) {
 async function loadSyncCards() {
   const el = document.getElementById('syncPlantCards');
   // 'match' added 2026-09-04 - see js/main.js's loadSyncStatus() /
-  // SyncRun.Source.MATCH's own comment (apps/core/models.py).
+  // SyncRun.Source.MATCH's own comment (apps/core/models/).
   const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM', match: 'Matching' };
   const rows = await Promise.all(PLANT_KEYS.map(async key => {
     try {
@@ -114,7 +114,7 @@ async function loadSyncCards() {
 // ── Overview: top correctors / top vendors / recent activity ────
 async function loadOverviewData() {
   try {
-    const res = await fetch('/api/auth/admin-overview', { credentials: 'same-origin' });
+    const res = await authFetch('/api/auth/admin-overview', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     renderBarList('topCorrectorsList', data.topCorrectors, c => c.fullName, c => c.count);
@@ -202,7 +202,7 @@ function renderSystemInfoPlants() {
 async function loadUsers() {
   const el = document.getElementById('usersArea');
   try {
-    const res = await fetch('/api/auth/users', { credentials: 'same-origin' });
+    const res = await authFetch('/api/auth/users', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     USERS = data.users || [];
@@ -346,7 +346,7 @@ async function loadDevices(userId) {
   const el = document.getElementById('uf-devices-list');
   el.innerHTML = '<p class="uf-hint my-4">Loading&hellip;</p>';
   try {
-    const res = await fetch('/api/auth/users/' + userId + '/devices', { credentials: 'same-origin' });
+    const res = await authFetch('/api/auth/users/' + userId + '/devices', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     renderDevices(userId, data.devices || []);
@@ -381,7 +381,7 @@ function renderDevices(userId, devices) {
 async function revokeDevice(userId, deviceId) {
   if (!window.confirm('Revoke this device? It will need to verify by email code again on its next sign-in.')) return;
   try {
-    const res = await fetch('/api/auth/users/' + userId + '/devices/' + deviceId, { method: 'DELETE', credentials: 'same-origin' });
+    const res = await authFetch('/api/auth/users/' + userId + '/devices/' + deviceId, { method: 'DELETE', credentials: 'same-origin' });
     if (!res.ok && res.status !== 204) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || 'HTTP ' + res.status);
@@ -474,7 +474,7 @@ async function deleteUser(userId) {
   if (!user) return;
   if (!window.confirm('Permanently delete ' + (user.fullName || user.email) + ' (' + user.email + ')? This cannot be undone - consider Deactivate instead if you just want to block sign-in.')) return;
   try {
-    const res = await fetch('/api/auth/users/' + userId, { method: 'DELETE', credentials: 'same-origin' });
+    const res = await authFetch('/api/auth/users/' + userId, { method: 'DELETE', credentials: 'same-origin' });
     if (!res.ok && res.status !== 204) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.detail || 'HTTP ' + res.status);
@@ -487,7 +487,7 @@ async function deleteUser(userId) {
 }
 
 async function createUserApi(payload) {
-  const res = await fetch('/api/auth/users/create', {
+  const res = await authFetch('/api/auth/users/create', {
     method: 'POST', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -508,7 +508,7 @@ async function createUserApi(payload) {
 }
 
 async function patchUser(userId, payload) {
-  const res = await fetch('/api/auth/users/' + userId, {
+  const res = await authFetch('/api/auth/users/' + userId, {
     method: 'PATCH', credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

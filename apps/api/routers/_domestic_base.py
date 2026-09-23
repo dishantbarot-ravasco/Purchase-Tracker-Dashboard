@@ -376,7 +376,7 @@ def _po_material_categories(items, category_reference) -> list[dict]:
     """De-duplicated {category, subCategory} pairs across this PO's own line
     items, looked up the same canonical way _lot_dict() looks up a Stock
     lot's category - see MaterialCategoryReference's own docstring
-    (apps/core/models.py). Added 2026-09-08 so the Purchase Orders page can
+    (apps/core/models/). Added 2026-09-08 so the Purchase Orders page can
     filter/group by the materials a PO actually orders - "Filter by
     Category"/"Sub Category" on this page previously meant Data Quality
     Flag severity/label instead (moved to "Filter by Flags" - see
@@ -456,7 +456,7 @@ def _po_dict(cfg: _PlantConfig, po, corrections_by_po=None, flag_dismissals_by_p
 def _category_reference_map() -> dict[str, MaterialCategoryReference]:
     """One query for the whole (small, shared-across-plants) canonical
     Category/Subcategory table - see MaterialCategoryReference's own
-    docstring (apps/core/models.py) for the full design. Called once per
+    docstring (apps/core/models/) for the full design. Called once per
     request (make_materials()), not once per lot."""
     return {ref.normalized_description: ref for ref in MaterialCategoryReference.objects.all()}
 

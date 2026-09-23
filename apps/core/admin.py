@@ -87,7 +87,7 @@ class MaterialCategoryReferenceAdmin(admin.ModelAdmin):
     """Real list_display/search, unlike the plain registrations above -
     this table is meant for ad-hoc staff correction (a new material added,
     a typo in a category), not just read-only debugging. See the model's
-    own docstring (apps/core/models.py) for the full design - normalized_
+    own docstring (apps/core/models/) for the full design - normalized_
     description is the actual match key, read-only here since editing it
     without also fixing every plant's own Stock description would silently
     break the lookup."""

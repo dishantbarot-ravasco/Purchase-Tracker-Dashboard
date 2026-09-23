@@ -1,7 +1,7 @@
 """
 apps/services/token_revocation.py - custom refresh-token revocation.
 
-See apps/core/models.py's RevokedRefreshToken for why this is a small
+See apps/core/models/auth.py's RevokedRefreshToken for why this is a small
 custom table rather than rest_framework_simplejwt's built-in
 `token_blacklist` app: that app's OutstandingToken model FKs to
 AUTH_USER_MODEL (Django's default auth.User), which is incompatible with

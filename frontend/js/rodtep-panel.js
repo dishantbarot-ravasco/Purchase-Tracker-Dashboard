@@ -1,7 +1,7 @@
 // ── RoDTEP Ledger panel (added 2026-09-09) ──────────────────────────────────
 // Scoped to Import Purchases ONLY, per the project owner's own instruction -
 // no Domestic Purchases changes, no new top-level nav tab. RoDTEP scrips are
-// a company-wide resource (see apps/core/models.py's RodtepScrollEntry/
+// a company-wide resource (see apps/core/models/ledgers.py's RodtepScrollEntry/
 // SyncRun.Plant.COMPANY), not tied to any one plant, so this lives as a
 // button in Import Purchases' own toolbar (import-po.js) rather than under
 // any plant's tab hierarchy.

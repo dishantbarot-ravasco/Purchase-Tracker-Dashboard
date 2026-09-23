@@ -1,29 +1,37 @@
+/*
+  Added 2026-09-15 (audit pass). CI previously gated frontend JS with
+  `node --check` alone - a pure syntax check that catches an unclosed brace
+  and nothing else. 7,300 lines of browser JS had no other automated check.
+
+  Deliberately narrow, same principle as pyproject.toml's ruff config: only
+  rules that catch a REAL defect. No stylistic rules at all (no indent,
+  quotes or semicolon rules) - this codebase already has a consistent house
+  style, and reformatting 7,300 lines would bury every real finding.
+
+  no-undef is deliberately OFF, and that is a considered decision, not an
+  oversight. This app has no bundler and no ES modules by design (see
+  CLAUDE.md): all 14 files are plain <script> tags sharing ONE global scope,
+  so shared.js calling closeModal() (defined in charts.js) is correct code.
+  ESLint cannot see across files in this arrangement, so no-undef would
+  either flag hundreds of legitimate cross-file calls, or require an
+  exhaustive hand-maintained `globals` list - which would itself drift and
+  become a second source of truth for what every file exports. Neither is
+  worth it. The rules that remain are all intra-file and fire reliably.
+
+  NOTE: this config has not been executed locally - there is no Node in the
+  development environment it was written in, so the first CI run is what
+  establishes the baseline. If it reports findings, fix them (or narrow a
+  rule with a recorded reason); do not silence the step.
+
+  FIXED 2026-09-23: these notes used to live in a top-level "//" key. ESLint
+  8 validates .eslintrc against a strict schema and rejects any unknown
+  top-level property, so every CI run since 2026-09-15 crashed with exit code
+  2 (configuration error) before linting a single line - hidden by the
+  step's continue-on-error. ESLint's JSON config format allows comments, so
+  the notes live in this block comment instead. Do not move them back into a
+  key.
+*/
 {
-  "//": [
-    "Added 2026-09-15 (audit pass). CI previously gated frontend JS with",
-    "`node --check` alone - a pure syntax check that catches an unclosed brace",
-    "and nothing else. 7,300 lines of browser JS had no other automated check.",
-    "",
-    "Deliberately narrow, same principle as pyproject.toml's ruff config: only",
-    "rules that catch a REAL defect. No stylistic rules at all (no indent,",
-    "quotes or semicolon rules) - this codebase already has a consistent house",
-    "style, and reformatting 7,300 lines would bury every real finding.",
-    "",
-    "no-undef is deliberately OFF, and that is a considered decision, not an",
-    "oversight. This app has no bundler and no ES modules by design (see",
-    "CLAUDE.md): all 14 files are plain <script> tags sharing ONE global scope,",
-    "so shared.js calling closeModal() (defined in charts.js) is correct code.",
-    "ESLint cannot see across files in this arrangement, so no-undef would",
-    "either flag hundreds of legitimate cross-file calls, or require an",
-    "exhaustive hand-maintained `globals` list - which would itself drift and",
-    "become a second source of truth for what every file exports. Neither is",
-    "worth it. The rules that remain are all intra-file and fire reliably.",
-    "",
-    "NOTE: this config has not been executed locally - there is no Node in the",
-    "development environment it was written in, so the first CI run is what",
-    "establishes the baseline. If it reports findings, fix them (or narrow a",
-    "rule with a recorded reason); do not silence the step."
-  ],
   "root": true,
   "env": {
     "browser": true,

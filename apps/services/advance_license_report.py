@@ -217,12 +217,29 @@ def _send_one(kind: str, today: datetime.date) -> dict:
     try:
         html_body, text_body = _render_expiry_email(kind, rows, today)
         subject = (
-            f"[Purchase Tracker Admin Alert] Advance License — {cfg['label']} "
+            f"[Purchase Tracker Admin Alert] Advance License - {cfg['label']} "
             f"Expiring in {_EXPIRY_WINDOW_DAYS} Days"
         )
+        # fail_silently=False is LOAD-BEARING, not a preference - do not
+        # "harden" this back to True (2026-09-23, audit pass). This function's
+        # whole claim-before-send design depends on a delivery failure
+        # actually raising: with fail_silently=True, an SMTP fault returned
+        # normally, the `except` below never ran, and every ReportSendLog row
+        # claimed in that run stayed claimed. Because this report's period_key
+        # is "<license_number>@<validity date>" - a key that never recurs
+        # while the date is unchanged, unlike the consumption reports' date-
+        # keyed rows which self-heal the next day - every subsequent daily run
+        # saw created=False and skipped the license silently. One transient
+        # SMTP blip therefore suppressed the ONLY warning that an advance
+        # authorisation was about to expire, permanently, with no log line and
+        # nothing in Sentry. The module docstring already promised the
+        # opposite behaviour ("If sending then fails, every row claimed in
+        # that run is released so the next run retries them"); this is the
+        # line that makes that promise true. Covered by
+        # test_send_failure_releases_claims_so_the_next_run_retries.
         send_mail(
             subject=subject, message=text_body, from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=recipients, html_message=html_body, fail_silently=True,
+            recipient_list=recipients, html_message=html_body, fail_silently=False,
         )
         log.info(
             "advance_license_report: sent %s expiry alert for %s license(s) to %s recipient(s)",

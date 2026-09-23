@@ -3,7 +3,7 @@ Match Accuracy Programme, Phase 1 (doc 03, 1.2): a deliberately minimal
 review screen. Shows a batch of random unreviewed matches (_BATCH_SIZE = 5,
 bumped up from 1 on 2026-09-07 for throughput - see next_review()'s own
 docstring) with both sides side by side per match, and records a
-Correct/Incorrect/Unsure verdict as a MatchReview row (apps/core/models.py)
+Correct/Incorrect/Unsure verdict as a MatchReview row (apps/core/models/)
 per match - no filtering, no search, no bulk actions beyond the batch size
 itself. The design goal is throughput (roughly 200 reviews spread across
 plants and tiers), not a full audit UI.
@@ -31,6 +31,16 @@ belong to that plant, instead of re-deriving a second per-plant mapping here.
 Any authenticated role can review (IsAuthenticated is this project's
 default permission class - see config/settings.py) - this is data
 collection, not a privileged write.
+
+Role is open; PLANT is not (2026-09-23, audit pass). A review card is real
+per-plant business data - PO numbers, vendors, rates, MIR rows - so
+next_review only draws from plants the caller may read, and submit_review
+refuses a verdict on any other plant, via the same
+permissions.user_can_access_plant() every other plant-scoped endpoint uses
+(CLAUDE.md: "If you add a new read OR write endpoint, gate both role and
+plant"). An empty PTUser.plants still means all plants, so this changes
+nothing for an unscoped account. review_stats/export_review_stats stay
+cross-plant on purpose - see review_stats' own docstring.
 """
 
 import io as _io
@@ -41,9 +51,10 @@ from django.utils import timezone
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
+from apps.api.permissions import user_can_access_plant
 from apps.api.routers._domestic_base import SafeCsvWriter
 
-from apps.core.models import MatchReview
+from apps.core.models import MatchReview, SyncRun
 from apps.services.match_accuracy import CONFIGS as _CONFIGS
 from apps.services.match_accuracy import MATCH_TYPE_LABELS as _MATCH_TYPE_LABELS
 from apps.services.match_accuracy import PLANT_LABELS as _PLANT_LABELS
@@ -53,6 +64,21 @@ from apps.services.matching_core import _import_rate_value_inr
 # random order per request so no single group dominates the ~200-review
 # sample (doc 03, 1.2).
 _GROUPS = [(mt, plant) for mt in MatchReview.MatchType.values for plant in _CONFIGS]
+
+# MatchReview.plant holds SyncRun.Plant values ("HRS"/"RTP-ACHHAD"/...), while
+# plant scoping (PTUser.plants, user_can_access_plant) speaks the lowercase
+# frontend keys. Each plant's _PlantConfig already pairs the two;
+# test_review_plant_scoping.py asserts this dict agrees with all three, so
+# the two spellings cannot drift apart silently.
+_ACCESS_KEY = {
+    SyncRun.Plant.HRS: "hrs",
+    SyncRun.Plant.RTP_ACHHAD: "achhad",
+    SyncRun.Plant.RTP_VAPI: "vapi",
+}
+
+
+def _can_review(user, plant) -> bool:
+    return user_can_access_plant(user, _ACCESS_KEY[plant])
 
 
 def _num(value):
@@ -316,7 +342,7 @@ def next_review(request):
     the original one-at-a-time version did over many calls. Returns fewer
     than _BATCH_SIZE once few unreviewed matches remain, and {"done": true}
     (no "matches" key) only once every group is genuinely exhausted."""
-    groups = list(_GROUPS)
+    groups = [g for g in _GROUPS if _can_review(request.user, g[1])]
     random.shuffle(groups)
     reviewed_ids_by_group = {
         (mt, plant): set(MatchReview.objects.filter(plant=plant, match_type=mt).values_list("match_id", flat=True))
@@ -356,6 +382,8 @@ def submit_review(request):
 
     if plant not in _CONFIGS:
         return Response({"detail": "Invalid plant."}, status=400)
+    if not _can_review(request.user, plant):
+        return Response({"detail": "You are not permitted to review this plant's matches."}, status=403)
     if match_type not in MatchReview.MatchType.values:
         return Response({"detail": "Invalid matchType."}, status=400)
     if verdict not in MatchReview.Verdict.values:

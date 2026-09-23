@@ -12,7 +12,7 @@ Achhad is the plant with the most schema divergence from HRS/Vapi: no
 vendor column on Stock (RTPAchhadRMLot has no party_name/supplier_name
 field at all), no sub_category/uom columns either, and a real `msl`
 (Minimum Stock Level) field the other two plants have no equivalent of -
-see _CONFIG below and RTPAchhadRMLot's own docstring in apps/core/models.py.
+see _CONFIG below and RTPAchhadRMLot's own docstring in apps/core/models/.
 """
 
 from apps.api.routers import _domestic_base as _base

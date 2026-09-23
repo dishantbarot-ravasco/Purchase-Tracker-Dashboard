@@ -9,7 +9,7 @@ shared schema" for why HRS/Achhad/Vapi each get their own model set, and
 apps/api/routers/_domestic_base.py rather than being duplicated here.
 Vapi's Stock sheet is lot-shaped with a real vendor column (`supplier_name`,
 not HRS's `party_name`), like HRS's, not material-shaped like Achhad's -
-see the RTP-Vapi section header comment in apps/core/models.py.
+see the RTP-Vapi section header comment in apps/core/models/.
 """
 
 from apps.api.routers import _domestic_base as _base

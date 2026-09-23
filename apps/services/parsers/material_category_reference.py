@@ -4,7 +4,7 @@ manager's Category/Subcategory reference list (a CSV with columns "SAP Item
 Code, Description, HSN Code, Category, Subcategory (SAP Product Group),
 UOM") into rows ready to upsert into MaterialCategoryReference.
 
-See MaterialCategoryReference's own docstring (apps/core/models.py) for why
+See MaterialCategoryReference's own docstring (apps/core/models/) for why
 the match key is normalized Material Description, not SAP Item Code (project
 owner, 2026-09-08: SAP Item Code "is not trust worthy as it's not maintain
 thoroughly").

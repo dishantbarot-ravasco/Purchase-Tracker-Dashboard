@@ -80,11 +80,11 @@ def notify_admins_account_locked(user) -> None:
         try:
             send_mail(
                 subject=subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=admin_emails, fail_silently=True,
+                recipient_list=admin_emails, fail_silently=False,
             )
             log.info("notify_admins_account_locked: sent for %s", user.email)
         except Exception as exc:
-            log.warning("notify_admins_account_locked: failed for %s: %s", user.email, exc)
+            log.error("notify_admins_account_locked: failed for %s: %s", user.email, exc)
 
     _dispatch_email(_send)
 
@@ -130,11 +130,11 @@ def record_failed_login_and_maybe_alert() -> None:
         try:
             send_mail(
                 subject=subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=admin_emails, fail_silently=True,
+                recipient_list=admin_emails, fail_silently=False,
             )
             log.info("record_failed_login_and_maybe_alert: burst alert sent (count=%s)", count)
         except Exception as exc:
-            log.warning("record_failed_login_and_maybe_alert: alert send failed: %s", exc)
+            log.error("record_failed_login_and_maybe_alert: alert send failed: %s", exc)
 
     _dispatch_email(_send)
 
@@ -171,10 +171,10 @@ def notify_admins_sync_failure(plant_key: str, cmd_name: str, detail: str = "") 
         try:
             send_mail(
                 subject=subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=admin_emails, fail_silently=True,
+                recipient_list=admin_emails, fail_silently=False,
             )
             log.info("notify_admins_sync_failure: sent for plant=%s cmd=%s", plant_key, cmd_name)
         except Exception as exc:
-            log.warning("notify_admins_sync_failure: failed for plant=%s cmd=%s: %s", plant_key, cmd_name, exc)
+            log.error("notify_admins_sync_failure: failed for plant=%s cmd=%s: %s", plant_key, cmd_name, exc)
 
     _dispatch_email(_send)

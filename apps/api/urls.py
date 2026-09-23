@@ -19,6 +19,7 @@ from apps.api.routers import achhad_views, admin_overview_views, hrs_views, impo
 
 urlpatterns = [
     path("health", views.health, name="health"),
+    path("health/ready", views.readiness, name="health-ready"),
     # Hit once a day (e.g. 20:30 IST) by an external free scheduler (cron-job.org)
     # - see reports_views.py's own module docstring for the shared-secret
     # auth scheme (no login session/JWT possible for that caller).

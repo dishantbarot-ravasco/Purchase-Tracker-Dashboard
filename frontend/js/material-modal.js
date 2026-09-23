@@ -200,7 +200,15 @@ async function openMaterialModal(compositeKey) {
   siblingLots.forEach(l => (l.dataQualityFlags || []).forEach(f =>
     dataQualityFlagsHtml.push(dataQualityFlagHtml(Object.assign({}, f, { _plantLabel: l._plantLabel })))
   ));
-  const totalFlagCount = flaggedMatches.length + materialCritPos.size + dataQualityFlagsHtml.length;
+  // One INFO note per sibling lot whose MIR<->Stock pairing could not compare
+  // qty/rate because the units clash - see flags.js's mirStockMatchHtml().
+  // Collected separately from flaggedMatches because these are not flags
+  // (is_flagged is False and there is nothing to dismiss); without this the
+  // tab said "No ... match flags" about a pairing that was never checked.
+  const uomNotesHtml = siblingLots
+    .filter(l => (l.mirStockMatches || []).some(m => m.uomMismatch))
+    .map(materialUomNoteHtml);
+  const totalFlagCount = flaggedMatches.length + materialCritPos.size + dataQualityFlagsHtml.length + uomNotesHtml.length;
 
   const allMaterialCorrections = [];
   // _plantKey/_lotId ride along so a Correction History row can build its
@@ -211,7 +219,7 @@ async function openMaterialModal(compositeKey) {
   allMaterialCorrections.sort((a, b) => (b.correctedAt || '').localeCompare(a.correctedAt || ''));
 
   const materialFlagsListHtml = totalFlagCount
-    ? materialCritFlagsHtml + flaggedMatches.map(materialFlagHtml).join('') + dataQualityFlagsHtml.join('')
+    ? materialCritFlagsHtml + flaggedMatches.map(materialFlagHtml).join('') + uomNotesHtml.join('') + dataQualityFlagsHtml.join('')
     : '<div class="empty-note-sm">No discrepancy or MIR&harr;Stock match flags for this material.</div>';
   const materialCorrectionsHtml = allMaterialCorrections.length
     ? '<div class="section-title mt-18">Correction History</div>' +

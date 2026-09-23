@@ -2,7 +2,7 @@
 // Scoped to Import Purchases ONLY, per the project owner's own instruction -
 // no Domestic Purchases changes, no new top-level nav tab. Same reasoning
 // and same shared-modal pattern as rodtep-panel.js (Advance Licenses are a
-// company-wide resource too - see apps/core/models.py's AdvanceLicense),
+// company-wide resource too - see apps/core/models/ledgers.py's AdvanceLicense),
 // and the same existing-CSS-only rule.
 //
 // There has never been a manual "Log Usage" form here: the source workbook

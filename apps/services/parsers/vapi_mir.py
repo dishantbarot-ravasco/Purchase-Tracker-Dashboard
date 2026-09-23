@@ -27,7 +27,7 @@ by openpyxl (e.g. 1000001437.0, matching this app's own PO-number format
 exactly) - read with to_code_str() to drop the trailing '.0', same as every
 other PO-number-shaped column across the three plants' MIR parsers.
 
-See the big "RTP-Vapi" section header comment in apps/core/models.py for
+See the big "RTP-Vapi" section header comment in apps/core/models/ for
 the full rationale behind how this genuinely differs from HRS's and
 Achhad's MIR columns (no Net/discount columns, GST split into one overall
 rate plus three amount-only IGST/CGST/SGST columns, a single TCS amount

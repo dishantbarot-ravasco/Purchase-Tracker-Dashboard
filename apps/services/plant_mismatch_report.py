@@ -332,7 +332,7 @@ def send_plant_mismatch_reports(*, test_recipient: str | None = None) -> dict:
                 to=[to_email], cc=admin_emails,
             )
             message.attach_alternative(html_body, "text/html")
-            message.send(fail_silently=True)
+            message.send(fail_silently=False)
             sent += 1
             log.info(
                 "send_plant_mismatch_reports: sent %s report to %s (cc %s admin(s))",

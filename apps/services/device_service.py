@@ -73,7 +73,7 @@ def get_client_ip(request) -> str:
 
 def _hash_device_token(token: str) -> str:
     """SHA-256 hex digest of a plaintext device token - see TrustedDevice's
-    own docstring (apps/core/models.py) for why plain SHA-256, not bcrypt,
+    own docstring (apps/core/models/) for why plain SHA-256, not bcrypt,
     is the right hash here (the token already has 256 bits of entropy, and
     is_trusted_device() needs an indexed equality lookup, not a per-row
     bcrypt.checkpw() scan)."""
@@ -243,7 +243,7 @@ def is_trusted_device(request, user_id: int) -> bool:
     request doesn't pay for a full row rewrite just to record a timestamp.
 
     Looks up by the cookie's own SHA-256 hash, never the plaintext value -
-    see TrustedDevice's own docstring (apps/core/models.py) for why the
+    see TrustedDevice's own docstring (apps/core/models/) for why the
     stored column is device_token_hash, not the raw token."""
     device_token = request.COOKIES.get(DEVICE_COOKIE_NAME, "").strip()
     if not device_token:
@@ -378,7 +378,7 @@ def send_new_device_notification(user, request) -> None:
                 message=body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[user.email],
-                fail_silently=True,
+                fail_silently=False,
             )
             log.info("send_new_device_notification: sent to %s", user.email)
         except Exception as exc:
@@ -428,10 +428,10 @@ def notify_admins_new_device_login(user, request) -> None:
                 message=body,
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=admin_emails,
-                fail_silently=True,
+                fail_silently=False,
             )
             log.info("notify_admins_new_device_login: sent to %s admin(s) re: %s", len(admin_emails), user.email)
         except Exception as exc:
-            log.warning("notify_admins_new_device_login: failed re: %s: %s", user.email, exc)
+            log.error("notify_admins_new_device_login: failed re: %s: %s", user.email, exc)
 
     _dispatch_email(_send)

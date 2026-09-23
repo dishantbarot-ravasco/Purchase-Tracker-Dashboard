@@ -18,6 +18,64 @@
 // ── Session state ───────────────────────────────────────────────────────
 let CURRENT_USER = null;
 
+// ── Silent session renewal (2026-09-23, audit pass) ─────────────────────
+// pt_access lives 12h; pt_refresh lives 30 days and the server has always
+// been able to trade it for a fresh pair (PTTokenRefreshView reads it from
+// the httpOnly cookie, rotates it, and re-cookies both). But nothing in the
+// frontend ever called that endpoint: every 401 went straight to
+// /login.html, so the 30-day "remember me" never worked in a browser and
+// everyone was signed out 12 hours after signing in - mid-edit, if that is
+// when it landed, with the freshness watcher's next poll doing the bouncing.
+//
+// authFetch() is a drop-in for fetch(): on a 401 it renews the session once
+// and replays the request. Callers keep their existing 401 -> /login.html
+// handling unchanged; it now only fires when renewal genuinely failed
+// (refresh cookie expired, "log out everywhere", a password change - every
+// case where the server already refuses the refresh token), so none of
+// those security properties move. Replaying a PATCH/POST is safe: a 401
+// means authentication failed before the view ran, so nothing was written.
+let _sessionRefresh = null;
+
+/**
+ * Trades the pt_refresh cookie for a new pt_access/pt_refresh pair.
+ * SINGLE-FLIGHT, and that is load-bearing: refresh tokens rotate and the
+ * spent one is revoked (ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION),
+ * so two concurrent refreshes would present the same token twice and the
+ * loser would be refused - signing the user out precisely when several
+ * requests expired together, which is the normal case (a page load fires
+ * several fetches at once). Every caller that arrives while one is in
+ * flight awaits that same promise instead.
+ */
+function refreshSession() {
+  if (!_sessionRefresh) {
+    _sessionRefresh = fetch('/api/auth/token/refresh', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+      .then(res => res.ok, () => false)
+      .finally(() => { _sessionRefresh = null; });
+  }
+  return _sessionRefresh;
+}
+
+/**
+ * fetch() that survives an expired access token. On a 401 it renews the
+ * session and replays the request exactly once - and replays it even when
+ * the renewal itself failed, deliberately: with two tabs open, the other tab
+ * may have just rotated the (shared) refresh cookie, so this tab's renewal
+ * is refused while the cookie jar already holds a valid new access token.
+ * The replay picks that up. If the replay is still a 401, that response is
+ * returned and the caller's normal login redirect takes over.
+ */
+async function authFetch(url, opts) {
+  const res = await fetch(url, opts);
+  if (res.status !== 401) return res;
+  await refreshSession();
+  return fetch(url, opts);
+}
+
 /**
  * Confirms the browser's httpOnly session cookie is still valid by asking
  * the server (GET /api/auth/me), populating CURRENT_USER on success.
@@ -27,7 +85,7 @@ let CURRENT_USER = null;
  */
 async function requireAuth() {
   try {
-    const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+    const res = await authFetch('/api/auth/me', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('not authenticated (HTTP ' + res.status + ')');
     CURRENT_USER = await res.json();
     return CURRENT_USER;

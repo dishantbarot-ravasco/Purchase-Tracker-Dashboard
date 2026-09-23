@@ -7,7 +7,7 @@ Product Group), UOM).
 Unlike every other sync_* command in this app, this is NOT pulled from Drive
 on a schedule - this data changes rarely (new materials/categories only, not
 daily transaction volume), so it's a manually-triggered load run whenever the
-plant manager sends an updated list, per apps/core/models.py's
+plant manager sends an updated list, per apps/core/models/'s
 MaterialCategoryReference docstring. Idempotent (sync_utils.unchanged()) -
 safe to re-run the same file, and re-running an updated file only touches
 rows that actually changed.

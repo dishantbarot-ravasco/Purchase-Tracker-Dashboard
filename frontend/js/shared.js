@@ -49,7 +49,7 @@ function materialRateFieldName(plantKey) {
  * handle that case identically anyway. */
 async function apiForPlant(plantKey, path, opts) {
   opts = opts || {};
-  const res = await fetch(PLANTS[plantKey].apiPrefix + path, opts);
+  const res = await authFetch(PLANTS[plantKey].apiPrefix + path, opts);
   if (res.status === 401) {
     window.location.href = '/login.html';
     throw new Error('Not authenticated');
@@ -230,7 +230,7 @@ function openChangePasswordModal() {
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending…';
     try {
-      const res = await fetch('/api/auth/change-password/request', { method: 'POST', credentials: 'same-origin' });
+      const res = await authFetch('/api/auth/change-password/request', { method: 'POST', credentials: 'same-origin' });
       if (res.status === 401) { window.location.href = '/login.html'; return; }
       if (!res.ok) throw new Error('Could not send the verification code. Please try again.');
       step = 2;
@@ -253,7 +253,7 @@ function openChangePasswordModal() {
     submitBtn.disabled = true;
     submitBtn.textContent = 'Confirming…';
     try {
-      const res = await fetch('/api/auth/change-password/confirm', {
+      const res = await authFetch('/api/auth/change-password/confirm', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ otp: otp, newPassword: pw }),
       });
@@ -1002,7 +1002,7 @@ function distinctFieldValues(list, accessor) {
 // audit row alongside old/new value (see each *_views.py's correct_field/
 // correct_material_field).
 async function savePoField(fieldsUrl, itemId, field, value, reason) {
-  const res = await fetch(fieldsUrl, {
+  const res = await authFetch(fieldsUrl, {
     method: 'PATCH',
     credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },

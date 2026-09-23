@@ -1,5 +1,5 @@
 """
-Pipeline tests for manual MIR pins (apps/core/models.py's ManualMirMatch,
+Pipeline tests for manual MIR pins (apps/core/models/review.py's ManualMirMatch,
 applied by matching_core.run_full_match()) - the "edit the MIR number"
 feature, 2026-09-21.
 

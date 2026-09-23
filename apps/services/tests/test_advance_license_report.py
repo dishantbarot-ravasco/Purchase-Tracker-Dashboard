@@ -5,13 +5,16 @@ per license the first time it's seen inside the 30-day window (see that
 module's own docstring for why, and for the ReportSendLog dedup reasoning).
 """
 import datetime
+from smtplib import SMTPException
 
 import pytest
 from django.core import mail
+from django.core.mail import send_mail
 
 from apps.api.tests.factories import make_user
 from apps.core.models import AdvanceLicense, AdvanceLicenseMaterial, ReportSendLog
 from apps.services.advance_license_report import send_advance_license_expiry_reports
+from apps.services.tests.refusing_email_backends import LOCMEM, REFUSE_ALL, REFUSE_IMPORT_VALIDITY
 
 TODAY = datetime.date.today()
 
@@ -154,3 +157,90 @@ class TestSendAdvanceLicenseExpiryReports:
             "exportSent": False, "exportLicenses": 0,
         }
         assert len(mail.outbox) == 0
+
+    def test_refusing_backend_honours_fail_silently(self, settings):
+        """Pins the premise the two failure tests below rest on: the fake
+        backend swallows a refused send under fail_silently=True (returning 0,
+        raising nothing) and raises under fail_silently=False - exactly what
+        Django's SMTP backend does facing a dead server. So if
+        _send_one() ever regresses to fail_silently=True, nothing raises, its
+        `except` never runs, the claim is kept, and the next test fails on
+        "no ReportSendLog row survives". That is how those tests satisfy
+        CLAUDE.md's "a test must fail when the fix is reverted" without anyone
+        having to revert the fix to find out."""
+        settings.EMAIL_BACKEND = REFUSE_ALL
+
+        assert send_mail("s", "b", "from@ravasco.com", ["to@ravasco.com"], fail_silently=True) == 0
+        with pytest.raises(SMTPException):
+            send_mail("s", "b", "from@ravasco.com", ["to@ravasco.com"], fail_silently=False)
+
+    def test_send_failure_releases_claims_so_the_next_run_retries(self, settings):
+        """A delivery failure must leave NO ReportSendLog row behind.
+
+        This is the test the claim-release branch never had, and its absence
+        is why that branch sat unreachable: send_mail() was called with
+        fail_silently=True, so an SMTP fault returned normally instead of
+        raising, the `except` never ran, and the claim stayed. Because this
+        report's period_key embeds the validity date rather than the run
+        date, a kept claim is not retried tomorrow the way a consumption
+        report's is - it is never retried at all, and the license expires
+        unannounced.
+
+        The failure is injected at the BACKEND, not by replacing send_mail:
+        a replaced send_mail raises regardless of fail_silently, so a test
+        built that way passes with the bug present. See
+        refusing_email_backends.py's module docstring.
+        """
+        make_user(email="admin@ravasco.com", role="admin")
+        _make_license(days_to_import=12)
+
+        settings.EMAIL_BACKEND = REFUSE_ALL
+        failed = send_advance_license_expiry_reports()
+
+        assert failed["importSent"] is False
+        assert failed["importLicenses"] == 0
+        assert ReportSendLog.objects.count() == 0, "claim was not released - the license is now permanently suppressed"
+
+        # The next run, with mail working again, must still alert it.
+        settings.EMAIL_BACKEND = LOCMEM
+        retried = send_advance_license_expiry_reports()
+
+        assert retried["importSent"] is True
+        assert retried["importLicenses"] == 1
+        assert len(mail.outbox) == 1
+        assert "0311051817" in mail.outbox[0].body
+
+    def test_a_failing_import_send_does_not_suppress_the_export_alert(self, settings):
+        """The two kinds are independent, and a claim released by one must
+        not take the other's email with it - _send_one() is called twice and
+        each owns only its own claims."""
+        make_user(email="admin@ravasco.com", role="admin")
+        _make_license(days_to_import=8, days_to_export=8)
+
+        settings.EMAIL_BACKEND = REFUSE_IMPORT_VALIDITY
+        result = send_advance_license_expiry_reports()
+
+        assert result["importSent"] is False
+        assert result["exportSent"] is True
+        assert len(mail.outbox) == 1
+        assert "Export Validity" in mail.outbox[0].subject
+        # Import's claim released, Export's kept - exactly one row survives.
+        assert ReportSendLog.objects.filter(
+            report_type=ReportSendLog.ReportType.ADV_LICENSE_IMPORT).count() == 0
+        assert ReportSendLog.objects.filter(
+            report_type=ReportSendLog.ReportType.ADV_LICENSE_EXPORT).count() == 1
+
+    def test_subject_lines_carry_no_em_dash(self):
+        """The em-dash sweep (2026-09-22) missed this module because it
+        landed in the same batch of commits. A subject line is the one
+        string here that reaches a real inbox, so it gets its own guard
+        rather than relying on the sweep having been thorough."""
+        make_user(email="admin@ravasco.com", role="admin")
+        _make_license(days_to_import=8, days_to_export=8)
+
+        send_advance_license_expiry_reports()
+
+        assert len(mail.outbox) == 2
+        for msg in mail.outbox:
+            assert "\u2014" not in msg.subject
+            assert "\u2014" not in msg.body

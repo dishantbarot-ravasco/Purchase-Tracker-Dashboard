@@ -6,7 +6,7 @@
 // genuinely differs: shipment stage (Placed/Shipped(BL)/Cleared(BOE)) instead
 // of match status, BOE/BL/country-of-origin fields, and inline-edit
 // corrections (a real mutating endpoint - see ImportPOCorrection in
-// apps/core/models.py) since Domestic has no equivalent "fix a bad value in
+// apps/core/models/) since Domestic has no equivalent "fix a bad value in
 // place" workflow yet.
 
 const IMPORT_STAGES = ['Placed', 'Shipped (BL)', 'Cleared (BOE)'];

@@ -2,7 +2,7 @@
 Regression tests for the 2026-09-04 fix: TrustedDevice used to store the
 raw plaintext device-trust token (device_token); it now stores only a
 SHA-256 hex digest (device_token_hash) - see TrustedDevice's own docstring
-(apps/core/models.py) for the full reasoning. These tests lock in that the
+(apps/core/models/) for the full reasoning. These tests lock in that the
 stored value is never the plaintext token, and that the hashed lookup path
 (register -> cookie -> is_trusted_device) still round-trips correctly.
 """

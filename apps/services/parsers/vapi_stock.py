@@ -25,7 +25,7 @@ No./Issue No./Revision No./Effective Date), not part of the table - the
 real header starts at row 6, one row lower than HRS's Stock sheet (row 6 is
 also HRS's header row, purely coincidentally the same number).
 
-See the big "RTP-Vapi" section header comment in apps/core/models.py for the
+See the big "RTP-Vapi" section header comment in apps/core/models/ for the
 full rationale behind PLANT/Supplier Name/the three extra columns this
 sheet has that HRS's doesn't. No category-divider-row convention like
 Achhad's Stock sheet - plain single-header-row shape like HRS's, with a real

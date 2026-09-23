@@ -8,7 +8,7 @@ taxable_value is used directly as the value-closeness comparator (no `or
 mir.net` fallback - RTPVapiMIREntry has no `net` field at all); its Stock
 lot uses HRS's stronger (material, vendor) gate via `supplier_name`
 (confirmed a real, distinct vendor column - see RTP-Vapi's section header
-comment in apps/core/models.py), not Achhad's material-only gate.
+comment in apps/core/models/), not Achhad's material-only gate.
 
 RTPVapiMIREntry.po_number_raw was 0% populated when this comment was first
 written - it no longer is. The plant head added a 'PURCHASE ORDER' column to

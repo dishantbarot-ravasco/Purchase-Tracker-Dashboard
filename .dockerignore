@@ -1,11 +1,27 @@
 # Mirrors .gitignore, plus .git/ itself - keeps the build context small and
 # avoids ever baking local secrets/dev artifacts into the image.
+#
+# ENFORCED, not aspirational (2026-09-23, audit pass): this file once claimed
+# to mirror .gitignore while missing `*.sqlite3.*` - the exact pattern added
+# to .gitignore after dev_smoke_test.sqlite3.bak_pre_vendorgate (real bcrypt
+# hashes + emails) got committed. That backup would have been baked into any
+# image built here. apps/api/tests/test_dockerignore_mirrors_gitignore.py now
+# fails if .gitignore has a pattern this file does not. Add new patterns to
+# BOTH files.
 .git/
+
 .venv/
 __pycache__/
 *.pyc
 .env
 staticfiles/
 *.sqlite3
-logs/
+*.sqlite3.*
 .pytest_cache/
+logs/
+_a11y_tmp/
+
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml

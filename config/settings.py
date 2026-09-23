@@ -115,6 +115,12 @@ MIDDLEWARE = [
     # on every static-file response (most of a page load).
     "config.security_headers.SecurityHeadersMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    # AFTER WhiteNoise on purpose: static responses short-circuit above this
+    # line and never reach it, so WhiteNoise keeps full control of its own
+    # (pre-compressed) files and their ETag/304 revalidation. Only view
+    # responses - the API JSON - get compressed. Skips /api/auth/ and /admin/
+    # (BREACH) - see the class docstring in config/middleware.py.
+    "config.middleware.SelectiveGZipMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     # Full CsrfViewMiddleware is NOT used app-wide: every /api/ endpoint
@@ -424,6 +430,13 @@ REPORT_CRON_SECRET = os.environ.get("REPORT_CRON_SECRET", "")
 # stays available for verifying the pipeline while matching is tuned.
 MISMATCH_REPORT_PLANT_HEADS_ENABLED = os.environ.get("MISMATCH_REPORT_PLANT_HEADS_ENABLED", "false").lower() == "true"
 
+# Readiness probe (apps/api/views.py's readiness(), added 2026-09-23): how
+# long a plant's pipeline step may go without completing before
+# /api/health/ready reports "degraded". 26h, not 1h, because the schedule is
+# hourly 09:00-20:00 IST only - the overnight gap is 13h by design - so this
+# fires on a genuinely missed DAY, not on every night.
+HEALTH_SYNC_STALE_HOURS = int(os.environ.get("HEALTH_SYNC_STALE_HOURS", "26"))
+
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
     # 30 days - backs the persistent 'remember me' pt_refresh cookie.
@@ -443,7 +456,7 @@ SIMPLE_JWT = {
     # to say these flags require rest_framework_simplejwt.token_blacklist in
     # INSTALLED_APPS - that was never true here and INSTALLED_APPS below
     # correctly does NOT include it. Revocation is backed by our own
-    # apps/core/models.py's RevokedRefreshToken table instead (written via
+    # apps/core/models/auth.py's RevokedRefreshToken table instead (written via
     # apps/services/token_revocation.py's revoke_refresh_jti()/
     # is_refresh_jti_revoked()) precisely BECAUSE token_blacklist's own
     # OutstandingToken model FKs to AUTH_USER_MODEL (Django's default

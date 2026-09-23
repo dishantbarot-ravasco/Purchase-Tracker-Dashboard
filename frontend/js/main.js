@@ -66,7 +66,7 @@
 //     one row per raw Stock lot - the backend's own per-lot data (HRS's and
 //     Vapi's real Stock sheets are lot-shaped, one row per material+vendor;
 //     Achhad's is material-shaped with no vendor column at all, see
-//     apps/core/models.py) is still kept underneath (`lots`/`vendors` on
+//     apps/core/models/) is still kept underneath (`lots`/`vendors` on
 //     each aggregated group) for the drill-down modal's per-vendor
 //     breakdown, not lost by aggregating.
 
@@ -748,7 +748,7 @@ async function loadSyncStatus() {
       // actually produces every discrepancy flag/confidence badge on this
       // dashboard) had no SyncRun tracking at all, so a real failure there
       // was invisible here even with every other source showing green -
-      // see SyncRun.Source.MATCH's own comment (apps/core/models.py).
+      // see SyncRun.Source.MATCH's own comment (apps/core/models/).
       const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM', match: 'Matching' };
       const syncingBadge = data.syncInProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '';
       // See the isAllPlants() branch above for what snapshotGapDays means
@@ -848,7 +848,7 @@ async function loadSyncStatus() {
         if (!run) return '<span class="badge stale">' + labels[src] + ': never synced</span>';
         const cls = run.status === 'success' ? '' : 'failed';
         const when = new Date(run.startedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-        // errorDetail (SyncRun.error_detail, apps/core/models.py) was
+        // errorDetail (SyncRun.error_detail, apps/core/models/) was
         // always recorded server-side on a sync failure, but never
         // returned by /sync-status until now - an admin used to see only a
         // red "failed" badge with no way to find out why short of Django
@@ -1016,7 +1016,7 @@ function currentPOs() {
 // and picking an arbitrary plant key, same 401-redirect/error-shape
 // contract as apiForPlant() in shared.js.
 async function apiImports(path, opts) {
-  const res = await fetch('/api/imports' + path, opts || {});
+  const res = await authFetch('/api/imports' + path, opts || {});
   if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Not authenticated'); }
   // See shared.js's apiForPlant() for why res.json() is guarded - same fix
   // applied here for consistency (this is the imports-router equivalent of

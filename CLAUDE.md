@@ -86,7 +86,14 @@ Every `sync_*` command accepts `--file <path>` to parse a local copy instead of 
 
 ### Layering
 
-- **`apps/core`** - models and migrations only. No views, no business logic.
+- **`apps/core`** - models and migrations only. No views, no business logic. **`apps/core/models/` is a
+  package** (split from one 3,255-line `models.py` on 2026-09-23): `hrs.py` / `achhad.py` / `vapi.py`
+  hold each plant's PO/MIR/Stock/match models, and `sync.py`, `review.py` (corrections, dismissals,
+  manual pins, category reference, flags, match reviews), `auth.py`, `reports.py`, `ledgers.py` and
+  `consumption.py` the shared ones. `__init__.py` re-exports every class - **always import from
+  `apps.core.models`**, never a submodule. It moved no model and changed no schema (`makemigrations
+  --check`: no changes; every model's migration state diffed identical); a new model goes in the file
+  for its plant or concern and gets added to `__init__.py`'s imports and `__all__`.
 - **`apps/api`** - every HTTP-facing view, under `apps/api/routers/*_views.py`. Thin: build response
   dicts from the ORM or call into `apps/services`. No business logic beyond what a view needs.
 - **`apps/services`** - Drive access (`google_client.py`), per-plant parsers (`parsers/`), the
@@ -156,9 +163,10 @@ all passing) since there is no Node here to run a JS test runner; the harness wa
 convention as the earlier `_a11y_tmp`.
 
 `shared.js` (loaded on every protected page right after `auth.js`) holds what would otherwise be
-duplicated per page: `PLANTS`/`PLANT_KEYS`, the authenticated `apiForPlant()` wrapper (401 → bounce
-to `/login.html`), `escapeHtml`/`formatInr`/`formatDateIN`, the inline-edit helpers, and the
-accessibility helpers.
+duplicated per page: `PLANTS`/`PLANT_KEYS`, the authenticated `apiForPlant()` wrapper (401 → silent
+session renewal, then `/login.html` only if renewal fails - see
+[Sessions and tokens](#sessions-and-tokens)), `escapeHtml`/`formatInr`/`formatDateIN`, the inline-edit
+helpers, and the accessibility helpers.
 
 **A header-filter keystroke re-renders the list region only - never the whole view (2026-09-19).**
 Reported as the Raw Materials search "refreshing/reloading every time I type something, it's
@@ -266,7 +274,7 @@ between them (see [CSS custom-property collisions](#css-custom-property-collisio
 
 ### Per-plant models, not a shared schema - deliberate, don't "fix" it
 
-`apps/core/models.py` has fully separate model classes per plant (`HRSDomesticPurchaseOrder` /
+`apps/core/models/` has fully separate model classes per plant (`HRSDomesticPurchaseOrder` /
 `RTPAchhadDomesticPurchaseOrder` / `RTPVapiDomesticPurchaseOrder`, and their `*POLineItem` /
 `*MIREntry` / `*RMLot` / `*RMSnapshot` / `*POMirMatch` / `*MirStockMatch` siblings) rather than one
 shared schema with a `plant` discriminator column.
@@ -538,6 +546,18 @@ position, so missed days are permanently unrecoverable. The entry point is
 `sync_trigger.run_daily_sync_all_plants()`, which also runs the company-wide RoDTEP and Advance
 Licence syncs. Admin/dashboard-triggered `sync-trigger` endpoints still exist alongside it, and a
 plant is **skipped, not queued behind**, if a manual refresh is already mid-flight for it.
+
+**`GET /api/health/ready` makes a dead worker visible (2026-09-23).** `/api/health` only proves the web
+process is up; the 13-day outage above had every page loading normally. The readiness probe
+(`apps/api/views.py`'s `readiness()`) returns 503 `degraded` naming each `plant/step` - PO CSV, MIR,
+stock, **match and consumption** (the two derive-from-DB steps that look healthy when stale) - that
+has not completed (`success`/`partial`) within `HEALTH_SYNC_STALE_HOURS` (default **26**: the schedule
+leaves a 13h overnight gap by design, so a shorter window would alarm every night), and 503 `down` if
+the DB is unreachable. Unauthenticated and minimal (step names only, no data); `authentication_classes`
+is empty so a monitor sending a stale cookie never gets a 401. **Point an external uptime monitor at it
+- nothing polls it yet.** Deliberately NOT Render's `healthCheckPath` (that stays `/`): a stale sync is
+no reason to restart the web service. On the local box it reports all 15 steps stale, which is the
+point.
 
 The schedule row is still named `"daily-sync-all-plants"` even though the cadence changed twice
 (daily → 3-hourly → hourly 9–20). **Renaming it risks creating a duplicate schedule row** - see the
@@ -1133,8 +1153,14 @@ When the two units belong to different, non-convertible families, qty/rate diffs
 `None` and `uom_mismatch` is set - **not** a nonsense percentage (migration `0044` added the field to
 all three `*MirStockMatch` models, matching what `*POMirMatch` already had). Value stays
 unit-uncompared; it is a currency amount, not a per-unit figure. It surfaces on the API as
-`uomMismatch` in `_domestic_base.py`'s `mirStockMatches`; a frontend badge for it is a natural small
-follow-up that has not been done.
+`uomMismatch` in `_domestic_base.py`'s `mirStockMatches`.
+
+**It is rendered as its own amber "units differ" badge (2026-09-23), not as "matched".** A unit clash
+leaves `is_flagged=False` (nothing was compared, so nothing mismatched), and `flags.js`'s
+`mirStockMatchHtml()` used to fall through to the green `matched` badge for it - telling the reader a
+pair had reconciled when its figures were never compared. `uomMismatchBadgeHtml()` renders it amber
+with no dismiss link (it is not a flag: nothing is known to be wrong), and the material modal's Flags
+tab gets an INFO note per affected lot (`materialUomNoteHtml()`). One live pair at Vapi on the day.
 
 ### Flag thresholds
 
@@ -1211,6 +1237,25 @@ re-render.
 
 **If you add anything to the Raw Material render path, check it is not per-pair.** The linkage loop is
 the one place in this app where an innocuous-looking `normalize...()` call is multiplied by ~800,000.
+
+### Performance: API responses are compressed, except where that is a security risk
+
+Nothing compressed the API until 2026-09-23 - WhiteNoise pre-compresses static files, but every JSON
+response went out raw. Measured on live data: Vapi's `/purchase-orders` **787 KB → 51 KB**, HRS's
+307 KB → 28 KB, `/materials` 145 KB → 11 KB (**91-94% smaller**), and "All Plants" fetches every
+plant's order book at once. Server time is ~250 ms; on a plant's link the transfer was most of the wait.
+
+`config/middleware.py`'s `SelectiveGZipMiddleware` is Django's `GZipMiddleware` minus **`/api/auth/`
+and `/admin/`** - the two places a secret sits in a response body next to reflected input (access
+tokens in the login/refresh/device-verify/Google/password bodies; Admin's CSRF token), which is what
+the BREACH attack needs. Both are small and gain nothing anyway. **If you add an endpoint that returns
+a token or OTP in its body, put it under `/api/auth/` or add its prefix to
+`UNCOMPRESSED_PATH_PREFIXES`.** It sits **after** WhiteNoise in `MIDDLEWARE` on purpose: static
+responses short-circuit above it, so WhiteNoise's own files and ETag/304 revalidation are untouched.
+`test_response_compression.py` pins all of it, including that the decompressed JSON is byte-identical.
+
+Measured and deliberately NOT done: caching `_category_reference_map()` (771 rows, ~10 ms of a ~250 ms
+request - not worth an invalidation path).
 
 ### Performance: the engine was quadratic
 
@@ -1305,13 +1350,23 @@ item**, so anything it calls is on a cubic-ish path. Profiled on one real Vapi m
   Vapi's PO numbers are bare SAP numerals. `legacy_po_matches()` checks this itself, but only after
   two calls and a `strip()` apiece; at this volume the cheap test has to come first.
 
-### The five helpers are duplicated across the three matchers on purpose
+### The five core helpers live once, in `matching_core.py`
 
 `_closeness()`, `_diff_pct()`, `_token_overlap()`, `_vendor_matches()`, `_po_number_matches()` are
-byte-for-byte identical copies in `matching.py` / `matching_achhad.py` / `matching_vapi.py` - a
-deliberate, documented duplication (see `test_matching.py`'s module docstring). **Only HRS's copy is
-directly tested**, so a change to one plant's copy without mirroring it in the other two will not be
-caught here. Mirror it.
+defined **exactly once**, in `matching_core.py`, and all three plants run that one copy through their
+`_MatchConfig`. (They were once byte-for-byte copies in `matching.py` / `matching_achhad.py` /
+`matching_vapi.py`; the Match Accuracy Programme's Phase 0 consolidated them - see
+`test_matching.py`'s module docstring, which tests the shared copy directly.) This section used to
+say "Mirror it" and was corrected 2026-09-23 after the audit found each helper defined in one file
+only. **Do not re-introduce per-plant copies** - a plant difference belongs in a `_MatchConfig`
+field, the way every existing one is expressed.
+
+**`matching_core.py` was deliberately NOT split into smaller files in the 2026-09-23 modularity pass**,
+unlike `models.py`. Test coupling was low (three private names, no monkeypatching), so it was
+feasible; it was declined because this is the one module this file, the memory notes and every
+matching investigation name functions in *by file*, it is cohesive (one algorithm, read top to
+bottom), and the gain would have been navigation only, in the code with the least tolerance for
+risk.
 
 Dismissing a match, by contrast, is genuinely identical per plant with no variation worth protecting,
 so it lives once in `match_dismiss.py`.
@@ -1381,6 +1436,16 @@ reviews across plants and tiers), not a full audit UI. It is cross-plant by desi
 router, like `imports_views.py`) and reuses each plant's own `MATCH_CONFIG` as the single source of
 truth for model classes and lot field names rather than re-deriving a second mapping. Any
 authenticated role can review - this is data collection, not a privileged write.
+
+**Role is open; plant is not (2026-09-23).** A card is real per-plant business data (PO numbers,
+vendors, rates, MIR rows), and until this date `next_review` drew cards from every plant regardless of
+`PTUser.plants` while `submit_review` accepted a verdict on any plant - so an account scoped to one
+plant could read the others through this screen. `next_review` now draws only from plants the caller
+may read and `submit_review` 403s on any other, via `user_can_access_plant()`. `review_views._ACCESS_KEY`
+maps `SyncRun.Plant` values (what `MatchReview.plant` stores) to the lowercase access keys, and
+`test_review_plant_scoping.py` fails if it ever disagrees with the three `_PlantConfig`s.
+`review_stats`/its export stay cross-plant on purpose (see `review_stats`' docstring - the accuracy of
+the app's own output, not plant data).
 
 **A card carries both rows' identifiers and the matcher's own evidence** (2026-09-22). The first
 version showed description/qty/rate/value/vendor only, which is not enough to judge the pairing:
@@ -2512,6 +2577,16 @@ behaviour rather than confirming a PO exists.
 **If you add a new read OR write endpoint, gate both role and plant** - don't leave a new endpoint
 unscoped by plant just because it's "only a read".
 
+**This is enforced now, not remembered (2026-09-23).** `apps/api/tests/test_endpoint_permission_guard.py`
+walks the AST of every `@api_view` under `apps/api/` and fails if (1) an endpoint accepting
+POST/PUT/PATCH/DELETE has no `@permission_classes` - the project default lets ANY role write, so
+omitting it is a decision that used to be invisible - or (2) an endpoint that handles a plant (a
+`plant` argument, a `"plant"` field, a `plant` variable, or a per-plant `cfg`) never calls a scoping
+helper. Legitimate exceptions live in two allow-lists **with their reason**, and a stale entry fails
+too. It exists because the review router grew to five endpoints with no plant scoping on any, despite
+the sentence above. It is a tripwire, not a proof: it cannot tell whether the scoping call is in the
+right place, only that someone thought about it.
+
 `permissions.is_allowed_email_domain()` restricts accounts and logins to `@<ALLOWED_EMAIL_DOMAIN>`
 (default `ravasco.com`), enforced at login, Google OAuth, and account creation. The delete-user gate
 reads `DELETE_USER_ALLOWED_EMAIL` (defaulting to the previously hardcoded address) so the restriction
@@ -2584,6 +2659,30 @@ also deletes every `TrustedDevice`, which is right for a panic button but wrong 
 attacker once the password changes - wiping it would re-challenge every colleague on every device for
 no security gain). The self-service path re-issues fresh cookies for the caller in the same response,
 so changing your own password doesn't sign you out of the browser you changed it in.
+
+**The browser renews its session silently (2026-09-23).** Until this date nothing in `frontend/js/`
+ever called `/api/auth/token/refresh`: every 401 went straight to `/login.html`, so the 30-day
+`pt_refresh` cookie never extended a browser session and everyone was signed out 12 hours after
+signing in - often mid-edit, with the freshness watcher's next poll doing the bouncing. `auth.js` now
+has `authFetch()`, a drop-in for `fetch()` that on a 401 calls `refreshSession()` and replays the
+request once; `apiForPlant()`, `apiImports()`, `apiReview()`, `savePoField()`, `requireAuth()`, the
+password-change calls and every `admin-page.js` call go through it. Callers keep their own 401 →
+login redirect, which now fires only when renewal genuinely failed. Three details are load-bearing:
+
+- **`refreshSession()` is single-flight.** Refresh tokens rotate and the spent one is revoked, so two
+  concurrent renewals present the same token twice and the loser is refused - signing the user out
+  exactly when several requests expire together, which is every page load after hour 12. Every caller
+  awaits the one in-flight promise.
+- **The request is replayed even when renewal fails.** With two tabs open, the other tab may have just
+  rotated the shared cookie, so this tab's renewal is refused while the cookie jar already holds a
+  valid new access token. The replay picks it up; a second 401 falls through to the login redirect.
+- **No revocation got weaker.** "Log out everywhere", a password change and an expired refresh cookie
+  all make the server refuse the refresh, so they still end the session. Replaying a POST/PATCH is safe
+  because a 401 means authentication failed before the view ran.
+
+`apps/api/tests/test_browser_session_renewal.py` pins the server side of that contract (including that
+a copied refresh token cannot resurrect a revoked session); the frontend was verified in the Browser
+pane with a stubbed `fetch` (single-flight, two-tab race, PATCH body replayed intact, every wrapper).
 
 `prune_revoked_tokens` deletes `RevokedRefreshToken` rows past their own `expires_at`. Session cookie
 age is an explicit 30 minutes (not Django's 2-week default) - that session only ever carries
@@ -2764,6 +2863,21 @@ with nothing to stop it. `ReportSendLog` (migration `0045`) holds one row per
 slip through), and **releases the claim if building/sending then raises**, so a transient failure stays
 retryable rather than permanently burning that period's slot.
 
+**Until 2026-09-23 that release only ever worked for a BUILD failure.** Every sender passed
+`fail_silently=True` to `send_mail()`, so an SMTP fault returned normally, the `except` never ran, the
+claim stayed, and the next line logged the email as sent. For the daily report that cost a day; for the
+monthly, a month; for the Advance Licence expiry alert (#11/12), whose key embeds the validity date and
+so never recurs, **one transient SMTP failure permanently suppressed the only warning that an
+authorisation was about to expire**. All three pass `fail_silently=False` now, and so does every other
+sender (security alerts, new-device notices, the mismatch report) - each already had an `except` that
+logs, so nothing can propagate into a login or a sync, but the failure is now logged as a failure (at
+ERROR for the admin alerts, so Sentry sees it) instead of as a success. Two guards: 
+`test_email_delivery_is_observable.py` fails on any `fail_silently=True` in application code, and the
+delivery-failure tests inject the fault through `apps/services/tests/refusing_email_backends.py` - a
+backend that honours `fail_silently` exactly like Django's SMTP backend. **Do not test a send failure
+by monkeypatching `send_mail` to raise**: a replaced `send_mail` raises whatever `fail_silently` says,
+so that test passes with this exact bug present.
+
 **Deliberately NOT applied to the Plant Data Correction report** - asked rather than guessed. That
 report has no fixed cadence by design, so a once-per-day lock could block an intentional same-day
 re-trigger.
@@ -2863,8 +2977,15 @@ shared lane would have waited ~4s.
   - those functions were written dependency-free for exactly this - so it runs in well under a second.
   Pipeline-level tests that *do* seed rows and run `run_full_match()` live here too.
 
-Coverage was measured at **92%** across `apps/` + `config/`, with CI enforcing `--cov-fail-under=90`
-(set below the measured value so ordinary refactors don't fail it). **Coverage is not assertion**:
+Coverage was measured at **94%** across `apps/` + `config/` (2026-09-23, up from 92%), with CI
+enforcing `--cov-fail-under=92` (two points below the measured value so ordinary refactors don't fail
+it - raised from 90 under the ratchet's own rule).
+
+**Run the suite against Postgres, never `config.settings_dev_sqlite`.** A local Postgres is available
+here. SQLite produces false failures: `SUM()` over a `decimal_places=3` column comes back as `75` on
+SQLite and `75.000` on Postgres, so `test_estimate_rows_are_marked_and_explained_in_the_email_body`
+fails on SQLite and passes in CI - which cost an investigation on 2026-09-23 before the cause was
+clear. **Coverage is not assertion**:
 `middleware.py` and `security_headers.py` were ~95% covered but never *asserted* about, so
 `test_security_headers_and_csrf_scope.py` now pins the CSP's actual contents and
 `AdminOnlyCsrfMiddleware`'s scope in both directions.
@@ -2895,6 +3016,14 @@ and leave existing violations behind; a lint gate with a known-failing baseline 
 **ESLint has never been executed locally** - there is no Node in this development environment, so
 `.eslintrc.json` is unproven and its first CI run establishes the baseline. If it reports findings, fix
 them or narrow a rule with a recorded reason; **don't delete the step to get a green build.**
+
+**Until 2026-09-23 it had never executed in CI either.** Every run since 2026-09-15 ended with exit
+code **2** - ESLint's configuration-error code, not its findings code (1) - because the config kept its
+notes in a top-level `"//"` key, which ESLint 8's schema rejects. `continue-on-error` showed the job
+green the whole time. The notes are a real `/* */` comment now (ESLint's JSON config allows comments;
+**don't move them back into a key**). The next CI run is the first genuine baseline - read that step's
+output, fix or narrow, then delete `continue-on-error`. A non-blocking step whose exit code nobody
+reads can hide a crash as easily as a finding.
 `no-undef` is deliberately OFF and the config records why: all frontend files share one global scope by
 design, so ESLint can't resolve cross-file calls without an exhaustive hand-maintained globals list
 that would itself become a second source of truth.
@@ -2904,6 +3033,20 @@ that would itself become a second source of truth.
 `check --deploy --fail-level WARNING` (plain `check --deploy` never fails a build on its own - every
 deploy check is Warning-level - so `--fail-level WARNING` is what makes it real), the test suite with
 the coverage ratchet, and ESLint.
+
+**CI runs Python 3.12 via `UV_PYTHON`, matching Render (3.12.8) and the Dockerfile.** It used to pass
+`python-version: '3.12'` to `setup-uv@v3`, an input v3 does not have: every run logged "Unexpected
+input(s) 'python-version'", ignored it, and let uv fall back to `.python-version` (3.14) - so CI tested
+on 3.14 while production ran 3.12. `UV_PYTHON` overrides `.python-version`, which stays 3.14 for local
+dev. All 276 `.py` files parse under the 3.12 grammar (`ast.parse(..., feature_version=(3, 12))`).
+
+More cross-file guards, added 2026-09-23 alongside those above:
+`test_endpoint_permission_guard.py` (see [Roles and plant scoping](#roles-and-plant-scoping)),
+`test_email_delivery_is_observable.py` (see [Outgoing email](#outgoing-email)),
+`test_dockerignore_mirrors_gitignore.py` (`.dockerignore` must exclude everything `.gitignore` does -
+it claimed to and had not, missing `*.sqlite3.*`, the pattern added after a committed backup carried
+real bcrypt hashes) and `test_no_em_dashes.py` (the 2026-09-22 sweep as a rule: it had missed an em
+dash in a live email subject and all of `.env.example`).
 
 **Still untested**: the actual Drive API calls and the `sync_*` management commands' own file-fetching.
 Verification there stays manual - real parser runs against real files, real sync/match runs against a
@@ -3015,6 +3158,15 @@ alongside each.
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [PO ↔ MIR](#po--mir) |
 | Vendors with no PO looking like matcher failures for every run | [No-PO vendors](#some-vendors-never-have-a-po--that-is-registered-not-inferred) |
 | `?format=csv` silently 404ing - DRF reserves `format` for content negotiation | [No PO behind it](#no-purchase-order-behind-it-is-three-questions-not-one-2026-09-21) |
+| `fail_silently=True` making every sender's `except` unreachable - claims kept, failures logged as "sent" | [Outgoing email](#outgoing-email) |
+| Testing a send failure by monkeypatching `send_mail`, which passes with the bug present | [Outgoing email](#outgoing-email) |
+| The frontend never calling `/token/refresh`, signing everyone out at hour 12 | [Sessions and tokens](#sessions-and-tokens) |
+| Two concurrent refreshes presenting one rotated token, the loser signing the user out | [Sessions and tokens](#sessions-and-tokens) |
+| The review queue serving every plant's cards to a plant-scoped account | [Match accuracy](#match-accuracy-manual-validation-is-required-not-optional) |
+| A top-level `"//"` key in `.eslintrc.json` crashing ESLint (exit 2), hidden by `continue-on-error` | [Testing, lint, CI](#testing-lint-ci) |
+| `setup-uv@v3` ignoring `python-version`, so CI tested 3.14 while production ran 3.12 | [Testing, lint, CI](#testing-lint-ci) |
+| A unit-clash MIR↔Stock pair shown as green "matched" though nothing was compared | [Unit normalisation](#units-are-normalised-before-comparing--on-both-pairings) |
+| Running the suite on SQLite, where a Decimal `SUM()` loses its scale and a correct test fails | [Testing, lint, CI](#testing-lint-ci) |
 | A licence number written with and without its leading zero reading as two authorisations | [Licences](#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
 | Splitting a multi-value cell without a guard, shredding an unexpected shape into tokens matching nothing | [Licences](#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
 | A Balance column equal to Sanctioned reading as "nothing spent" when the usage table is simply empty | [Licences](#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
@@ -3132,14 +3284,16 @@ elsewhere. Check the file or section it points at directly.
   collects the labelled data and its Accuracy tab reports precision/recall/F1 per plant and match type
   (`apps/services/match_accuracy.py`) - so what is missing now is reviews, not code. The panel's own
   small-sample flags say which cells are still empty.
-- **ESLint has never been executed** (no Node in this development environment). Its first CI run
-  establishes the baseline.
+- **ESLint's first real baseline is the next CI run** - it crashed on a config error until 2026-09-23
+  (see [Testing, lint, CI](#testing-lint-ci)). Read that step's output, then remove its
+  `continue-on-error`.
 - **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git HISTORY** (untracked going forward;
   `.gitignore`'s `*.sqlite3` never matched the `.bak_` suffix, now widened to `*.sqlite3.*`). It carried
   4 dev/test `pt_users` rows with bcrypt hashes. History rewriting was deliberately not attempted - if
   any of those passwords was ever reused on a real account, rotate it.
-- **`uom_mismatch` on MIR↔Stock matches has no frontend badge yet.** The data-correctness fix is done
-  and the field is on the API; rendering it is a small follow-up.
+- **The Dockerfile still runs as root.** Local-dev only (Render builds its own way), and Docker was not
+  available to verify a `USER` change on 2026-09-23 - add a non-root user plus a `chown` of `/app`
+  (`settings.py` creates `logs/` at import) where it can be tested.
 - **`prune_revoked_tokens` has a trigger endpoint but no fixed cadence** configured.
 - **`cache_page` infrastructure exists and nothing uses it** - every current endpoint is real business
   data behind auth, not the public reference data `cache_page` is safe in front of.

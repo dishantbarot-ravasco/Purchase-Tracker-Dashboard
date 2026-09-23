@@ -612,9 +612,16 @@ def send_daily_consumption_reports() -> dict:
             report = build_plant_report(plant_key, today=today)
             html_body, text_body = _render_report_email(report)
             subject = f"[Purchase Tracker] Raw Material Consumption - {cfg['label']} - {report['date']}"
+            # fail_silently=False is what makes the claim release below work
+            # for a DELIVERY failure, not only a build failure (2026-09-23,
+            # audit pass). With True, an SMTP fault returned normally, the
+            # `except` never ran, and the day's claim stayed - so a re-trigger
+            # was silently deduped and the failure never reached the log or
+            # Sentry. Same defect and same fix as advance_license_report.py's
+            # _send_one(); see that comment for the long version.
             send_mail(
                 subject=subject, message=text_body, from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=admin_emails, html_message=html_body, fail_silently=True,
+                recipient_list=admin_emails, html_message=html_body, fail_silently=False,
             )
             sent += 1
             log.info(
@@ -670,9 +677,11 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
             report = build_plant_monthly_report(plant_key, year=year, month=month)
             html_body, text_body = _render_monthly_report_email(report)
             subject = f"[Purchase Tracker] Raw Material Consumption (Monthly) - {cfg['label']} - {report['monthLabel']}"
+            # See the daily sender's comment. Matters more here: a kept claim
+            # blocks the whole month, not one day.
             send_mail(
                 subject=subject, message=text_body, from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=admin_emails, html_message=html_body, fail_silently=True,
+                recipient_list=admin_emails, html_message=html_body, fail_silently=False,
             )
             sent += 1
             log.info(

@@ -33,7 +33,7 @@ let ACTIVE_IDX = 0;
  * JSON-parse-guard shape as shared.js's apiForPlant()/main.js's apiImports(),
  * but review has no plant prefix (it spans all 3 plants from one screen). */
 async function apiReview(path, opts) {
-  const res = await fetch('/api/review' + path, opts || {});
+  const res = await authFetch('/api/review' + path, opts || {});
   if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Not authenticated'); }
   let data;
   try {
