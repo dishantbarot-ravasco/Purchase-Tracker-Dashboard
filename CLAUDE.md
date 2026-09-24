@@ -834,6 +834,72 @@ labelled-ground-truth check for the same reason nothing else on this page has on
 [Match accuracy](#match-accuracy-manual-validation-is-required-not-optional)) - review a sample of
 Madura's re-pointed pairs through `review.html` before trusting the new count over the old one.
 
+### One PO, many receipts - the PO number is the join key (2026-09-24)
+
+Reported against HRS PO 3000001174 (Carbon Black N330, 200,000 KG): four MIR receipts each name it
+in their PO column; the modal showed one MIR number (33/09) at "67.8% short". **67.8% was already
+the four receipts summed** - `_shipment_group()` had grouped them - but `*POMirMatch` is one row
+per line (`mir_entry` = the primary) and the group's membership was never saved. The other three
+read as unmatched to everything: the modal, `mir_without_po`'s "PO on file, not yet matched", and
+the MIR picker's `claimedBy`.
+
+The project owner's rule, which the matcher now follows: *"I specifically added the PO number in MIR
+for these purpose that if in case multiple shipments we can have everything matched up and one PO
+can match with multiple MIR number based on PO numbers only."*
+
+- **PO-number groups settle right after manual pins**, before rate groups and the optimal
+  assignment. Every candidate that is `po_number_matched` and whose PO column names **exactly one**
+  order we hold (`_cited_po_numbers()`, counted on the `clean_po_number()` form so an annotated order
+  is not two) counts toward that order - **no rate tolerance and no 150% cap**. A disagreeing rate or
+  quantity is flagged, never grounds to drop a delivery. Identification still applies (2-of-3), so a
+  mistyped number from another supplier's order for another material cannot attach.
+- **Several lines on one order share its receipts in two steps:** one receipt per line by
+  `_assign_pairs()` first, then every extra receipt to the line whose material it matches best. The
+  first version skipped step one and left one line of each duplicate-line order empty (2 Achhad, 2
+  Vapi).
+- **Vapi's hyphen cells (a row naming several orders) stay on the old per-row path** - one row cannot
+  be held against all of them.
+- **Every counted row is saved** in `*POMirMatch.group_entries` (M2M, migration `0059`, all six match
+  models), rebuilt whole each run by `_rebuild_group_links()` - one delete and one bulk insert per
+  table. Empty for a one-row match; readers fall back to `mir_entry`. The API serves them as
+  `matchedMirs` (`_counted_mirs()`, domestic and import); `mir_without_po._matched_mir_ids()` and both
+  `claimedBy` lookups (`_held_mir_numbers()`) read them; `flags.js`'s `matchedMirsLabelHtml()` shows
+  up to three numbers plus "+N more" with each receipt in a native `title` (a CSS tooltip is clipped
+  by `.table-wrap`, a two-axis scroll container).
+- **Groups now also sum taxable and final value** (`_ShipmentGroup.taxable/final`). Comparing one
+  delivery's taxable value against the whole order raised a false "Taxable Value Mismatch" on every
+  grouped single-line PO.
+- **Deliberately NOT done: re-forming a rate group from its remaining rows** when it loses one. Tried
+  and measured: it cost Vapi 12 matched lines, because a rate group keys on vendor + material + rate
+  alone and a rebuilt Madura EE-200 group at the flat Rs 230 swallowed VERBAL receipts of five widths
+  that other lines held one to one. The case that prompted it (Silica 3000001085) is fixed by
+  PO-number groups instead.
+
+Measured against the local copy, full `run_full_match()` before and after, inside a rolled-back
+transaction:
+
+| Plant | Lines matched | Lost | MIR receipts linked to a line | Lines with >1 receipt |
+| --- | --- | --- | --- | --- |
+| HRS | 179 -> 183 | 0 | 179 -> 302 | 45 |
+| RTP-Achhad | 179 -> 181 | 0 | 179 -> 221 | 25 |
+| RTP-Vapi | 603 -> 608 | 0 | 603 -> 796 | 66 |
+
+Run time is unchanged. Receipts whose PO column names exactly one order, and linked to it: HRS 235 of
+235, Achhad 218 of 219, Vapi 407 of 440. What is left is MIR naming the wrong order: the Achhad one is
+MIR 74/06 (2M Elastomers against an APP order), and 28 of Vapi's name another vendor's order for
+another material (MIR109/05: Jayam's reclaim rubber against Dycon's hydrocarbon resin PO). They stay in
+`mir_without_po`'s "PO on file, not yet matched" for the plant to correct.
+
+**An annotated order is matched on its bare number too** (`_names_this_po()`, used by identification,
+the candidate index and pins). The master CSV can write "1000001462 (Changed Purchase Order)" while
+MIR writes 1000001462; a token match against the annotated form never fired, so 17 Vapi receipts
+linked to nothing. `known_po_numbers()` already held both forms, so the contradiction gate knew the
+receipt named one of our orders, just never which. Render's own numbers (the audit that found this, run in Render Shell before the fix):
+COUNTED_UNSAVED single-line receipts 84 / 33 / 65. `test_po_number_groups.py` pins the rule.
+
+**Still open:** fabric ordered in ROLLS against MIR in Kgs is compared raw (PO 1077: "9999.99%"),
+because `_uom_adjust()` does not treat ROLLS vs KG as a clash.
+
 ### MIR ↔ Stock
 
 Gates differently per plant, reflecting the real schema difference: HRS and Vapi gate on

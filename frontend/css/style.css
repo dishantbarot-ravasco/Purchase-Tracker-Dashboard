@@ -309,6 +309,9 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .info-tooltip:hover::after, .info-tooltip:hover::before,
 .info-tooltip:focus-visible::after, .info-tooltip:focus-visible::before { opacity:1; visibility:visible; }
 .info-tooltip:focus-visible { outline:none; }
+/* The MIR numbers beside a match tick (flags.js's matchedMirsLabelHtml()):
+   a dotted underline says "hover for each receipt", as the title does. */
+.mir-list { cursor:help; text-decoration:underline dotted; text-underline-offset:2px; }
 
 /* ── Days Left confidence dot (Raw Material Analysis) ───────────────────
    Reuses .info-tooltip's hover/focus tooltip mechanism above (same

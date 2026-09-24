@@ -103,10 +103,15 @@ def _matched_mir_ids(match_config) -> set:
     Both models, not just the domestic one: a receipt matched to an IMPORT
     purchase order is reconciled just as completely, and omitting them would
     park real, fully-matched rows in PO_KNOWN_UNMATCHED where somebody would
-    go looking for a matcher bug that does not exist."""
+    go looking for a matcher bug that does not exist.
+
+    A row counted inside a multi-shipment group is matched too (2026-09-24):
+    only the primary is `mir_entry`, and reading that alone listed three of
+    PO 3000001174's four receipts as "PO on file, not yet matched"."""
     ids = set()
     for model in (match_config.po_mir_match_model, match_config.import_po_mir_match_model):
         ids.update(model.objects.values_list("mir_entry_id", flat=True))
+        ids.update(model.objects.values_list("group_entries__id", flat=True).exclude(group_entries__id=None))
     return ids
 
 

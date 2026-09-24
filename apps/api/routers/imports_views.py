@@ -50,6 +50,8 @@ from apps.core.models import (
 from apps.api.routers._domestic_base import (
     _category_reference_map,
     _claims_for_mir_numbers,
+    _counted_mirs,
+    _held_mir_numbers,
     _mir_row_dict,
     _po_material_categories,
 )
@@ -148,6 +150,8 @@ def _mir_match_dict(item):
         "matchId": match.id,
         "tier": match.tier,
         "matchScore": float(match.match_score),
+        # Every MIR receipt this match counted - see _domestic_base._counted_mirs().
+        "matchedMirs": _counted_mirs(match),
         "qtyDiffPct": _f(match.qty_diff_pct),
         # Over vs under delivery (2026-09-18). True = more received than
         # ordered, false = less, null = no quantity comparison was possible.
@@ -363,7 +367,7 @@ def purchase_orders(request):
             continue
         # is_active=True - see _domestic_base.py's own note.
         qs = po_model.objects.filter(is_active=True).prefetch_related(
-            "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
+            "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries",
         )
         result.extend(_po_dict(po, plant_key, label, category_reference=category_reference) for po in qs)
     result.sort(key=lambda d: d["createdDate"] or "", reverse=True)
@@ -386,7 +390,7 @@ def purchase_order_detail(request, plant, po_number):
         return Response({"error": "Unknown plant."}, status=404)
     po_model, _item_model, sr_plant, label, _match_model = resolved
     po = po_model.objects.prefetch_related(
-        "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
+        "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries",
     ).filter(po_number=po_number).first()
     if not po:
         return Response({"error": "Purchase order not found."}, status=404)
@@ -1179,10 +1183,14 @@ def _import_claims_for_mir_numbers(plant, mir_numbers):
     if not mir_numbers:
         return {}
     _po_model, item_model, _sr, _label, match_model = _PLANTS[plant]
-    matches = (
+    # Grouped rows count as held too - see _domestic_base._held_mir_numbers().
+    matches = list(
         match_model.objects
-        .filter(mir_entry__mir_no__in=mir_numbers, po_line_item__purchase_order__is_active=True)
+        .filter(Q(mir_entry__mir_no__in=mir_numbers) | Q(group_entries__mir_no__in=mir_numbers),
+                po_line_item__purchase_order__is_active=True)
         .select_related("mir_entry", "po_line_item", "po_line_item__purchase_order")
+        .prefetch_related("group_entries")
+        .distinct()
     )
     po_ids = {m.po_line_item.purchase_order_id for m in matches}
     refs = {}
@@ -1190,8 +1198,8 @@ def _import_claims_for_mir_numbers(plant, mir_numbers):
         items = list(item_model.objects.filter(purchase_order_id__in=po_ids).select_related("purchase_order"))
         refs = {item_id: ref for item_id, (_po, ref, _desc) in line_item_positions(items).items()}
     out: dict = {}
-    for m in matches:
-        out.setdefault(m.mir_entry.mir_no, []).append({
+    for m, mir_no in _held_mir_numbers(matches, mir_numbers):
+        out.setdefault(mir_no, []).append({
             "poNumber": m.po_line_item.purchase_order.po_number,
             "itemRef": refs.get(m.po_line_item_id, ""),
             "description": m.po_line_item.description,

@@ -299,6 +299,16 @@ class HRSPOMirMatch(models.Model):
 
     po_line_item = models.OneToOneField(HRSDomesticPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(HRSMIREntry, on_delete=models.CASCADE, related_name="po_matches")
+    # EVERY MIR row this match counted, when it counted more than one
+    # (2026-09-24). `mir_entry` is one row - the primary - but a PO filled
+    # by several deliveries is compared against their SUM, and until this
+    # field existed the other rows were counted and then thrown away: the
+    # PO modal showed one MIR number beside a quantity built from four, and
+    # every reader asking "is this MIR row matched?" said no for the rest.
+    # Empty for an ordinary one-row match; readers fall back to mir_entry.
+    # Rebuilt from scratch by every run_full_match(). See CLAUDE.md's
+    # "One PO, many receipts".
+    group_entries = models.ManyToManyField(HRSMIREntry, blank=True, related_name="po_group_matches")
     tier = models.CharField(max_length=20, choices=Tier.choices)
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 
@@ -665,6 +675,16 @@ class HRSImportPOMirMatch(models.Model):
 
     po_line_item = models.OneToOneField(HRSImportPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(HRSMIREntry, on_delete=models.CASCADE, related_name="import_po_matches")
+    # EVERY MIR row this match counted, when it counted more than one
+    # (2026-09-24). `mir_entry` is one row - the primary - but a PO filled
+    # by several deliveries is compared against their SUM, and until this
+    # field existed the other rows were counted and then thrown away: the
+    # PO modal showed one MIR number beside a quantity built from four, and
+    # every reader asking "is this MIR row matched?" said no for the rest.
+    # Empty for an ordinary one-row match; readers fall back to mir_entry.
+    # Rebuilt from scratch by every run_full_match(). See CLAUDE.md's
+    # "One PO, many receipts".
+    group_entries = models.ManyToManyField(HRSMIREntry, blank=True, related_name="import_po_group_matches")
     tier = models.CharField(max_length=20, choices=Tier.choices)
     match_score = models.DecimalField(max_digits=5, decimal_places=4)
 

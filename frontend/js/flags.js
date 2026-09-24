@@ -154,9 +154,37 @@ function rowFlagKeyHtml() {
 // CLAUDE.md) - the confidence badge and these diff badges are there so a
 // human still manually verifies anything that isn't a plain PO-number match,
 // not as a replacement for that review.
+// " (33/09, 35/09, 48/09 +1 more)" beside the tick, for every MIR receipt a
+// match counted (2026-09-24). One PO delivered in several shipments is
+// compared against all of them together, and the badge used to name only the
+// first - a quantity built from four receipts beside one MIR number. The
+// tooltip lists each receipt and, when the units agree, their total, so the
+// qty mismatch percentage beside it can be checked by eye. Falls back to the
+// single `fallbackNo` for a payload from before the field existed.
+const MATCHED_MIRS_SHOWN = 3;
+function matchedMirsLabelHtml(mirs, fallbackNo) {
+  const list = (mirs && mirs.length) ? mirs : (fallbackNo ? [{ mirNo: fallbackNo }] : []);
+  if (!list.length) return '';
+  const shown = list.slice(0, MATCHED_MIRS_SHOWN).map(m => m.mirNo).join(', ');
+  const more = list.length > MATCHED_MIRS_SHOWN ? ' +' + (list.length - MATCHED_MIRS_SHOWN) + ' more' : '';
+  if (list.length === 1) return ' (' + escapeHtml(shown) + ')';
+  const lines = list.map(m => 'MIR ' + m.mirNo + (m.mirDate ? ' - ' + formatDateIN(m.mirDate) : '') +
+    (m.qty != null ? ' - ' + m.qty.toLocaleString('en-IN') + ' ' + (m.uom || '') : ''));
+  const units = new Set(list.map(m => (m.uom || '').trim().toLowerCase()));
+  if (units.size === 1 && list.every(m => m.qty != null)) {
+    lines.push('Total received: ' + list.reduce((t, m) => t + m.qty, 0).toLocaleString('en-IN') + ' ' + (list[0].uom || ''));
+  }
+  // A native title, not the .info-tooltip CSS box: this sits inside
+  // .table-wrap, a two-axis scroll container that clips any positioned
+  // overlay - the CSS box lost its first lines under the table header. The
+  // confidence badge beside it uses a title for the same reason.
+  return ' <span class="mir-list" title="' + escapeHtml(list.length + ' receipts:\n' + lines.join('\n')) + '">(' +
+    escapeHtml(shown + more) + ')</span>';
+}
+
 function matchStatusHtml(it, plantKey) {
   if (!it.matched) return '-';
-  let out = '✓' + (it.matchedMirNo ? ' (' + escapeHtml(it.matchedMirNo) + ')' : '');
+  let out = '✓' + matchedMirsLabelHtml(it.matchedMirs, it.matchedMirNo);
 
   const conf = it.matchTier === 'po_number' ? 'high' : (it.matchScore != null && it.matchScore >= 0.75 ? 'medium' : 'low');
   const confTitle = { high: 'High confidence: exact PO number match', medium: 'Medium confidence: weighted score ≥ 0.75', low: 'Low confidence: weighted score below 0.75 - verify manually' }[conf]
@@ -216,7 +244,7 @@ function matchStatusHtml(it, plantKey) {
 function importMatchStatusHtml(it, plantKey) {
   const m = it.mirMatch;
   if (!m) return '-';
-  let out = '✓';
+  let out = '✓' + matchedMirsLabelHtml(m.matchedMirs, null);
   const conf = m.tier === 'po_number' ? 'high' : (m.matchScore != null && m.matchScore >= 0.75 ? 'medium' : 'low');
   const confTitle = { high: 'High confidence: exact PO number match', medium: 'Medium confidence: weighted score ≥ 0.75', low: 'Low confidence: weighted score below 0.75 - verify manually' }[conf]
     + (m.matchScore != null ? ' (score ' + m.matchScore.toFixed(2) + ')' : '');

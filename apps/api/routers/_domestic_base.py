@@ -282,6 +282,24 @@ def _data_quality_flag_dict(flag):
     }
 
 
+def _counted_mirs(match) -> list[dict]:
+    """[{mirNo, mirDate, qty, uom}, ...] for every MIR row a PO<->MIR match
+    counted, oldest first - its group_entries when it grouped several
+    shipments, otherwise its one mir_entry. Reads the prefetched
+    `group_entries` (see make_purchase_orders() and imports_views.py), so no
+    query per line. Shared with imports_views.py's _mir_match_dict()."""
+    if match is None:
+        return []
+    rows = list(match.group_entries.all()) or [match.mir_entry]
+    rows.sort(key=lambda m: (m.mir_date.isoformat() if m.mir_date else "", m.mir_no or ""))
+    return [{
+        "mirNo": m.mir_no,
+        "mirDate": m.mir_date.isoformat() if m.mir_date else None,
+        "qty": float(m.qty) if m.qty is not None else None,
+        "uom": m.uom,
+    } for m in rows]
+
+
 def _line_item_dict(item, item_ref=""):
     match = getattr(item, "mir_match", None)
     return {
@@ -323,6 +341,10 @@ def _line_item_dict(item, item_ref=""):
         "uomMismatch": bool(match and match.uom_mismatch),
         "severity": match.severity if match else None,
         "matchedMirNo": match.mir_entry.mir_no if match else None,
+        # Every MIR receipt this match counted (2026-09-24) - several when one
+        # PO was delivered in several shipments. matchedMirNo above is only
+        # the first of them, kept for the callers that read it.
+        "matchedMirs": _counted_mirs(match),
         "stockMatched": bool(match and len(match.mir_entry.stock_matches.all()) > 0),
         # Identification/Financial-Check redesign (2026-09-07, see
         # matching_core.py's module docstring): matchFlagged (is_flagged)
@@ -618,7 +640,7 @@ def make_purchase_orders(cfg: _PlantConfig):
         # displaying a renamed PO's old spelling alongside its
         # replacement, which is how this bug was reported.
         qs = cfg.po_model.objects.filter(is_active=True).prefetch_related(
-            "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches",
+            "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries",
         )
         pos = list(qs)
 
@@ -1383,23 +1405,41 @@ def _claims_for_mir_numbers(cfg, mir_numbers):
     equally worth knowing about before you take it."""
     if not mir_numbers:
         return {}
-    matches = (
+    # A row counted inside a multi-shipment group is held just as much as a
+    # primary one (2026-09-24), so both are read - see *POMirMatch.group_entries.
+    matches = list(
         cfg.po_mir_match_model.objects
-        .filter(mir_entry__mir_no__in=mir_numbers, po_line_item__purchase_order__is_active=True)
+        .filter(Q(mir_entry__mir_no__in=mir_numbers) | Q(group_entries__mir_no__in=mir_numbers),
+                po_line_item__purchase_order__is_active=True)
         .select_related("mir_entry", "po_line_item", "po_line_item__purchase_order")
+        .prefetch_related("group_entries")
+        .distinct()
     )
     # Positions are per PO, so they have to be derived from that PO's full
     # item list - the same numbering the matcher and the pin both use.
     ref_by_item_id = _item_refs_for_pos(cfg, {m.po_line_item.purchase_order_id for m in matches})
     out: dict = {}
-    for m in matches:
-        out.setdefault(m.mir_entry.mir_no, []).append({
+    for m, mir_no in _held_mir_numbers(matches, mir_numbers):
+        out.setdefault(mir_no, []).append({
             "poNumber": m.po_line_item.purchase_order.po_number,
             "itemRef": ref_by_item_id.get(m.po_line_item_id, ""),
             "description": m.po_line_item.description,
             "manuallyPinned": bool(getattr(m, "manually_pinned", False)),
         })
     return out
+
+
+def _held_mir_numbers(matches, mir_numbers):
+    """(match, mir_no) once per MIR document a match holds among
+    `mir_numbers` - its primary row and every grouped row. Shared with
+    imports_views.py's _import_claims_for_mir_numbers()."""
+    wanted = set(mir_numbers)
+    for m in matches:
+        seen = set()
+        for row in [m.mir_entry, *m.group_entries.all()]:
+            if row.mir_no in wanted and row.mir_no not in seen:
+                seen.add(row.mir_no)
+                yield m, row.mir_no
 
 
 def _item_refs_for_pos(cfg, po_ids):
