@@ -54,6 +54,7 @@ from apps.api.routers._domestic_base import (
     _held_mir_numbers,
     _mir_row_dict,
     _po_material_categories,
+    _request_bool,
     _sheet_row,
 )
 # Each plant's own MIR model, for the manual-MIR-match picker. Imports
@@ -609,7 +610,7 @@ def dismiss_import_po_mir_match(request, plant, match_id: int):
     if not user_can_edit_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
     _po_model, _item_model, _sr_plant, _label, match_model = resolved
-    dismissed = bool(request.data.get("dismissed", True))
+    dismissed = _request_bool(request.data.get("dismissed"), True)
     reason = (request.data.get("reason") or "").strip()
     match = dismiss_match(match_model, match_id, request.user, dismissed, reason)
     if not match:
@@ -642,7 +643,7 @@ def dismiss_flag(request, plant, po_number):
     flag_key = (request.data.get("flagKey") or "").strip()
     if not flag_key:
         return Response({"error": "flagKey is required."}, status=400)
-    dismissed = bool(request.data.get("dismissed", True))
+    dismissed = _request_bool(request.data.get("dismissed"), True)
     reason = (request.data.get("reason") or "").strip()
     fd = dismiss_po_flag(sr_plant, po_number, flag_key, request.user, dismissed, reason)
     return Response(_flag_dismissal_dict(fd))

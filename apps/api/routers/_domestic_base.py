@@ -124,6 +124,17 @@ class _PlantConfig:
 
 # ── Serialization helpers ─────────────────────────────────────────────────────
 
+def _request_bool(value, default: bool) -> bool:
+    """A request body flag as a real bool. bool("false") is True, so a JSON
+    boolean is used as-is and a string is read by its meaning; missing or
+    null falls back to `default`."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ("false", "0", "no", "off", "")
+    return bool(value)
+
+
 def _serialize(value):
     if isinstance(value, datetime.date):
         return value.isoformat()
@@ -1365,7 +1376,7 @@ def make_dismiss_po_mir_match(cfg: _PlantConfig):
     def dismiss_po_mir_match(request, match_id: int):
         if not user_can_edit_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
-        dismissed = bool(request.data.get("dismissed", True))
+        dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
         match = dismiss_match(cfg.po_mir_match_model, match_id, request.user, dismissed, reason)
         if not match:
@@ -1386,7 +1397,7 @@ def make_dismiss_mir_stock_match(cfg: _PlantConfig):
     def dismiss_mir_stock_match(request, match_id: int):
         if not user_can_edit_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
-        dismissed = bool(request.data.get("dismissed", True))
+        dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
         match = dismiss_match(cfg.mir_stock_match_model, match_id, request.user, dismissed, reason)
         if not match:
@@ -1410,7 +1421,7 @@ def make_dismiss_flag(cfg: _PlantConfig):
         flag_key = (request.data.get("flagKey") or "").strip()
         if not flag_key:
             return Response({"error": "flagKey is required."}, status=400)
-        dismissed = bool(request.data.get("dismissed", True))
+        dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
         fd = dismiss_po_flag(cfg.syncrun_plant, po_number, flag_key, request.user, dismissed, reason)
         return Response(_flag_dismissal_dict(fd))
@@ -1429,8 +1440,10 @@ def make_dismiss_flag(cfg: _PlantConfig):
 # and the backend is the only side that can see which other line items
 # currently hold rows of that document.
 #
-# Scoped to Domestic POs. Import POs match against the same MIR table but
-# through their own cross-plant router, and nothing has asked for it there.
+# These are the Domestic endpoints. Import POs have their own pair in
+# imports_views.py against the same MIR table; the two kinds share
+# ManualMirMatch and are kept apart by po_kind, so every query here names
+# po_kind=DOMESTIC.
 
 
 def _sheet_row(row) -> int | None:
@@ -1600,13 +1613,18 @@ def make_set_mir_match(cfg: _PlantConfig):
             return Response({"error": "Line item not found on this purchase order."}, status=404)
 
         if clear:
+            # po_kind is part of the unique key: a PO number can exist as both
+            # a Domestic and an Import order, and this must never touch the
+            # import pin.
             ManualMirMatch.objects.filter(
-                plant=cfg.syncrun_plant, po_number=po_number, item_ref=item_ref).delete()
+                plant=cfg.syncrun_plant, po_kind=ManualMirMatch.POKind.DOMESTIC,
+                po_number=po_number, item_ref=item_ref).delete()
         else:
             if mir_no and not cfg.mir_model.objects.filter(is_active=True, mir_no=mir_no).exists():
                 return Response({"error": f"No active MIR entry numbered {mir_no!r} at this plant."}, status=400)
             ManualMirMatch.objects.update_or_create(
                 plant=cfg.syncrun_plant,
+                po_kind=ManualMirMatch.POKind.DOMESTIC,
                 po_number=po_number,
                 item_ref=item_ref,
                 defaults=dict(

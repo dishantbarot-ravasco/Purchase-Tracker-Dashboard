@@ -231,8 +231,9 @@ function wireDismissLinks(container, plantKey, onDone) {
       const dismissing = el.dataset.dismiss === 'true';
       let reason = '';
       if (dismissing) {
-        reason = window.prompt('Optional note for dismissing this flag (why is it fine to ignore?):', '') || '';
-        if (reason === null) return;
+        const answer = window.prompt('Optional note for dismissing this flag (why is it fine to ignore?):', '');
+        if (answer === null) return;  // Cancel aborts; an empty note still dismisses
+        reason = answer;
       } else if (!window.confirm('Reinstate this flag? It will show as flagged again.')) {
         return;
       }

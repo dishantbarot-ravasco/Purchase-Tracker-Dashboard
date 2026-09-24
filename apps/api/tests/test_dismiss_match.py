@@ -111,6 +111,26 @@ class TestDismissPoMirMatch:
         assert self.match.dismissed_by is None
         assert self.match.dismissed_at is None
 
+    def test_string_false_reinstates_rather_than_dismissing(self):
+        """bool("false") is True, so a form-encoded or string "false" used to
+        dismiss. It must reinstate, the same as a JSON false."""
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e4@ravasco.com", role="editor"))
+        client.patch(self.url, {"dismissed": True, "reason": "test"}, format="json")
+
+        response = client.patch(self.url, {"dismissed": "false"}, format="json")
+        assert response.status_code == 200
+        self.match.refresh_from_db()
+        assert self.match.dismissed_by_override is False
+
+    def test_missing_dismissed_still_defaults_to_dismissing(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e5@ravasco.com", role="editor"))
+        response = client.patch(self.url, {"reason": "no flag sent"}, format="json")
+        assert response.status_code == 200
+        self.match.refresh_from_db()
+        assert self.match.dismissed_by_override is True
+
     def test_unknown_match_id_returns_404(self):
         """A nonexistent match id must 404 rather than error or silently no-op."""
         client = APIClient()

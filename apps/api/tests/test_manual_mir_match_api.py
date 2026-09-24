@@ -131,6 +131,30 @@ class TestSetMirMatch:
         assert res.json()["cleared"] is True
         assert ManualMirMatch.objects.count() == 0
 
+    def _import_pin(self):
+        # Same plant, PO number and line position as the domestic line - the
+        # collision po_kind exists to keep apart.
+        return ManualMirMatch.objects.create(
+            plant=SyncRun.Plant.HRS, po_kind=ManualMirMatch.POKind.IMPORT,
+            po_number=self.po.po_number, item_ref="0", mir_no="MIR-IMPORT",
+        )
+
+    def test_domestic_clear_leaves_an_import_pin_on_the_same_po_number_alone(self):
+        import_pin = self._import_pin()
+        self.client.patch(self.url, {"itemRef": "0", "mirNo": "MIR-A"}, format="json")
+        res = self.client.patch(self.url, {"itemRef": "0", "clear": True}, format="json")
+        assert res.status_code == 200
+        assert list(ManualMirMatch.objects.values_list("id", flat=True)) == [import_pin.id]
+
+    def test_domestic_pin_never_overwrites_an_import_pin_on_the_same_po_number(self):
+        import_pin = self._import_pin()
+        res = self.client.patch(self.url, {"itemRef": "0", "mirNo": "MIR-A"}, format="json")
+        assert res.status_code == 200
+        domestic = ManualMirMatch.objects.get(po_kind=ManualMirMatch.POKind.DOMESTIC)
+        assert domestic.mir_no == "MIR-A"
+        import_pin.refresh_from_db()
+        assert import_pin.mir_no == "MIR-IMPORT"
+
     def test_unknown_mir_number_is_rejected(self):
         res = self.client.patch(self.url, {"itemRef": "0", "mirNo": "NOPE"}, format="json")
         assert res.status_code == 400
