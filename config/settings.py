@@ -121,6 +121,9 @@ MIDDLEWARE = [
     # responses - the API JSON - get compressed. Skips /api/auth/ and /admin/
     # (BREACH) - see the class docstring in config/middleware.py.
     "config.middleware.SelectiveGZipMiddleware",
+    # API responses are live data - never let a plain reload replay a cached
+    # copy. See the class docstring in config/middleware.py.
+    "config.middleware.ApiNoStoreMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     # Full CsrfViewMiddleware is NOT used app-wide: every /api/ endpoint

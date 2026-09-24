@@ -774,69 +774,43 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
     (IMPORT_PO_CACHE || []).flatMap(p => (p.items || []).map(i => i.taxType)).filter(Boolean)
   )).sort();
 
+  // Same trimmed set as the Domestic modal (2026-09-24) - see po-modal.js's
+  // own comment on why vendor address/GSTIN/email/code left this tab and
+  // why "Packing and Incoterms" carries Incoterms and Payment Terms.
   const overviewHtml =
-    '<div class="field-grid">' +
+    '<div class="po-overview"><div class="field-grid">' +
       '<div class="field-block"><h4>Purchase Order</h4>' +
         plainLine('PO No', po.poNumber) +
         edit('Created on', po.createdDate, 'po_created_date', null, 'date') +
         plainLine('Plant', po.plantLabel + ' (Imports)') +
       '</div>' +
-      '<div class="field-block"><h4>Vendor</h4>' +
-        edit('Vendor Name', po.vendorName, 'vendor_name') +
-        edit('Vendor Address', po.vendorAddress, 'vendor_address') +
-        edit('Vendor GSTIN', po.vendorGstin, 'vendor_gstin') +
-        edit('Vendor Email', po.vendorEmail, 'vendor_email') +
-        edit('Vendor Code', po.vendorCode, 'vendor_code') +
-      '</div>' +
-      '<div class="field-block"><h4>Billing and Ship To</h4>' +
-        edit('Billing Address', po.billingAddress, 'billing_address') +
-        edit('Ship To', po.shipTo, 'ship_to') +
-      '</div>' +
-      '<div class="field-block"><h4>Payment and Incoterms</h4>' +
-        edit('Payment Terms', po.paymentTerms, 'payment_terms') +
-        edit('Incoterms', po.incoterms, 'incoterms') +
+      '<div class="field-block value-card"><h4>Value</h4>' +
+        edit('Total Value (in ' + (po.currency || 'PO currency') + ')', po.totalValue, 'total_value', null, 'number') +
         edit('Currency (as per PO)', po.currency, 'currency', null, 'select', currencyOptions) +
       '</div>' +
-      '<div class="field-block"><h4>Value</h4>' +
-        edit('Total Value (as per PO, in ' + (po.currency || 'PO currency') + ')', po.totalValue, 'total_value', null, 'number') +
+      '<div class="field-block"><h4>Vendor</h4>' +
+        edit('Vendor Name', po.vendorName, 'vendor_name') +
+      '</div>' +
+      '<div class="field-block"><h4>Packing and Incoterms</h4>' +
+        edit('Incoterms', po.incoterms, 'incoterms') +
+        edit('Payment Terms', po.paymentTerms, 'payment_terms') +
+      '</div>' +
+      '<div class="field-block"><h4>Billing Address</h4>' +
+        edit('Billing Address', po.billingAddress, 'billing_address') +
+      '</div>' +
+      '<div class="field-block"><h4>Shipping Address</h4>' +
+        edit('Ship To', po.shipTo, 'ship_to') +
       '</div>' +
     '</div>' +
-    '<div class="field-block full-width mt-14"><h4>Remarks</h4>' + edit('Remarks', po.remarks, 'remarks') + '</div>';
+    '<div class="field-block full-width mt-14"><h4>Remarks</h4>' + edit('Remarks', po.remarks, 'remarks') + '</div></div>';
 
-  const itemsHtml = (po.items || []).length
-    ? '<table class="items-table"><thead><tr><th>Item Id</th><th>Description</th><th>HSN</th><th>Qty (As Per PO)</th><th>Qty (As Per BOE)</th><th>Variance</th><th>Net Price</th><th>Net Value</th><th>MIR Match</th><th>Material Analysis</th></tr></thead><tbody>' +
-        po.items.map(it => {
-          const variance = it.qtyDiscrepancyPct != null ? it.qtyDiscrepancyPct.toFixed(1) + '%' : '-';
-          // Only 3 possible states, not an arbitrary color - a fixed CSS
-          // class per state instead of a dynamic style="..." attribute.
-          const varianceCls = it.qtyDiscrepancy ? (it.qtyDiscrepancyPct >= 0 ? 'variance-up' : 'variance-down') : '';
-          // "change" opens the shared MIR picker (po-modal.js) against this
-          // router's own endpoint - an import line addresses itself by the
-          // same position-based `itemRef` a domestic one does, even though
-          // it carries a real item_id, since the sync recreates every line
-          // on change either way. See ManualMirMatch.
-          const pinned = !!it.manuallyPinned;
-          const changeLink = canEditField(plantKey) && it.itemRef !== undefined
-            ? ' <span class="mir-change-link" role="button" tabindex="0"' +
-              ' data-item-ref="' + escapeHtml(String(it.itemRef)) + '"' +
-              ' data-description="' + escapeHtml(it.description || '') + '"' +
-              ' data-current-mir="' + escapeHtml((it.mirMatch && it.mirMatch.mirNo) || '') + '"' +
-              ' data-pinned="' + (pinned ? '1' : '0') + '">change</span>'
-            : '';
-          const pinnedTag = pinned
-            ? ' <span class="pinned-tag" title="This MIR match was set by hand and is not re-decided by the matcher.">manual</span>'
-            : '';
-          return '<tr><td>' + escapeHtml(it.itemId || '-') + '</td><td>' + escapeHtml(it.description || '') + '</td><td>' + escapeHtml(it.hsn || '-') +
-            '</td><td>' + (it.qtyAsPerPo != null ? it.qtyAsPerPo : '-') + ' ' + escapeHtml(it.uom || '') +
-            '</td><td>' + (it.qtyAsPerBoe != null ? it.qtyAsPerBoe : '-') + ' ' + escapeHtml(it.uom || '') +
-            '</td><td class="fw-700 ' + varianceCls + '">' + variance + '</td>' +
-            '<td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') + '</td><td>' + (it.netValue != null ? formatInr(it.netValue) : '-') + '</td>' +
-            '<td>' + importMatchStatusHtml(it, plantKey) + pinnedTag + changeLink + '</td>' +
-            '<td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in Stock</span>') + '</td></tr>';
-        }).join('') + '</tbody></table>'
-    : '<div class="fs-12-5 text-slate-soft">No line items recorded.</div>';
-  const itemsTabHtml = '<div class="section-title mt-0">Material / Product Details</div>' +
-    '<div class="table-wrap">' + itemsHtml + '</div>' +
+  // One reconciliation card per line (po-reconcile.js). An import line is
+  // compared as the matcher compares it: BOE quantity, INR rate and landed
+  // INR value against MIR, with the PO quantity and the currency conversion
+  // shown alongside. The PO-vs-BOE variance the old table carried is a
+  // separate, customs-side check and stays on the Flags tab.
+  const reconLines = (po.items || []).map((it, i) => importReconLine(it, i + 1, po, plantKey));
+  const itemsTabHtml = reconItemsHtml(reconLines, plantKey, 'INR') +
     // Rendered once and moved under whichever line's "change" was
     // clicked - shared with the Domestic modal (po-modal.js).
     mirPickerHtml();
@@ -903,7 +877,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
     '<span class="close-btn">&times;</span></div>' +
     '<div class="modal-tabs" id="importPoModalTabs" role="tablist">' +
       '<div class="modal-tab' + (importModalTab === 'overview' ? ' active' : '') + '" data-itab="overview" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'overview') + '">Overview</div>' +
-      '<div class="modal-tab' + (importModalTab === 'items' ? ' active' : '') + '" data-itab="items" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'items') + '">Items</div>' +
+      '<div class="modal-tab' + (importModalTab === 'items' ? ' active' : '') + '" data-itab="items" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'items') + '">Items &amp; MIR</div>' +
       '<div class="modal-tab' + (importModalTab === 'shipment' ? ' active' : '') + '" data-itab="shipment" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'shipment') + '">Shipment &amp; License</div>' +
       '<div class="modal-tab' + (importModalTab === 'flags' ? ' active' : '') + '" data-itab="flags" tabindex="0" role="tab" aria-selected="' + (importModalTab === 'flags') + '">Flags &amp; Corrections</div>' +
     '</div>' +
@@ -937,6 +911,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   }, poNumber, () => onImportFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
+  applyDynamicStyles(body); // the reconciliation cards' progress bars
   body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () => trackBlNumber(el2.dataset.trackBl));
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
 }

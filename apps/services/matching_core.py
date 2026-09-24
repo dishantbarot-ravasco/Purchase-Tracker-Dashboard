@@ -1524,6 +1524,56 @@ def _uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b):
     return qty_a_norm, qty_b_norm, rate_a_norm, rate_b_norm, False
 
 
+def received_against_line(config: _MatchConfig, po_uom: str, mir_rows: list) -> dict:
+    """What a PO line's matched MIR rows add up to, in the PO LINE's own
+    unit - for the PO modal's side-by-side Ordered / Received reconciliation
+    (2026-09-24), so a reader sees "200,000 KG ordered, 64,400 KG received"
+    rather than only a percentage.
+
+    Converts exactly as _uom_adjust() does: same family scales by the two
+    units' factors (MT against KG), an unrecognized unit on either side
+    passes through unconverted, and different families (KG against NOS)
+    make that row not comparable. Value is config.mir_value() - the same
+    pre-tax figure the matcher compares against the PO's net value.
+
+    Returns {"qty", "value", "rate", "comparable", "rows": [{"mir",
+    "qtyInPoUnit", "value"}]}. `qty`/`rate` are None when any row is not
+    comparable, `value` when any row lacks one - a partial sum presented as a
+    total is exactly the misreading this view exists to prevent."""
+    family_po, factor_po = normalize_uom(po_uom)
+    rows_out, total_qty, total_value = [], Decimal("0"), Decimal("0")
+    comparable, value_complete = True, True
+    for mir in mir_rows:
+        family_mir, factor_mir = normalize_uom(mir.uom)
+        if mir.qty is None:
+            qty_po = None
+        elif family_po is None or family_mir is None:
+            qty_po = Decimal(mir.qty)
+        elif family_po != family_mir:
+            qty_po = None
+        else:
+            qty_po = Decimal(mir.qty) * factor_mir / factor_po
+        value = config.mir_value(mir)
+        if qty_po is None:
+            comparable = False
+        else:
+            total_qty += qty_po
+        if value is None:
+            value_complete = False
+        else:
+            total_value += Decimal(value)
+        rows_out.append({"mir": mir, "qtyInPoUnit": qty_po, "value": value})
+    qty = total_qty if comparable and rows_out else None
+    value = total_value if value_complete and rows_out else None
+    return {
+        "qty": qty,
+        "value": value,
+        "rate": (value / qty) if (qty and value is not None) else None,
+        "comparable": comparable,
+        "rows": rows_out,
+    }
+
+
 def _score_components(config: _MatchConfig, item: _Matchable, mir) -> tuple[list[tuple[Decimal, Decimal | None]], bool]:
     """Returns [(weight, score_or_None), ...] for the three financial-
     closeness factors used to pick the best candidate among an

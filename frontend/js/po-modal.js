@@ -67,76 +67,57 @@ async function openPoModal(compositeKey) {
   }
   if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
 
-  const itemsHtml = (po.items || []).length
-    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>Delivery Date</th><th>MIR Matched</th><th>Material Analysis</th></tr></thead><tbody>' +
-        po.items.map(it => {
-          // Domestic line items still have no stable item_id in a meaningful
-          // number of real rows (see DomesticPOCorrection's docstring), so
-          // per-FIELD item edits remain unwired - only PO-level fields are
-          // editable (Overview tab below). The MIR match is the exception:
-          // it is addressed by `itemRef`, the line's position within its PO,
-          // which matching_core and the API both derive the same way (see
-          // ManualMirMatch) precisely because item_id cannot be trusted.
-          const pinned = !!it.manuallyPinned;
-          const changeLink = canEditField(plantKey) && it.itemRef !== undefined
-            ? ' <span class="mir-change-link" role="button" tabindex="0"' +
-              ' data-item-ref="' + escapeHtml(String(it.itemRef)) + '"' +
-              ' data-description="' + escapeHtml(it.description || '') + '"' +
-              ' data-current-mir="' + escapeHtml(it.matchedMirNo || '') + '"' +
-              ' data-pinned="' + (pinned ? '1' : '0') + '">change</span>'
-            : '';
-          const pinnedTag = pinned
-            ? ' <span class="pinned-tag" title="This MIR match was set by hand and is not re-decided by the matcher.">manual</span>'
-            : '';
-          return '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '-') +
-          '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
-          '</td><td>' + escapeHtml(formatDateIN(it.deliveryDate)) + '</td><td>' +
-          matchStatusHtml(it, plantKey) + pinnedTag + changeLink +
-          '</td><td>' + (materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in Stock</span>') +
-          '</td></tr>';
-        }).join('') + '</tbody></table>'
-    : '<div class="fs-12-5 text-slate-soft">No line items recorded.</div>';
+  // One reconciliation card per line (po-reconcile.js): Ordered / Received /
+  // Difference in real figures, every matched MIR receipt listed. The MIR
+  // "change" link and the dismiss link live on the card, and still carry the
+  // same data-* attributes wireMirPicker()/wireDismissLinks() read. Domestic
+  // line items have no stable item_id, so per-field item edits stay unwired -
+  // see DomesticPOCorrection; the MIR pin is addressed by `itemRef` instead.
+  const reconLines = (po.items || []).map((it, i) => domesticReconLine(it, i + 1, po, plantKey));
 
   const currencyOptions = distinctFieldValues(PURCHASE_ORDERS_BY_PLANT[plantKey] || [], p => p.currency);
   const incotermsOptions = distinctFieldValues(PURCHASE_ORDERS_BY_PLANT[plantKey] || [], p => p.incoterms);
   const taxTypeOptions = distinctFieldValues(PURCHASE_ORDERS_BY_PLANT[plantKey] || [], p => p.taxType);
 
+  // Trimmed to what the project owner asked for (2026-09-24): PO details,
+  // vendor name, billing and shipping address, packing and incoterms, value,
+  // remarks. Vendor address/GSTIN/email/code are still synced and still
+  // correctable - they simply are not what a reader opens this for. The
+  // master CSV has no packing column, so that card carries Incoterms and
+  // Payment Terms, the two delivery terms the PO does record.
   const overviewHtml =
-    '<div class="field-grid">' +
+    '<div class="po-overview"><div class="field-grid">' +
       '<div class="field-block"><h4>Purchase Order</h4>' +
         '<div class="line">PO No: ' + escapeHtml(po.poNumber) + '</div>' +
         edit('Created on', po.createdDate, 'po_created_date', null, 'date') +
         '<div class="line">Plant: ' + escapeHtml(PLANTS[plantKey].label) + '</div>' +
       '</div>' +
-      '<div class="field-block"><h4>Vendor</h4>' +
-        edit('Vendor Name', po.vendorName, 'vendor_name') +
-        edit('Vendor Address', po.vendorAddress, 'vendor_address') +
-        edit('Vendor GSTIN', po.vendorGstin, 'vendor_gstin') +
-        edit('Vendor Email', po.vendorEmail, 'vendor_email') +
-        edit('Vendor Code', po.vendorCode, 'vendor_code') +
-      '</div>' +
-      '<div class="field-block"><h4>Billing and Ship To</h4>' +
-        edit('Billing Address', po.billingAddress, 'billing_address') +
-        edit('Ship To', po.shipTo, 'ship_to') +
-      '</div>' +
-      '<div class="field-block"><h4>Packing and Incoterms</h4>' +
-        edit('Payment Terms', po.paymentTerms, 'payment_terms') +
-        edit('Incoterms', po.incoterms, 'incoterms', null, 'select', incotermsOptions) +
+      '<div class="field-block value-card"><h4>Value</h4>' +
+        edit('Total Value', po.totalValue, 'total_value', null, 'number') +
+        edit('Total Inclusive Value', po.totalInclTax, 'total_inclusive_value', null, 'number') +
+        edit('Tax Type', po.taxType, 'tax_type', null, 'select', taxTypeOptions) +
         edit('Currency', po.currency, 'currency', null, 'select', currencyOptions) +
       '</div>' +
-      '<div class="field-block"><h4>Value</h4>' +
-        edit('Total Value', po.totalValue, 'total_value', null, 'number') +
-        edit('Tax Type', po.taxType, 'tax_type', null, 'select', taxTypeOptions) +
-        edit('Total Inclusive Value', po.totalInclTax, 'total_inclusive_value', null, 'number') +
+      '<div class="field-block"><h4>Vendor</h4>' +
+        edit('Vendor Name', po.vendorName, 'vendor_name') +
+      '</div>' +
+      '<div class="field-block"><h4>Packing and Incoterms</h4>' +
+        edit('Incoterms', po.incoterms, 'incoterms', null, 'select', incotermsOptions) +
+        edit('Payment Terms', po.paymentTerms, 'payment_terms') +
+      '</div>' +
+      '<div class="field-block"><h4>Billing Address</h4>' +
+        edit('Billing Address', po.billingAddress, 'billing_address') +
+      '</div>' +
+      '<div class="field-block"><h4>Shipping Address</h4>' +
+        edit('Ship To', po.shipTo, 'ship_to') +
       '</div>' +
     '</div>' +
     '<div class="field-block full-width mt-14"><h4>Remarks</h4>' +
-      edit('Remarks', po.remarks, 'remarks') + '</div>';
+      edit('Remarks', po.remarks, 'remarks') + '</div></div>';
 
   const itemStockHtml =
     '<div class="mb-block-16">' + miniStepperHtml(po) + '</div>' +
-    '<div class="section-title mt-0">Material / Product Details</div>' +
-    '<div class="table-wrap">' + itemsHtml + '</div>' +
+    reconItemsHtml(reconLines, plantKey, '') +
     // Rendered once per modal and moved under whichever line's "change" was
     // clicked - same behaviour as the correction box (shared.js).
     mirPickerHtml();
@@ -228,6 +209,7 @@ async function openPoModal(compositeKey) {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   }, poNumber, () => onDomesticFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onDomesticFieldSaved(plantKey, poNumber));
+  applyDynamicStyles(body); // the reconciliation cards' progress bars
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
 }
 
@@ -366,7 +348,7 @@ async function applyMirMatch(opts) {
 function closeMirPicker() {
   const panel = document.getElementById('mirPicker');
   if (panel) panel.hidden = true;
-  document.querySelectorAll('tr.mir-editing').forEach(tr => tr.classList.remove('mir-editing'));
+  document.querySelectorAll('.mir-editing').forEach(el => el.classList.remove('mir-editing'));
   MIR_PICKER = null;
 }
 
@@ -383,15 +365,16 @@ async function loadMirCandidates(q) {
   }
 }
 
-/** Opens the picker for one line item, anchored under its own table. */
+/** Opens the picker for one line item, anchored under its own card (or,
+ * for a caller still rendering a table, under that table). */
 function openMirPicker(ctx) {
   const panel = document.getElementById('mirPicker');
   if (!panel) return;
   MIR_PICKER = ctx;
   panel.hidden = false;
-  const anchor = ctx.rowEl && (ctx.rowEl.closest('.table-wrap') || ctx.rowEl.closest('table'));
+  const anchor = ctx.rowEl && (ctx.rowEl.closest('.recon-line') || ctx.rowEl.closest('.table-wrap') || ctx.rowEl.closest('table'));
   if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(panel, anchor.nextSibling);
-  document.querySelectorAll('tr.mir-editing').forEach(tr => tr.classList.remove('mir-editing'));
+  document.querySelectorAll('.mir-editing').forEach(el => el.classList.remove('mir-editing'));
   if (ctx.rowEl) ctx.rowEl.classList.add('mir-editing');
   document.getElementById('mirPickerFor').textContent =
     'Line ' + (Number(ctx.itemRef) + 1) + ': ' + (ctx.description || 'no description') +
@@ -447,7 +430,7 @@ function wireMirPicker(container, api, poNumber, onDone) {
       description: el.dataset.description,
       currentMir: el.dataset.currentMir || '',
       manuallyPinned: el.dataset.pinned === '1',
-      rowEl: el.closest('tr'),
+      rowEl: el.closest('.recon-line') || el.closest('tr'),
       onDone: onDone,
     });
     el.onclick = open;

@@ -29,6 +29,11 @@ SelectiveGZipMiddleware
 -----------------------
 Compresses API responses, except where compression is a security risk. See
 the class docstring.
+
+ApiNoStoreMiddleware
+--------------------
+Makes every /api/ response uncacheable unless its view says otherwise. See
+the class docstring.
 """
 from django.middleware.csrf import CsrfViewMiddleware
 from django.middleware.gzip import GZipMiddleware
@@ -118,3 +123,35 @@ class SelectiveGZipMiddleware(GZipMiddleware):
         if request.path.startswith(self.UNCOMPRESSED_PATH_PREFIXES):
             return response
         return super().process_response(request, response)
+
+
+class ApiNoStoreMiddleware:
+    """Default every /api/ response to `Cache-Control: no-store` (2026-09-24).
+
+    Project owner: after Refresh Data or a sync, "the user is kind of in a
+    black spot whether the data refreshed or not until I hard reload it". A
+    hard reload differs from a plain one in exactly one way: it bypasses the
+    browser's HTTP cache. An API response with no Cache-Control is left to
+    each browser's own caching heuristics, so a plain reload may replay a
+    stored copy while a hard one fetches fresh - the same symptom already
+    fixed for /sync-status alone on 2026-09-09 (see _domestic_base.py's
+    make_sync_status()). Every endpoint here returns live data; none of it
+    is meant to be reused, so the rule belongs on the whole prefix rather
+    than on one view at a time.
+
+    Invisible in local dev, which is why it survived: NoCacheMiddleware
+    stamps no-store on everything when DEBUG is on, so the dev server never
+    behaved like production. `setdefault` leaves any view that sets its own
+    Cache-Control in charge.
+    """
+
+    API_PREFIX = "/api/"
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        if request.path.startswith(self.API_PREFIX):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response

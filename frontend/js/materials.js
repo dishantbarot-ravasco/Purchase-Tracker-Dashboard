@@ -36,9 +36,13 @@ async function loadAndRenderMaterials() {
     await Promise.all([ensureMaterialsLoaded(selectedPlantKeys()), ensurePOsLoaded(selectedPlantKeys())]);
     el.innerHTML = '<div id="materialsContent"></div>';
     renderMaterialsView();
+    return true;
   } catch (e) {
     console.error('loadAndRenderMaterials failed:', e);
     el.innerHTML = '<div class="noaccess">Couldn\'t load material data right now. Please refresh, or contact IT if this keeps happening.</div>';
+    // main.js's loadAndRender() reads this so a refresh never reports
+    // success over this error panel.
+    return false;
   }
 }
 

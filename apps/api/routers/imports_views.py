@@ -62,7 +62,7 @@ from apps.api.routers._domestic_base import (
 from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 # The matcher's own line numbering, imported rather than re-derived so the
 # API and matching_core can never disagree about what a pin addresses.
-from apps.services.matching_core import line_item_positions
+from apps.services.matching_core import _import_rate_value_inr, line_item_positions
 from apps.services import bl_tracking
 from apps.services import import_flags as flags
 from apps.services import license_links
@@ -146,12 +146,20 @@ def _mir_match_dict(item):
     match = getattr(item, "mir_match", None)
     if match is None:
         return None
+    counted_mirs, received = _counted_mirs(match, item.uom)
+    ordered_rate_inr, ordered_value_inr = _import_rate_value_inr(item)
     return {
         "matchId": match.id,
         "tier": match.tier,
         "matchScore": float(match.match_score),
-        # Every MIR receipt this match counted - see _domestic_base._counted_mirs().
-        "matchedMirs": _counted_mirs(match),
+        # Every MIR receipt this match counted and what they total, in this
+        # line's own unit - see _domestic_base._counted_mirs().
+        "matchedMirs": counted_mirs,
+        "received": received,
+        # The ordered side in INR, exactly as the matcher compares it (MIR is
+        # always INR) - see matching_core._import_rate_value_inr().
+        "orderedRateInr": _f(ordered_rate_inr),
+        "orderedValueInr": _f(ordered_value_inr),
         "qtyDiffPct": _f(match.qty_diff_pct),
         # Over vs under delivery (2026-09-18). True = more received than
         # ordered, false = less, null = no quantity comparison was possible.

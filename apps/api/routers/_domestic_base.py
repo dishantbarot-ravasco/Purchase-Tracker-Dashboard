@@ -282,26 +282,67 @@ def _data_quality_flag_dict(flag):
     }
 
 
-def _counted_mirs(match) -> list[dict]:
-    """[{mirNo, mirDate, qty, uom}, ...] for every MIR row a PO<->MIR match
-    counted, oldest first - its group_entries when it grouped several
-    shipments, otherwise its one mir_entry. Reads the prefetched
-    `group_entries` (see make_purchase_orders() and imports_views.py), so no
-    query per line. Shared with imports_views.py's _mir_match_dict()."""
+_MATCH_CONFIG_BY_MODEL: dict = {}
+
+
+def _match_config_for(match):
+    """The matcher config (apps/services/matching*.py MATCH_CONFIG) a match
+    row belongs to, found from its own model class - so the Domestic and the
+    cross-plant Import serializers can share _counted_mirs() without each
+    threading a plant through. Imported lazily, as the routers never import
+    the matchers at module load."""
+    if not _MATCH_CONFIG_BY_MODEL:
+        from apps.services import matching, matching_achhad, matching_vapi
+        for c in (matching.MATCH_CONFIG, matching_achhad.MATCH_CONFIG, matching_vapi.MATCH_CONFIG):
+            _MATCH_CONFIG_BY_MODEL[c.po_mir_match_model] = c
+            _MATCH_CONFIG_BY_MODEL[c.import_po_mir_match_model] = c
+    return _MATCH_CONFIG_BY_MODEL[type(match)]
+
+
+def _f_or_none(v):
+    return float(v) if v is not None else None
+
+
+def _counted_mirs(match, po_uom: str = "") -> tuple[list[dict], dict | None]:
+    """(rows, received) for a PO<->MIR match - every MIR row it counted,
+    oldest first, and what they add up to in the PO line's own unit.
+
+    Rows are its group_entries when it grouped several shipments, otherwise
+    its one mir_entry, each with its own qty/rate/value and invoice so the PO
+    modal can reconcile line by line (2026-09-24). `received` comes from
+    matching_core.received_against_line(), the matcher's own unit conversion,
+    so the two can never disagree about MT against KG. Reads the prefetched
+    `group_entries` (make_purchase_orders() / imports_views.py), so no query
+    per line. Shared with imports_views.py's _mir_match_dict()."""
     if match is None:
-        return []
+        return [], None
+    from apps.services.matching_core import received_against_line
+
     rows = list(match.group_entries.all()) or [match.mir_entry]
     rows.sort(key=lambda m: (m.mir_date.isoformat() if m.mir_date else "", m.mir_no or ""))
-    return [{
-        "mirNo": m.mir_no,
-        "mirDate": m.mir_date.isoformat() if m.mir_date else None,
-        "qty": float(m.qty) if m.qty is not None else None,
-        "uom": m.uom,
-    } for m in rows]
+    totals = received_against_line(_match_config_for(match), po_uom, rows)
+    out = [{
+        "mirNo": r["mir"].mir_no,
+        "mirDate": r["mir"].mir_date.isoformat() if r["mir"].mir_date else None,
+        "invoiceNo": getattr(r["mir"], "invoice_no", "") or "",
+        "qty": _f_or_none(r["mir"].qty),
+        "uom": r["mir"].uom,
+        "qtyInPoUnit": _f_or_none(r["qtyInPoUnit"]),
+        "rate": _f_or_none(r["mir"].rate),
+        "value": _f_or_none(r["value"]),
+    } for r in totals["rows"]]
+    received = {
+        "qty": _f_or_none(totals["qty"]),
+        "rate": _f_or_none(totals["rate"]),
+        "value": _f_or_none(totals["value"]),
+        "comparable": totals["comparable"],
+    }
+    return out, received
 
 
 def _line_item_dict(item, item_ref=""):
     match = getattr(item, "mir_match", None)
+    counted_mirs, received = _counted_mirs(match, item.uom)
     return {
         # The line's address for a manual MIR pin (matching_core's
         # line_item_positions()). Domestic line items have no stable id of
@@ -344,7 +385,11 @@ def _line_item_dict(item, item_ref=""):
         # Every MIR receipt this match counted (2026-09-24) - several when one
         # PO was delivered in several shipments. matchedMirNo above is only
         # the first of them, kept for the callers that read it.
-        "matchedMirs": _counted_mirs(match),
+        # Every MIR receipt this match counted and what they total, in this
+        # line's own unit - see _counted_mirs().
+        "matchedMirs": counted_mirs,
+        "received": received,
+        "netValue": _f_or_none(item.net_value),
         "stockMatched": bool(match and len(match.mir_entry.stock_matches.all()) > 0),
         # Identification/Financial-Check redesign (2026-09-07, see
         # matching_core.py's module docstring): matchFlagged (is_flagged)

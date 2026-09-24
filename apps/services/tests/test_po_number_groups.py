@@ -193,3 +193,29 @@ class TestAnnotatedOrders:
         # needs the PO number to count at all.
         assert _saved_mir_nos(match) == ["C-1", "C-2"]
         assert match.po_number_matched is True
+
+
+@pytest.mark.django_db
+class TestPoModalPayload:
+    def test_every_counted_receipt_and_the_received_total_are_served(self):
+        """The PO modal's reconciliation cards read these (2026-09-24)."""
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        from apps.api.routers import hrs_views
+        from apps.api.tests.factories import make_user
+
+        po = _po("3000009950")
+        _item(po, qty=Decimal("3000"), net_price=Decimal("100"))
+        _mir("P-1", "1", po_number_raw=po.po_number, qty=Decimal("1000"))
+        _mir("P-2", "2", po_number_raw=po.po_number, qty=Decimal("1500"))
+        run_full_match()
+
+        request = APIRequestFactory().get("/api/purchase-orders")
+        force_authenticate(request, user=make_user(email="payload@ravasco.com", role="viewer"))
+        [served] = [p for p in hrs_views.purchase_orders(request).data["purchaseOrders"] if p["poNumber"] == po.po_number]
+        item = served["items"][0]
+
+        assert [m["mirNo"] for m in item["matchedMirs"]] == ["P-1", "P-2"]
+        assert item["matchedMirs"][1]["value"] == 150000.0
+        assert item["received"] == {"qty": 2500.0, "rate": 100.0, "value": 250000.0, "comparable": True}
+        assert item["netValue"] == 300000.0

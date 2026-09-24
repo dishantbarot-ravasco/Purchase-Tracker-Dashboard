@@ -145,136 +145,13 @@ function rowFlagKeyHtml() {
   '</div>';
 }
 
-// Separate qty/rate/value badges (previously one blended "review" flag) so a
-// normal partial delivery (qty differs, rate/value line up) doesn't read the
-// same as a genuine price/value discrepancy. Value is suppressed when qty is
-// already flagged, since value = qty x rate - a value gap fully explained by
-// a partial-delivery qty gap isn't a separate problem worth a second badge.
-// Matches are algorithmic (PO-number exact match or a weighted score, see
-// CLAUDE.md) - the confidence badge and these diff badges are there so a
-// human still manually verifies anything that isn't a plain PO-number match,
-// not as a replacement for that review.
-// " (33/09, 35/09, 48/09 +1 more)" beside the tick, for every MIR receipt a
-// match counted (2026-09-24). One PO delivered in several shipments is
-// compared against all of them together, and the badge used to name only the
-// first - a quantity built from four receipts beside one MIR number. The
-// tooltip lists each receipt and, when the units agree, their total, so the
-// qty mismatch percentage beside it can be checked by eye. Falls back to the
-// single `fallbackNo` for a payload from before the field existed.
-const MATCHED_MIRS_SHOWN = 3;
-function matchedMirsLabelHtml(mirs, fallbackNo) {
-  const list = (mirs && mirs.length) ? mirs : (fallbackNo ? [{ mirNo: fallbackNo }] : []);
-  if (!list.length) return '';
-  const shown = list.slice(0, MATCHED_MIRS_SHOWN).map(m => m.mirNo).join(', ');
-  const more = list.length > MATCHED_MIRS_SHOWN ? ' +' + (list.length - MATCHED_MIRS_SHOWN) + ' more' : '';
-  if (list.length === 1) return ' (' + escapeHtml(shown) + ')';
-  const lines = list.map(m => 'MIR ' + m.mirNo + (m.mirDate ? ' - ' + formatDateIN(m.mirDate) : '') +
-    (m.qty != null ? ' - ' + m.qty.toLocaleString('en-IN') + ' ' + (m.uom || '') : ''));
-  const units = new Set(list.map(m => (m.uom || '').trim().toLowerCase()));
-  if (units.size === 1 && list.every(m => m.qty != null)) {
-    lines.push('Total received: ' + list.reduce((t, m) => t + m.qty, 0).toLocaleString('en-IN') + ' ' + (list[0].uom || ''));
-  }
-  // A native title, not the .info-tooltip CSS box: this sits inside
-  // .table-wrap, a two-axis scroll container that clips any positioned
-  // overlay - the CSS box lost its first lines under the table header. The
-  // confidence badge beside it uses a title for the same reason.
-  return ' <span class="mir-list" title="' + escapeHtml(list.length + ' receipts:\n' + lines.join('\n')) + '">(' +
-    escapeHtml(shown + more) + ')</span>';
-}
+// The PO modals' per-line MIR badge (matchStatusHtml / importMatchStatusHtml,
+// with its qty/rate/value "Δ%" badges) was replaced on 2026-09-24 by the
+// reconciliation cards in po-reconcile.js, which show the real Ordered /
+// Received / Difference figures and every matched MIR receipt instead. The
+// confidence badge and dismiss link moved there (reconControlsHtml()).
 
-function matchStatusHtml(it, plantKey) {
-  if (!it.matched) return '-';
-  let out = '✓' + matchedMirsLabelHtml(it.matchedMirs, it.matchedMirNo);
-
-  const conf = it.matchTier === 'po_number' ? 'high' : (it.matchScore != null && it.matchScore >= 0.75 ? 'medium' : 'low');
-  const confTitle = { high: 'High confidence: exact PO number match', medium: 'Medium confidence: weighted score ≥ 0.75', low: 'Low confidence: weighted score below 0.75 - verify manually' }[conf]
-    + (it.matchScore != null ? ' (score ' + it.matchScore.toFixed(2) + ')' : '');
-  out += ' <span class="conf-badge conf-' + conf + '" title="' + escapeHtml(confTitle) + '">' + conf + '</span>';
-
-  const qtyFlag = it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT;
-  const rateFlag = it.rateDiffPct != null && it.rateDiffPct > FLAG_PCT;
-  const uomFlag = !!it.uomMismatch;
-  // Match Accuracy Programme fix 3.F (2026-09-05): value gets a small
-  // absolute-currency epsilon on the backend now (matching_core.py's
-  // VALUE_FLAG_EPSILON), not zero tolerance like qty/rate - re-deriving a
-  // value flag here from `valueDiffPct > FLAG_PCT` would ignore that
-  // epsilon and show a badge the backend no longer considers a real
-  // discrepancy. `it.matchFlagged` (match.is_flagged) is the backend's own
-  // decision; once qty/rate/uom are accounted for, any remaining
-  // matchFlagged must be the value epsilon firing.
-  const valueFlag = !!it.matchFlagged && !qtyFlag && !rateFlag && !uomFlag;
-  const anyFlag = qtyFlag || rateFlag || valueFlag || uomFlag;
-  // Dismissed (apps/services/match_dismiss.py) keeps the badges visible but
-  // muted, rather than hiding them - a reviewer who dismissed a flag should
-  // still be able to see what was dismissed and why, not lose the record.
-  const dismissedCls = it.dismissedByOverride ? ' dismissed' : '';
-  // Severity band (fix 3.F) as a CSS modifier class - see style.css's
-  // .flag-badge.sev-material/.sev-minor/.sev-rounding - so a reviewer's eye
-  // is pulled toward material discrepancies first instead of hunting for
-  // them among rounding noise, without hiding or discarding anything.
-  const severityCls = it.severity ? ' sev-' + it.severity : '';
-  // Badge text uses 1 decimal place, not toFixed(0) - with zero tolerance
-  // (see FLAG_PCT's own comment) a genuinely flagged 0.1% diff would
-  // otherwise round to "Δ0%", which reads as "no difference" and
-  // contradicts the badge existing at all.
-  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity mismatch in MIR: qty received differs from PO qty by ' + it.qtyDiffPct.toFixed(2) + '% - likely a partial/over delivery, verify manually">qty Δ' + it.qtyDiffPct.toFixed(1) + '%</span>';
-  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate mismatch in MIR: rate differs from PO rate by ' + it.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + it.rateDiffPct.toFixed(1) + '%</span>';
-  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="UOM mismatch in MIR: quantity is recorded in a different unit family on each side (e.g. mass vs count) - not directly comparable, verify manually">uom mismatch</span>';
-  if (valueFlag && it.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value mismatch in MIR: value differs from PO value by ' + it.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + it.valueDiffPct.toFixed(1) + '%</span>';
-
-  if (anyFlag && it.dismissedByOverride) {
-    out += ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (it.dismissedBy ? ' by ' + it.dismissedBy : '') + (it.dismissedReason ? ': ' + it.dismissedReason : '')) + '">dismissed</span>';
-    if (canEditField(plantKey)) {
-      out += ' <span class="dismiss-link" data-match-id="' + it.matchId + '" data-match-type="po-mir" data-dismiss="false">reinstate</span>';
-    }
-  } else if (anyFlag && canEditField(plantKey)) {
-    out += ' <span class="dismiss-link" data-match-id="' + it.matchId + '" data-match-type="po-mir" data-dismiss="true">dismiss</span>';
-  }
-  return out;
-}
-
-// Import-PO equivalent of matchStatusHtml() above, for an import line
-// item's nested `mirMatch` object (apps/api/routers/imports_views.py's
-// _mir_match_dict()) instead of the flat matched/matchTier/... fields
-// domestic line items carry - same badge shapes/colors, just reading from
-// a nested object since imports_views.py is one cross-plant router rather
-// than three per-plant ones (see that module's docstring) and couldn't
-// reuse the exact flat shape without colliding with its own PO-level
-// fields (dataQualityFlags, etc.) that already use similar names.
-function importMatchStatusHtml(it, plantKey) {
-  const m = it.mirMatch;
-  if (!m) return '-';
-  let out = '✓' + matchedMirsLabelHtml(m.matchedMirs, null);
-  const conf = m.tier === 'po_number' ? 'high' : (m.matchScore != null && m.matchScore >= 0.75 ? 'medium' : 'low');
-  const confTitle = { high: 'High confidence: exact PO number match', medium: 'Medium confidence: weighted score ≥ 0.75', low: 'Low confidence: weighted score below 0.75 - verify manually' }[conf]
-    + (m.matchScore != null ? ' (score ' + m.matchScore.toFixed(2) + ')' : '');
-  out += ' <span class="conf-badge conf-' + conf + '" title="' + escapeHtml(confTitle) + '">' + conf + '</span>';
-
-  const qtyFlag = m.qtyDiffPct != null && m.qtyDiffPct > FLAG_PCT;
-  const rateFlag = m.rateDiffPct != null && m.rateDiffPct > FLAG_PCT;
-  const uomFlag = !!m.uomMismatch;
-  // See matchStatusHtml()'s own comment (fix 3.F) - value flags per the
-  // backend's epsilon-aware isFlagged, not a client-side re-derivation.
-  const valueFlag = !!m.isFlagged && !qtyFlag && !rateFlag && !uomFlag;
-  const anyFlag = qtyFlag || rateFlag || valueFlag || uomFlag;
-  const dismissedCls = m.dismissedByOverride ? ' dismissed' : '';
-  const severityCls = m.severity ? ' sev-' + m.severity : '';
-  if (qtyFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Quantity mismatch in MIR: qty (as per BOE) differs from MIR qty by ' + m.qtyDiffPct.toFixed(2) + '% - verify manually">qty Δ' + m.qtyDiffPct.toFixed(1) + '%</span>';
-  if (rateFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Rate mismatch in MIR: rate (converted to INR) differs from MIR rate by ' + m.rateDiffPct.toFixed(2) + '% - verify manually">rate Δ' + m.rateDiffPct.toFixed(1) + '%</span>';
-  if (uomFlag) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="UOM mismatch in MIR: quantity is recorded in a different unit family on each side - not directly comparable, verify manually">uom mismatch</span>';
-  if (valueFlag && m.valueDiffPct != null) out += ' <span class="flag-badge' + dismissedCls + severityCls + '" title="Value mismatch in MIR: value differs from MIR value by ' + m.valueDiffPct.toFixed(2) + '%, beyond the rounding epsilon and not explained by qty - verify manually">value Δ' + m.valueDiffPct.toFixed(1) + '%</span>';
-
-  if (anyFlag && m.dismissedByOverride) {
-    out += ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (m.dismissedReason ? ': ' + m.dismissedReason : '')) + '">dismissed</span>';
-    if (canEditField(plantKey)) out += ' <span class="dismiss-link" data-match-id="' + m.matchId + '" data-match-type="import-po-mir" data-plant="' + plantKey + '" data-dismiss="false">reinstate</span>';
-  } else if (anyFlag && canEditField(plantKey)) {
-    out += ' <span class="dismiss-link" data-match-id="' + m.matchId + '" data-match-type="import-po-mir" data-plant="' + plantKey + '" data-dismiss="true">dismiss</span>';
-  }
-  if (m.stockMatched) out += ' <span class="conf-badge conf-high" title="The MIR entry this item matched to also has a Stock match">stocked</span>';
-  return out;
-}
-
-// MIR<->Stock equivalent of matchStatusHtml() above, for a Stock lot's
+// MIR<->Stock match badges, for a Stock lot's
 // `mirStockMatches` (apps/api/routers/*_views.py's _lot_dict()) - a lot can
 // carry more than one MIR<->Stock pairing, so this renders one badge per
 // flagged match rather than a single blended one.
@@ -330,8 +207,8 @@ function uomMismatchBadgeHtml(lot) {
   return ' <span class="conf-badge conf-medium" title="' + escapeHtml(tip) + '">units differ</span>';
 }
 
-// Wires every .dismiss-link under `container` (rendered by matchStatusHtml()
-// above, or the equivalent MIR<->Stock badge in the materials modal, or
+// Wires every .dismiss-link under `container` (rendered by po-reconcile.js's reconControlsHtml()
+// on each PO line card, or the equivalent MIR<->Stock badge in the materials modal, or
 // poFlagHtml()'s PO-level Quantity/Rate-Value/Data-Quality flags below) to
 // PATCH the right dismiss endpoint and then re-run `onDone` to refresh
 // whatever view is showing the flag. A plain confirm()/prompt() for the

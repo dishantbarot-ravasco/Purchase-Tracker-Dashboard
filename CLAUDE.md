@@ -162,6 +162,43 @@ a silent no-op while it lived inside. Verified with a throwaway in-browser harne
 all passing) since there is no Node here to run a JS test runner; the harness was deleted after, same
 convention as the earlier `_a11y_tmp`.
 
+**Every refresh says what it did - the status line beside "Refresh Data" (2026-09-24).** Project
+owner: *"whenever I click on refresh the user is kind of in a black spot whether the data refreshed
+or not until I hard reload it, same for the syncing too"*. Every path worked; none said so. A
+viewer's refresh re-reads the DB and usually changes nothing on screen, identical to a click that did
+not register; an admin sync sat on "Syncing..." for minutes, then re-rendered silently (its completion
+went to `announce()`, i.e. screen readers only) and called itself complete even when a step failed;
+the freshness watcher left no trace at all. `main.js`'s `setRefreshStatus()` now fills one
+`#refreshStatus` line on every path: "Loaded at", "Reloaded at ... - already up to date (last Drive
+sync ...)" vs "- new data since your last load" (decided by `DATA_STAMP` before/after), "Syncing from
+Drive... N of M steps done (elapsed)", then "Synced at ... - N rows updated from Drive" / "Drive files
+had no changes" / **"with errors in MIR (RTP-Vapi)"** with each step's `errorDetail` in the tooltip,
+and "Updated automatically at ..." from the watcher. Text that stays put, not a toast: someone who
+looks back a minute later still gets the answer. The `alert()`s on these paths are gone.
+
+- **Progress counts steps against a baseline** (`syncBaseline()`: each step's `startedAt` before the
+  trigger), so it counts only this sync's runs. It can end below the total when a plant was already
+  mid-sync (409); completion is decided by the in-progress flags, never by the count.
+- **Only Drive-reading steps feed "rows updated"** (`DRIVE_SYNC_STEPS`); match/consumption re-derive
+  every run, so their counts do not mean the source changed.
+- **A sync already running when the page loads is picked up** (`resumeSyncIfRunning()`), for every
+  role: button locked, elapsed time only, since steps finished before load cannot be told apart.
+- **`loadAndRender()` returns whether the view loaded**, so no path reports "refreshed" over the
+  view's own error panel.
+
+Two real defects came with it. **The Import tab's Refresh re-rendered the same orders**: both manual
+paths cleared only the domestic PO and materials caches, never `IMPORT_PO_CACHE` (the watcher did),
+so there a reload genuinely was the only way to see new data; all three paths now call
+`clearDataCaches()`, which also drops `IMPORT_PO_DETAIL_CACHE`. And **a failed sync trigger left
+`MANUAL_SYNC_RUNNING` set**, switching the freshness watcher off for the rest of the session, because
+only `pollSyncUntilDone()` ever released it. Server side, `config/middleware.py`'s
+`ApiNoStoreMiddleware` defaults every `/api/` response to `Cache-Control: no-store` (a view's own
+header wins): only `/sync-status` had it, and the dev server hid the gap because DEBUG's
+`NoCacheMiddleware` stamps no-store on everything. `test_api_no_store.py` tests the class directly for
+that reason. The frontend was verified with a throwaway in-browser harness driving the real `init()`,
+refresh button and sync poll against a stubbed API (every message above, the import refetch, the
+resumed sync, the released flag); deleted after.
+
 `shared.js` (loaded on every protected page right after `auth.js`) holds what would otherwise be
 duplicated per page: `PLANTS`/`PLANT_KEYS`, the authenticated `apiForPlant()` wrapper (401 → silent
 session renewal, then `/login.html` only if renewal fails - see
@@ -896,6 +933,39 @@ MIR writes 1000001462; a token match against the annotated form never fired, so 
 linked to nothing. `known_po_numbers()` already held both forms, so the contradiction gate knew the
 receipt named one of our orders, just never which. Render's own numbers (the audit that found this, run in Render Shell before the fix):
 COUNTED_UNSAVED single-line receipts 84 / 33 / 65. `test_po_number_groups.py` pins the rule.
+
+#### The PO modal reconciles in real figures (2026-09-24)
+
+Project owner: *"along with MIR match show all the MIR's row matched and instead of delta in red or
+green show the real values too for immediate reconciliation"*, and a trimmed Overview (PO details,
+vendor name, billing and shipping address, packing and incoterms, value, remarks - Domestic and
+Import alike; vendor address/GSTIN/email/code are still synced and correctable, just not shown).
+
+The line table with its `qty Δ67.8%` badges is gone from both modals. `frontend/js/po-reconcile.js`
+renders one card per line - status pill, progress bar, an **Ordered / Received / Difference** table
+for qty, rate and value in real numbers, and every matched MIR receipt (date, invoice, qty, rate,
+value, total) - from two adapters (`domesticReconLine()` / `importReconLine()`) over one renderer.
+`matchStatusHtml()`/`importMatchStatusHtml()` were deleted with it; the confidence badge, dismiss
+link and "change MIR" moved to `reconControlsHtml()` with the same `data-*` attributes, and the MIR
+picker now anchors under the card (`.recon-line`).
+
+- **The received side is computed server-side**, by `matching_core.received_against_line()` - the
+  matcher's own unit conversion, in the PO line's unit - and served as `received` plus per-row
+  `matchedMirs` (qty, `qtyInPoUnit`, rate, value, invoice). Summing in the browser would let a PO in
+  MT and receipts in KG disagree with the flags beside them. A row whose unit cannot convert makes
+  `qty`/`rate` null rather than a partial sum.
+- **Imports compare what the matcher compares for qty and rate** (BOE quantity; `orderedRateInr` =
+  net price x exchange rate) **but not for value**: the card uses PO net value x exchange rate. The
+  matcher's landed `total_inclusive_value` includes duty while MIR's value is pre-tax, which read
+  "15% short" on Vapi 1000001569 whose qty matched and whose rate was 8% HIGHER.
+- **The summary's "fulfilled" percentage caps each line at its own ordered value** - one line
+  over-delivered 3x must not make an order whose other lines received nothing read 100% (Vapi
+  1000001517, where one MIR row, MIR67/06, carries all three PTFE widths' 405 SQMTR against line 2).
+- Exact rupees (`reconMoney()`), deliberately not `formatInr()`, for the same reason as review cards.
+- The master CSVs have **no packing column**; "Packing and Incoterms" carries Incoterms and Payment
+  Terms.
+- Also fixed on the way: the Import modal's "change" link read `mirMatch.mirNo`, which the API never
+  sent, so its picker never knew the current MIR.
 
 **Still open:** fabric ordered in ROLLS against MIR in Kgs is compared raw (PO 1077: "9999.99%"),
 because `_uom_adjust()` does not treat ROLLS vs KG as a clash.

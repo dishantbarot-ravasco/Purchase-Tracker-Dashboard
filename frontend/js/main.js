@@ -86,11 +86,14 @@
 //                        formatMonthLabel, trailingPriceAvg).
 //   - js/flags.js      - PO status (STATUS_LABELS/computeStatus/
 //                        miniStepperHtml/materialStepperHtml), match-
-//                        confidence badges (matchStatusHtml and friends),
+//                        confidence badges (mirStockMatchHtml and friends),
 //                        and Data Quality Flag rendering/categorization -
 //                        shared by every list/modal below.
 //   - js/po-list.js    - renderPoList() (Domestic Purchases KPI row/chart/
 //                        table).
+//   - js/po-reconcile.js - the PO line reconciliation cards (Ordered /
+//                        Received / Difference, every matched MIR
+//                        receipt) both PO modals render.
 //   - js/po-modal.js   - openPoModal() (Domestic PO detail modal).
 //   - js/import-po.js  - renderImportPoList()/openImportPoModal() (Import
 //                        Purchases list + detail modal).
@@ -412,6 +415,8 @@ async function init() {
         // than a bare role check so an editor scoped to zero plants (an
         // unusual but possible PTUser.plants config) doesn't see a button that
         // would just open to an all-disabled plant list.
+        // The answer to "did my refresh do anything?" - see setRefreshStatus().
+        '<span id="refreshStatus" class="refresh-status"></span>' +
         (PLANT_KEYS.some(canEditField) ? '<button type="button" id="exportDataBtn" class="refresh-btn">Export Data</button>' : '') +
         '<button type="button" id="refreshDataBtn" class="refresh-btn">Refresh Data</button>' +
       '</div>' +
@@ -451,33 +456,196 @@ async function init() {
     const btn = refreshBtn;
     btn.disabled = true;
     btn.textContent = 'Refreshing…';
+    setRefreshStatus('busy', 'Reloading from the database…');
+    const stampBefore = DATA_STAMP;
     try {
-      PURCHASE_ORDERS_BY_PLANT = {};
-      MATERIALS_BY_PLANT = {};
+      clearDataCaches();
       await loadSyncStatus();
-      await loadAndRender();
+      const ok = await loadAndRender();
+      // A viewer's refresh only re-reads the database, so on most clicks the
+      // page comes back identical - which is exactly why it used to feel like
+      // nothing happened. Saying WHICH of the two outcomes it was is the fix:
+      // new data arrived, or you were already looking at the latest sync.
+      if (!ok) {
+        setRefreshStatus('error', 'Could not reload the data. Try again in a moment.');
+      } else if (stampBefore && DATA_STAMP && stampBefore !== DATA_STAMP) {
+        setRefreshStatus('ok', 'Reloaded at ' + clockTime(new Date()) + ' - new data since your last load');
+      } else {
+        const last = latestSyncTime(DATA_STAMP);
+        setRefreshStatus('ok', 'Reloaded at ' + clockTime(new Date()) + ' - already up to date'
+          + (last ? ' (last Drive sync ' + clockTime(last) + ')' : ''));
+      }
     } catch (e) {
       // Real bug, found and fixed 2026-09-04: this used to only
       // console.error() and silently reset the button back to "Refresh
       // Data" - a viewer clicking it would see the button briefly say
       // "Refreshing…" then flip right back with nothing to show for it and
       // no indication anything went wrong, indistinguishable from "already
-      // up to date". Matches the admin branch's own triggerRealSyncAndRefresh()
-      // failure handling just above (alert() - this page has no toast
-      // system, unlike admin.html).
+      // up to date". The status line beside the button now carries it.
       console.error('Refresh Data failed:', e);
-      alert('Could not refresh the data right now: ' + (e.message || 'unknown error'));
+      setRefreshStatus('error', 'Could not refresh the data: ' + (e.message || 'unknown error'));
     } finally {
       btn.disabled = false;
       btn.textContent = 'Refresh Data';
     }
   };
-  await loadAndRender();
+  if (await loadAndRender()) setRefreshStatus('idle', 'Loaded at ' + clockTime(new Date()));
   // After the first render, so the modal opens over a finished page (and so
   // a miss can report itself into #viewContent rather than into a spinner).
   if (deepLink) await openDeepLinkTarget(deepLink);
   // From here on the page keeps itself current - see startFreshnessWatch().
   startFreshnessWatch();
+  // A sync started before this page loaded (a reload mid-sync, a colleague,
+  // the hourly schedule) used to leave the button saying "Refresh Data" with
+  // only a small pulsing badge hinting otherwise. Pick the wait back up.
+  resumeSyncIfRunning(refreshBtn);
+}
+
+// ── Refresh / sync status line (2026-09-24) ─────────────────────────────
+//
+// Project owner: "whenever I click on refresh the user is kind of in a black
+// spot whether the data refreshed or not until I hard reload it, same for the
+// syncing too". Every refresh path already worked; none of them SAID so:
+//   - a viewer's refresh re-reads the database, so it usually changes
+//     nothing on screen - identical to a click that failed to register;
+//   - an admin's sync sat on "Syncing…" for minutes with no progress, then
+//     re-rendered silently (the completion message went to screen readers
+//     only), and reported "complete" even when a step had failed;
+//   - the freshness watcher re-rendered with no visible trace at all.
+// One line beside the button now always says what the page last did and
+// when. It is deliberately text, not a toast: it stays put, so someone who
+// looks back a minute later still gets the answer.
+const DOMESTIC_SYNC_STEPS = ['po_csv', 'mir', 'stock', 'match', 'consumption', 'import_po_csv'];
+const SYNC_STEP_LABELS = {
+  po_csv: 'PO', mir: 'MIR', stock: 'RM', match: 'Matching',
+  consumption: 'Consumption', import_po_csv: 'Import PO',
+};
+// Steps that read a Drive file - the only ones whose rowsChanged means "the
+// source had new data". match/consumption re-derive from the DB every run.
+const DRIVE_SYNC_STEPS = ['po_csv', 'mir', 'stock', 'import_po_csv'];
+
+function clockTime(d) {
+  return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+}
+
+// kind: 'idle' | 'busy' | 'ok' | 'warn' | 'error'. textContent only - the
+// error branch can carry a server message.
+function setRefreshStatus(kind, text, title) {
+  const el = document.getElementById('refreshStatus');
+  if (!el) return;
+  el.className = 'refresh-status ' + kind;
+  el.textContent = text;
+  if (title) el.title = title; else el.removeAttribute('title');
+  // A repeat of the same message ("already up to date" twice) must still
+  // visibly register as a fresh answer, so the highlight is restarted.
+  if (kind === 'ok' || kind === 'warn' || kind === 'error') {
+    void el.offsetWidth;
+    el.classList.add('flash');
+  }
+}
+
+// The newest sync time inside a DATA_STAMP ("hrs:<iso>|achhad:<iso>").
+function latestSyncTime(stamp) {
+  if (!stamp) return null;
+  const iso = stamp.split('|').map(s => s.slice(s.indexOf(':') + 1)).filter(Boolean).sort().pop();
+  return iso ? new Date(iso) : null;
+}
+
+// Clears every client-side data cache, so the next render refetches. The two
+// manual refresh paths used to clear only the domestic PO and materials
+// caches, so on the Import tab "Refresh Data" re-rendered the SAME import
+// orders it already held - the one place a reload really was the only way
+// to see new data. One helper so the three paths cannot drift apart again.
+function clearDataCaches() {
+  PURCHASE_ORDERS_BY_PLANT = {};
+  MATERIALS_BY_PLANT = {};
+  IMPORT_PO_CACHE = null;
+  IMPORT_PO_DETAIL_CACHE = {};
+}
+
+// Each selected plant's latest startedAt per step, taken before triggering,
+// so progress counts only steps THIS sync ran. null on failure - progress is
+// a nicety and must never block the sync itself.
+async function syncBaseline(targetKeys) {
+  try {
+    const results = await Promise.all(targetKeys.map(key => apiForPlant(key, '/sync-status')));
+    const baseline = {};
+    targetKeys.forEach((key, i) => {
+      baseline[key] = {};
+      DOMESTIC_SYNC_STEPS.forEach(src => {
+        const run = results[i].sync && results[i].sync[src];
+        baseline[key][src] = run ? run.startedAt : null;
+      });
+    });
+    return baseline;
+  } catch (e) {
+    console.error('syncBaseline failed:', e);
+    return null;
+  }
+}
+
+// The steps a sync has finished since `baseline`, from one round of
+// /sync-status results. Each entry: {key, src, run}.
+function stepsDoneSince(baseline, targetKeys, results) {
+  const done = [];
+  targetKeys.forEach((key, i) => {
+    DOMESTIC_SYNC_STEPS.forEach(src => {
+      const run = results[i].sync && results[i].sync[src];
+      if (run && run.finishedAt && run.startedAt !== baseline[key][src]) done.push({ key, src, run });
+    });
+  });
+  return done;
+}
+
+// "MIR (RTP-Vapi)" - the plant goes in brackets because its label can
+// itself contain a comma ("HRS, Silvassa").
+function stepName(d) {
+  return SYNC_STEP_LABELS[d.src] + ' (' + PLANTS[d.key].label + ')';
+}
+
+function elapsedLabel(ms) {
+  const s = Math.round(ms / 1000);
+  return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+}
+
+// What a finished sync did, in one line: failures first (they are the thing
+// to act on), otherwise whether Drive actually had anything new.
+function syncOutcome(done) {
+  const failed = done.filter(d => d.run.status !== 'success' && d.run.status !== 'partial');
+  const at = clockTime(new Date());
+  if (failed.length) {
+    const detail = failed.map(d => stepName(d) + ': ' + (d.run.errorDetail || 'failed')).join('\n');
+    return { kind: 'error', text: 'Sync finished at ' + at + ' with errors in ' + failed.map(stepName).join(', ') + ' - hover for details', title: detail };
+  }
+  const changed = done.filter(d => DRIVE_SYNC_STEPS.includes(d.src))
+    .reduce((sum, d) => sum + (d.run.rowsChanged || 0), 0);
+  return {
+    kind: 'ok',
+    text: 'Synced at ' + at + ' - ' + (changed > 0
+      ? changed.toLocaleString('en-IN') + ' row' + (changed === 1 ? '' : 's') + ' updated from Drive'
+      : 'Drive files had no changes, data is up to date'),
+  };
+}
+
+// Called once after the first render. If any selected plant is mid-sync,
+// lock the button and wait exactly as if this page had started it - for
+// every role, since a viewer's reload during a sync would only re-read
+// half-written data anyway.
+async function resumeSyncIfRunning(btn) {
+  const targetKeys = selectedPlantKeys();
+  let running;
+  try {
+    const results = await Promise.all(targetKeys.map(key => apiForPlant(key, '/sync-status')));
+    running = results.some(r => r.syncInProgress);
+  } catch (e) {
+    return;  // the badges already show "Sync status unavailable"
+  }
+  if (!running || MANUAL_SYNC_RUNNING) return;
+  btn.disabled = true;
+  MANUAL_SYNC_RUNNING = true;
+  // No baseline: steps finished before this page loaded cannot be told
+  // apart from older runs, so this wait shows elapsed time only.
+  await pollSyncUntilDone(btn, targetKeys, null, { resumed: true });
 }
 
 // Admin-only real Drive sync (2026-09-04) - triggers every currently
@@ -492,10 +660,12 @@ async function triggerRealSyncAndRefresh(btn) {
   const targetKeys = selectedPlantKeys();
   btn.disabled = true;
   btn.textContent = 'Starting sync…';
+  setRefreshStatus('busy', 'Starting the Drive sync…');
   // The watcher would otherwise re-render mid-sync, on each source finishing
   // in turn - correct but noisy, and it would fight this function's own
   // reload at the end. pollSyncUntilDone() clears the flag in its `finally`.
   MANUAL_SYNC_RUNNING = true;
+  const baseline = await syncBaseline(targetKeys);
   try {
     await Promise.all(targetKeys.map(async key => {
       try {
@@ -543,10 +713,13 @@ async function triggerRealSyncAndRefresh(btn) {
     console.error('sync-trigger failed:', e);
     btn.disabled = false;
     btn.textContent = 'Refresh Data';
-    alert('Could not start the sync: ' + (e.message || 'unknown error'));
+    // Released here too: pollSyncUntilDone() never runs on this path, and
+    // leaving the flag set would switch the freshness watcher off for good.
+    MANUAL_SYNC_RUNNING = false;
+    setRefreshStatus('error', 'Could not start the sync: ' + (e.message || 'unknown error'));
     return;
   }
-  await pollSyncUntilDone(btn, targetKeys);
+  await pollSyncUntilDone(btn, targetKeys, baseline);
 }
 
 // Polls each triggered plant's /sync-status for syncInProgress:false every
@@ -559,9 +732,9 @@ async function triggerRealSyncAndRefresh(btn) {
 // the badges will pick up the finished state next time anything reloads them.
 const SYNC_POLL_INTERVAL_MS = 4000;
 const SYNC_POLL_TIMEOUT_MS = 5 * 60 * 1000;
-async function pollSyncUntilDone(btn, targetKeys) {
+async function pollSyncUntilDone(btn, targetKeys, baseline, opts) {
   try {
-    return await _pollSyncUntilDone(btn, targetKeys);
+    return await _pollSyncUntilDone(btn, targetKeys, baseline, opts || {});
   } finally {
     // Always, including on the timeout path and on a thrown error: leaving
     // this set would silently disable the freshness watcher for the rest of
@@ -570,14 +743,21 @@ async function pollSyncUntilDone(btn, targetKeys) {
   }
 }
 
-async function _pollSyncUntilDone(btn, targetKeys) {
+async function _pollSyncUntilDone(btn, targetKeys, baseline, opts) {
   const startedAt = Date.now();
+  const totalSteps = targetKeys.length * DOMESTIC_SYNC_STEPS.length;
+  const verb = opts.resumed ? 'A Drive sync is running' : 'Syncing from Drive';
+  let done = [];
   btn.textContent = 'Syncing…';
-  // The button's own label change is the only progress signal a sighted user
-  // gets; announce() gives the same information to a screen reader, which
-  // otherwise sits in silence through a multi-minute Drive sync with no way
-  // to tell whether the click registered. See shared.js's announce().
-  if (typeof announce === 'function') announce('Sync started. This can take a few minutes.');
+  setRefreshStatus('busy', verb + '… this can take a few minutes');
+  // The status line is what a sighted user watches; announce() gives the
+  // same information to a screen reader, which otherwise sits in silence
+  // through a multi-minute Drive sync. See shared.js's announce().
+  if (typeof announce === 'function') {
+    announce(opts.resumed
+      ? 'A Drive sync is already running. The dashboard will update when it finishes.'
+      : 'Sync started. This can take a few minutes.');
+  }
   while (Date.now() - startedAt < SYNC_POLL_TIMEOUT_MS) {
     await new Promise(resolve => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
     let stillRunning;
@@ -595,26 +775,47 @@ async function _pollSyncUntilDone(btn, targetKeys) {
       stillRunning = results.some(r => r.syncInProgress) ||
         targetKeys.some(key => importsStatus.sync[key] && importsStatus.sync[key].syncInProgress) ||
         importsStatus.rodtepInProgress || importsStatus.advanceLicenseInProgress;
+      if (baseline) done = stepsDoneSince(baseline, targetKeys, results);
     } catch (e) {
       console.error('Polling sync-status failed:', e);
       continue; // one bad poll shouldn't abandon the wait - try again next tick
     }
     if (!stillRunning) {
-      PURCHASE_ORDERS_BY_PLANT = {};
-      MATERIALS_BY_PLANT = {};
+      clearDataCaches();
       await loadSyncStatus();
-      await loadAndRender();
+      const ok = await loadAndRender();
       btn.disabled = false;
       btn.textContent = 'Refresh Data';
-      if (typeof announce === 'function') announce('Sync complete. The dashboard has been updated.');
+      // Without a baseline (a resumed wait) there is no telling which runs
+      // were this sync's, so it reports the reload rather than guessing.
+      const outcome = !ok
+        ? { kind: 'error', text: 'The sync finished but the data could not be reloaded. Try Refresh Data again.' }
+        : baseline
+          ? syncOutcome(done)
+          : { kind: 'ok', text: 'Sync finished - dashboard updated at ' + clockTime(new Date()) };
+      setRefreshStatus(outcome.kind, outcome.text, outcome.title);
+      if (typeof announce === 'function') announce(outcome.text);
       return;
     }
+    // Progress is a count, not a stepper: the steps run in a fixed order per
+    // plant, but plants run in parallel, so "7 of 18" is the honest summary.
+    // Steps a plant skipped (already running when clicked) finish uncounted,
+    // which is why this can end below the total - completion is decided by
+    // the in-progress flags above, never by this number.
+    const elapsed = elapsedLabel(Date.now() - startedAt);
+    setRefreshStatus('busy', baseline
+      ? verb + '… ' + done.length + ' of ' + totalSteps + ' steps done (' + elapsed + ')'
+      : verb + '… (' + elapsed + ')',
+    done.map(d => stepName(d) + ' done').join('\n'));
   }
   btn.disabled = false;
   btn.textContent = 'Refresh Data';
   await loadSyncStatus();
-  if (typeof announce === 'function') announce('The sync is taking longer than expected and is still running in the background.');
-  alert('The sync is taking longer than expected. It may still be running in the background - refresh in a bit to check.');
+  // No alert() any more: the freshness watcher takes over from here and
+  // re-renders when the background sync lands, so this is not a failure.
+  const slow = 'The sync is taking longer than usual and is still running. The page will update itself when it finishes.';
+  setRefreshStatus('warn', slow);
+  if (typeof announce === 'function') announce(slow);
 }
 
 // ── Level 1: Purchase Orders / Raw Material Analysis ───────────────────
@@ -878,15 +1079,15 @@ async function loadSyncStatus() {
   }
 }
 
+// Resolves true when the view rendered, false when its load failed (the view
+// has already shown its own error panel) - so a caller never reports
+// "refreshed" over an error message.
 async function loadAndRender() {
-  if (state.view === 'po') {
-    await loadDashboard();
-  } else {
-    await loadAndRenderMaterials();
-  }
+  const ok = state.view === 'po' ? await loadDashboard() : await loadAndRenderMaterials();
   // Record what this render is based on, so the freshness watcher below can
   // tell "same data" from "the database moved under us".
   DATA_STAMP = await currentDataStamp().catch(() => DATA_STAMP);
+  return ok !== false;
 }
 
 // ── Live data freshness watcher ─────────────────────────────────────────
@@ -961,12 +1162,15 @@ async function checkFreshness() {
     return;  // offline, 500, mid-deploy - try again next tick
   }
   if (!DATA_STAMP || stamp === DATA_STAMP) { DATA_STAMP = DATA_STAMP || stamp; return; }
-  PURCHASE_ORDERS_BY_PLANT = {};
-  MATERIALS_BY_PLANT = {};
-  IMPORT_PO_CACHE = null;
+  clearDataCaches();
   await loadSyncStatus();
-  await loadAndRender();   // sets DATA_STAMP to the new value
-  if (typeof announce === 'function') announce('New data has arrived. The dashboard has been updated.');
+  // loadAndRender() sets DATA_STAMP to the new value. A failed load leaves
+  // the status line alone - the view shows its own error, and the next tick
+  // retries.
+  if (await loadAndRender()) {
+    setRefreshStatus('ok', 'Updated automatically at ' + clockTime(new Date()) + ' - a new sync arrived');
+    if (typeof announce === 'function') announce('New data has arrived. The dashboard has been updated.');
+  }
 }
 
 function startFreshnessWatch() {
@@ -1061,9 +1265,11 @@ async function loadDashboard() {
     else await ensurePOsLoaded(selectedPlantKeys());
     el.innerHTML = '<div id="content"></div>';
     renderPoList(document.getElementById('content'));
+    return true;
   } catch (e) {
     console.error('loadDashboard failed:', e);
     el.innerHTML = '<div class="noaccess">Couldn\'t load the dashboard right now. Please refresh, or contact IT if this keeps happening.</div>';
+    return false;
   }
 }
 

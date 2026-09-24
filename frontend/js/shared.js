@@ -334,6 +334,13 @@ function applyDynamicStyles(root) {
     el.style.height = el.dataset.heightPx + 'px';
     el.removeAttribute('data-height-px');
   });
+  // Progress-bar fills (po-reconcile.js) - a percentage, clamped so a bad
+  // value can never push a bar outside its track.
+  root.querySelectorAll('[data-width-pct]').forEach(el => {
+    const pct = Math.max(0, Math.min(100, Number(el.dataset.widthPct) || 0));
+    el.style.width = pct + '%';
+    el.removeAttribute('data-width-pct');
+  });
 }
 
 // ── Accessible names for generated form controls ─────────────────────────
@@ -818,8 +825,8 @@ function editableLine(plantKey, label, value, fieldName, itemId, fieldType, opti
 }
 
 // ── Dismiss/override a flagged match ────────────────────────────────────
-// Backs the "Dismiss"/"Reinstate" control matchStatusHtml() renders next to
-// a flagged PO<->MIR badge (main.js) and the equivalent MIR<->Stock control
+// Backs the "Dismiss"/"Reinstate" control po-reconcile.js renders on each
+// flagged PO<->MIR line card and the equivalent MIR<->Stock control
 // in the Raw Material Analysis modal - both PATCH the same shape of
 // endpoint (.../matches/po-mir/<id>/dismiss or .../matches/mir-stock/<id>/
 // dismiss, see apps/services/match_dismiss.py), so one shared helper here

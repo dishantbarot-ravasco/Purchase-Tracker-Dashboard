@@ -162,6 +162,24 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .refresh-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--navy-solid); background:var(--navy-solid); color:var(--on-accent); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; box-shadow:var(--dash-shadow); }
 .refresh-btn:hover { background:var(--navy-hover); }
 .refresh-btn[disabled] { opacity:.5; cursor:default; }
+/* What the last refresh/sync did and when (main.js's setRefreshStatus()).
+   Plain text when idle ("Loaded at 02:14 pm"); a tinted pill once there is
+   an answer to report, so it reads as a result rather than a caption. */
+.refresh-status { font-size:12px; color:var(--slate-soft); max-width:460px; line-height:1.35; }
+.refresh-status:empty { display:none; }
+.refresh-status.busy, .refresh-status.ok, .refresh-status.warn, .refresh-status.error { padding:5px 11px; border-radius:8px; font-weight:600; }
+.refresh-status.busy { background:var(--indigo-soft); color:var(--indigo-text); }
+.refresh-status.busy::before { content:""; display:inline-block; width:10px; height:10px; margin-right:7px; vertical-align:-1px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:spin .8s linear infinite; }
+.refresh-status.ok { background:var(--green-soft); color:var(--green-text); }
+.refresh-status.warn { background:var(--amber-soft); color:var(--amber-text); }
+.refresh-status.error { background:var(--red-soft); color:var(--red-text); cursor:help; }
+@keyframes refresh-status-flash { from { box-shadow:0 0 0 3px currentColor; } to { box-shadow:0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: no-preference) {
+  .refresh-status.flash { animation:refresh-status-flash 1.2s ease-out; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .refresh-status.busy::before { animation:none; }
+}
 
 /* ── Nav tabs (3-level: view / plant / purchase-type) ──────────────────
    Three structurally different components, not one class reused across
@@ -309,9 +327,6 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .info-tooltip:hover::after, .info-tooltip:hover::before,
 .info-tooltip:focus-visible::after, .info-tooltip:focus-visible::before { opacity:1; visibility:visible; }
 .info-tooltip:focus-visible { outline:none; }
-/* The MIR numbers beside a match tick (flags.js's matchedMirsLabelHtml()):
-   a dotted underline says "hover for each receipt", as the title does. */
-.mir-list { cursor:help; text-decoration:underline dotted; text-underline-offset:2px; }
 
 /* ── Days Left confidence dot (Raw Material Analysis) ───────────────────
    Reuses .info-tooltip's hover/focus tooltip mechanism above (same
@@ -770,6 +785,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .mir-change-link:focus-visible { outline:2px solid var(--gold-accent-text); outline-offset:1px; border-radius:3px; }
 .pinned-tag { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:6px; background:var(--indigo-soft); color:var(--indigo-text); cursor:default; }
 tr.mir-editing > td { background:var(--gold-accent-soft); }
+.recon-line.mir-editing { background:var(--gold-accent-soft); border-left-color:var(--gold-accent-text); }
 
 .mir-picker { background:var(--card); border:1px solid var(--gold-accent-border); border-radius:10px; padding:14px 16px; margin-top:14px; box-shadow:var(--dash-shadow); }
 .mir-picker[hidden] { display:none !important; }
@@ -886,3 +902,81 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
   --dash-shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
 }
 .mini-stepper-labels { font-size:9px; color:var(--slate-soft); white-space:nowrap; }
+
+/* ── PO line reconciliation cards (po-reconcile.js, 2026-09-24) ──────────
+   Ordered / Received / Difference in real figures, one card per PO line,
+   every matched MIR receipt underneath. Tokens only, so dark mode follows. */
+.recon-summary { display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin:4px 0 16px; }
+@media (max-width: 720px) { .recon-summary { grid-template-columns: 1fr; } }
+.recon-tile { background:var(--gray-soft); border-radius:10px; padding:12px 14px; }
+.recon-tile-k { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--slate-soft); }
+.recon-tile-v { font-size:20px; font-weight:800; margin-top:4px; color:var(--slate); font-variant-numeric:tabular-nums; }
+.recon-tile-sub { font-size:11.5px; color:var(--slate-soft); margin-top:2px; }
+.recon-list { display:flex; flex-direction:column; gap:14px; }
+.recon-line { border:1px solid var(--border); border-left:4px solid var(--border); border-radius:12px; padding:14px 16px 12px; background:var(--card);
+  transition:box-shadow .15s ease, transform .15s ease; }
+.recon-line:hover { box-shadow:var(--dash-shadow); }
+.recon-line.recon-full { border-left-color:var(--green-text); }
+.recon-line.recon-part { border-left-color:var(--amber-text); }
+.recon-line.recon-over { border-left-color:var(--red-text); }
+.recon-line.recon-units { border-left-color:var(--blue-text); }
+.recon-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+.recon-title { display:flex; gap:10px; align-items:flex-start; min-width:0; flex:1 1 260px; }
+.recon-idx { flex:0 0 auto; width:22px; height:22px; border-radius:50%; background:var(--slate); color:var(--card);
+  font-size:11px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; margin-top:1px; }
+.recon-desc { font-size:13.5px; font-weight:700; color:var(--slate); line-height:1.35; }
+.recon-chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+.recon-chip { font-size:11px; background:var(--gray-soft); border-radius:99px; padding:2px 9px; color:var(--slate); }
+.recon-chip-k { color:var(--slate-soft); font-weight:600; }
+.recon-status { display:flex; flex-wrap:wrap; align-items:center; gap:6px; justify-content:flex-end; }
+.recon-pill { font-size:11px; font-weight:700; border-radius:99px; padding:3px 10px; background:var(--gray-soft); color:var(--slate); }
+.recon-full .recon-pill { background:var(--green-soft); color:var(--green-text); }
+.recon-part .recon-pill { background:var(--amber-soft); color:var(--amber-text); }
+.recon-over .recon-pill { background:var(--red-soft); color:var(--red-text); }
+.recon-units .recon-pill { background:var(--blue-soft); color:var(--blue-text); }
+.recon-status .conf-badge { margin-left:0; }
+.recon-bar { height:6px; background:var(--gray-soft); border-radius:99px; overflow:hidden; margin:12px 0 10px; }
+.recon-bar-sm { height:4px; margin:8px 0 0; }
+.recon-bar-fill { height:100%; width:0; background:var(--slate-soft); border-radius:99px; transition:width .5s ease; }
+.recon-full .recon-bar-fill, .recon-tile .recon-bar-fill { background:var(--green-text); }
+.recon-part .recon-bar-fill { background:var(--amber-text); }
+.recon-over .recon-bar-fill { background:var(--red-text); }
+.recon-units .recon-bar-fill { background:var(--blue-text); }
+@media (prefers-reduced-motion: reduce) { .recon-bar-fill, .recon-line { transition:none; } }
+.recon-table, .recon-mini { width:100%; border-collapse:collapse; font-size:12.5px; font-variant-numeric:tabular-nums; }
+.recon-table th, .recon-table td { padding:7px 10px; border-bottom:1px solid var(--border); text-align:left; }
+.recon-table thead th { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--slate-soft); }
+.recon-table tbody th { font-weight:600; color:var(--slate); white-space:nowrap; }
+.recon-table tbody tr:last-child th, .recon-table tbody tr:last-child td { border-bottom:none; }
+.recon-table .num, .recon-mini .num { text-align:right; white-space:nowrap; }
+.recon-unit { color:var(--slate-soft); font-size:11px; }
+.recon-muted { color:var(--slate-soft); font-weight:400; font-size:11px; }
+.recon-diff { text-align:right; white-space:nowrap; }
+.recon-diff-val { display:block; font-weight:700; }
+.recon-diff-note { display:block; font-size:10.5px; font-weight:600; opacity:.85; }
+.recon-diff.diff-ok { color:var(--green-text); }
+.recon-diff.diff-short { color:var(--amber-text); }
+.recon-diff.diff-over, .recon-diff.diff-rate { color:var(--red-text); }
+.recon-note { font-size:11.5px; color:var(--blue-text); background:var(--blue-soft); border-radius:8px; padding:6px 10px; margin-top:8px; }
+.recon-receipts { margin-top:10px; border-top:1px dashed var(--border); padding-top:8px; }
+.recon-receipts > summary { cursor:pointer; font-size:12px; font-weight:700; color:var(--slate); list-style:none; display:flex; align-items:center; gap:6px; }
+.recon-receipts > summary::-webkit-details-marker { display:none; }
+.recon-receipts > summary::before { content:'▸'; transition:transform .15s ease; color:var(--slate-soft); }
+.recon-receipts[open] > summary::before { transform:rotate(90deg); }
+.recon-receipts-scroll { overflow-x:auto; margin-top:6px; }
+.recon-mini th, .recon-mini td { padding:6px 9px; border-bottom:1px solid var(--border); text-align:left; }
+.recon-mini thead th { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--slate-soft); background:var(--gray-soft); }
+.recon-mini tbody tr:nth-child(even) td { background:var(--gray-soft); }
+.recon-mini tbody tr:hover td { background:var(--blue-soft); }
+.recon-mini tfoot td { font-weight:800; border-top:2px solid var(--border); border-bottom:none; }
+.recon-foot { margin-top:10px; font-size:12px; }
+.recon-table-scroll { overflow-x:auto; }
+@media (max-width: 560px) {
+  .recon-line { padding:12px 12px 10px; }
+  .recon-table th, .recon-table td, .recon-mini th, .recon-mini td { padding:6px 6px; font-size:11.5px; }
+  .recon-status { justify-content:flex-start; }
+}
+
+/* Overview: fewer, clearer cards (2026-09-24). The Value card leads. */
+.po-overview .field-block.value-card { background:var(--blue-soft); }
+.po-overview .field-block.value-card .line:first-of-type { font-size:15px; font-weight:800; }
