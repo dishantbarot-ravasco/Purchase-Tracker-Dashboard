@@ -54,6 +54,7 @@ from apps.api.routers._domestic_base import (
     _held_mir_numbers,
     _mir_row_dict,
     _po_material_categories,
+    _sheet_row,
 )
 # Each plant's own MIR model, for the manual-MIR-match picker. Imports
 # reconcile against the SAME MIR table as that plant's domestic POs (see
@@ -63,6 +64,7 @@ from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 # The matcher's own line numbering, imported rather than re-derived so the
 # API and matching_core can never disagree about what a pin addresses.
 from apps.services.matching_core import _import_rate_value_inr, line_item_positions
+from apps.services.parsers.common import normalize_material
 from apps.services import bl_tracking
 from apps.services import import_flags as flags
 from apps.services import license_links
@@ -287,7 +289,18 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_r
     today = timezone.localdate()
     # Numbered per PO in pk order - the master CSV's own row order, and the
     # same numbering the matcher uses to resolve a manual MIR pin.
-    item_dicts = [_item_dict(i, str(n)) for n, i in enumerate(sorted(items, key=lambda x: x.id))]
+    ordered_items = sorted(items, key=lambda x: x.id)
+    item_dicts = [_item_dict(i, str(n)) for n, i in enumerate(ordered_items)]
+    # Each line's own canonical category, looked up exactly as a Stock lot's
+    # is. Raw Material Analysis now counts open import lines (2026-09-24), and
+    # an import-only material gets a row of its own there that can sit in the
+    # right Category filter only if it knows its category - materialCategories
+    # below is de-duplicated per PO, so it cannot say which line holds which.
+    # Same reasoning as _domestic_base._categorized_line_item_dict().
+    for item_dict, item in zip(item_dicts, ordered_items, strict=True):
+        ref = (category_reference or {}).get(normalize_material(item.description))
+        item_dict["category"] = ref.category if ref else "Uncategorized"
+        item_dict["subCategory"] = ref.subcategory if ref else ""
     total_incl_value = sum((i.total_inclusive_value or 0) for i in items)
     # PO-list rows show one BL/country - real POs in the live data ship as
     # one BOE per PO today, so "first item with a value" is representative;
@@ -1180,9 +1193,12 @@ def mir_candidates(request, plant, po_number):
         if entry is None:
             entry = dict(_mir_row_dict(row))
             entry["rowCount"] = 0
+            entry["sheetRows"] = []
             entry["claimedBy"] = claims.get(row.mir_no, [])
             seen[row.mir_no] = entry
         entry["rowCount"] += 1
+        if _sheet_row(row) is not None:
+            entry["sheetRows"].append(_sheet_row(row))
     return Response({"candidates": list(seen.values())})
 
 

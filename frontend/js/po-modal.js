@@ -283,6 +283,8 @@ function renderMirCandidates(candidates) {
       '<div class="mir-cand-head"><b>' + escapeHtml(c.mirNo) + '</b>' +
         (c.mirDate ? ' <span class="mir-cand-date">' + escapeHtml(formatDateIN(c.mirDate)) + '</span>' : '') +
         (c.rowCount > 1 ? ' <span class="mir-cand-rows">' + c.rowCount + ' lines</span>' : '') +
+        // Where the document sits in the MIR Excel sheet (2026-09-24).
+        ((c.sheetRows || []).length ? ' <span class="mir-cand-date">sheet row' + (c.sheetRows.length > 1 ? 's ' : ' ') + escapeHtml(c.sheetRows.join(', ')) + '</span>' : '') +
       '</div>' +
       '<div class="mir-cand-sub">' + escapeHtml(c.party || 'Unknown party') + ' &middot; ' + escapeHtml(c.material || '') + '</div>' +
       '<div class="mir-cand-sub">' +

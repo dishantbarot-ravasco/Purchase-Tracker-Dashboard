@@ -325,6 +325,7 @@ def _counted_mirs(match, po_uom: str = "") -> tuple[list[dict], dict | None]:
         "mirNo": r["mir"].mir_no,
         "mirDate": r["mir"].mir_date.isoformat() if r["mir"].mir_date else None,
         "invoiceNo": getattr(r["mir"], "invoice_no", "") or "",
+        "sheetRow": _sheet_row(r["mir"]),
         "qty": _f_or_none(r["mir"].qty),
         "uom": r["mir"].uom,
         "qtyInPoUnit": _f_or_none(r["qtyInPoUnit"]),
@@ -618,6 +619,12 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_material=None, category_ref
         "value": float(lot.value) if lot.value is not None else None,
         "vendor": getattr(lot, cfg.lot_vendor_field, None) if cfg.lot_vendor_field else None,
         "receivedDate": lot.received_date.isoformat() if lot.received_date else None,
+        # Which warehouse the Stock sheet itself files this lot under: HRS's
+        # unlabeled last column (location_tag) or Vapi's PLANT column
+        # (plant_tag). Both sheets hold lots for more than one site, so the
+        # file a lot came from does not say where it sits - HRS's imported
+        # SBR 1502 lots are all tagged RTP-1. Achhad's sheet has neither.
+        "locationTag": getattr(lot, "location_tag", "") or getattr(lot, "plant_tag", "") or None,
         # HRS's model has a real no_of_days field; Vapi/Achhad's models have
         # none - getattr's default None reproduces both hrs_views.py's real
         # value and vapi_views.py's/achhad_views.py's hardcoded None.
@@ -1426,6 +1433,15 @@ def make_dismiss_flag(cfg: _PlantConfig):
 # through their own cross-plant router, and nothing has asked for it there.
 
 
+def _sheet_row(row) -> int | None:
+    """The receipt's row number in the MIR Excel sheet, for finding it there
+    by hand (project owner, 2026-09-24). `source_row_ref` is exactly that -
+    parsers.common.stream_rows() numbers rows from the sheet's first data row
+    with blank rows still counted - stored as text; served as a number."""
+    ref = (getattr(row, "source_row_ref", "") or "").strip()
+    return int(ref) if ref.isdigit() else None
+
+
 def _mir_row_dict(row):
     return {
         "mirNo": row.mir_no,
@@ -1437,6 +1453,7 @@ def _mir_row_dict(row):
         "rate": float(row.rate) if row.rate is not None else None,
         "invoiceNo": row.invoice_no,
         "poNumberRaw": row.po_number_raw,
+        "sheetRow": _sheet_row(row),
     }
 
 
@@ -1541,9 +1558,12 @@ def make_mir_candidates(cfg: _PlantConfig):
             if entry is None:
                 entry = dict(_mir_row_dict(row))
                 entry["rowCount"] = 0
+                entry["sheetRows"] = []
                 entry["claimedBy"] = claims.get(row.mir_no, [])
                 seen[row.mir_no] = entry
             entry["rowCount"] += 1
+            if _sheet_row(row) is not None:
+                entry["sheetRows"].append(_sheet_row(row))
         return Response({"candidates": list(seen.values())})
 
     return mir_candidates

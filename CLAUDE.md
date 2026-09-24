@@ -962,6 +962,11 @@ picker now anchors under the card (`.recon-line`).
   over-delivered 3x must not make an order whose other lines received nothing read 100% (Vapi
   1000001517, where one MIR row, MIR67/06, carries all three PTFE widths' 405 SQMTR against line 2).
 - Exact rupees (`reconMoney()`), deliberately not `formatInr()`, for the same reason as review cards.
+- **Each receipt shows its MIR Excel row** (`sheetRow`, `_domestic_base._sheet_row()` - the stored
+  `source_row_ref`, which `stream_rows()` numbers from the sheet's first data row with blank rows
+  counted), on the cards and in the MIR picker (`sheetRows`, every row of the document), so a
+  reader can go straight to the row. It is a pointer for a human, never an identity - see
+  [Stable lot identity](#stable-lot-identity) on why a row number shifts.
 - The master CSVs have **no packing column**; "Packing and Incoterms" carries Incoterms and Payment
   Terms.
 - Also fixed on the way: the Import modal's "change" link read `mirMatch.mirNo`, which the API never
@@ -1401,6 +1406,42 @@ Two causes were measured and deliberately **not** changed: wording drift (~23 li
 "Reclaim Rubber" order to six different grades and "Carbon Black N220" to "Carbon Black 134". Those
 lines now show on an order-only row instead of vanishing.
 
+### Open import orders count too, and the list reads latest first (2026-09-24)
+
+Reported as *"there's a vendor in imports, Kumho Petrochemical, and we ordered SBR, but in open POs
+in the raw material analysis I can't find it"*. Raw Material Analysis read `PURCHASE_ORDERS_BY_PLANT`
+only, so **every open import order was missing** - from In Transit, Quantity Ordered, the order-only
+rows and the material modal (HRS PO 3000001141, 201,600 KG of SBR, among them). `materials.js`'s
+`materialOrders(key)` now returns a plant's domestic orders followed by its import orders reshaped by
+`importPoAsMaterialOrder()` into the domestic shape, so the link rule, `isOpenPoLine()` and the flag
+categories apply to both with no second code path. Four details:
+
+- **Converted to INR first**, exactly as `matching_core._import_rate_value_inr()` does (net price x
+  exchange rate, bare net price when no rate is on file). Left raw, a USD line counts at ~1/90th.
+- **Ordered quantity and the MIR test**, same as domestic: a line cleared through customs but not yet
+  received into the plant is still in transit.
+- **Memoized on the identity of the two source caches**, so each order stays the same object between
+  refreshes (callers stamp `_status`/`_categories` on it) and rebuilds when `clearDataCaches()` runs.
+- **It does not join a generic order to a grade.** Kumho's line reads "Synthetic Rubber SBR" and no
+  SBR 1502 lot is Kumho's, so the vendor gate keeps it off that row; it gets an order-only row
+  instead. Import lines now carry their own `category`/`subCategory` (`imports_views._po_dict()`) so
+  that row lands in the right Category filter.
+
+**The Materials list is latest first** (project owner: *"just like it's for PO latest first"*), by
+`materialLatestDate()`: the newest lot's received date, or for an order-only row its newest open
+order's created date, shown under each name ("Last received" / "Ordered"). It was stock quantity
+descending, which pinned the same large materials to the top whatever arrived.
+
+**The material modal's Stock by Plant table has Vendor, Received and Location columns** (*"why are
+there so many instances of HRS Silvassa"*). One row is one lot, i.e. one purchase: HRS's SBR 1502 is
+four GPC lots and one Expol, three used up. Rows sort in-stock first then newest per plant, and
+used-up lots are faded, not hidden. `locationTag` (`_lot_dict()`: HRS `location_tag`, Vapi
+`plant_tag`, null at Achhad) says where the sheet files the lot - HRS's imported SBR sits under RTP-1.
+Purchase Activity tags import orders and shows their INR value with the conversion in the tooltip.
+`test_raw_material_order_payload.py` pins both payload fields; the frontend was verified with a
+throwaway in-browser harness (import adapter, open/closed, the Kumho row at Rs 3.30 cr, sort order,
+modal table); deleted after.
+
 **If you add anything to the Raw Material render path, check it is not per-pair.** The linkage loop is
 the one place in this app where an innocuous-looking `normalize...()` call is multiplied by ~800,000.
 
@@ -1839,7 +1880,7 @@ Three restraints, each deliberate:
   reader was already looking at, and scrolling away from the cards would be the surprise. `total`
   (both views) and `value` (materials) clear, so they never scroll.
 
-It also `announce()`s the list's own heading - `"Materials by Stock Quantity - showing 4 of 27"` - because
+It also `announce()`s the list's own heading - `"Materials (Latest first) - showing 4 of 27"` - because
 the visual change starts off-screen and a screen-reader user gets nothing from the scroll itself.
 
 Verified with a throwaway in-browser harness driving real clicks on the real rendered cards (17

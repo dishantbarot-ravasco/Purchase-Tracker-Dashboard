@@ -104,10 +104,13 @@ function reconReceiptsHtml(line) {
   // A receipt booked in a different unit shows its own qty AND its qty in the
   // PO's unit, so the total row is visibly the sum of the second column.
   const unitsDiffer = mirs.some(m => (m.uom || '').trim().toLowerCase() !== (line.uom || '').trim().toLowerCase() && m.qtyInPoUnit != null && m.qtyInPoUnit !== m.qty);
-  const head = '<tr><th>MIR No.</th><th>Date</th><th>Invoice</th><th class="num">Qty</th>' +
+  // "Sheet row" is the receipt's row in the MIR Excel file (2026-09-24), so
+  // a reader reconciling by hand can go straight to it.
+  const head = '<tr><th>MIR No.</th><th class="num" title="Row number in the MIR Excel sheet">Sheet row</th><th>Date</th><th>Invoice</th><th class="num">Qty</th>' +
     (unitsDiffer ? '<th class="num">Qty (' + escapeHtml(line.uom || 'PO unit') + ')</th>' : '') +
     '<th class="num">Rate</th><th class="num">Value</th></tr>';
   const rows = mirs.map(m => '<tr><td class="mono fw-700">' + escapeHtml(m.mirNo || '-') + '</td>' +
+    '<td class="num mono">' + (m.sheetRow != null ? escapeHtml(String(m.sheetRow)) : '-') + '</td>' +
     '<td>' + escapeHtml(formatDateIN(m.mirDate)) + '</td>' +
     '<td>' + escapeHtml(m.invoiceNo || '-') + '</td>' +
     '<td class="num">' + reconQty(m.qty) + ' <span class="recon-unit">' + escapeHtml(m.uom || '') + '</span></td>' +
@@ -115,7 +118,7 @@ function reconReceiptsHtml(line) {
     '<td class="num">' + reconMoney(m.rate) + '</td>' +
     '<td class="num">' + reconMoney(m.value) + '</td></tr>').join('');
   const foot = mirs.length > 1
-    ? '<tfoot><tr><td colspan="3">Total of ' + mirs.length + ' receipts</td>' +
+    ? '<tfoot><tr><td colspan="4">Total of ' + mirs.length + ' receipts</td>' +
       '<td class="num">' + (unitsDiffer ? '' : reconQty(r.qty) + ' <span class="recon-unit">' + escapeHtml(line.uom || '') + '</span>') + '</td>' +
       (unitsDiffer ? '<td class="num">' + reconQty(r.qty) + '</td>' : '') +
       '<td class="num">' + reconMoney(r.rate) + '</td><td class="num">' + reconMoney(r.value) + '</td></tr></tfoot>'

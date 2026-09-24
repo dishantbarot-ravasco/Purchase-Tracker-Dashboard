@@ -575,6 +575,13 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    _boe_exists()) - a real, checkable signal (does this BOE number appear
    on any plant's synced Import PO line items), not a guess. */
 .badge-verified { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--green-soft); color:var(--green-text); }
+/* Material modal (2026-09-24): an open import order among the domestic ones
+   (materials.js's materialOrders()), and a Stock lot that is used up but
+   still listed in the sheet - faded, not hidden, since its rate and MIR
+   match are still real history. */
+.badge-import { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--indigo-soft); color:var(--indigo-text); cursor:help; }
+tr.lot-used-up td { opacity:.55; }
+td.nowrap, div.nowrap { white-space:nowrap; }
 .badge-warn { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--red-soft); color:var(--red-text); }
 .dismiss-link { display:inline-block; font-size:10.5px; font-weight:600; margin-left:6px; color:var(--gold-accent-text); cursor:pointer; }
 .dismiss-link:hover { text-decoration:underline; }

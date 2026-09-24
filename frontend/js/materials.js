@@ -30,10 +30,10 @@ async function loadAndRenderMaterials() {
     // Also loads Purchase Orders for the same plant(s) - the KPI row and
     // drill-down chart below need PO line items to compute the "in transit"/
     // discrepancy/data-quality numbers (see materialLinksToItem()), not just
-    // Stock data. Cheap: ensurePOsLoaded/ensureMaterialsLoaded both cache per
-    // plant, so this is a no-op re-fetch if the Purchase Orders tab was
-    // already visited for the same plant(s).
-    await Promise.all([ensureMaterialsLoaded(selectedPlantKeys()), ensurePOsLoaded(selectedPlantKeys())]);
+    // Stock data. Import orders too, since 2026-09-24 - see materialOrders().
+    // Cheap: all three loaders cache, so this is a no-op re-fetch if the
+    // Purchase Orders tab was already visited for the same plant(s).
+    await Promise.all([ensureMaterialsLoaded(selectedPlantKeys()), ensurePOsLoaded(selectedPlantKeys()), ensureImportPOsLoaded()]);
     el.innerHTML = '<div id="materialsContent"></div>';
     renderMaterialsView();
     return true;
@@ -273,14 +273,110 @@ function daysLeftCellHtml(m) {
     '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="' + escapeHtml(tip) + '" tabindex="0"></span></span>';
 }
 
-// All (po, item) pairs across the given plant keys' cached PO data that link
-// to `material` - each pair tagged with its plant key/label for display.
-// Callers must ensure PURCHASE_ORDERS_BY_PLANT is already populated for
-// every key in plantKeys (ensurePOsLoaded()) before calling this.
+// ── Import orders count too (2026-09-24) ────────────────────────────────
+// Project owner: "there's a vendor in imports, Kumho Petrochemical, and we
+// ordered SBR, but in open POs in the raw material analysis I can't find it".
+// This view read the domestic order book only, so every open import order was
+// missing from In Transit, Quantity Ordered, the order-only rows and the
+// material modal - HRS PO 3000001141 (201,600 KG of SBR from Kumho) among
+// them. Import orders are now folded in, in the same shape as a domestic
+// order, so every rule below (the link, "is this line still open", the flag
+// categories) applies to both without a second code path.
+//
+// PRICES ARE CONVERTED TO INR FIRST. An import line is priced in its PO's own
+// currency (USD for nearly all of them) while everything this view adds up is
+// INR; left raw, a USD order would count at roughly 1/90th of its value.
+// Converted exactly as the matcher converts it (matching_core's
+// _import_rate_value_inr()): net price x exchange rate, or the bare net price
+// when no rate is on file - the same fallback, so a figure here never
+// disagrees with the one the PO<->MIR match was scored on.
+//
+// ORDERED quantity, not BOE quantity: "still to come" is measured against
+// what was ordered, the same as a domestic line. Open-ness is the same MIR
+// test too - a line cleared through customs but not yet received into the
+// plant is genuinely still in transit.
+function importRateInr(item) {
+  if (item.netPrice == null) return null;
+  return item.exchangeRate ? item.netPrice * item.exchangeRate : item.netPrice;
+}
+
+// Tooltip for an import line's INR figure: the price as ordered and the rate
+// it was converted at, so a reader can check the conversion rather than take
+// it on trust - and is told plainly when no rate was on file.
+function importPriceTitle(item) {
+  if (item.foreignPrice == null) return 'Import order - no price on file';
+  if (!item.exchangeRate) return 'Import order - price ' + item.foreignPrice + ' per unit; no exchange rate on file, so it is counted as INR as written';
+  return 'Import order - price ' + item.foreignPrice + ' per unit x exchange rate ' + item.exchangeRate + ' = Rs ' + (item.foreignPrice * item.exchangeRate).toFixed(2);
+}
+
+function importPoAsMaterialOrder(po) {
+  return {
+    poNumber: po.poNumber,
+    vendorName: po.vendorName,
+    createdDate: po.createdDate,
+    remarks: '',
+    isImport: true,
+    items: (po.items || []).map(it => {
+      const m = it.mirMatch || {};
+      const rate = importRateInr(it);
+      return {
+        description: it.description,
+        category: it.category || '',
+        subCategory: it.subCategory || '',
+        qty: it.qtyAsPerPo,
+        uom: it.uom,
+        netPrice: rate,
+        netValue: rate != null && it.qtyAsPerPo != null ? rate * it.qtyAsPerPo : null,
+        deliveryDate: it.deliveryDate,
+        // The domestic line item's match fields, read off the import line's
+        // nested mirMatch (null when nothing crossed MATCH_THRESHOLD).
+        matched: !!it.mirMatch,
+        dismissedByOverride: !!m.dismissedByOverride,
+        qtyDiffPct: m.qtyDiffPct != null ? m.qtyDiffPct : null,
+        qtyOverDelivered: m.qtyOverDelivered != null ? m.qtyOverDelivered : null,
+        rateDiffPct: m.rateDiffPct != null ? m.rateDiffPct : null,
+        valueDiffPct: m.valueDiffPct != null ? m.valueDiffPct : null,
+        vendorMatched: it.mirMatch ? m.vendorMatched : undefined,
+        taxTypeMismatch: !!m.taxTypeMismatch,
+        netValueMismatched: !!m.netValueMismatched,
+        taxableValueMismatched: !!m.taxableValueMismatched,
+        finalValueMismatched: !!m.finalValueMismatched,
+        uomMismatch: !!m.uomMismatch,
+        stockMatched: !!m.stockMatched,
+        foreignPrice: it.netPrice,
+        exchangeRate: it.exchangeRate,
+      };
+    }),
+  };
+}
+
+// Every order this view reads for one plant: its domestic orders, then its
+// import orders in domestic shape. Memoized on the identity of the two source
+// caches, which clearDataCaches() replaces on every refresh - so it rebuilds
+// exactly when the data does, and between refreshes each order stays the SAME
+// object. That identity matters: callers stamp _status/_categories onto an
+// order and hand links back by reference.
+let _materialOrdersMemo = { imports: undefined, byKey: {} };
+function materialOrders(key) {
+  if (_materialOrdersMemo.imports !== IMPORT_PO_CACHE) _materialOrdersMemo = { imports: IMPORT_PO_CACHE, byKey: {} };
+  const domestic = PURCHASE_ORDERS_BY_PLANT[key] || [];
+  let entry = _materialOrdersMemo.byKey[key];
+  if (!entry || entry.domestic !== domestic) {
+    const imports = (IMPORT_PO_CACHE || []).filter(po => po.plant === key).map(importPoAsMaterialOrder);
+    entry = { domestic, list: domestic.concat(imports) };
+    _materialOrdersMemo.byKey[key] = entry;
+  }
+  return entry.list;
+}
+
+// All (po, item) pairs across the given plant keys' orders (domestic and
+// import - see materialOrders()) that link to `material` - each pair tagged
+// with its plant key/label for display. Callers must have loaded both order
+// books (ensurePOsLoaded(), ensureImportPOsLoaded()) before calling this.
 function linkedPoItemsForMaterial(material, plantKeys) {
   const out = [];
   plantKeys.forEach(key => {
-    (PURCHASE_ORDERS_BY_PLANT[key] || []).forEach(po => {
+    materialOrders(key).forEach(po => {
       (po.items || []).forEach(item => {
         if (materialLinksToItem(material, po, item)) {
           out.push({ po, item, plantKey: key, plantLabel: PLANTS[key].label });
@@ -327,7 +423,7 @@ function orderOnlyMaterials(stockMaterials, plantKeys) {
   _vendorNormCache.clear();
   const groups = new Map();
   plantKeys.forEach(key => {
-    (PURCHASE_ORDERS_BY_PLANT[key] || []).forEach(po => {
+    materialOrders(key).forEach(po => {
       (po.items || []).forEach(item => {
         if (!isOpenPoLine(po, item)) return;
         const norm = materialTokenInfo(item.description).norm;
@@ -347,6 +443,19 @@ function orderOnlyMaterials(stockMaterials, plantKeys) {
     });
   });
   return Array.from(groups.values()).map(g => { delete g.vendorSeen; return g; });
+}
+
+// The date the Materials list sorts on, newest first (ISO string, '' when
+// unknown). For a stocked material: its newest lot's received date - a lot
+// is one arrival, so this is "when did this material last come in". For an
+// order-only row, which has no lot: its newest open order's created date, so
+// a brand-new order for a new material surfaces near the top rather than
+// sinking below every dated lot. The list labels which of the two it is.
+function materialLatestDate(m, entry) {
+  if (m.orderOnly) {
+    return (entry ? entry.openLinks.map(l => l.po.createdDate).filter(Boolean).sort().pop() : '') || '';
+  }
+  return (m.lots || [m]).map(l => l.receivedDate).filter(Boolean).sort().pop() || '';
 }
 
 // What a row or chart bar hands openMaterialModal(): its anchor lot, or for
@@ -741,12 +850,21 @@ function materialsListRegionHtml() {
     tableRecs = ctx.linkage.filter(l => l.categories.some(c => c.label === wantedLabel)).map(l => l.material);
   }
   tableRecs = applyMatColFilters(tableRecs);
-  // "Materials by Stock Quantity" - sorted by stock qty descending, not
-  // value (per the reference design).
-  // Ties (every order-only row, and every sold-out lot, sits at 0) break on
-  // the value still on order, so the biggest incoming purchase comes first.
-  const openValueOf = m => { const e = ctx.linkageByKey.get(normalizeMaterial(m.description)); return e ? e.openValue : 0; };
-  const sorted = tableRecs.slice().sort((a, b) => ((b.qty || 0) - (a.qty || 0)) || (openValueOf(b) - openValueOf(a)));
+  // LATEST FIRST (2026-09-24, project owner: "stock lot added first or
+  // latest, just like it's for PO latest first"). Was stock qty descending,
+  // which kept the same big-quantity materials pinned to the top whatever
+  // arrived. Now the material whose newest lot was received most recently
+  // leads - the same reading order as Purchase Orders (Latest first). See
+  // materialLatestDate() for what "latest" means on an order-only row.
+  // Rows with no date at all go last; ties fall back to the old order (stock
+  // qty, then value still on order).
+  const entryOf = m => ctx.linkageByKey.get(normalizeMaterial(m.description));
+  const openValueOf = m => { const e = entryOf(m); return e ? e.openValue : 0; };
+  const latestOf = new Map(tableRecs.map(m => [m, materialLatestDate(m, entryOf(m))]));
+  const sorted = tableRecs.slice().sort((a, b) =>
+    latestOf.get(b).localeCompare(latestOf.get(a))
+    || ((b.qty || 0) - (a.qty || 0))
+    || (openValueOf(b) - openValueOf(a)));
 
   const showingAll = state.showAllMaterials;
   const PAGE_SIZE = 10;
@@ -827,7 +945,14 @@ function materialsListRegionHtml() {
       '</div>'
     : '';
 
-  return '<div class="list-toggle-row"><div class="section-title m-0">Materials by Stock Quantity - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
+  // The date under each material name - why that row sits where it does.
+  const latestNote = m => {
+    const d = latestOf.get(m);
+    if (!d) return '';
+    return '<div class="fs-11 text-slate-soft">' + (m.orderOnly ? 'Ordered ' : 'Last received ') + escapeHtml(formatDateIN(d)) + '</div>';
+  };
+
+  return '<div class="list-toggle-row"><div class="section-title m-0">Materials (Latest first) - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
       (listRecs.some(m => { const e = linkageByKey.get(normalizeMaterial(m.description)); return e && (e.qtyFlag || e.rateFlag); }) ? rowTintLegendHtml() : '') +
       (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all ' + sorted.length + ' materials') + '</button>' : '') +
     '</div>' +
@@ -847,7 +972,7 @@ function materialsListRegionHtml() {
           const key = escapeHtml(materialModalKey(m));
           const entry = linkageByKey.get(normalizeMaterial(m.description));
           const orderOnlyNote = m.orderOnly ? '<div class="fs-11 text-slate-soft">On order, no stock lot yet</div>' : '';
-          return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + '</td>' +
+          return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</td>' +
           '<td>' + escapeHtml(m.category || '-') + '</td>' +
           '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
           '<td>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</td>' +
@@ -868,7 +993,7 @@ function materialsListRegionHtml() {
           const orderOnlyNote = m.orderOnly ? '<div class="fs-11 text-slate-soft">On order, no stock lot yet</div>' : '';
           const st = computeMaterialStatus(m, entry);
           return '<div class="top5-row' + (entry ? rowTintClass(entry) : '') + '">' +
-            '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + '</div>' +
+            '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</div>' +
             '<div>' + escapeHtml(m.category || 'Not available') + '</div>' +
             '<div>' + escapeHtml(m.subCategory || 'Not available') + '</div>' +
             '<div>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</div>' +

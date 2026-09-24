@@ -216,6 +216,8 @@ class TestPoModalPayload:
         item = served["items"][0]
 
         assert [m["mirNo"] for m in item["matchedMirs"]] == ["P-1", "P-2"]
+        # Each receipt's row in the MIR Excel sheet (its source_row_ref).
+        assert [m["sheetRow"] for m in item["matchedMirs"]] == [1, 2]
         assert item["matchedMirs"][1]["value"] == 150000.0
         assert item["received"] == {"qty": 2500.0, "rate": 100.0, "value": 250000.0, "comparable": True}
         assert item["netValue"] == 300000.0

@@ -15,7 +15,7 @@
 function resolveOrderOnlyAnchor(normKey) {
   let anchor = null;
   const vendorSeen = new Set();
-  PLANT_KEYS.forEach(key => (PURCHASE_ORDERS_BY_PLANT[key] || []).forEach(po => (po.items || []).forEach(item => {
+  PLANT_KEYS.forEach(key => materialOrders(key).forEach(po => (po.items || []).forEach(item => {
     if (normalizeMaterial(item.description) !== normKey || !isOpenPoLine(po, item)) return;
     if (!anchor) anchor = { description: item.description, materialCode: '', category: item.category || '', subCategory: item.subCategory || '', vendors: [], orderOnly: true, _plantKey: key };
     const nv = normalizeVendor(po.vendorName);
@@ -34,7 +34,7 @@ async function openMaterialModal(compositeKey) {
   if (isOrderOnly) {
     // Orders for every plant, not just the open tab's - the lookup below
     // spans all three, same as the rest of this modal.
-    try { await ensurePOsLoaded(PLANT_KEYS); } catch (e) { console.error('openMaterialModal order lookup failed:', e); return; }
+    try { await Promise.all([ensurePOsLoaded(PLANT_KEYS), ensureImportPOsLoaded()]); } catch (e) { console.error('openMaterialModal order lookup failed:', e); return; }
     if (myModalRequestId !== modalRequestId) return;
     anchor = resolveOrderOnlyAnchor(compositeKey.slice(sep + 2));
     if (anchor) plantKey = anchor._plantKey;
@@ -62,7 +62,7 @@ async function openMaterialModal(compositeKey) {
   body.innerHTML = '<div class="modal-head"><div></div><span class="close-btn">&times;</span></div><div class="load-banner"><div class="spinner"></div><div>Loading material analysis&hellip;</div></div>';
 
   try {
-    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS), ensurePOsLoaded(PLANT_KEYS)]);
+    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS), ensurePOsLoaded(PLANT_KEYS), ensureImportPOsLoaded()]);
   } catch (e) {
     console.error('openMaterialModal cross-plant load failed:', e);
     if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
@@ -153,15 +153,39 @@ async function openMaterialModal(compositeKey) {
   // per plant's lot until someone corrects them to match - same "each row
   // is its own real row, corrections don't auto-propagate" situation the
   // artifact's own multi-field correction UX never had to deal with either.
+  //
+  // ONE ROW PER LOT, and a lot is one purchase (2026-09-24). HRS's and Vapi's
+  // Stock sheets add a row every time a material arrives from a vendor at a
+  // new price, so SBR 1502 at HRS is five rows: four GPC International lots
+  // and one Expol, three of them used up. With no Vendor or Received column
+  // those read as the same plant listed five times (project owner: "why are
+  // there so many instances of HRS Silvassa"). The columns say what each row
+  // is; the order puts what is on hand first and the newest lot at the top of
+  // each plant; a used-up lot (qty 0, still listed in the sheet) is faded
+  // rather than hidden, because its rate and MIR match are still real history.
+  // The sheet's own location tag rides under the plant, since both sheets
+  // file lots for more than one site (HRS's imported SBR sits under RTP-1).
+  const plantOrder = key => PLANT_KEYS.indexOf(key);
+  siblingLots.sort((a, b) =>
+    plantOrder(a._plantKey) - plantOrder(b._plantKey)
+    || ((b.qty || 0) > 0) - ((a.qty || 0) > 0)
+    || (b.receivedDate || '').localeCompare(a.receivedDate || ''));
   const stockTableHtml = siblingLots.length
-    ? '<div class="table-wrap"><table><thead><tr><th>Plant</th><th>Category</th><th>Qty</th><th>Rate</th><th>Value</th><th>MIR↔Stock Match</th></tr></thead><tbody>' +
-        siblingLots.map(l => '<tr><td>' + escapeHtml(l._plantLabel) + '</td>' +
-          '<td>' + editableCell(l._plantKey, 'Category (' + l._plantLabel + ')', l.category, 'category', l.lotId, 'text') + '</td>' +
-          '<td>' + (l.qty != null ? l.qty : '-') + '</td>' +
-          '<td>' + editableCell(l._plantKey, 'Rate (' + l._plantLabel + ')', l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
-          '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
-          '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>').join('') +
-        '<tr class="fw-700"><td>Total</td><td></td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
+    ? '<div class="table-wrap"><table><thead><tr><th>Plant</th><th>Vendor</th><th>Received</th><th>Category</th><th>Qty</th><th>Rate</th><th>Value</th><th>MIR↔Stock Match</th></tr></thead><tbody>' +
+        siblingLots.map(l => {
+          const usedUp = !((l.qty || 0) > 0);
+          return '<tr' + (usedUp ? ' class="lot-used-up" title="Used up - still listed in the Stock sheet"' : '') + '>' +
+            '<td>' + escapeHtml(l._plantLabel) +
+              (l.locationTag ? '<div class="fs-11 text-slate-soft nowrap" title="Where the Stock sheet files this lot">Location: ' + escapeHtml(l.locationTag) + '</div>' : '') + '</td>' +
+            '<td>' + escapeHtml(l.vendor || '-') + '</td>' +
+            '<td class="nowrap">' + escapeHtml(l.receivedDate ? formatDateIN(l.receivedDate) : '-') + '</td>' +
+            '<td>' + editableCell(l._plantKey, 'Category (' + l._plantLabel + ')', l.category, 'category', l.lotId, 'text') + '</td>' +
+            '<td>' + (l.qty != null ? l.qty : '-') + (usedUp ? '<div class="fs-11 text-slate-soft">used up</div>' : '') + '</td>' +
+            '<td>' + editableCell(l._plantKey, 'Rate (' + l._plantLabel + ')', l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
+            '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
+            '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>';
+        }).join('') +
+        '<tr class="fw-700"><td>Total</td><td></td><td></td><td></td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
       '</tbody></table></div>'
     : '<div class="no-data-note">No stock found for this material at any plant.</div>';
 
@@ -206,7 +230,7 @@ async function openMaterialModal(compositeKey) {
   const materialCritPos = new Map();
   const addMaterialFlag = (label, severity, l) => {
     if (!materialCritPos.has(label)) materialCritPos.set(label, { severity, poSet: new Set() });
-    materialCritPos.get(label).poSet.add(l.po.poNumber + ' (' + l.plantLabel + ')');
+    materialCritPos.get(label).poSet.add(l.po.poNumber + ' (' + l.plantLabel + (l.po.isImport ? ', import' : '') + ')');
   };
   linked.forEach(l => {
     if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) addMaterialFlag('Quantity Mismatch in MIR', 'critical', l);
@@ -287,9 +311,15 @@ async function openMaterialModal(compositeKey) {
     '<div class="field-block"><h4>Quantity</h4>' + atAGlanceHtml + '</div>' +
     '<div class="section-title">Open Purchase Orders</div>' +
     (openLinked.length
-      ? '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Plant</th><th>Qty</th><th>Status</th></tr></thead><tbody>' +
-          openLinked.map(l => '<tr><td><b>' + escapeHtml(l.po.poNumber) + '</b></td><td>' + escapeHtml(l.plantLabel) +
+      // Import orders are listed here too since 2026-09-24 (materials.js's
+      // materialOrders()), tagged so they are never mistaken for domestic
+      // ones, with the INR value the In Transit figure counts them at.
+      ? '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Plant</th><th>Qty</th><th>Value (INR)</th><th>Status</th></tr></thead><tbody>' +
+          openLinked.map(l => '<tr><td><b>' + escapeHtml(l.po.poNumber) + '</b>' +
+            (l.po.isImport ? ' <span class="badge-import" title="' + escapeHtml(importPriceTitle(l.item)) + '">Import</span>' : '') +
+            '</td><td>' + escapeHtml(l.po.vendorName || '-') + '</td><td>' + escapeHtml(l.plantLabel) +
             '</td><td>' + (l.item.qty != null ? l.item.qty : '-') + ' ' + escapeHtml(l.item.uom || '') +
+            '</td><td>' + (l.item.netPrice != null && l.item.qty != null ? formatInr(l.item.netPrice * l.item.qty) : '-') +
             '</td><td><span class="status-pill status-' + l.po._status + '">' + escapeHtml(STATUS_LABELS[l.po._status]) + '</span></td></tr>').join('') +
         '</tbody></table></div>'
       : '<div class="no-data-note">No open purchase orders currently linked to this material by automated matching.</div>');

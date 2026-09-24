@@ -191,6 +191,8 @@ class TestMirCandidates:
         candidates = self.client.get(self.url, {"q": "MIR-MULTI"}).json()["candidates"]
         assert len(candidates) == 1
         assert candidates[0]["rowCount"] == 2
+        # Both rows' positions in the MIR Excel sheet, for finding it by hand.
+        assert sorted(candidates[0]["sheetRows"]) == [1, 2]
 
     def test_inactive_mir_rows_are_not_offered(self):
         stale = _make_mir(mir_no="MIR-OLD", source_row_ref="1")
