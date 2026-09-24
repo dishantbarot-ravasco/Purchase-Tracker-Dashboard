@@ -2869,7 +2869,25 @@ so cron-job.org logged a success. The result now carries `plants`
 `_report_response()` returns **502 `partial`** when any plant failed. Re-running is safe: sent plants
 are deduplicated by their claim and failed ones released theirs. The cause of the 2026-09-23 failure
 was not established from here - no production log access - and the log line to look for is
-`failed to build/send report for plant=`.
+`failed (connect/login|send) for plant=`.
+
+**That run took 23.94s, and 30s is gunicorn's kill (2026-09-24).** A report builds in 20-110ms and a
+Gmail connect+EHLO takes ~0.8s (measured from a dev box against the local copy; Render's data is
+larger), so 24s is two 10s `EMAIL_TIMEOUT` stalls plus one normal send. One more stall and the
+request is killed mid-send. That skips the `except` that releases the claim, and since `sent_at` is
+written at claim time, the plant is stuck for the day with no email. `_send_plant_reports()` (shared
+by daily and monthly) therefore:
+
+- starts a plant only while the run is under `_REPORT_START_BUDGET_S` (12s). A plant not started is
+  `deferred`, **unclaimed**, and makes the run a 502, so a re-run sends it;
+- uses **one** SMTP connection for every plant, with `_REPORT_SMTP_TIMEOUT_S` (4s) per step instead
+  of 10 - one handshake and Gmail login per run, not three - and drops it after a failure so the next
+  plant reconnects;
+- returns per-plant `timings` (`buildMs`/`sendMs`), `elapsedMs`, and the failing SMTP phase
+  (`connect/login` or `send`) in `failures`. That answers "why is it slow" from Render's own numbers.
+
+Not a hard guarantee: a plant starting at 11.9s that then stalls on several SMTP steps could still
+overrun. A stall normally hits one step (the connect), which this bounds to 4s.
 
 **9 - Monthly RM Consumption Report.** `POST /api/internal/send-monthly-report`, a separate endpoint
 rather than a mode flag since the two run on genuinely different schedules. Same category-grouped shape

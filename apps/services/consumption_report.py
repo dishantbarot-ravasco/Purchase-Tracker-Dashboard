@@ -49,9 +49,10 @@ from __future__ import annotations
 import datetime
 import html
 import logging
+import time
 
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import get_connection, send_mail
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
@@ -640,13 +641,137 @@ def _render_monthly_report_email(report: dict) -> tuple:
     )
 
 
-def _failure_summary(exc: BaseException) -> str:
+def _failure_summary(exc: BaseException, phase: str = "") -> str:
     """One line naming what went wrong for a plant, for the trigger's JSON
     response. The type alone separates the cases that matter (an SMTP
-    refusal vs a bug in the build); the message is capped because an SMTP
-    server's reply can run long. The endpoint is secret-gated, so this never
-    reaches an unauthenticated caller."""
-    return f"{type(exc).__name__}: {str(exc)[:200]}"
+    refusal vs a bug in the build); `phase` says WHERE a delivery failure
+    happened - "connect/login" or "send" - which is what tells a Gmail
+    connection that never came up from one that dropped mid-message. The
+    message is capped because an SMTP server's reply can run long. The
+    endpoint is secret-gated, so this never reaches an unauthenticated
+    caller."""
+    prefix = f"{phase}: " if phase else ""
+    return f"{prefix}{type(exc).__name__}: {str(exc)[:200]}"
+
+
+# Time budget for one trigger request (2026-09-24). The trigger runs inside a
+# gunicorn web request, and gunicorn kills a request at 30s. The 2026-09-23
+# run took 23.94s - two plants each stalling for the full 10s EMAIL_TIMEOUT
+# before failing, then Vapi sending normally - so one more stall would have
+# been killed MID-SEND. A kill skips the `except` that releases a plant's
+# ReportSendLog claim, and the claim is written before the email goes out, so
+# that plant's report for the day could then never be sent by anything.
+#
+# So: a plant is only STARTED while the run is under _REPORT_START_BUDGET_S,
+# each SMTP step gives up after _REPORT_SMTP_TIMEOUT_S rather than 10, and
+# every plant shares one SMTP connection (one TLS handshake and one Gmail
+# login per run, not three). A plant not started is reported "deferred" with
+# no claim taken, which makes the run a 502 and a re-run sends it. Measured
+# from a dev box: a report builds in 20-110ms and a Gmail connect+EHLO takes
+# ~0.8s, so a healthy run is a few seconds and never meets the budget.
+#
+# Not a hard proof against the 30s kill: a plant that starts at 11.9s and then
+# stalls on several SMTP steps in turn could still overrun. A stall shows up
+# on one step (normally the connect), which this bounds to 4s.
+_REPORT_START_BUDGET_S = 12.0
+_REPORT_SMTP_TIMEOUT_S = 4
+# Indirection so a test can drive the clock instead of sleeping.
+_clock = time.monotonic
+
+
+def _send_plant_reports(report_type: str, period_key: str, build, admin_emails: list, log_name: str) -> dict:
+    """The per-plant claim / build / send loop both consumption reports run.
+
+    `build(plant_key)` returns (report, html_body, text_body, subject). See
+    send_daily_consumption_reports() for the claim-before-send dedup and why a
+    failure releases its claim, and the comment on _REPORT_START_BUDGET_S for
+    the time budget and the shared connection.
+
+    Returns `plants` (sent / already_sent / failed / deferred per plant),
+    `failures` (why, including the SMTP phase), `timings` (buildMs/sendMs per
+    plant attempted) and `elapsedMs` for the whole run. The timings are the
+    point: they say whether a slow run was slow building or slow delivering,
+    and a sendMs of ~4000 alongside a failure is a stalled connection.
+    """
+    outcomes: dict[str, str] = {}
+    failures: dict[str, str] = {}
+    timings: dict[str, dict] = {}
+    sent = 0
+    started = _clock()
+    connection = get_connection(fail_silently=False, timeout=_REPORT_SMTP_TIMEOUT_S)
+
+    def _ms(since):
+        return round((_clock() - since) * 1000)
+
+    try:
+        for plant_key in _PLANTS:
+            if _clock() - started >= _REPORT_START_BUDGET_S:
+                outcomes[plant_key] = "deferred"
+                failures[plant_key] = (
+                    f"deferred: the run passed its {_REPORT_START_BUDGET_S:.0f}s budget before this plant "
+                    "started; nothing was claimed, so re-running sends it"
+                )
+                log.warning("%s: deferred %s - run over its time budget", log_name, plant_key)
+                continue
+
+            log_row, claimed = ReportSendLog.objects.get_or_create(
+                report_type=report_type, plant=plant_key, period_key=period_key,
+            )
+            if not claimed:
+                log.info("%s: already sent %s report for %s - skipping duplicate", log_name, plant_key, period_key)
+                outcomes[plant_key] = "already_sent"
+                continue
+
+            phase = "build"
+            t_build = _clock()
+            timing = timings[plant_key] = {}
+            try:
+                report, html_body, text_body, subject = build(plant_key)
+                timing["buildMs"] = _ms(t_build)
+                t_send = _clock()
+                # open() is a no-op once the connection is up, so only the
+                # first plant (or the first after a failure) pays for the
+                # handshake and login, and a failure there is labelled as such.
+                phase = "connect/login"
+                connection.open()
+                phase = "send"
+                # fail_silently=False is what makes the claim release below
+                # work for a DELIVERY failure, not only a build failure
+                # (2026-09-23, audit pass). With True, an SMTP fault returned
+                # normally, the `except` never ran, and the claim stayed. Same
+                # defect and fix as advance_license_report.py's _send_one().
+                send_mail(
+                    subject=subject, message=text_body, from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=admin_emails, html_message=html_body, fail_silently=False,
+                    connection=connection,
+                )
+                timing["sendMs"] = _ms(t_send)
+                sent += 1
+                outcomes[plant_key] = "sent"
+                log.info("%s: sent %s report to %s admin(s) in %sms", log_name, plant_key, len(admin_emails), timing)
+            except Exception as exc:
+                log_row.delete()
+                if phase == "build":
+                    timing["buildMs"] = _ms(t_build)
+                else:
+                    timing["sendMs"] = _ms(t_send)
+                outcomes[plant_key] = "failed"
+                failures[plant_key] = _failure_summary(exc, "" if phase == "build" else phase)
+                log.exception("%s: failed (%s) for plant=%s period=%s", log_name, phase, plant_key, period_key)
+                # A connection that failed mid-conversation is in an unknown
+                # state; drop it so the next plant starts a fresh one.
+                try:
+                    connection.close()
+                except Exception:
+                    log.warning("%s: closing the failed SMTP connection also failed", log_name, exc_info=True)
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            log.warning("%s: closing the SMTP connection failed", log_name, exc_info=True)
+
+    return {"plants_sent": sent, "plants": outcomes, "failures": failures,
+            "timings": timings, "elapsedMs": _ms(started)}
 
 
 def send_daily_consumption_reports() -> dict:
@@ -691,56 +816,21 @@ def send_daily_consumption_reports() -> dict:
         log.warning("send_daily_consumption_reports: no recipients at all, nothing sent")
         return {"date": today.isoformat(), "plants_sent": 0, "admins_notified": 0, "plants": {}, "failures": {}}
 
+    def build(plant_key):
+        report = build_plant_report(plant_key, today=today)
+        html_body, text_body = _render_report_email(report)
+        subject = f"[Purchase Tracker] Raw Material Consumption - {_PLANTS[plant_key]['label']} - {report['date']}"
+        return report, html_body, text_body, subject
+
     # Per-plant outcome, returned to the caller (2026-09-24). Until then the
     # result carried only a count, so a run where HRS and Achhad failed and
     # Vapi went out answered `200 {"status": "ok", "plants_sent": 1}` - the
     # scheduler logged a success, nobody was alerted, and which plants
     # failed, and why, existed only in the web service's own log.
-    outcomes: dict[str, str] = {}
-    failures: dict[str, str] = {}
-    sent = 0
-    for plant_key, cfg in _PLANTS.items():
-        log_row, claimed = ReportSendLog.objects.get_or_create(
-            report_type=ReportSendLog.ReportType.DAILY, plant=plant_key, period_key=today.isoformat(),
-        )
-        if not claimed:
-            log.info(
-                "send_daily_consumption_reports: already sent %s report for %s today - skipping duplicate",
-                plant_key, today.isoformat(),
-            )
-            outcomes[plant_key] = "already_sent"
-            continue
-        try:
-            report = build_plant_report(plant_key, today=today)
-            html_body, text_body = _render_report_email(report)
-            subject = f"[Purchase Tracker] Raw Material Consumption - {cfg['label']} - {report['date']}"
-            # fail_silently=False is what makes the claim release below work
-            # for a DELIVERY failure, not only a build failure (2026-09-23,
-            # audit pass). With True, an SMTP fault returned normally, the
-            # `except` never ran, and the day's claim stayed - so a re-trigger
-            # was silently deduped and the failure never reached the log or
-            # Sentry. Same defect and same fix as advance_license_report.py's
-            # _send_one(); see that comment for the long version.
-            send_mail(
-                subject=subject, message=text_body, from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=admin_emails, html_message=html_body, fail_silently=False,
-            )
-            sent += 1
-            outcomes[plant_key] = "sent"
-            log.info(
-                "send_daily_consumption_reports: sent %s report to %s admin(s)",
-                plant_key, len(admin_emails),
-            )
-        except Exception as exc:
-            log_row.delete()
-            outcomes[plant_key] = "failed"
-            failures[plant_key] = _failure_summary(exc)
-            log.exception(
-                "send_daily_consumption_reports: failed to build/send report for plant=%s", plant_key,
-            )
-
-    return {"date": today.isoformat(), "plants_sent": sent, "admins_notified": len(admin_emails),
-            "plants": outcomes, "failures": failures}
+    result = _send_plant_reports(
+        ReportSendLog.ReportType.DAILY, today.isoformat(), build, admin_emails, "send_daily_consumption_reports",
+    )
+    return {"date": today.isoformat(), "admins_notified": len(admin_emails), **result}
 
 
 def send_monthly_consumption_reports(year: int | None = None, month: int | None = None) -> dict:
@@ -768,44 +858,18 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
         log.warning("send_monthly_consumption_reports: no recipients at all, nothing sent")
         return {"month": month_str, "plants_sent": 0, "admins_notified": 0, "plants": {}, "failures": {}}
 
-    # Per-plant outcome - see send_daily_consumption_reports().
-    outcomes: dict[str, str] = {}
-    failures: dict[str, str] = {}
-    sent = 0
-    for plant_key, cfg in _PLANTS.items():
-        log_row, claimed = ReportSendLog.objects.get_or_create(
-            report_type=ReportSendLog.ReportType.MONTHLY, plant=plant_key, period_key=month_str,
+    def build(plant_key):
+        report = build_plant_monthly_report(plant_key, year=year, month=month)
+        html_body, text_body = _render_monthly_report_email(report)
+        subject = (
+            f"[Purchase Tracker] Raw Material Consumption (Monthly) - {_PLANTS[plant_key]['label']} - "
+            f"{report['monthLabel']}"
         )
-        if not claimed:
-            log.info(
-                "send_monthly_consumption_reports: already sent %s report for %s - skipping duplicate",
-                plant_key, month_str,
-            )
-            outcomes[plant_key] = "already_sent"
-            continue
-        try:
-            report = build_plant_monthly_report(plant_key, year=year, month=month)
-            html_body, text_body = _render_monthly_report_email(report)
-            subject = f"[Purchase Tracker] Raw Material Consumption (Monthly) - {cfg['label']} - {report['monthLabel']}"
-            # See the daily sender's comment. Matters more here: a kept claim
-            # blocks the whole month, not one day.
-            send_mail(
-                subject=subject, message=text_body, from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=admin_emails, html_message=html_body, fail_silently=False,
-            )
-            sent += 1
-            outcomes[plant_key] = "sent"
-            log.info(
-                "send_monthly_consumption_reports: sent %s report (%s) to %s admin(s)",
-                plant_key, month_str, len(admin_emails),
-            )
-        except Exception as exc:
-            log_row.delete()
-            outcomes[plant_key] = "failed"
-            failures[plant_key] = _failure_summary(exc)
-            log.exception(
-                "send_monthly_consumption_reports: failed to build/send report for plant=%s month=%s", plant_key, month_str,
-            )
+        return report, html_body, text_body, subject
 
-    return {"month": month_str, "plants_sent": sent, "admins_notified": len(admin_emails),
-            "plants": outcomes, "failures": failures}
+    # A kept claim matters more here than on the daily report: it blocks the
+    # whole month, not one day.
+    result = _send_plant_reports(
+        ReportSendLog.ReportType.MONTHLY, month_str, build, admin_emails, "send_monthly_consumption_reports",
+    )
+    return {"month": month_str, "admins_notified": len(admin_emails), **result}

@@ -72,3 +72,17 @@ class RefuseAllButVapiBackend(locmem.EmailBackend):
                 return 0
             raise SMTPException("Connection unexpectedly closed")
         return super().send_messages(messages)
+
+
+STALL_ON_CONNECT = f"{_MODULE}.StallOnConnectBackend"
+
+
+class StallOnConnectBackend(locmem.EmailBackend):
+    """Fails in open() - the connect/login step - with the timeout an
+    unreachable SMTP server produces, the shape the 2026-09-23 run's 24s
+    suggests. Delivers nothing."""
+
+    def open(self):
+        if self.fail_silently:
+            return False
+        raise TimeoutError("timed out")

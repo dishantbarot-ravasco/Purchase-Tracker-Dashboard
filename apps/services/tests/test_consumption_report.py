@@ -323,7 +323,10 @@ class TestSendDailyConsumptionReports:
         first = send_daily_consumption_reports()
         assert first["plants"] == {"hrs": "failed", "achhad": "failed", "vapi": "sent"}
         assert set(first["failures"]) == {"hrs", "achhad"}
-        assert first["failures"]["hrs"].startswith("SMTPException: ")
+        # The phase says the connection came up and the message itself failed.
+        assert first["failures"]["hrs"].startswith("send: SMTPException: ")
+        assert set(first["timings"]) == {"hrs", "achhad", "vapi"}
+        assert all("buildMs" in t and "sendMs" in t for t in first["timings"].values())
 
         settings.EMAIL_BACKEND = LOCMEM
         retried = send_daily_consumption_reports()
@@ -716,3 +719,66 @@ class TestVendorColumn:
         assert ">Vendor</th>" in html_body
         assert "Rubamin &lt;Vadodara&gt;" in html_body, "vendor names are escaped like every other cell"
         assert "Zinc Oxide (vendor: Rubamin <Vadodara>)" in hrs_mail.body
+
+
+@pytest.mark.django_db
+class TestReportRunTimeBudget:
+    """The trigger runs inside a gunicorn request that is killed at 30s, and a
+    kill mid-send strands that plant's claim with no email sent (2026-09-24).
+    See consumption_report._REPORT_START_BUDGET_S."""
+
+    def test_plants_not_started_in_budget_are_deferred_unclaimed_and_retryable(self, monkeypatch, mailoutbox):
+        import apps.services.consumption_report as cr
+
+        make_user(email="admin-budget@ravasco.com", role="admin")
+        now = [1000.0]
+        monkeypatch.setattr(cr, "_clock", lambda: now[0])
+        real_build = cr.build_plant_report
+
+        def slow_hrs(plant_key, today=None):
+            if plant_key == "hrs":
+                now[0] += cr._REPORT_START_BUDGET_S + 1  # HRS alone uses up the budget
+            return real_build(plant_key, today=today)
+
+        monkeypatch.setattr(cr, "build_plant_report", slow_hrs)
+
+        first = send_daily_consumption_reports()
+        assert first["plants"] == {"hrs": "sent", "achhad": "deferred", "vapi": "deferred"}
+        assert set(first["failures"]) == {"achhad", "vapi"}
+        assert list(ReportSendLog.objects.values_list("plant", flat=True)) == ["hrs"], \
+            "a deferred plant must not be claimed, or the re-run could never send it"
+
+        monkeypatch.setattr(cr, "build_plant_report", real_build)
+        retried = send_daily_consumption_reports()
+        assert retried["plants"] == {"hrs": "already_sent", "achhad": "sent", "vapi": "sent"}
+        assert len(mailoutbox) == 3
+
+    def test_every_plant_shares_one_connection_with_the_short_timeout(self, monkeypatch, mailoutbox):
+        import apps.services.consumption_report as cr
+
+        make_user(email="admin-conn@ravasco.com", role="admin")
+        opened = []
+        real_get_connection = cr.get_connection
+
+        def counting_get_connection(*args, **kwargs):
+            opened.append(kwargs)
+            return real_get_connection(*args, **kwargs)
+
+        monkeypatch.setattr(cr, "get_connection", counting_get_connection)
+        result = send_daily_consumption_reports()
+
+        assert result["plants_sent"] == 3
+        assert len(opened) == 1, "one SMTP connection per run, not one per plant"
+        assert opened[0]["timeout"] == cr._REPORT_SMTP_TIMEOUT_S
+        assert "elapsedMs" in result
+
+    def test_a_stalled_connect_is_reported_as_the_connect_phase(self, settings):
+        from apps.services.tests.refusing_email_backends import STALL_ON_CONNECT
+
+        make_user(email="admin-stall@ravasco.com", role="admin")
+        settings.EMAIL_BACKEND = STALL_ON_CONNECT
+        result = send_daily_consumption_reports()
+
+        assert result["plants"] == {"hrs": "failed", "achhad": "failed", "vapi": "failed"}
+        assert all(f.startswith("connect/login: TimeoutError") for f in result["failures"].values())
+        assert not ReportSendLog.objects.exists(), "every failed plant releases its claim"
