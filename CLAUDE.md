@@ -2620,7 +2620,14 @@ but never stops it, with no signal an account is under sustained attack. `PTUser
 /`locked_until` (migration `0020`): `PTUserBackend.authenticate()` increments on a wrong password and
 locks for 15 minutes at 5, resetting on success. **The lockout check runs before the bcrypt check and
 burns an equivalent dummy-bcrypt delay** (`_dummy_verify()`), so a locked account isn't
-distinguishable by timing from a wrong password on an unlocked one. **Google OAuth honours the lockout
+distinguishable by timing from a wrong password on an unlocked one. **Until 2026-09-24 that delay
+was not happening**: the dummy hash was `"$2b$12$"` plus 52 `a`s, 59 bytes, one short of a valid
+bcrypt hash, so `checkpw()` raised "Invalid salt" in ~0.04 ms against ~240 ms for a real check and
+the deliberate bare `except` hid it - unknown emails and locked accounts answered ~240 ms faster,
+which is exactly the enumeration signal the function exists to remove. The TDS app had the same
+line. `_DUMMY_HASH` is now a genuine cost-12 hash and `test_login_timing_dummy_hash.py` fails on the
+old value (it must verify without raising, match `_hash_password()`'s cost, and an unknown email
+must not answer much faster than a wrong password). **If the bcrypt cost changes, regenerate it.** **Google OAuth honours the lockout
 too** - it once checked only `is_active`, so five failed passwords locked the password door and left
 the Google door open.
 
@@ -3243,6 +3250,7 @@ alongside each.
 | Orphan detection reporting only to a stdout nobody reads | [Purchase orders are retired](#purchase-orders-are-retired-not-deleted--and-until-2026-09-18-they-were-neither) |
 | `date.today()` returning the server's UTC date, not IST | below |
 | Per-IP login throttle locking out a whole office | [Throttling](#throttling-lockout-and-brute-force-counters) |
+| A malformed dummy bcrypt hash making unknown-email logins ~240 ms faster than real ones | [Throttling](#throttling-lockout-and-brute-force-counters) |
 | Google OAuth ignoring account lockout | [Throttling](#throttling-lockout-and-brute-force-counters) |
 | Non-atomic failed-login / OTP-attempt counters undercounting | [Throttling](#throttling-lockout-and-brute-force-counters) |
 | TOCTOU race leaving zero active admins | below |
