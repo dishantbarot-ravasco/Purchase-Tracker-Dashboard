@@ -845,7 +845,7 @@ requires-dist = [
     { name = "bcrypt", specifier = ">=5.0.0" },
     { name = "croniter", specifier = ">=6.2.4" },
     { name = "dj-database-url", specifier = ">=3.1.2" },
-    { name = "django", specifier = ">=5.2,<6.0" },
+    { name = "django", specifier = ">=5.2,<7.0" },
     { name = "django-q2", specifier = ">=1.11.1" },
     { name = "djangorestframework", specifier = ">=3.15" },
     { name = "djangorestframework-simplejwt", specifier = ">=5.5.1" },

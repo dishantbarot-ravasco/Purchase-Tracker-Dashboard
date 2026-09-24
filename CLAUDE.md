@@ -1239,6 +1239,32 @@ serialize and render; and the sync pipeline gained a fifth per-plant step
 the data stamp advance more times per sync cycle - and every one of those advances triggers a full
 re-render.
 
+### Open orders with no stock lot get a row of their own (2026-09-24)
+
+Reported as *"open PO's even if they are there they don't show up in Raw Material Analysis"*. The
+view was built **one row per Stock lot**, so an open order could appear only by linking to a lot that
+already existed. Measured on live data: **386 of 478 open line items linked to no lot** (HRS 39/89,
+Achhad 26/45, Vapi 321/344) and were invisible - a first order for a new material (Titanium Dioxide,
+ZDMC at Achhad; VNB-EPT, POE at HRS), and nearly all of Vapi's fabric orders.
+
+`materials.js`'s `orderOnlyMaterials()` gives every open line that links to **no** stock material
+(same `materialLinksToItem()` rule, so a line is never under two rows) a row grouped by normalized
+description, qty/value 0, marked "On order, no stock lot yet". After it, **478 of 478** open lines
+appear. The row opens the material modal via an `order::<normalized description>` key
+(`materialModalKey()`); the modal builds its anchor from the open lines and skips the two lot-only
+pieces (Category pencil, stock-trend fetch). Order-only rows are kept out of the Inventory Value chart.
+Their category comes from each line item's own `category`/`subCategory`, which `_po_dict()` now serves
+(`_categorized_line_item_dict()`, same lookup as `_lot_dict()`).
+
+**"Open" is judged per LINE now, not per PO** (`isOpenPoLine()`). A PO is `partial` while any line
+is outstanding, so a line that had already arrived in full counted as open on every multi-line PO -
+its value in "In Transit" and its material reading "On Order".
+
+Two causes were measured and deliberately **not** changed: wording drift (~23 lines, e.g.
+`AUROAID AR 262` vs `AUROAID AR262`) and the vendor gate (~16). Dropping the gate binds a generic
+"Reclaim Rubber" order to six different grades and "Carbon Black N220" to "Carbon Black 134". Those
+lines now show on an order-only row instead of vanishing.
+
 **If you add anything to the Raw Material render path, check it is not per-pair.** The linkage loop is
 the one place in this app where an innocuous-looking `normalize...()` call is multiplied by ~800,000.
 
@@ -2829,6 +2855,21 @@ month-to-date running total under a heading that said "Issued Today". `isEstimat
 survives with a different and now uniform meaning: the quantity was interpolated across a snapshot
 gap rather than observed on one dated day, at any of the three plants. See
 [Consumption ledger](#consumption-ledger-2026-09-21--supersedes-the-days-left-engines-arithmetic).
+
+**A Vendor column (2026-09-24, both #8 and #9).** HRS and Vapi read the Stock sheet's own supplier
+column (`party_name`/`supplier_name`), highest-value lot first, capped at three names plus "+N more".
+Achhad's sheet has no vendor column, so there it is the `party_name` on the MIR receipts matched to
+the lot (dismissed matches excluded), marked **"(per MIR)"** because a MIR<->Stock match is a
+suggestion. That covers 114 of Achhad's 303 materials today; the rest show "-".
+
+**The trigger reports each plant's outcome, and a failure is a 502 (2026-09-24).** On 2026-09-23 only
+Vapi's daily report arrived, and the endpoint had answered `200 {"status": "ok", "plants_sent": 1}`,
+so cron-job.org logged a success. The result now carries `plants`
+(`sent`/`already_sent`/`failed` per plant) and `failures` (exception type plus message), and
+`_report_response()` returns **502 `partial`** when any plant failed. Re-running is safe: sent plants
+are deduplicated by their claim and failed ones released theirs. The cause of the 2026-09-23 failure
+was not established from here - no production log access - and the log line to look for is
+`failed to build/send report for plant=`.
 
 **9 - Monthly RM Consumption Report.** `POST /api/internal/send-monthly-report`, a separate endpoint
 rather than a mode flag since the two run on genuinely different schedules. Same category-grouped shape

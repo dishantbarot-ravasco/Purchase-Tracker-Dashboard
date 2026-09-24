@@ -72,6 +72,20 @@ def _check_report_secret(request):
     return None
 
 
+def _report_response(result: dict) -> Response:
+    """200 when every plant was sent or already sent; 502 naming the failed
+    plants otherwise (2026-09-24). A run where HRS and Achhad failed and Vapi
+    went out used to answer 200 "ok", so cron-job.org recorded a success and
+    never alerted - the only trace was the web service's own log. A non-200
+    makes the scheduler flag the run, and re-running it is safe: plants that
+    went out are skipped by their ReportSendLog claim and failed ones released
+    theirs. 502 rather than 500 because the usual cause is the mail server
+    refusing, not this app crashing - a genuine crash still 500s on its own."""
+    if result.get("failures"):
+        return Response({"status": "partial", **result}, status=status.HTTP_502_BAD_GATEWAY)
+    return Response({"status": "ok", **result})
+
+
 @api_view(["GET", "POST"])
 @permission_classes([AllowAny])
 def trigger_daily_report(request):
@@ -89,10 +103,10 @@ def trigger_daily_report(request):
 
     result = send_daily_consumption_reports()
     log.info(
-        "trigger_daily_report: sent report for %s to %s admin(s) (%s plant reports)",
-        result.get("date"), result.get("admins_notified"), result.get("plants_sent"),
+        "trigger_daily_report: sent report for %s to %s admin(s) (%s plant reports, outcomes %s)",
+        result.get("date"), result.get("admins_notified"), result.get("plants_sent"), result.get("plants"),
     )
-    return Response({"status": "ok", **result})
+    return _report_response(result)
 
 
 @api_view(["GET", "POST"])
@@ -129,10 +143,10 @@ def trigger_monthly_report(request):
 
     result = send_monthly_consumption_reports(year=year, month=month)
     log.info(
-        "trigger_monthly_report: sent report for %s to %s admin(s) (%s plant reports)",
-        result.get("month"), result.get("admins_notified"), result.get("plants_sent"),
+        "trigger_monthly_report: sent report for %s to %s admin(s) (%s plant reports, outcomes %s)",
+        result.get("month"), result.get("admins_notified"), result.get("plants_sent"), result.get("plants"),
     )
-    return Response({"status": "ok", **result})
+    return _report_response(result)
 
 
 @api_view(["GET", "POST"])
