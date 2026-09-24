@@ -5,12 +5,42 @@
 // plant regardless of which plant tab was open when this was clicked - see
 // the file header/CLAUDE.md for why this modal alone, unlike the rest of
 // this view, always aggregates across all three plants.
+//
+// "order::<normalized description>" opens a material that is on an open order
+// but has no Stock lot anywhere in the current view (materials.js's
+// orderOnlyMaterials()). It has no lot to anchor on, so the anchor is built
+// from the open lines themselves - see resolveOrderOnlyAnchor() - and the two
+// things that need a real lot (the Category pencil, the stock-trend fetch)
+// are skipped. Everything else reads the same data either way.
+function resolveOrderOnlyAnchor(normKey) {
+  let anchor = null;
+  const vendorSeen = new Set();
+  PLANT_KEYS.forEach(key => (PURCHASE_ORDERS_BY_PLANT[key] || []).forEach(po => (po.items || []).forEach(item => {
+    if (normalizeMaterial(item.description) !== normKey || !isOpenPoLine(po, item)) return;
+    if (!anchor) anchor = { description: item.description, materialCode: '', category: item.category || '', subCategory: item.subCategory || '', vendors: [], orderOnly: true, _plantKey: key };
+    const nv = normalizeVendor(po.vendorName);
+    if (nv && !vendorSeen.has(nv)) { vendorSeen.add(nv); anchor.vendors.push(po.vendorName); }
+  })));
+  return anchor;
+}
+
 async function openMaterialModal(compositeKey) {
   const myModalRequestId = ++modalRequestId;
   const sep = compositeKey.indexOf('::');
-  const plantKey = compositeKey.slice(0, sep);
-  const lotId = Number(compositeKey.slice(sep + 2));
-  const anchor = (MATERIALS_BY_PLANT[plantKey] || []).find(m => m.lotId === lotId);
+  const isOrderOnly = compositeKey.slice(0, sep) === 'order';
+  let plantKey = compositeKey.slice(0, sep);
+  const lotId = isOrderOnly ? null : Number(compositeKey.slice(sep + 2));
+  let anchor = null;
+  if (isOrderOnly) {
+    // Orders for every plant, not just the open tab's - the lookup below
+    // spans all three, same as the rest of this modal.
+    try { await ensurePOsLoaded(PLANT_KEYS); } catch (e) { console.error('openMaterialModal order lookup failed:', e); return; }
+    if (myModalRequestId !== modalRequestId) return;
+    anchor = resolveOrderOnlyAnchor(compositeKey.slice(sep + 2));
+    if (anchor) plantKey = anchor._plantKey;
+  } else {
+    anchor = (MATERIALS_BY_PLANT[plantKey] || []).find(m => m.lotId === lotId);
+  }
   if (!anchor) return;
 
   // Reopening on a different lot without closing first (e.g. clicking
@@ -58,7 +88,7 @@ async function openMaterialModal(compositeKey) {
     l.po._deliveryDate = l.po._deliveryDate || computePoDeliveryDate(l.po);
     if (!l.po._categories) computePoFlags(l.po);
   });
-  const openLinked = linked.filter(l => l.po._status !== 'received')
+  const openLinked = linked.filter(l => isOpenPoLine(l.po, l.item))
     .sort((a, b) => (a.po._deliveryDate || '').localeCompare(b.po._deliveryDate || ''));
 
   const vendorSeen = new Set();
@@ -97,10 +127,14 @@ async function openMaterialModal(compositeKey) {
   const overviewHtml =
     '<div class="field-grid">' +
       '<div class="field-block"><h4>Classification</h4>' +
-        editableLine(plantKey, 'Category', anchor.category, 'category', lotId, 'text') +
+        // No lot to correct on an order-only material - its category comes
+        // from the category reference, and there is no row to PATCH.
+        (isOrderOnly
+          ? plainLine('Category', anchor.category) + plainLine('Sub Category', anchor.subCategory)
+          : editableLine(plantKey, 'Category', anchor.category, 'category', lotId, 'text') +
         (plantKey === 'achhad'
           ? plainLine('Sub Category', anchor.subCategory)
-          : editableLine(plantKey, 'Sub Category', anchor.subCategory, 'sub_category', lotId, 'text')) +
+          : editableLine(plantKey, 'Sub Category', anchor.subCategory, 'sub_category', lotId, 'text'))) +
         '<div class="line">Also known as: ' + (aliases.length ? escapeHtml(aliases.slice(0, 5).join('; ')) + (aliases.length > 5 ? ' (+' + (aliases.length - 5) + ' more)' : '') : 'Not available') + '</div>' +
       '</div>' +
       '<div class="field-block"><h4>Vendors (from POs and Stock Supplier History)</h4>' +
@@ -384,7 +418,8 @@ async function openMaterialModal(compositeKey) {
 
   // Anchor lot's own qty-over-time stock trend (per-lot, not cross-plant -
   // the stock-trend endpoint only knows about one specific lot id), appended
-  // under the Stock by Plant table.
+  // under the Stock by Plant table. An order-only material has no lot.
+  if (isOrderOnly) return;
   try {
     const data = await apiForPlant(plantKey, '/materials/' + encodeURIComponent(lotId) + '/stock-trend');
     if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one

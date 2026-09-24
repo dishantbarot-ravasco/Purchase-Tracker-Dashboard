@@ -50,7 +50,7 @@ from apps.services.consumption_report import (
     send_daily_consumption_reports,
     send_monthly_consumption_reports,
 )
-from apps.services.tests.refusing_email_backends import LOCMEM, REFUSE_ALL
+from apps.services.tests.refusing_email_backends import LOCMEM, REFUSE_ALL, REFUSE_ALL_BUT_VAPI
 
 TODAY = timezone.localdate()
 
@@ -311,6 +311,27 @@ class TestSendDailyConsumptionReports:
         retried = send_daily_consumption_reports()
         assert retried["plants_sent"] == 3
         assert len(mail.outbox) == 3
+
+    def test_the_result_names_each_plants_outcome_and_why_it_failed(self, settings):
+        """The 2026-09-23 run: HRS and Achhad undelivered, Vapi sent. The
+        result used to be a bare count (plants_sent: 1), so nothing said
+        WHICH plants failed or why. It must name every plant's outcome, and
+        a re-run must report the survivors as already sent, not resend."""
+        make_user(email="admin-outcome@ravasco.com", role="admin")
+
+        settings.EMAIL_BACKEND = REFUSE_ALL_BUT_VAPI
+        first = send_daily_consumption_reports()
+        assert first["plants"] == {"hrs": "failed", "achhad": "failed", "vapi": "sent"}
+        assert set(first["failures"]) == {"hrs", "achhad"}
+        assert first["failures"]["hrs"].startswith("SMTPException: ")
+
+        settings.EMAIL_BACKEND = LOCMEM
+        retried = send_daily_consumption_reports()
+        assert retried["plants"] == {"hrs": "sent", "achhad": "sent", "vapi": "already_sent"}
+        assert retried["failures"] == {}
+        # Vapi's from the first run plus the two retried - Vapi exactly once.
+        assert len(mail.outbox) == 3
+        assert sum("RTP-Vapi" in m.subject for m in mail.outbox) == 1, "the retry must not resend Vapi"
 
     def test_email_body_groups_materials_under_category_headings(self, mailoutbox):
         make_user(email="admin5@ravasco.com", role="admin")
@@ -632,3 +653,66 @@ class TestEmptyReportDistinguishesQuietFromMissing:
         report = build_plant_report("hrs", today=TODAY)
         assert report["rows"]
         assert report["emptyMessage"] == ""
+
+
+@pytest.mark.django_db
+class TestVendorColumn:
+    """Who each issued material is bought from (project owner, 2026-09-24).
+    HRS/Vapi read the Stock sheet's own supplier column; Achhad's sheet has
+    none, so it names the party on the matched MIR receipts, marked as such."""
+
+    def test_hrs_names_each_lots_supplier_highest_value_first(self):
+        y, t = _days(1, 0)
+        hrs_lot_issuing("SBR 1502", [(y, 0), (t, 30)], party_name="Balaji Rubbers", natural_key="a", value=Decimal("100"))
+        hrs_lot_issuing("SBR 1502", [(y, 0), (t, 70)], party_name="GPC International", natural_key="b", value=Decimal("9000"))
+        rebuild_plant_consumption("hrs")
+
+        [row] = build_plant_report("hrs", today=TODAY)["rows"]
+        assert row["vendor"] == "GPC International; Balaji Rubbers"
+
+    def test_more_than_three_vendors_are_counted_not_listed(self):
+        y, t = _days(1, 0)
+        for n in range(5):
+            hrs_lot_issuing("Silica", [(y, 0), (t, 10)], party_name=f"Vendor {n}", natural_key=f"s{n}",
+                            value=Decimal(str(1000 - n)))
+        rebuild_plant_consumption("hrs")
+
+        [row] = build_plant_report("hrs", today=TODAY)["rows"]
+        assert row["vendor"] == "Vendor 0; Vendor 1; Vendor 2 +2 more"
+
+    def test_achhad_names_the_matched_mir_party_and_says_so(self):
+        from apps.core.models import RTPAchhadMIREntry, RTPAchhadMirStockMatch
+
+        lot = achhad_lot_issuing("Butyl Rubber", [(d, 0) for d in _days(1, 0)])
+        RTPAchhadRMDailyMovement.objects.create(stock_lot=lot, movement_date=TODAY, received=0, issued=Decimal("15"))
+        kept = RTPAchhadMIREntry.objects.create(mir_no="1", party_name="Exxon Chemicals", material_description="Butyl", source_row_ref="1")
+        RTPAchhadMirStockMatch.objects.create(mir_entry=kept, stock_lot=lot)
+        # A match a reviewer dismissed is not evidence of anything.
+        dismissed = RTPAchhadMIREntry.objects.create(mir_no="2", party_name="Wrong Party", material_description="Butyl", source_row_ref="2")
+        RTPAchhadMirStockMatch.objects.create(mir_entry=dismissed, stock_lot=lot, dismissed_by_override=True)
+        rebuild_plant_consumption("achhad")
+
+        [row] = build_plant_report("achhad", today=TODAY)["rows"]
+        assert row["vendor"] == "Exxon Chemicals (per MIR)"
+
+    def test_a_material_with_no_known_vendor_shows_a_dash(self):
+        lot = achhad_lot_issuing("Sulphur", [(d, 0) for d in _days(1, 0)])
+        RTPAchhadRMDailyMovement.objects.create(stock_lot=lot, movement_date=TODAY, received=0, issued=Decimal("5"))
+        rebuild_plant_consumption("achhad")
+
+        [row] = build_plant_report("achhad", today=TODAY)["rows"]
+        assert row["vendor"] == "-"
+
+    def test_the_email_carries_a_vendor_column(self, mailoutbox):
+        make_user(email="admin-vendor@ravasco.com", role="admin")
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Zinc Oxide", [(y, 0), (t, 10)], party_name="Rubamin <Vadodara>")
+        rebuild_plant_consumption("hrs")
+
+        send_daily_consumption_reports()
+
+        [hrs_mail] = [m for m in mailoutbox if "HRS" in m.subject]
+        html_body = hrs_mail.alternatives[0][0]
+        assert ">Vendor</th>" in html_body
+        assert "Rubamin &lt;Vadodara&gt;" in html_body, "vendor names are escaped like every other cell"
+        assert "Zinc Oxide (vendor: Rubamin <Vadodara>)" in hrs_mail.body

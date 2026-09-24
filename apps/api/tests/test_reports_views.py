@@ -53,6 +53,27 @@ class TestTriggerDailyReport:
         assert response.status_code == 200
         assert response.json()["status"] == "ok"
 
+    def test_a_plant_that_failed_to_send_makes_the_run_a_502(self, settings):
+        """So cron-job.org records the run as failed and alerts, instead of
+        logging a success for a day two plants never received (2026-09-23).
+        The body still says which plants went out and which did not."""
+        from apps.services.tests.refusing_email_backends import LOCMEM, REFUSE_ALL_BUT_VAPI
+
+        settings.REPORT_CRON_SECRET = "the-real-secret"
+        settings.EMAIL_BACKEND = REFUSE_ALL_BUT_VAPI
+        response = APIClient().get("/api/internal/send-daily-report", HTTP_X_REPORT_SECRET="the-real-secret")
+        assert response.status_code == 502
+        body = response.json()
+        assert body["status"] == "partial"
+        assert body["plants"] == {"hrs": "failed", "achhad": "failed", "vapi": "sent"}
+        assert set(body["failures"]) == {"hrs", "achhad"}
+
+        # Re-running is the remedy the 502 invites, and it is safe.
+        settings.EMAIL_BACKEND = LOCMEM
+        retry = APIClient().get("/api/internal/send-daily-report", HTTP_X_REPORT_SECRET="the-real-secret")
+        assert retry.status_code == 200
+        assert retry.json()["plants"] == {"hrs": "sent", "achhad": "sent", "vapi": "already_sent"}
+
     def test_no_login_session_required(self):
         """The whole point of this endpoint: an unauthenticated caller (no
         JWT cookie, no session) must be able to reach it - only the secret

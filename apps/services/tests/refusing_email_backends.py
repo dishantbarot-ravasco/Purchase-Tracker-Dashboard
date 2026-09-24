@@ -31,6 +31,7 @@ from django.core.mail.backends import locmem
 _MODULE = "apps.services.tests.refusing_email_backends"
 REFUSE_ALL = f"{_MODULE}.RefuseAllBackend"
 REFUSE_IMPORT_VALIDITY = f"{_MODULE}.RefuseImportValidityBackend"
+REFUSE_ALL_BUT_VAPI = f"{_MODULE}.RefuseAllButVapiBackend"
 LOCMEM = "django.core.mail.backends.locmem.EmailBackend"
 
 
@@ -58,3 +59,16 @@ class RefuseImportValidityBackend(_RefusingBackend):
     prove one kind's failure does not take the other kind's claims with it."""
 
     refuse_marker = "Import Validity"
+
+
+class RefuseAllButVapiBackend(locmem.EmailBackend):
+    """Refuses every consumption report except RTP-Vapi's - the 2026-09-23
+    run, where only Vapi's daily report went out. Same fail_silently
+    contract as _RefusingBackend."""
+
+    def send_messages(self, messages):
+        if any("RTP-Vapi" not in m.subject for m in messages):
+            if self.fail_silently:
+                return 0
+            raise SMTPException("Connection unexpectedly closed")
+        return super().send_messages(messages)

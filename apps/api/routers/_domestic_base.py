@@ -390,6 +390,21 @@ def _po_material_categories(items, category_reference) -> list[dict]:
     return list(seen.values())
 
 
+def _categorized_line_item_dict(item, item_ref, category_reference) -> dict:
+    """_line_item_dict() plus the line's own canonical category, looked up
+    exactly as _lot_dict() looks up a Stock lot's. Raw Material Analysis
+    gives an open order for a material with no Stock lot a row of its own
+    (materials.js's orderOnlyMaterials()), and that row can only sit in the
+    right Category/Sub Category filter if it knows its own category -
+    materialCategories above is de-duplicated per PO, so it cannot say which
+    line holds which."""
+    d = _line_item_dict(item, item_ref)
+    ref = (category_reference or {}).get(normalize_material(item.description))
+    d["category"] = ref.category if ref else "Uncategorized"
+    d["subCategory"] = ref.subcategory if ref else ""
+    return d
+
+
 def _po_dict(cfg: _PlantConfig, po, corrections_by_po=None, flag_dismissals_by_po=None,
              item_flags_by_item=None, mir_flags_by_mir_entry=None, category_reference=None):
     items = list(po.items.all())
@@ -446,7 +461,8 @@ def _po_dict(cfg: _PlantConfig, po, corrections_by_po=None, flag_dismissals_by_p
         "materialCategories": _po_material_categories(items, category_reference),
         # Numbered per PO in pk order - the master CSV's own row order, and
         # the same numbering the matcher uses to resolve a pin.
-        "items": [_line_item_dict(i, str(n)) for n, i in enumerate(sorted(items, key=lambda x: x.id))],
+        "items": [_categorized_line_item_dict(i, str(n), category_reference)
+                  for n, i in enumerate(sorted(items, key=lambda x: x.id))],
         "corrections": [_correction_dict(c) for c in corrections],
         "flagDismissals": [_flag_dismissal_dict(fd) for fd in flag_dismissals],
         "dataQualityFlags": [_data_quality_flag_dict(f) for f in data_quality_flags],

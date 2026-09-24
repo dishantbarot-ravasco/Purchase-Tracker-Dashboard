@@ -60,6 +60,7 @@ from apps.core.models import (
     HRSRMLot,
     MaterialConsumptionDaily,
     ReportSendLog,
+    RTPAchhadMirStockMatch,
     RTPAchhadRMLot,
     RTPVapiRMLot,
     SyncRun,
@@ -105,18 +106,25 @@ _PLANTS = {
         "plant": SyncRun.Plant.HRS,
         "lot_model": HRSRMLot,
         "rate_field": "basic_rate",
+        "vendor_field": "party_name",
     },
     "achhad": {
         "label": "RTP-Achhad (Ravasco Transmission and Packing, Achhad)",
         "plant": SyncRun.Plant.RTP_ACHHAD,
         "lot_model": RTPAchhadRMLot,
         "rate_field": "rate",
+        # Achhad's Stock sheet has no vendor column (see RTPAchhadRMLot's
+        # docstring). Its vendors come from the MIR receipts matched to each
+        # lot instead - see _vendors_by_material().
+        "vendor_field": None,
+        "mir_stock_match_model": RTPAchhadMirStockMatch,
     },
     "vapi": {
         "label": "RTP-Vapi (Ravasco Transmission and Packing, Vapi)",
         "plant": SyncRun.Plant.RTP_VAPI,
         "lot_model": RTPVapiRMLot,
         "rate_field": "basic_rate",
+        "vendor_field": "supplier_name",
     },
 }
 
@@ -164,6 +172,68 @@ def _material_display(cfg: dict) -> dict:
             "rate": getattr(lot, rate_field, None),
         }
     return out
+
+
+# A material bought from many vendors would otherwise stretch one cell across
+# the table; the rest are counted, not dropped silently.
+_MAX_VENDORS_SHOWN = 3
+
+
+def _vendors_by_material(cfg: dict) -> dict:
+    """material_key -> {'names': [vendor, ...], 'viaMir': bool} - who this
+    plant buys each material from (project owner, 2026-09-24).
+
+    HRS and Vapi read the Stock sheet's own vendor column, one per lot,
+    highest-value lot first so the supplier holding most of the stock leads.
+    Achhad's sheet has no vendor column at all, so it reads the party name
+    off the MIR receipts matched to each lot, most recent receipt first.
+    That is weaker evidence - a MIR<->Stock match is a suggestion, not a
+    fact (see CLAUDE.md's "Match accuracy") - so it is flagged `viaMir` and
+    the email says so beside the name rather than presenting it as the
+    sheet's own. A dismissed match names nobody. A material none of whose
+    lots has a vendor or a matched receipt is simply absent here.
+    """
+    out: dict[str, dict] = {}
+
+    def _add(key, name, via_mir):
+        name = (name or "").strip()
+        if not key or not name:
+            return
+        entry = out.setdefault(key, {"names": [], "viaMir": via_mir})
+        if name.casefold() not in (n.casefold() for n in entry["names"]):
+            entry["names"].append(name)
+
+    vendor_field = cfg.get("vendor_field")
+    if vendor_field:
+        for description, vendor in cfg["lot_model"].objects.order_by("-value").values_list("description", vendor_field):
+            _add(normalize_material(description or ""), vendor, False)
+        return out
+
+    match_model = cfg.get("mir_stock_match_model")
+    if match_model:
+        matches = (
+            match_model.objects.filter(dismissed_by_override=False)
+            .order_by("-mir_entry__mir_date")
+            .values_list("stock_lot__description", "mir_entry__party_name")
+        )
+        for description, party in matches:
+            _add(normalize_material(description or ""), party, True)
+    return out
+
+
+def _vendor_display(vendors: dict | None) -> str:
+    """"A; B; C +2 more", with "(per MIR)" when the names came from matched
+    receipts rather than the Stock sheet. "-" when nothing is known, the
+    convention every other missing value in these emails already uses."""
+    if not vendors or not vendors.get("names"):
+        return "-"
+    names = vendors["names"]
+    text = "; ".join(names[:_MAX_VENDORS_SHOWN])
+    if len(names) > _MAX_VENDORS_SHOWN:
+        text += f" +{len(names) - _MAX_VENDORS_SHOWN} more"
+    if vendors.get("viaMir"):
+        text += " (per MIR)"
+    return text
 
 
 def _current_stock(cfg: dict) -> dict:
@@ -214,6 +284,7 @@ def _ledger_rows(cfg: dict, start: datetime.date, end: datetime.date, qty_key: s
         .filter(qty__gt=0)
     )
     display = _material_display(cfg)
+    vendors = _vendors_by_material(cfg)
     rates = consumption_rates(cfg["plant"], today=timezone.localdate())
     stock_by_material = _current_stock(cfg)
 
@@ -227,6 +298,7 @@ def _ledger_rows(cfg: dict, start: datetime.date, end: datetime.date, qty_key: s
         rows.append({
             "material": meta.get("material") or key,
             "category": meta.get("category") or "Uncategorized",
+            "vendor": _vendor_display(vendors.get(key)),
             qty_key: t["qty"],
             "rate": meta.get("rate"),
             "daysLeft": (stock / avg_daily) if (avg_daily and stock is not None) else None,
@@ -383,7 +455,7 @@ def _render_consumption_rows(rows: list, qty_key: str, empty_message: str) -> tu
     Returns (body_html_rows, text_rows, any_estimate)."""
     if not rows:
         return (
-            f'<tr><td colspan="4" style="padding:12px;color:#718096;">{empty_message}</td></tr>',
+            f'<tr><td colspan="5" style="padding:12px;color:#718096;">{empty_message}</td></tr>',
             [empty_message],
             False,
         )
@@ -397,7 +469,7 @@ def _render_consumption_rows(rows: list, qty_key: str, empty_message: str) -> tu
     text_rows = []
     for category, cat_rows in groups.items():
         html_parts.append(
-            '<tr><td colspan="4" style="padding:10px 8px 6px;font-weight:700;'
+            '<tr><td colspan="5" style="padding:10px 8px 6px;font-weight:700;'
             'font-size:12.5px;color:#1A202C;background:#F7FAFC;border-top:2px solid #CBD5E0;">'
             f'{html.escape(category)}</td></tr>'
         )
@@ -406,6 +478,9 @@ def _render_consumption_rows(rows: list, qty_key: str, empty_message: str) -> tu
             days_left = f'{r["daysLeft"]:.1f}' if r["daysLeft"] is not None else "N/A"
             rate = f'{r["rate"]:.2f}' if r["rate"] is not None else "N/A"
             material = html.escape(r["material"])
+            # .get(): a row built by anything other than _ledger_rows() may
+            # carry no vendor, and a missing one reads the same as unknown.
+            vendor = r.get("vendor") or "-"
             # A figure interpolated across a snapshot gap (see
             # _ledger_rows()) is one share of a multi-day interval, not a
             # confirmed single-day total - marked "(est.)" right next to
@@ -420,13 +495,14 @@ def _render_consumption_rows(rows: list, qty_key: str, empty_message: str) -> tu
             html_parts.append(
                 "<tr>"
                 f'<td style="padding:8px;border-bottom:1px solid #E2E8F0;">{material}</td>'
+                f'<td style="padding:8px;border-bottom:1px solid #E2E8F0;">{html.escape(vendor)}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #E2E8F0;text-align:right;">{qty_display}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #E2E8F0;text-align:right;">{rate}</td>'
                 f'<td style="padding:8px;border-bottom:1px solid #E2E8F0;text-align:right;">{days_left} ({r["confidence"]})</td>'
                 "</tr>"
             )
             text_rows.append(
-                f'- {r["material"]}: issued {qty_display}, rate {rate}, days left {days_left} ({r["confidence"]})'
+                f'- {r["material"]} (vendor: {vendor}): issued {qty_display}, rate {rate}, days left {days_left} ({r["confidence"]})'
             )
     return "".join(html_parts), text_rows, any_estimate
 
@@ -460,6 +536,7 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     <thead>
       <tr style="background:#F7FAFC;">
         <th style="padding:8px;text-align:left;border-bottom:2px solid #CBD5E0;">Material</th>
+        <th style="padding:8px;text-align:left;border-bottom:2px solid #CBD5E0;">Vendor</th>
         <th style="padding:8px;text-align:right;border-bottom:2px solid #CBD5E0;">{html.escape(qty_column_label)}</th>
         <th style="padding:8px;text-align:right;border-bottom:2px solid #CBD5E0;">Latest Rate</th>
         <th style="padding:8px;text-align:right;border-bottom:2px solid #CBD5E0;">Days Left</th>
@@ -474,6 +551,11 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     last {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each row is one material,
     combining every vendor lot of it this plant holds. Figures reflect the most recent successful
     Drive sync for this plant (automatic or manually triggered).
+  </p>
+  <p style="margin:10px 0 0;font-size:11px;color:#718096;">
+    Vendor comes from the Stock sheet's own supplier column. RTP-Achhad's sheet has none, so there
+    it is the party on the MIR receipts automatically matched to that material, marked
+    <strong>(per MIR)</strong> - verify it before relying on it. "-" means no vendor is on record.
   </p>
   <p style="margin:10px 0 0;font-size:11px;color:#718096;">
     <strong>The word in parentheses next to Days Left is NOT a stock-level warning</strong> - it's
@@ -505,6 +587,9 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
         f"consumption over the last {DEFAULT_WINDOW_DAYS} days - an estimate, not a guarantee. Each "
         "row is one material, combining every vendor lot of it this plant holds. Figures reflect the "
         "most recent successful Drive sync for this plant (automatic or manual).\n"
+        "Vendor comes from the Stock sheet's own supplier column. RTP-Achhad's sheet has none, so "
+        "there it is the party on the MIR receipts automatically matched to that material, marked "
+        "(per MIR) - verify it before relying on it. \"-\" means no vendor is on record.\n"
         "\nThe word in parentheses next to Days Left is NOT a stock-level warning - it's how much "
         "snapshot history backs that estimate, shown so a thin estimate is never mistaken for a "
         "confirmed one:\n"
@@ -555,6 +640,15 @@ def _render_monthly_report_email(report: dict) -> tuple:
     )
 
 
+def _failure_summary(exc: BaseException) -> str:
+    """One line naming what went wrong for a plant, for the trigger's JSON
+    response. The type alone separates the cases that matter (an SMTP
+    refusal vs a bug in the build); the message is capped because an SMTP
+    server's reply can run long. The endpoint is secret-gated, so this never
+    reaches an unauthenticated caller."""
+    return f"{type(exc).__name__}: {str(exc)[:200]}"
+
+
 def send_daily_consumption_reports() -> dict:
     """Builds and emails all 3 plants' consumption reports to every active
     admin (PTUser role=admin, apps/services/security_alerts.py's own
@@ -595,8 +689,15 @@ def send_daily_consumption_reports() -> dict:
 
     if not admin_emails:
         log.warning("send_daily_consumption_reports: no recipients at all, nothing sent")
-        return {"date": today.isoformat(), "plants_sent": 0, "admins_notified": 0}
+        return {"date": today.isoformat(), "plants_sent": 0, "admins_notified": 0, "plants": {}, "failures": {}}
 
+    # Per-plant outcome, returned to the caller (2026-09-24). Until then the
+    # result carried only a count, so a run where HRS and Achhad failed and
+    # Vapi went out answered `200 {"status": "ok", "plants_sent": 1}` - the
+    # scheduler logged a success, nobody was alerted, and which plants
+    # failed, and why, existed only in the web service's own log.
+    outcomes: dict[str, str] = {}
+    failures: dict[str, str] = {}
     sent = 0
     for plant_key, cfg in _PLANTS.items():
         log_row, claimed = ReportSendLog.objects.get_or_create(
@@ -607,6 +708,7 @@ def send_daily_consumption_reports() -> dict:
                 "send_daily_consumption_reports: already sent %s report for %s today - skipping duplicate",
                 plant_key, today.isoformat(),
             )
+            outcomes[plant_key] = "already_sent"
             continue
         try:
             report = build_plant_report(plant_key, today=today)
@@ -624,17 +726,21 @@ def send_daily_consumption_reports() -> dict:
                 recipient_list=admin_emails, html_message=html_body, fail_silently=False,
             )
             sent += 1
+            outcomes[plant_key] = "sent"
             log.info(
                 "send_daily_consumption_reports: sent %s report to %s admin(s)",
                 plant_key, len(admin_emails),
             )
-        except Exception:
+        except Exception as exc:
             log_row.delete()
+            outcomes[plant_key] = "failed"
+            failures[plant_key] = _failure_summary(exc)
             log.exception(
                 "send_daily_consumption_reports: failed to build/send report for plant=%s", plant_key,
             )
 
-    return {"date": today.isoformat(), "plants_sent": sent, "admins_notified": len(admin_emails)}
+    return {"date": today.isoformat(), "plants_sent": sent, "admins_notified": len(admin_emails),
+            "plants": outcomes, "failures": failures}
 
 
 def send_monthly_consumption_reports(year: int | None = None, month: int | None = None) -> dict:
@@ -660,8 +766,11 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
 
     if not admin_emails:
         log.warning("send_monthly_consumption_reports: no recipients at all, nothing sent")
-        return {"month": month_str, "plants_sent": 0, "admins_notified": 0}
+        return {"month": month_str, "plants_sent": 0, "admins_notified": 0, "plants": {}, "failures": {}}
 
+    # Per-plant outcome - see send_daily_consumption_reports().
+    outcomes: dict[str, str] = {}
+    failures: dict[str, str] = {}
     sent = 0
     for plant_key, cfg in _PLANTS.items():
         log_row, claimed = ReportSendLog.objects.get_or_create(
@@ -672,6 +781,7 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
                 "send_monthly_consumption_reports: already sent %s report for %s - skipping duplicate",
                 plant_key, month_str,
             )
+            outcomes[plant_key] = "already_sent"
             continue
         try:
             report = build_plant_monthly_report(plant_key, year=year, month=month)
@@ -684,14 +794,18 @@ def send_monthly_consumption_reports(year: int | None = None, month: int | None 
                 recipient_list=admin_emails, html_message=html_body, fail_silently=False,
             )
             sent += 1
+            outcomes[plant_key] = "sent"
             log.info(
                 "send_monthly_consumption_reports: sent %s report (%s) to %s admin(s)",
                 plant_key, month_str, len(admin_emails),
             )
-        except Exception:
+        except Exception as exc:
             log_row.delete()
+            outcomes[plant_key] = "failed"
+            failures[plant_key] = _failure_summary(exc)
             log.exception(
                 "send_monthly_consumption_reports: failed to build/send report for plant=%s month=%s", plant_key, month_str,
             )
 
-    return {"month": month_str, "plants_sent": sent, "admins_notified": len(admin_emails)}
+    return {"month": month_str, "plants_sent": sent, "admins_notified": len(admin_emails),
+            "plants": outcomes, "failures": failures}

@@ -287,6 +287,72 @@ function linkedPoItemsForMaterial(material, plantKeys) {
   return out;
 }
 
+// Is this (po, item) pair still to come? Judged on the LINE, not only on the
+// PO (2026-09-24). A PO's status is 'partial' while any one of its lines is
+// outstanding, so a line that had already arrived in full used to count as
+// open on every multi-line PO - its whole value landing in "Inventory Value
+// in Transit" and its material reading "On Order" for goods already in the
+// warehouse. A short-delivered line stays open: lineItemFullyReceived() is
+// false for it, and the rest of it genuinely is still coming.
+function isOpenPoLine(po, item) {
+  po._status = po._status || computeStatus(po);
+  return po._status !== 'received' && !lineItemFullyReceived(item);
+}
+
+// Rows for materials that are ON ORDER but have no RM Stock lot at all
+// (2026-09-24, reported as "open POs, even if they are there, don't show up
+// in Raw Material Analysis"). This view was built one row per Stock lot, so
+// an open order could only appear by linking to a lot that already existed -
+// measured on live data, 386 of 478 open line items linked to none and were
+// simply invisible: Titanium Dioxide and ZDMC at Achhad, VNB-EPT and POE at
+// HRS, nearly every Vapi fabric order. A first order for a new material, or
+// one for something that has sold out and been dropped from the sheet, is
+// exactly the purchase this view most needs to show.
+//
+// An open line gets one of these rows only when it links to NO stock
+// material under the same materialLinksToItem() rule the linkage uses, so a
+// line is never counted under a stock row and an order-only row at once.
+// Lines are grouped by normalized description, the same key
+// aggregateMaterialsByName() groups lots on. `vendors` carries every
+// ordering vendor, so the linkage pass gates this row's own fuzzy links on
+// vendor exactly as it does a lot's. Nothing here is a stock figure: qty and
+// value are 0, which is the truth about the warehouse, and the open order
+// shows through the same In Transit / Quantity Ordered path as any row.
+function orderOnlyMaterials(stockMaterials, plantKeys) {
+  _materialTokenCache.clear();
+  _vendorNormCache.clear();
+  const groups = new Map();
+  plantKeys.forEach(key => {
+    (PURCHASE_ORDERS_BY_PLANT[key] || []).forEach(po => {
+      (po.items || []).forEach(item => {
+        if (!isOpenPoLine(po, item)) return;
+        const norm = materialTokenInfo(item.description).norm;
+        if (!norm) return;
+        if (stockMaterials.some(m => materialLinksToItem(m, po, item))) return;
+        let g = groups.get(norm);
+        if (!g) {
+          g = { description: item.description, materialCode: '', category: '', subCategory: '', qty: 0, value: 0, rate: null,
+            mirMatched: false, vendors: [], vendorSeen: new Set(), lots: [], anchorLot: null, consumption: null,
+            orderOnly: true, orderKey: norm };
+          groups.set(norm, g);
+        }
+        if ((!g.category || g.category === 'Uncategorized') && item.category) { g.category = item.category; g.subCategory = item.subCategory || ''; }
+        const nv = normalizeVendor(po.vendorName);
+        if (nv && !g.vendorSeen.has(nv)) { g.vendorSeen.add(nv); g.vendors.push(po.vendorName); }
+      });
+    });
+  });
+  return Array.from(groups.values()).map(g => { delete g.vendorSeen; return g; });
+}
+
+// What a row or chart bar hands openMaterialModal(): its anchor lot, or for
+// an order-only row the "order::<normalized description>" form that modal
+// resolves against the open orders themselves.
+function materialModalKey(m) {
+  if (m.orderOnly) return 'order::' + m.orderKey;
+  return plantKeyFor(m.anchorLot) + '::' + m.anchorLot.lotId;
+}
+
 // Every material with >=1 linked open (non-received) PO line item, for the
 // KPI row below - computed once per render and reused across cards 3/4/5/6/7
 // rather than re-scanning PURCHASE_ORDERS_BY_PLANT per card.
@@ -298,7 +364,7 @@ function computeMaterialPoLinkage(materials, plantKeys) {
   return materials.map(m => {
     const links = linkedPoItemsForMaterial(m, plantKeys);
     links.forEach(l => { l.po._status = l.po._status || computeStatus(l.po); if (!l.po._categories) computePoFlags(l.po); });
-    const openLinks = links.filter(l => l.po._status !== 'received');
+    const openLinks = links.filter(l => isOpenPoLine(l.po, l.item));
     // Same categories a PO row's own rowFlags() shows (see renderPoList()),
     // but scoped to just this material's own linked line item(s) - qty/rate
     // discrepancy is checked against `l.item`'s own diff%, not the parent
@@ -344,6 +410,7 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       material: m,
       links,
       openLinks,
+      openValue: openLinks.reduce((s, x) => s + (x.item.netPrice != null && x.item.qty != null ? x.item.netPrice * x.item.qty : 0), 0),
       categories,
       qtyFlag: categories.some(c => c.label === 'Quantity Mismatch in MIR'),
       rateFlag: categories.some(c => c.label === 'Rate Mismatch in MIR'),
@@ -416,7 +483,11 @@ function renderMaterialsView() {
   // why/scope) - "All Plants" sums across all 3 plants, a single plant tab
   // sums only that plant's own vendor lots.
   const allLots = currentMaterials();
-  const all = aggregateMaterialsByName(allLots);
+  const stockMaterials = aggregateMaterialsByName(allLots);
+  // Plus a row per material on open order with no stock lot - see
+  // orderOnlyMaterials(). Built before the category filters so those rows
+  // sit in the Category/Sub Category options like any other.
+  const all = stockMaterials.concat(orderOnlyMaterials(stockMaterials, selectedPlantKeys()));
 
   const catCounts = {};
   all.forEach(m => { catCounts[m.category || 'Uncategorized'] = (catCounts[m.category || 'Uncategorized'] || 0) + 1; });
@@ -456,7 +527,7 @@ function renderMaterialsView() {
 
   const totalMaterials = filtered.length;
   const totalValue = filtered.reduce((s, m) => s + (m.value || 0), 0);
-  const inTransitValue = linkage.reduce((s, l) => s + l.openLinks.reduce((s2, x) => s2 + (x.item.netPrice != null && x.item.qty != null ? x.item.netPrice * x.item.qty : 0), 0), 0);
+  const inTransitValue = linkage.reduce((s, l) => s + l.openValue, 0);
   const qtyOrderedOpen = linkage.reduce((s, l) => s + l.openLinks.reduce((s2, x) => s2 + (x.item.qty || 0), 0), 0);
   // The material set behind BOTH "Inventory Value in Transit" and "Quantity
   // Ordered" - the two cards are different aggregates over the same rows, so
@@ -492,7 +563,7 @@ function renderMaterialsView() {
   // near the [data-matkpi] click handlers) - 'inr' for the two currency
   // cards, 'locale' for the plain comma-grouped quantity, 'int' for the rest.
   const cardDef = [
-    { key: 'total', cls: '', label: 'Materials Tracked', raw: totalMaterials, fmt: 'int', tip: 'Distinct materials with current stock, summed across every vendor lot.' },
+    { key: 'total', cls: '', label: 'Materials Tracked', raw: totalMaterials, fmt: 'int', tip: 'Distinct materials in stock, summed across every vendor lot, plus materials on an open order with no stock lot yet.' },
     { key: 'value', cls: '', label: 'Total Inventory Value (Warehouse)', raw: totalValue, fmt: 'inr', tip: 'Current stock quantity x rate, summed across every lot in the selected plant(s).' },
     { key: 'transit', filterKey: 'openpo', cls: 'partial', label: 'Inventory Value in Transit (Open POs)', raw: inTransitValue, fmt: 'inr', tip: 'Value of ordered-but-not-yet-received line items linked to this material.' },
     { key: 'qtyordered', filterKey: 'openpo', cls: 'partial', label: 'Quantity Ordered (Open POs)', raw: qtyOrderedOpen, fmt: 'locale', tip: 'Total quantity still open on purchase orders linked to this material.' },
@@ -527,7 +598,7 @@ function renderMaterialsView() {
 
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
-    '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + '. Click a row for its full cross-plant analysis.</div>' +
+    '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + ', plus anything on an open order that has no stock lot yet. Click a row for its full cross-plant analysis.</div>' +
     matchingDisclaimerHtml(
       'Ordered qty, in-transit value and the flag columns are matched automatically. Days Left is an estimate.',
       '<p><strong>Matched columns.</strong> "Inventory Value in Transit", "Quantity Ordered" and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
@@ -574,7 +645,9 @@ function renderMaterialsView() {
       '</div>' +
       ((state.matCategoryFilter || state.matSubCategoryFilter || state.matStatusFilter) ? '<button id="matClearCategoryFilter">Clear</button>' : '') +
     '</div>' +
-    renderMaterialsChart(filtered) +
+    // Inventory Value chart: stock rows only. An order-only row holds no
+    // inventory, and would only add zero-length bars at the material level.
+    renderMaterialsChart(filtered.filter(m => !m.orderOnly)) +
     // Its own container so a Material-search keystroke can replace just this
     // (see renderMaterialsListRegion()), leaving the KPI row's count-up and
     // the drill-down chart above it untouched.
@@ -622,7 +695,7 @@ function renderMaterialsView() {
   const matClearCategoryBtn = document.getElementById('matClearCategoryFilter');
   if (matClearCategoryBtn) matClearCategoryBtn.onclick = () => { state.matCategoryFilter = null; state.matSubCategoryFilter = null; state.matStatusFilter = null; state.matTablePage = 1; renderMaterialsView(); };
 
-  wireMaterialsChart(filtered);
+  wireMaterialsChart(filtered.filter(m => !m.orderOnly));
 }
 
 // ── The list region (heading + header filters + rows + pagination) ───────
@@ -666,7 +739,10 @@ function materialsListRegionHtml() {
   tableRecs = applyMatColFilters(tableRecs);
   // "Materials by Stock Quantity" - sorted by stock qty descending, not
   // value (per the reference design).
-  const sorted = tableRecs.slice().sort((a, b) => (b.qty || 0) - (a.qty || 0));
+  // Ties (every order-only row, and every sold-out lot, sits at 0) break on
+  // the value still on order, so the biggest incoming purchase comes first.
+  const openValueOf = m => { const e = ctx.linkageByKey.get(normalizeMaterial(m.description)); return e ? e.openValue : 0; };
+  const sorted = tableRecs.slice().sort((a, b) => ((b.qty || 0) - (a.qty || 0)) || (openValueOf(b) - openValueOf(a)));
 
   const showingAll = state.showAllMaterials;
   const PAGE_SIZE = 10;
@@ -764,10 +840,10 @@ function materialsListRegionHtml() {
           colFilterRow +
         '</thead><tbody>' +
         listRecs.map(m => {
-          const anchor = m.anchorLot;
-          const key = escapeHtml(plantKeyFor(anchor) + '::' + anchor.lotId);
+          const key = escapeHtml(materialModalKey(m));
           const entry = linkageByKey.get(normalizeMaterial(m.description));
-          return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></td>' +
+          const orderOnlyNote = m.orderOnly ? '<div class="fs-11 text-slate-soft">On order, no stock lot yet</div>' : '';
+          return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + '</td>' +
           '<td>' + escapeHtml(m.category || '-') + '</td>' +
           '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
           '<td>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</td>' +
@@ -783,12 +859,12 @@ function materialsListRegionHtml() {
       return '<div class="list-header-row grid-cols"><div>Material</div><div>Category</div><div>Sub Category</div><div>Stock' + stockAllPlantsSuffix + '</div><div>Inventory Value' + stockAllPlantsSuffix + '</div><div>Latest Rate</div><div>Days Left</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + matFilterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="matTop5List">' + listRecs.map(m => {
-          const anchor = m.anchorLot;
-          const key = escapeHtml(plantKeyFor(anchor) + '::' + anchor.lotId);
+          const key = escapeHtml(materialModalKey(m));
           const entry = linkageByKey.get(normalizeMaterial(m.description));
+          const orderOnlyNote = m.orderOnly ? '<div class="fs-11 text-slate-soft">On order, no stock lot yet</div>' : '';
           const st = computeMaterialStatus(m, entry);
           return '<div class="top5-row' + (entry ? rowTintClass(entry) : '') + '">' +
-            '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span></div>' +
+            '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + '</div>' +
             '<div>' + escapeHtml(m.category || 'Not available') + '</div>' +
             '<div>' + escapeHtml(m.subCategory || 'Not available') + '</div>' +
             '<div>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</div>' +
@@ -970,7 +1046,7 @@ function wireMaterialsChart(materials) {
           // the table's own row click (openMaterialModal re-derives the
           // full cross-plant picture from the description regardless of
           // which specific contributing lot it's handed).
-          else if (bar.material) { const anchor = bar.material.anchorLot; openMaterialModal(plantKeyFor(anchor) + '::' + anchor.lotId); }
+          else if (bar.material) openMaterialModal(materialModalKey(bar.material));
         },
       },
     });
