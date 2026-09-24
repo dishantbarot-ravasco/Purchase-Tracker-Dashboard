@@ -125,12 +125,13 @@ Achhad 1.85x, Vapi 1.31x** - from only 5/1/12 intervals, all on large lots. 29 a
 - **`books_disagree`** - the identity fails (tolerance 0.0005) while `opening` is unchanged. **0 of
   2,909** in real data; a canary, not a workaround. Counted at the issue-book figure.
 
-**Only `period_roll` and `closeout` become `ConsumptionEvent` rows.** `restatement` and
-`books_disagree` count toward the rate, so `daily_from_points()` never puts them in its excluded list
-and no event is written for them - despite what `ConsumptionEvent`'s docstring says. Where one has a
-positive quantity on a one-day interval, its label is stored as that day's
-`MaterialConsumptionDaily.quality` instead (a multi-day one becomes `spread`); a zero-quantity
-restatement (the SACK CARBON shape) leaves no trace in any table.
+**All four kinds become `ConsumptionEvent` rows.** `period_roll` and `closeout` are excluded from the
+rate; `restatement` and `books_disagree` are counted at their issue-book figure AND logged, because
+the balance disagreed with the books (`_LOGGED_BUT_COUNTED` in the engine). They are logged even at
+zero quantity - the SACK CARBON shape, a 432,650-unit balance rewrite with nothing issued, is the
+commonest restatement and would otherwise leave no trace. A counted one-day restatement with a
+positive quantity also stores its label as that day's `MaterialConsumptionDaily.quality` (a
+multi-day one becomes `spread`).
 
 `spread` is not an exclusion: real consumption the snapshots can't pin to one day (span longer than
 `max_dated_gap_days`, default 1). It is divided evenly across the span with the rounding remainder on
@@ -411,9 +412,9 @@ dedup, SMTP time budget and failure reporting are described in
 - **`_render_consumption_rows()` / `_render_consumption_email()`** - shared category-grouped table
   and text builders (categories ordered by their biggest mover, via dict insertion order over the
   quantity-sorted rows); `_render_report_email()` / `_render_monthly_report_email()` supply title,
-  column label and `(est.)` footnote. Note: the **plain-text** body's confidence legend still
-  describes the old span-based bands ("2 days / 1 usable data point" and so on); the HTML body's
-  legend matches the current coverage bands.
+  column label and `(est.)` footnote. Both bodies render the confidence legend from one
+  `_CONFIDENCE_LEGEND` tuple, which must stay in step with `consumption_periods._BANDS`; a test
+  checks the two cover the same bands.
 - **`_send_plant_reports(...)`**, **`send_daily_consumption_reports()`**,
   **`send_monthly_consumption_reports(year, month)`** - claim a `ReportSendLog` row per plant before
   building, release it on failure, share one SMTP connection, defer plants past the 12s budget, and

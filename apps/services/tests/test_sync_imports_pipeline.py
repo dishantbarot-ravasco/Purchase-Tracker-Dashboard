@@ -93,6 +93,20 @@ class TestSyncHrsImportsPoCsv:
         assert run.status == SyncRun.Status.SUCCESS
         assert HRSImportPurchaseOrder.objects.filter(po_number="IMP001").exists()
 
+    def test_a_header_with_stray_whitespace_syncs_rather_than_raising_keyerror(self, tmp_path):
+        """The header check compares stripped names, but each row is keyed by
+        the file's actual header - a re-saved CSV with "PO Number " passed the
+        check and then crashed the row lookup with KeyError."""
+        padded = [f" {h} " if h in ("PO Number", "Vendor Name") else h for h in EXPECTED_HEADER]
+        row = {p: _ROW_TEMPLATE[h] for p, h in zip(padded, EXPECTED_HEADER, strict=True)}
+        fixture_path = tmp_path / "imports.csv"
+        fixture_path.write_text(_write_csv([row], header=padded), encoding="utf-8")
+
+        call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+
+        order = HRSImportPurchaseOrder.objects.get(po_number="IMP001")
+        assert order.vendor_name == "Global Polymers Inc"
+
     def test_header_mismatch_records_a_failed_syncrun_and_raises(self, tmp_path):
         fixture_path = tmp_path / "imports.csv"
         fixture_path.write_text("Wrong,Header,Row\n1,2,3\n", encoding="utf-8")

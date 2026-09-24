@@ -137,8 +137,36 @@ class TestExcludedEventsAreRecorded:
 
         rebuild_plant_consumption("hrs")
 
-        # Nothing was issued, so nothing lands in the ledger at all.
+        # Nothing was issued, so nothing lands in the ledger at all...
         assert not MaterialConsumptionDaily.objects.filter(plant=SyncRun.Plant.HRS).exists()
+        # ...but the rewrite itself is recorded, with both figures, so the
+        # 432,650-unit gap the old balance method would have counted is
+        # visible rather than silently gone.
+        event = ConsumptionEvent.objects.get(plant=SyncRun.Plant.HRS)
+        assert event.kind == "restatement"
+        assert event.quantity == Decimal(0)
+        assert event.balance_quantity == Decimal(432650)
+        assert event.lot_ref == f"HRSRMLot#{lot.id}"
+
+    def test_a_restatement_with_real_issues_is_counted_and_recorded(self):
+        lot = _hrs_lot("SACK CARBON")
+        _hrs_snap(lot, 3, 450500, 0, 0, 450500)
+        _hrs_snap(lot, 4, 17850, 0, 50, 17800)
+
+        rebuild_plant_consumption("hrs")
+
+        # Counted from the issue book (50), not the balance...
+        assert MaterialConsumptionDaily.objects.get(plant=SyncRun.Plant.HRS).quantity == Decimal(50)
+        # ...and still logged, because the balance disagreed.
+        event = ConsumptionEvent.objects.get(plant=SyncRun.Plant.HRS)
+        assert (event.kind, event.quantity) == ("restatement", Decimal(50))
+
+    def test_an_ordinary_interval_records_no_event(self):
+        lot = _hrs_lot("6PPD")
+        _hrs_snap(lot, 1, 1000, 0, 0, 1000)
+        _hrs_snap(lot, 2, 1000, 0, 200, 800)
+        rebuild_plant_consumption("hrs")
+        assert not ConsumptionEvent.objects.filter(plant=SyncRun.Plant.HRS).exists()
 
 
 class TestIdempotency:

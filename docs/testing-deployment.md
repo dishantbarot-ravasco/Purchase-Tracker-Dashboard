@@ -497,12 +497,12 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 |---|---|---|
 | test_advance_license_report.py | yes | Advance License Import/Export validity-expiry alerts: 30-day window, once per license, re-alert on extension, claim released on send failure. |
 | test_arithmetic_checks.py | no | `arithmetic_checks.py` qty x rate = value checks and tolerance. |
-| test_consumption_engine.py | no | Pure consumption engine: issue-book deltas, receipts, restatements, closeouts; several fixtures are real rows. |
-| test_consumption_ledger.py | yes | Consumption ledger DB layer and period rollups: lot-to-material rollup, closeout/restatement events, idempotent rebuilds. |
-| test_consumption_report.py | yes | Daily/monthly Raw Material Consumption emails read from the ledger; per-plant sends, estimates, send-failure handling. |
+| test_consumption_engine.py | no | Pure consumption engine: issue-book deltas, receipts, restatements, closeouts, which intervals come back as events; several fixtures are real rows. |
+| test_consumption_ledger.py | yes | Consumption ledger DB layer and period rollups: lot-to-material rollup, closeout/restatement events (including zero-quantity restatements), idempotent rebuilds. |
+| test_consumption_report.py | yes | Daily/monthly Raw Material Consumption emails read from the ledger; per-plant sends, estimates, send-failure handling, one confidence legend for both bodies. |
 | test_email_delivery_is_observable.py | yes | Source guard: no `fail_silently=True`; a failed admin alert logs ERROR and never claims "sent". |
 | test_email_dispatch_pool.py | yes | Bounded OTP/bulk email thread pools: no thread per email, OTP lane never blocked, inline fallback. |
-| test_google_client_query.py | no | `find_file_id_by_title()` Drive query construction and escaping (fake service, no API call). |
+| test_google_client_query.py | no | `find_file_id_by_title()` Drive query construction and escaping, newest-first pick among duplicates, `list_files_in_folder()` pagination (fake service, no API call). |
 | test_import_flags.py | no | Import PO stage (placed/shipped/cleared) and BOE qty discrepancy flags. |
 | test_license_links.py | yes | Import line License Type/Number normalisation and join to the RoDTEP/Advance License ledgers. |
 | test_manual_mir_match.py | yes | Domestic manual MIR pins in `run_full_match()`: pin outranks matcher, survives rematch, forced-unmatched, collisions. |
@@ -523,13 +523,14 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_run_full_match_achhad_pipeline.py | yes | Achhad `run_full_match()` against real rows (no stock vendor column, legacy PO formats). |
 | test_run_full_match_import_pipeline.py | yes | Import PO<->MIR matching with currency conversion and BOE qty. |
 | test_run_full_match_pipeline.py | yes | HRS `run_full_match()` against real rows: flags, vendor gate, NO_PO vendors, idempotency. |
+| test_run_full_match_atomic.py | yes | `run_full_match()` is one transaction: a failure part-way rolls back writes already made. |
 | test_run_full_match_vapi_pipeline.py | yes | Vapi `run_full_match()`: taxable value, vendor containment, date-confirmed rate flags. |
 | test_security_alerts.py | yes | Admin alerts for failed-login bursts and sync failures, with suppression window. |
 | test_stock_consumption.py | no | Pure `consumption_stats()` days-of-cover math with receipt handling. |
 | test_stock_identity.py | no | `lot_natural_key()` composition and `OccurrenceCounter` suffixing. |
 | test_sync_achhad_pipeline.py | yes | Achhad `sync_*` commands against local files: idempotency, change pickup, deactivation, bad sheet. |
 | test_sync_advance_license_pipeline.py | yes | `sync_advance_license`: header detection, whole-license hash, materials rebuilt together. |
-| test_sync_imports_pipeline.py | yes | Import PO CSV sync (`sync_orders()`): idempotency, trailing blank headers, header mismatch. |
+| test_sync_imports_pipeline.py | yes | Import PO CSV sync (`sync_orders()`): idempotency, trailing blank headers, whitespace in header names, header mismatch. |
 | test_sync_mir_pipeline.py | yes | HRS `sync_mir`: per-field change detection, deactivation, wrong sheet name. |
 | test_sync_po_csv_pipeline.py | yes | HRS `sync_po_csv`: idempotency, change pickup, header mismatch recorded as failed SyncRun. |
 | test_sync_rodtep_pipeline.py | yes | `sync_rodtep`: (script_no, sb_number) keys, idempotency, one bad file does not block others. |
@@ -554,6 +555,7 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_csv_formula_injection.py | yes | CSV exports neutralise formula-prefixed cells. |
 | test_delete_user.py | yes | User delete restricted to one configured admin; last admin protected. |
 | test_deploy_checks.py | yes | Custom deploy checks: JWT key fallback, active superuser warning. |
+| test_signing_key_and_cli_reset.py | yes | A blank or whitespace `JWT_SIGNING_KEY` falls back to `SECRET_KEY` (fresh interpreter); a `create_pt_user` reset bumps `token_version`. |
 | test_device_hashing.py | yes | Trusted-device tokens stored only as SHA-256 hashes. |
 | test_dismiss_flag.py | yes | HRS and import PO-level flag dismiss/reinstate. |
 | test_dismiss_match.py | yes | HRS match dismissal with reason, survives rematch; string `"false"` reinstates, a missing flag dismisses. |
@@ -562,7 +564,7 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_ensure_schedules.py | yes | `ensure_schedules` is idempotent and never resets `next_run`. |
 | test_error_visibility.py | yes | No silent failures: OTP generation error, SyncRun rows and error detail. |
 | test_hrs_correct_field.py | yes | HRS inline "Edit Everywhere" with plant scoping. |
-| test_imports_api.py | yes | Import dashboard API: combined plants, derived fields, correct_field. |
+| test_imports_api.py | yes | Import dashboard API: combined plants, derived fields, correct_field, retired POs 404 on detail and correction. |
 | test_imports_sync_status_company_wide_flags.py | yes | Import sync-status exposes RoDTEP/Advance License in-progress flags. |
 | test_last_admin_race.py | yes | Concurrent last-admin deactivation is serialised (row locking). |
 | test_local_date_timezone.py | yes | Delivery status follows `TIME_ZONE`; source guard for naive dates. |

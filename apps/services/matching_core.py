@@ -2864,8 +2864,6 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool 
     return matches
 
 
-@transaction.atomic
-
 # ── Manual MIR pins ─────────────────────────────────────────────────────
 # A pin is a human overriding the matcher for one Domestic PO line item:
 # "this line came in under MIR <number>", or "nothing matches this line".
@@ -3001,18 +2999,22 @@ def _forced_candidate(config, matchable, mir, po, *, scorer, known_pos):
     )
 
 
+@transaction.atomic
 def run_full_match(config: _MatchConfig) -> dict:
     """Re-runs every matching pass for one plant - domestic PO line items
     AND import PO line items (both against the same shared MIR table, so
     fix 2.B's exclusive claiming considers them together), plus MIR<->Stock.
 
-    Fix 2.B: builds every (line item, MIR) pair scoring above threshold
-    across every domestic and import line item, sorts by score descending,
-    then assigns greedily - a MIR row already claimed by a higher-scoring
-    pair is skipped, so a line item can fall through to its own next-best
-    candidate rather than losing its match entirely. Caps at exactly one
-    claim per MIR row per run (confirmed safe against real data - see
-    matching_core.py's module docstring).
+    One transaction: the pass deletes stale rows and upserts new ones across
+    three match tables, so a failure part-way must roll the whole pass back
+    rather than leave the plant half re-matched.
+
+    Fix 2.B: builds every identified (line item, MIR) pair across every
+    domestic and import line item and hands them to _assign_pairs(), which
+    gives each MIR row to at most one line item per run, so a line item can
+    fall through to its own next-best candidate rather than losing its match
+    entirely (confirmed safe against real data - see matching_core.py's
+    module docstring).
 
     Fix 2.F (multi-shipment aggregation): when a line item has a valid
     _shipment_group(), that item contributes exactly ONE pair to `pairs` -

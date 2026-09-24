@@ -7,12 +7,15 @@ at all - only this module needs a real Drive connection.
 
 import io
 import json
+import logging
 import threading
 
 from django.conf import settings
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+
+logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
@@ -73,11 +76,15 @@ def get_drive_service():
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def find_file_id_by_title(title: str, parent_id: str | None = None, mime_type: str | None = None) -> str:
-    """Returns the Drive file id for the first file matching `title`
-    exactly, optionally scoped to a parent folder and/or mime type. Raises
-    if nothing (or more than expected ambiguity isn't resolved) is found -
-    callers should let this surface as a SyncRun failure rather than
-    silently sync stale data against a wrong/missing file."""
+    """Returns the Drive file id for the file matching `title` exactly,
+    optionally scoped to a parent folder and/or mime type. Raises if nothing
+    is found - callers should let this surface as a SyncRun failure rather
+    than silently sync stale data against a missing file.
+
+    When several files share the title, the most recently modified one wins
+    (the query orders by modifiedTime desc) and a warning is logged. Without
+    the ordering Drive returns them in no guaranteed order, so a duplicate
+    upload could silently switch which file a sync read from run to run."""
     service = get_drive_service()
     # Drive API v3 (which this client is built against) uses "name", not
     # v2's "title" - a v2-style query silently returns HTTP 400 Invalid
@@ -94,10 +101,17 @@ def find_file_id_by_title(title: str, parent_id: str | None = None, mime_type: s
     if mime_type:
         clauses.append(f"mimeType = '{_escape(mime_type)}'")
     query = " and ".join(clauses)
-    resp = service.files().list(q=query, fields="files(id, name, modifiedTime)", pageSize=5).execute()
+    resp = service.files().list(
+        q=query, fields="files(id, name, modifiedTime)", orderBy="modifiedTime desc", pageSize=5,
+    ).execute()
     files = resp.get("files", [])
     if not files:
         raise FileNotFoundError(f"No Drive file found matching title={title!r} parent={parent_id!r}")
+    if len(files) > 1:
+        logger.warning(
+            "%d Drive files are named %r (parent=%r); using the most recently modified, id=%s",
+            len(files), title, parent_id, files[0]["id"],
+        )
     return files[0]["id"]
 
 
@@ -116,8 +130,18 @@ def list_files_in_folder(parent_id: str, name_prefix: str | None = None) -> list
     if name_prefix:
         clauses.append(f"name contains '{_escape(name_prefix)}'")
     query = " and ".join(clauses)
-    resp = service.files().list(q=query, fields="files(id, name, modifiedTime)", pageSize=100).execute()
-    files = resp.get("files", [])
+    # Drive returns at most one page per call, so follow nextPageToken until
+    # it runs out - a single call silently stopped at the first 100 files.
+    files = []
+    page_token = None
+    while True:
+        resp = service.files().list(
+            q=query, fields="nextPageToken, files(id, name, modifiedTime)", pageSize=100, pageToken=page_token,
+        ).execute()
+        files.extend(resp.get("files", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
     # "name contains" is a substring match, not a prefix match - Drive API
     # has no prefix operator - so narrow further in Python for a real
     # prefix check when name_prefix was given. Case-insensitive (real bug,

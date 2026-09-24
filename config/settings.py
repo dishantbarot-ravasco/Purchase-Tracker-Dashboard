@@ -404,7 +404,10 @@ REST_FRAMEWORK = {
 # but is a distinct env var so it CAN be set independently - SECRET_KEY also
 # signs Django's session/CSRF tokens, so reusing it for JWTs means a leak in
 # one context compromises the other.
-JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", SECRET_KEY)
+# `or`, not a get() default: .env.example ships the line as `JWT_SIGNING_KEY=`,
+# and a present-but-blank variable would otherwise sign every JWT with an
+# empty key while checks.W001 (which compares against SECRET_KEY) stayed quiet.
+JWT_SIGNING_KEY = os.environ.get("JWT_SIGNING_KEY", "").strip() or SECRET_KEY
 
 # ---------------------------------------------------------------------------
 # SafeCube (Sinay) Container Tracking API

@@ -413,7 +413,9 @@ def purchase_order_detail(request, plant, po_number):
     po_model, _item_model, sr_plant, label, _match_model = resolved
     po = po_model.objects.prefetch_related(
         "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries",
-    ).filter(po_number=po_number).first()
+    # is_active=True: a retired order is gone from the list, so it must not
+    # stay reachable by URL either - same as the domestic detail view.
+    ).filter(po_number=po_number, is_active=True).first()
     if not po:
         return Response({"error": "Purchase order not found."}, status=404)
     return Response(_po_dict(po, plant, label, detail=True, sr_plant=sr_plant, category_reference=_category_reference_map()))
@@ -440,7 +442,9 @@ def correct_field(request, plant, po_number):
     raw_value = request.data.get("value")
     reason = (request.data.get("reason") or "").strip()
 
-    po = po_model.objects.filter(po_number=po_number).first()
+    # A retired order cannot be corrected: the next sync would never rewrite
+    # it, and nothing lists it any more.
+    po = po_model.objects.filter(po_number=po_number, is_active=True).first()
     if not po:
         return Response({"error": "Purchase order not found."}, status=404)
 

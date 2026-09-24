@@ -350,7 +350,7 @@ def rebuild_plant_consumption(
         )
         if len(points) < 2:
             continue
-        lot_daily, excluded = daily_from_points(points, max_dated_gap_days=max_dated_gap_days)
+        lot_daily, lot_events = daily_from_points(points, max_dated_gap_days=max_dated_gap_days)
         for date, (qty, quality) in lot_daily.items():
             _add(material_key, date, qty, quality, lot_id)
         # Coverage is derived from the INTERVALS, not from `lot_daily` -
@@ -365,7 +365,7 @@ def rebuild_plant_consumption(
             for n in range(1, interval.span_days + 1):
                 date = interval.start + datetime.timedelta(days=n)
                 coverage[date] = coverage.get(date, False) or interval.span_days == 1
-        for interval in excluded:
+        for interval in lot_events:
             if since is not None and interval.end < since:
                 continue
             events.append(ConsumptionEvent(

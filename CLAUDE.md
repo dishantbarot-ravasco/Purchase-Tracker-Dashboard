@@ -152,6 +152,8 @@ Read the linked section before breaking any of these. Each is there because it w
   [date + rate](docs/matching-engine.md#date--rate-is-this-pairings-po-number---behind-two-guards)
 - Keep both `_assign_pairs()` termination guards; a losing shipment group is demoted to per-row
   edges, never re-formed. [guards](docs/matching-engine.md#_assign_pairs-needs-both-its-termination-guards)
+- `run_full_match()` is one transaction; keep `@transaction.atomic` directly on it (it once drifted
+  onto the next function). [overview](docs/matching-engine.md#overview-what-run_full_match-does)
 - Every early exit in `match_mir_entry_stock()` goes through `_no_matches()`, or standalone
   re-matches leave stale rows. [file reference](docs/matching-engine.md#file-reference)
 - Import figures convert to INR first and compare `qty_as_per_boe`.
@@ -259,7 +261,7 @@ Read the linked section before breaking any of these. Each is there because it w
 | 2-decimal GST rate truncating a `0.025` fraction to `0.02` | [architecture](docs/architecture.md#decimal-precision-conventions) |
 | Unclamped `*_diff_pct` overflowing `max_digits=6` | [architecture](docs/architecture.md#decimal-precision-conventions) |
 | `source_row_ref` as lot identity splicing two materials' histories | [architecture](docs/architecture.md#stable-lot-identity) |
-| Header check stripping whitespace, row lookup not → `KeyError` on a resaved CSV (still open for `import_po_csv.py`) | [architecture](docs/architecture.md#per-plant-models-not-a-shared-schema---deliberate-dont-fix-it) |
+| Header check stripping whitespace, row lookup not → `KeyError` on a resaved CSV (both PO parsers now re-key rows) | [architecture](docs/architecture.md#per-plant-models-not-a-shared-schema---deliberate-dont-fix-it) |
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [matching](docs/matching-engine.md#po--mir) |
 | Vendors with no PO looking like matcher failures on every run | [matching](docs/matching-engine.md#some-vendors-never-have-a-po---that-is-registered-not-inferred) |
 | `?format=csv` silently 404ing - DRF reserves `format` | [matching](docs/matching-engine.md#no-purchase-order-behind-it-is-three-questions-not-one-2026-09-21) |
@@ -284,6 +286,7 @@ Read the linked section before breaking any of these. Each is there because it w
 | Per-IP login throttle locking out a whole office | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |
 | A malformed dummy bcrypt hash making unknown-email logins ~240 ms faster | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |
 | Google OAuth ignoring account lockout; non-atomic failed-login / OTP counters undercounting | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |
+| A blank `JWT_SIGNING_KEY=` signing every JWT with an empty key; a CLI password reset leaving sessions alive | [auth](docs/auth-security-email.md#configsettingspy-auth-and-security-parts) |
 | `KeyError` in `exceptions.py` leaking dict key names as a 400 | [auth](docs/auth-security-email.md#alerts-audit-log-and-logs) |
 | The review queue serving every plant's cards to a plant-scoped account | [api](docs/api-and-features.md#match-accuracy-manual-validation-is-required-not-optional) |
 | CSV formula injection in the export | [api](docs/api-and-features.md#data-export) |
@@ -332,24 +335,8 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **A day where qcluster was down has no stock snapshot**, deliberately not backfilled; `sync-status`
   exposes `snapshotGapDays` as a badge.
 
-**Found by the 2026-09-24 documentation audit, not yet fixed** (details in each doc):
-
-- `run_full_match()` is not atomic - the `@transaction.atomic` sits on `line_item_ref()` instead; a
-  failed run keeps its partial writes. [matching](docs/matching-engine.md#overview-what-run_full_match-does)
-- Restatement and `books_disagree` consumption events are never written as `ConsumptionEvent` rows,
-  though the model docstring says they are; a zero-quantity restatement leaves no trace.
-  [consumption](docs/consumption.md)
-- Import `purchase_order_detail` and `correct_field` don't filter `is_active`, so a retired import PO
-  can still be opened and edited by URL. [api](docs/api-and-features.md#appsapiroutersimports_viewspy)
-- A blank-but-present `JWT_SIGNING_KEY=` gives an empty signing key instead of falling back to
-  `SECRET_KEY`, and the W001 check doesn't fire. `create_pt_user` doesn't bump `token_version`, so
-  a CLI password reset leaves sessions alive. [auth](docs/auth-security-email.md)
-- `list_files_in_folder` fetches one page (max 100 files) with no pagination;
-  `find_file_id_by_title` takes `files[0]` with no ordering.
-  [google_client.py](docs/data-sync.md#appsservicesgoogle_clientpy)
-- The plain-text consumption email still explains the old span-based confidence bands.
-  [consumption](docs/consumption.md#appsservicesconsumption_reportpy)
-- Several code comments and docstrings are stale (listed in each doc's File reference).
+- **Several code comments and docstrings are stale** - found by the 2026-09-24 documentation audit
+  and listed in each doc's File reference. The bugs that audit found are all fixed.
 
 **Deliberately not done, each re-decided rather than forgotten:**
 

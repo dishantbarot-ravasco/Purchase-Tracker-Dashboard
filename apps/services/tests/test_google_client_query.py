@@ -181,3 +181,49 @@ class TestEscape:
 
     def test_leaves_an_ordinary_string_unchanged(self):
         assert _escape("My File.csv") == "My File.csv"
+
+
+class _PagedFilesResource:
+    """Serves `pages` one per list() call, keyed by the pageToken passed in -
+    the shape of Drive's real paginated response."""
+
+    def __init__(self, pages: list[list[dict]]):
+        self.pages = pages
+        self.calls = []
+
+    def list(self, **kwargs):
+        self.calls.append(kwargs)
+        return self
+
+    def execute(self):
+        index = int(self.calls[-1].get("pageToken") or 0)
+        resp = {"files": self.pages[index]}
+        if index + 1 < len(self.pages):
+            resp["nextPageToken"] = str(index + 1)
+        return resp
+
+
+class TestPaginationAndDuplicates:
+    def _install(self, monkeypatch, pages):
+        resource = _PagedFilesResource(pages)
+        service = type("S", (), {"files": lambda self: resource})()
+        import apps.services.google_client as google_client
+        monkeypatch.setattr(google_client, "get_drive_service", lambda: service)
+        return resource
+
+    def test_list_follows_every_page(self, monkeypatch):
+        page1 = [{"id": f"a{i}", "name": f"RODTEP-JNPT-{i:03}.xlsx"} for i in range(100)]
+        page2 = [{"id": "last", "name": "RODTEP-JNPT-100.xlsx"}]
+        resource = self._install(monkeypatch, [page1, page2])
+        files = list_files_in_folder("folder123", name_prefix="RODTEP")
+        assert len(files) == 101
+        assert files[-1]["id"] == "last"
+        assert len(resource.calls) == 2
+        assert "nextPageToken" in resource.calls[0]["fields"]
+
+    def test_find_orders_newest_first_and_warns_on_duplicates(self, monkeypatch, caplog):
+        resource = self._install(monkeypatch, [[{"id": "newest", "name": "PO.csv"}, {"id": "older", "name": "PO.csv"}]])
+        with caplog.at_level("WARNING", logger="apps.services.google_client"):
+            assert find_file_id_by_title("PO.csv") == "newest"
+        assert resource.calls[0]["orderBy"] == "modifiedTime desc"
+        assert "2 Drive files are named 'PO.csv'" in caplog.text

@@ -142,7 +142,13 @@ def parse_import_po_csv(csv_text: str) -> list[ParsedImportPurchaseOrder]:
     orders_by_po: dict[str, ParsedImportPurchaseOrder] = {}
     order_sequence: list[str] = []
 
-    for row in reader:
+    for raw_row in reader:
+        # Re-key by the stripped header, same as po_csv.py. The check above
+        # compares stripped names, but DictReader keys each row by the file's
+        # ACTUAL header, so a re-saved CSV with "PO Number " passed the check
+        # and then raised KeyError on the lookup below. A None key holds the
+        # extra cells of an over-long row; nothing reads it, so it is dropped.
+        row = {k.strip(): v for k, v in raw_row.items() if k is not None}
         po_number = to_str(row["PO Number"])
         if not po_number:
             continue

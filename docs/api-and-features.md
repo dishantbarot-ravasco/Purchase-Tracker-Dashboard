@@ -618,9 +618,9 @@ computes `poInwarded` / `poQtyDiscMir` / `poRateDiscMir` client-side (a PO has a
 does). The server's PO-level `qtyDiscrepancy` (`import_flags.po_has_qty_discrepancy()`) is the PO-vs-BOE
 check, not a MIR one.
 
-**The list and detail differ on `is_active`.** `purchase_orders`, `mir_candidates` and `set_mir_match`
-filter `is_active=True`; `purchase_order_detail` and `correct_field` do not, so a retired import PO can
-still be opened and corrected by direct URL. The domestic routers filter everywhere.
+**Every import endpoint filters `is_active=True`** - the list, `purchase_order_detail`,
+`correct_field`, `mir_candidates` and `set_mir_match` - so a retired import PO 404s by direct URL the
+same as it is missing from the list, matching the domestic routers.
 
 **BL tracking**: `bl_tracking.py` is a thin, single-call passthrough to SafeCube's (Sinay's) Container
 Tracking API v2, behind `GET imports/track-bl?bl=`. **Nothing is stored** - every call hits the API live,

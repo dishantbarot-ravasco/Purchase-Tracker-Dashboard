@@ -38,11 +38,12 @@ trusting a count.
 7. **Return** counts (`po_line_items_matched`, `import_po_line_items_matched`,
    `mir_entries_stock_matched`), `manual_pins_applied`, `manual_pins_stale` and `ran_at`.
 
-**`run_full_match()` is not wrapped in a transaction.** A stray `@transaction.atomic` at
-[matching_core.py:2867](../apps/services/matching_core.py) sits above a comment block and decorates
-`line_item_ref()`, not `run_full_match()`, and neither the plant wrappers nor the `match_*`
-commands add one. A run that raises part-way leaves the writes it already made. Do not assume
-atomicity when reasoning about a failed run.
+**`run_full_match()` is one transaction** (`@transaction.atomic` on the function itself). The pass
+deletes stale rows and upserts new ones across three match tables, so a failure part-way rolls the
+whole pass back rather than leaving the plant half re-matched. Until 2026-09-24 the decorator had
+drifted above a comment block and was decorating `line_item_ref()` instead;
+`test_run_full_match_atomic.py` pins the rollback by failing the stock pool after the retired-PO
+delete has already run.
 
 ---
 

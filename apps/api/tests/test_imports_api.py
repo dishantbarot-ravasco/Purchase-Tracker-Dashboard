@@ -184,3 +184,34 @@ class TestCorrectField:
         assert len(corrections) == 1
         assert corrections[0]["fieldName"] == "vendor_name"
         assert corrections[0]["newValue"] == "Corrected Vendor"
+
+
+@pytest.mark.django_db
+class TestRetiredImportPO:
+    """A retired order is gone from the list, so its detail and correction
+    endpoints must 404 too rather than stay reachable by URL."""
+
+    def setup_method(self):
+        self.po = _make_po(is_active=False)
+        _make_item(self.po)
+        self.client = APIClient()
+        self.client.force_authenticate(user=make_user(email="e@ravasco.com", role="editor"))
+
+    def test_detail_404s(self):
+        response = self.client.get(f"/api/imports/purchase-orders/vapi/{self.po.po_number}")
+        assert response.status_code == 404
+
+    def test_correction_404s_and_writes_nothing(self):
+        response = self.client.patch(
+            f"/api/imports/purchase-orders/vapi/{self.po.po_number}/fields",
+            {"field": "vendor_name", "value": "Changed"}, format="json")
+        assert response.status_code == 404
+        self.po.refresh_from_db()
+        assert self.po.vendor_name == "Test Vendor Ltd"
+        assert ImportPOCorrection.objects.count() == 0
+
+    def test_an_active_po_still_opens(self):
+        self.po.is_active = True
+        self.po.save(update_fields=["is_active"])
+        response = self.client.get(f"/api/imports/purchase-orders/vapi/{self.po.po_number}")
+        assert response.status_code == 200

@@ -25,6 +25,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.api.permissions import is_allowed_email_domain
 from apps.core.models import PTUser
+from apps.services.token_revocation import revoke_all_tokens
 
 
 class Command(BaseCommand):
@@ -83,6 +84,12 @@ class Command(BaseCommand):
                 is_active=True,
             ),
         )
+
+        # Re-running against an existing account is a password reset, so it
+        # evicts every live session the same way the in-app password change
+        # does. revoke_all_tokens, not revoke_all_sessions: device trust stays.
+        if not created:
+            revoke_all_tokens(user)
 
         verb = "Created" if created else "Updated"
         self.stdout.write(self.style.SUCCESS(f"{verb} PTUser {user.email} (role={user.role})"))

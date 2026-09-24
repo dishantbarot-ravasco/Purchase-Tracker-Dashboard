@@ -123,10 +123,11 @@ The Drive client is cached **per thread** (`threading.local`), not as a module s
 client produced intermittent SSL errors (`DECRYPTION_FAILED_OR_BAD_RECORD_MAC`,
 `WRONG_VERSION_NUMBER`) on whichever thread lost the race (2026-09-04). Keep it per-thread.
 
-Two limits worth knowing, neither hit today: `list_files_in_folder()` requests one page of at most
-100 files and does not follow `nextPageToken`, so a RoDTEP folder past 100 files would silently
-drop the rest; and `find_file_id_by_title()` returns the first of up to five same-named files in
-the folder with no ordering, so a duplicate copy with the exact same title makes the pick arbitrary.
+`list_files_in_folder()` follows `nextPageToken` until the listing is complete (one call used to
+stop silently at 100 files). `find_file_id_by_title()` orders by `modifiedTime desc`, so when
+several files share a title the most recently modified one wins, and it logs a warning naming the
+count and the chosen id; without the ordering a duplicate upload could switch which file a sync
+read from run to run.
 
 ### Change detection must compare quantized Decimals, rounded the way Postgres rounds
 
@@ -585,8 +586,9 @@ Import PO master CSV, shared by all three plants. `parse_import_po_csv()` return
 laden-on-board date, country of origin and licence type/number. Trailing blank-named header columns
 are dropped before the header comparison (a sheet-editing artifact that broke Vapi's sync on
 2026-09-07); any real header change still raises. An unparseable delivery date keeps its verbatim
-text in `delivery_date_raw`. Unlike `po_csv.py`, rows are not re-keyed by stripped header, so a
-trailing-space drift in a real column name would pass the check and then `KeyError` on lookup.
+text in `delivery_date_raw`. Like `po_csv.py`, every row is re-keyed by its stripped header right
+after validation, so a stray space in a column name (" PO Number ") passes the check and still
+reads; the `None` key DictReader uses for an over-long row's extra cells is dropped.
 
 ### [apps/services/parsers/mir.py](../apps/services/parsers/mir.py), [achhad_mir.py](../apps/services/parsers/achhad_mir.py), [vapi_mir.py](../apps/services/parsers/vapi_mir.py)
 
@@ -755,8 +757,9 @@ repeated description in the file keeps its first occurrence and is reported. No 
 
 Creates or updates a `PTUser` (`update_or_create` on the lower-cased email, `is_active=True`),
 refusing an email outside `ALLOWED_EMAIL_DOMAIN` and enforcing the same password policy as the Users
-panel (10+ characters, not all digits, not the email local-part). bcrypt with `rounds=12`. The only
-way to create the first admin; see [auth-security-email.md](auth-security-email.md).
+panel (10+ characters, not all digits, not the email local-part). bcrypt with `rounds=12`. Re-running
+it on an existing account revokes that account's tokens. The only way to create the first admin; see
+[auth-security-email.md](auth-security-email.md).
 
 ### [apps/core/management/commands/prune_revoked_tokens.py](../apps/core/management/commands/prune_revoked_tokens.py)
 

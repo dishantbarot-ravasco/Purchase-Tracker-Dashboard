@@ -249,6 +249,19 @@ class TestDailyFromPoints:
         assert daily == {}
         assert [e.classification for e in excluded] == [CLOSEOUT]
 
+    def test_a_restatement_is_counted_and_also_returned_as_an_event(self):
+        # opening rewritten 1000 -> 400 while the issue book ran 0 -> 30.
+        points = [_p(0, 1000, 0, 0, 1000), _p(1, 400, 0, 30, 370)]
+        daily, events = daily_from_points(points)
+        assert daily[D(2026, 9, 2)][0] == Decimal(30)
+        assert [e.classification for e in events] == ["restatement"]
+
+    def test_a_zero_issue_restatement_is_still_returned(self):
+        points = [_p(0, 450500, 0, 0, 450500), _p(1, 17850, 0, 0, 17850)]
+        daily, events = daily_from_points(points)
+        assert daily == {}
+        assert [(e.classification, e.quantity) for e in events] == [("restatement", Decimal(0))]
+
     def test_a_spread_day_overlapping_an_observed_day_takes_the_weaker_quality(self):
         points = [_p(0, 1000, 0, 0, 1000), _p(1, 1000, 0, 100, 900), _p(4, 1000, 0, 400, 600)]
         daily, _ = daily_from_points(points)

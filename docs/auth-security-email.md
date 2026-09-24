@@ -999,10 +999,11 @@ docstring records what was moved where to drop `'unsafe-inline'`. The CSP conten
 
 [settings.py](../config/settings.py):
 
-- `SECRET_KEY` from `DJANGO_SECRET_KEY` (insecure dev default); `JWT_SIGNING_KEY =
-  os.environ.get("JWT_SIGNING_KEY", SECRET_KEY)`. Because this uses a dict-style default, a
-  **present-but-blank** `JWT_SIGNING_KEY=` (as `.env.example` ships it) yields an empty signing key,
-  not the `SECRET_KEY` fallback, and W001 does not fire. Set a real value or delete the line.
+- `SECRET_KEY` from `DJANGO_SECRET_KEY` (insecure dev default); `JWT_SIGNING_KEY` from its own env
+  var, falling back to `SECRET_KEY` when unset **or blank** (`os.environ.get(...).strip() or
+  SECRET_KEY`). A get() default alone would have signed every JWT with an empty key for the
+  `JWT_SIGNING_KEY=` line `.env.example` ships, with W001 silent;
+  `test_signing_key_and_cli_reset.py` checks blank, whitespace and real values in a fresh process.
 - `SIMPLE_JWT` - access 12h, refresh 30 days, HS256, rotation + "blacklist" after rotation (served by
   `RevokedRefreshToken`), `USER_ID_FIELD`/`USER_ID_CLAIM` `user_id`, `UPDATE_LAST_LOGIN` False,
   `USER_AUTHENTICATION_RULE` `pt_user_authentication_rule`.
@@ -1034,8 +1035,9 @@ fail a build under `--fail-level WARNING`. Tested by `test_deploy_checks.py`.
 [--designation]`. The only way to create the first account. Domain check, the same password policy as
 the UI (duplicated by hand; `test_password_policy_is_stated_consistently.py` checks they agree),
 bcrypt `rounds=12`, then `update_or_create` on the email, so re-running it is also a CLI password reset
-or role change and re-activates the account. Unlike the in-app reset, it does **not** bump
-`token_version`, so existing sessions survive a CLI reset, and it writes no audit row.
+or role change and re-activates the account. On an existing account it calls `revoke_all_tokens()`
+(bumps `token_version`, keeps device trust), so a CLI reset evicts live sessions the same way the
+in-app password change does. It writes no audit row.
 
 ### apps/core/management/commands/prune_revoked_tokens.py
 

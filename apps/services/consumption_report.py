@@ -508,6 +508,19 @@ def _render_consumption_rows(rows: list, qty_key: str, empty_message: str) -> tu
     return "".join(html_parts), text_rows, any_estimate
 
 
+# What each confidence band means, shared by the HTML and plain-text bodies so
+# the two cannot drift apart (the text body once kept describing the old
+# span-based bands after the HTML moved on). Must stay in step with
+# consumption_periods._BANDS: high needs 80% of the window covered and 50%
+# observed day by day, medium 50% and 20%, low 5% coverage.
+_CONFIDENCE_LEGEND = (
+    ("none", "no usable history in the window at all"),
+    ("low", "only a small part of the window has data"),
+    ("medium", "at least half the window covered, some of it measured day by day"),
+    ("high", "nearly the whole window covered, most of it measured day by day"),
+)
+
+
 def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty_key: str, empty_message: str, estimate_note: str) -> tuple:
     """Shared (html_body, text_body) builder wrapping _render_consumption_rows()
     above with the header line/column label/estimate footnote each of the
@@ -525,6 +538,9 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     # for any already-closed month) will have nothing to explain here.
     estimate_note_html = f'<p style="margin:12px 0 0;font-size:11px;color:#718096;">{estimate_note}</p>' if any_estimate else ""
     estimate_note_text = f"\n\n{estimate_note}" if any_estimate else ""
+    legend_html = "\n    ".join(
+        f"<li><strong>{band}</strong> - {html.escape(meaning)}</li>" for band, meaning in _CONFIDENCE_LEGEND)
+    legend_text = "".join(f"  {band:<6} - {meaning}\n" for band, meaning in _CONFIDENCE_LEGEND)
 
     html_body = f"""<!DOCTYPE html>
 <html>
@@ -564,10 +580,7 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
     confirmed one:
   </p>
   <ul style="margin:4px 0 0;padding-left:18px;font-size:11px;color:#718096;">
-    <li><strong>none</strong> - no usable history in the window at all</li>
-    <li><strong>low</strong> - only a small part of the window has data</li>
-    <li><strong>medium</strong> - at least half the window covered, some of it measured day by day</li>
-    <li><strong>high</strong> - nearly the whole window covered, most of it measured day by day</li>
+    {legend_html}
   </ul>
   <p style="margin:6px 0 0;font-size:11px;color:#718096;">
     A material tagged <strong>(low)</strong> can still have a perfectly healthy Days Left number -
@@ -594,11 +607,8 @@ def _render_consumption_email(title: str, qty_column_label: str, rows: list, qty
         "\nThe word in parentheses next to Days Left is NOT a stock-level warning - it's how much "
         "snapshot history backs that estimate, shown so a thin estimate is never mistaken for a "
         "confirmed one:\n"
-        "  none   - not enough snapshot history yet to estimate at all\n"
-        "  low    - thin history (as little as 2 days / 1 usable data point)\n"
-        "  medium - moderate history (7+ days / 3+ usable data points)\n"
-        "  high   - strong history (14+ days / 5+ usable data points)\n"
-        "A material tagged (low) can still have a perfectly healthy Days Left number - the tag means "
+        + legend_text
+        + "A material tagged (low) can still have a perfectly healthy Days Left number - the tag means "
         "treat that particular figure cautiously until more history accumulates, not that the "
         "material itself is running low.\n"
         + estimate_note_text

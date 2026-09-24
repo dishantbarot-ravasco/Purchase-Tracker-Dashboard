@@ -123,6 +123,10 @@ BOOKS_DISAGREE = _BOOKS_DISAGREE
 # kept only so the balance-vs-books divergence stays visible.
 EXCLUDED_FROM_RATE = frozenset({_PERIOD_ROLL, _CLOSEOUT, _NOT_AN_INTERVAL})
 
+# Counted toward the rate normally, but still recorded as a ConsumptionEvent
+# because the balance disagreed with the issue book - see daily_from_points().
+_LOGGED_BUT_COUNTED = frozenset({_RESTATEMENT, _BOOKS_DISAGREE})
+
 # The sheets are exact to 3 decimal places (every *RMSnapshot quantity field
 # is decimal_places=3), so anything under half a thousandth is float noise
 # from the comparison itself, not a real disagreement.
@@ -316,18 +320,27 @@ def daily_from_points(
     max_dated_gap_days: int = 1,
 ) -> tuple[dict[datetime.date, tuple[Decimal, str]], list[ConsumptionInterval]]:
     """Convenience composition for one lot: returns
-    `({date: (quantity, quality)}, excluded_intervals)`.
+    `({date: (quantity, quality)}, event_intervals)`.
 
-    Only intervals that count toward a rate are allocated to days; the
-    excluded ones come back separately so the caller can record them as
-    visible events instead of dropping them.
+    Only intervals that count toward a rate are allocated to days. The
+    second value is every interval the caller should record as a visible
+    ConsumptionEvent:
+
+    - the excluded ones (`period_roll`, `closeout`), which never reach a
+      rate, and
+    - `restatement` and `books_disagree`, which ARE counted (their issue-book
+      figure is right) but where the balance disagreed with the books. They
+      are returned even at zero quantity - a zero-issue restatement is the
+      commonest kind, and without the event it leaves no trace anywhere.
     """
     daily: dict[datetime.date, tuple[Decimal, str]] = {}
-    excluded: list[ConsumptionInterval] = []
+    events: list[ConsumptionInterval] = []
     for interval in intervals_for_lot(points, max_dated_gap_days=max_dated_gap_days):
+        if interval.classification in _LOGGED_BUT_COUNTED:
+            events.append(interval)
         if not interval.counts_toward_rate:
             if interval.classification != _NOT_AN_INTERVAL:
-                excluded.append(interval)
+                events.append(interval)
             continue
         for date, qty, quality in allocate_daily(interval):
             prior_qty, prior_quality = daily.get(date, (Decimal(0), COUNTED))
@@ -335,7 +348,7 @@ def daily_from_points(
             # the weaker quality wins, same "worst contributing band"
             # convention the Days-Left engine's group aggregation uses.
             daily[date] = (prior_qty + qty, _SPREAD if _SPREAD in (prior_quality, quality) else quality)
-    return daily, excluded
+    return daily, events
 
 
 def rate_from_daily(

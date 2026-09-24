@@ -782,3 +782,31 @@ class TestReportRunTimeBudget:
         assert result["plants"] == {"hrs": "failed", "achhad": "failed", "vapi": "failed"}
         assert all(f.startswith("connect/login: TimeoutError") for f in result["failures"].values())
         assert not ReportSendLog.objects.exists(), "every failed plant releases its claim"
+
+
+class TestConfidenceLegend:
+    """The plain-text body once went on describing the old span-based bands
+    ("14+ days / 5+ usable data points") after the HTML body moved to the
+    coverage-based ones. Both now render from one list."""
+
+    def _bodies(self):
+        from apps.services.consumption_report import _render_report_email
+        report = {"label": "HRS", "date": "2026-09-24", "rows": [], "emptyMessage": "Nothing today."}
+        return _render_report_email(report)
+
+    def test_both_bodies_explain_every_band_the_same_way(self):
+        from apps.services.consumption_report import _CONFIDENCE_LEGEND
+        html_body, text_body = self._bodies()
+        for band, meaning in _CONFIDENCE_LEGEND:
+            assert f"<strong>{band}</strong> - {meaning}" in html_body
+            assert f"{band:<6} - {meaning}" in text_body
+
+    def test_the_old_span_based_wording_is_gone(self):
+        _html, text_body = self._bodies()
+        assert "usable data point" not in text_body
+        assert "14+ days" not in text_body
+
+    def test_the_legend_covers_exactly_the_bands_the_engine_can_return(self):
+        from apps.services.consumption_periods import _BANDS
+        from apps.services.consumption_report import _CONFIDENCE_LEGEND
+        assert {b for b, _ in _CONFIDENCE_LEGEND} == {b for b, *_ in _BANDS} | {"none"}
