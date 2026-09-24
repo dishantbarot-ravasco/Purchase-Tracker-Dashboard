@@ -74,20 +74,33 @@ def _verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+# A real bcrypt hash (of a throwaway string nobody types) at the same cost
+# as every stored password (rounds=12, users_views._hash_password), so
+# checking against it costs exactly what a real check costs.
+#
+# Fixed 2026-09-24: this used to be "$2b$12$" + 52 'a's - 59 bytes, one
+# short of a valid bcrypt hash. bcrypt.checkpw() rejected it with
+# "ValueError: Invalid salt" in ~0.04 ms instead of hashing for ~240 ms, the
+# bare except below swallowed that, and unknown emails and locked accounts
+# answered ~240 ms faster than real ones - the exact enumeration signal this
+# function exists to remove. test_login_timing_dummy_hash.py pins it.
+_DUMMY_HASH = b"$2b$12$m124GDb7oMcUeGqxAFP9.uSbau8tIWxiQeDO59KJM7D9Y.e6GT.M2"
+
+
 def _dummy_verify() -> None:
     """Constant-time no-op to prevent user-enumeration timing attacks.
 
     The bare except is deliberate, not an oversight: this call's only job is
     to burn the same amount of time a real bcrypt.checkpw() would, for an
-    unknown-email login attempt. dummy_hash is a fixed, valid-format hash,
-    so an exception here is not expected in practice - but if bcrypt ever
-    did raise, there is nothing useful to do with that failure (there is no
-    real check in flight to abort, and logging it would itself leak a
-    timing/behavioral difference between the dummy and real paths, defeating
-    the point of this function)."""
-    dummy_hash = b"$2b$12$aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    unknown-email login attempt. _DUMMY_HASH is a genuine bcrypt hash, so
+    an exception here is not expected - but if bcrypt ever did raise, there
+    is nothing useful to do with that failure (there is no real check in
+    flight to abort, and logging it would itself leak a timing/behavioral
+    difference between the dummy and real paths, defeating the point of
+    this function). The hash's validity is pinned by a test instead, which
+    is what should have caught the original malformed value."""
     try:
-        bcrypt.checkpw(b"dummy", dummy_hash)
+        bcrypt.checkpw(b"dummy", _DUMMY_HASH)
     except Exception:
         pass
 
