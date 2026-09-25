@@ -140,7 +140,7 @@ into stock across multiple lots over time), unaffected by fix 2.B.
 import math
 import re
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import Callable, NamedTuple, Optional
@@ -2232,8 +2232,19 @@ def _exchange_rate_explains(config: _MatchConfig, import_line_item, mir_rows: li
     return implied.quantize(Decimal("0.0001")), bool(on_grid and differs and plausible)
 
 
+def _pin_defers_to_boe(config: _MatchConfig, import_line_item, rows) -> bool:
+    """Whether a manual pin on this import line names a receipt booked
+    under the line's own Bill of Entry - every row of the pinned MIR
+    document cites that BOE. Such a pin is settled by _boe_settlement(),
+    which can share one receipt across the BOE's lines by quantity, rather
+    than by an exclusive claim that would take the receipt from the line's
+    siblings (see run_full_match()'s deferred_pins)."""
+    boe = _boe_key(getattr(import_line_item, "boe_number", ""))
+    return bool(boe) and bool(rows) and all(_boe_key(config.mir_boe_number(r)) == boe for r in rows)
+
+
 def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys, claimed_mir_ids, *,
-                    scorer, known_pos) -> dict:
+                    scorer, known_pos, pinned_to=None) -> dict:
     """Pairs import lines with the MIR receipts that cite their Bill of
     Entry number. Returns {("import", item.id): (candidates, share,
     matchable)} - every MIR row the line takes, with the _Candidate evidence
@@ -2295,11 +2306,19 @@ def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys,
         for item in lines:
             key = ("import", item.id)
             po = item.purchase_order
+            # A pinned line (`pinned_to`: key -> MIR number) is offered only
+            # the document a person named, and the pin is its evidence - no
+            # vendor or material vote, and no contradiction gate, exactly as
+            # an ordinary pin's forced candidate is never gated.
+            target_no = (pinned_to or {}).get(key)
             for mir in rows:
-                if _po_number_contradicts(po.po_number, mir.po_number_raw, known_pos):
+                if target_no is not None:
+                    if (mir.mir_no or "").strip() != target_no:
+                        continue
+                elif _po_number_contradicts(po.po_number, mir.po_number_raw, known_pos):
                     continue
                 cand = _forced_candidate(config, items_by_key[key], mir, po, scorer=scorer, known_pos=known_pos)
-                if cand.vendor_matched or cand.material_matched:
+                if target_no is not None or cand.vendor_matched or cand.material_matched:
                     evidence[(key, mir.id)] = cand
         usable = sorted({mir_id for _k, mir_id in evidence}, key=int)
         if not usable:
@@ -2344,6 +2363,67 @@ def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys,
             if cands:
                 settled[k] = (cands, Decimal(qtys[k]) / total, blended[k])
     return settled
+
+
+_QTY_PLACES = Decimal("0.001")
+_MONEY_PLACES = Decimal("0.01")
+
+
+def _share_of(amount, share, places):
+    """`amount x share` rounded HALF_UP to `places`, the way Postgres rounds
+    the stored figure; None stays None."""
+    if amount is None:
+        return None
+    return (Decimal(amount) * share).quantize(places, rounding=ROUND_HALF_UP)
+
+
+def _scaled_group(group, share):
+    """A shared receipt's figures as one holder counts them: qty and money
+    times `share`, rounded to the precision MIR stores (qty 3 places, money
+    2). The rounding matters: a share like 650/24,000 recurs, so the
+    unrounded product was 649.9999... KG against a 650 KG line, and the
+    zero-tolerance flag marked it "qty mismatched" at a displayed 0.00%."""
+    return group._replace(
+        qty=_share_of(group.qty, share, _QTY_PLACES),
+        value=_share_of(group.value, share, _MONEY_PLACES),
+        taxable=_share_of(group.taxable, share, _MONEY_PLACES),
+        final=_share_of(group.final, share, _MONEY_PLACES),
+    )
+
+
+def _split_shared_rows(config, assigned, items_by_key, shared_pin_keys, receipt_share):
+    """Has every line holding a "Keep both" pin's MIR row count its share of
+    it, by ordered quantity - the same split BOE settlement gives one import
+    receipt across its Bill of Entry's lines. Without it each holder would
+    be compared against the whole receipt: a 200 KG line sharing a 24,000 KG
+    row read as 11,900% over-delivered.
+
+    Split only when it is honest: every holder counts that one row alone and
+    in full (a holder already grouping several rows, or already on a share,
+    is left as it is), all quantities are known and in one unit. Otherwise
+    the lines keep the row unsplit, and the flags show the full figure.
+    Mutates `assigned` and `receipt_share` in place."""
+    if not shared_pin_keys:
+        return
+    holders: dict[int, list] = {}
+    for key, (mir, _score, _cov, group) in assigned.items():
+        for row in (group.entries if group is not None else [mir]):
+            holders.setdefault(row.id, []).append(key)
+    for pin_key in sorted(shared_pin_keys, key=str):
+        mir = assigned[pin_key][0]
+        keys = holders.get(mir.id, [])
+        if len(keys) < 2 or any(assigned[k][3] is not None for k in keys):
+            continue
+        qtys = {k: items_by_key[k].qty for k in keys}
+        if any(not q for q in qtys.values()) or len({normalize_uom(items_by_key[k].uom) for k in keys}) != 1:
+            continue
+        total = sum((Decimal(q) for q in qtys.values()), Decimal("0"))
+        for k in keys:
+            share = Decimal(qtys[k]) / total
+            group = _scaled_group(_aggregate_rows(config, items_by_key[k], [mir], by_po_number=True), share)
+            m, score, coverage, _g = assigned[k]
+            assigned[k] = (m, score, coverage, group)
+            receipt_share[k] = share.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
 
 def _blended_matchables(items_by_key, keys, qtys, total) -> dict:
@@ -3522,18 +3602,24 @@ def run_full_match(config: _MatchConfig) -> dict:
     unfilled_pins = []
     items_by_kind_id = {("po", item.id): item for item in po_items}
     items_by_kind_id.update({("import", item.id): item for item in import_items})
-    for key, pin in pins.items():
-        item = items_by_kind_id.get(key)
-        if item is None:
-            continue
-        pinned_keys.add(key)
-        # An empty mir_no is the explicit "leave this line unmatched"
-        # instruction, not a missing value - the item is simply never
-        # assigned, and the write loop below deletes whatever match it had.
-        target_no = pin.mir_no.strip()
-        if not target_no:
-            continue
-        rows = [r for r in pin_rows_by_no.get(target_no, []) if r.id not in claimed_mir_ids]
+    # A pin naming the receipt its own Bill of Entry was booked under is
+    # handed to BOE settlement instead of claiming the row here (2026-09-25,
+    # Vapi 1000001317: three lines, one BOE, one 24,000 KG MIR row). Claiming
+    # it made the row one line's alone, so pinning any line unmatched the
+    # other two, and pinning all three left two "unfilled" - while the
+    # automatic match shared the receipt across all three by quantity. See
+    # _pin_defers_to_boe().
+    deferred_pins: dict = {}  # key -> target MIR number
+
+    # A "Keep both" pin (ManualMirMatch.shared) takes the best row of its
+    # document whoever holds it, and claims nothing: the line that had the
+    # row keeps it, through whichever stage would have given it anyway, and
+    # _split_shared_rows() below then has each holder count its share.
+    shared_pin_keys: set = set()
+
+    def claim_pin(key, pin, item, target_no):
+        shared = bool(getattr(pin, "shared", False))
+        rows = [r for r in pin_rows_by_no.get(target_no, []) if shared or r.id not in claimed_mir_ids]
         if not rows:
             # The document has no free row left (another pin took it, or the
             # number no longer exists in MIR at all). Left unmatched rather
@@ -3542,10 +3628,10 @@ def run_full_match(config: _MatchConfig) -> dict:
             # manual_pins_unfilled, since an instruction that could not be
             # carried out is something the person who gave it must hear.
             unfilled_pins.append(pin)
-            continue
+            return
         matchable = items_by_key.get(key)
         if matchable is None:
-            continue
+            return
         candidates = [
             _forced_candidate(config, matchable, row, item.purchase_order, scorer=scorer, known_pos=known_pos)
             for row in rows
@@ -3553,7 +3639,25 @@ def run_full_match(config: _MatchConfig) -> dict:
         best = max(candidates, key=lambda c: (_pair_weight(c), c.mir.id))
         candidates_by_key[(key[0], key[1], best.mir.id)] = best
         assigned[key] = (best.mir, best.score, best.coverage, None)
-        claimed_mir_ids.add(best.mir.id)
+        if shared:
+            shared_pin_keys.add(key)
+        else:
+            claimed_mir_ids.add(best.mir.id)
+
+    for key, pin in pins.items():
+        item = items_by_kind_id.get(key)
+        if item is None:
+            continue
+        # An empty mir_no is the explicit "leave this line unmatched"
+        # instruction, not a missing value - the item is simply never
+        # assigned, and the write loop below deletes whatever match it had.
+        target_no = pin.mir_no.strip()
+        if target_no and key[0] == "import" and _pin_defers_to_boe(config, item, pin_rows_by_no.get(target_no, [])):
+            deferred_pins[key] = target_no
+            continue
+        pinned_keys.add(key)
+        if target_no:
+            claim_pin(key, pin, item, target_no)
 
     # BILL OF ENTRY NUMBERS SETTLE NEXT (2026-09-25) - an import receipt whose
     # MIR invoice_no is a line's BOE number belongs to that line; see
@@ -3565,6 +3669,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     boe_keys: set = set()
     for key, (cands, share, matchable) in _boe_settlement(
         config, import_items, items_by_key, pinned_keys, claimed_mir_ids, scorer=scorer, known_pos=known_pos,
+        pinned_to=deferred_pins,
     ).items():
         items_by_key[key] = matchable
         rows = sorted((c.mir for c in cands), key=lambda m: m.id)
@@ -3576,16 +3681,22 @@ def run_full_match(config: _MatchConfig) -> dict:
         if len(rows) > 1 or share is not None:
             group = _aggregate_rows(config, items_by_key[key], rows, by_po_number=True)
             if share is not None:
-                group = group._replace(
-                    qty=group.qty * share,
-                    value=group.value * share if group.value is not None else None,
-                    taxable=group.taxable * share if group.taxable is not None else None,
-                    final=group.final * share if group.final is not None else None,
-                )
+                group = _scaled_group(group, share)
                 boe_share[key] = share
         assigned[key] = (primary.mir, primary.score, primary.coverage, group)
         claimed_mir_ids.update(m.id for m in rows)
         boe_keys.add(key)
+
+    # A deferred pin is carried out when BOE settlement gave its line a share
+    # of the named document (settlement only offers a pinned line that
+    # document's rows - see pinned_to). When it could not - the BOE's lines
+    # sit on different Bills of Lading, or the quantities cannot be split -
+    # the pin falls back to an ordinary claim, which takes a free row or
+    # reports the pin unfilled, never leaving the automatic pick in place.
+    for key, target_no in deferred_pins.items():
+        pinned_keys.add(key)
+        if key not in assigned:
+            claim_pin(key, pins[key], items_by_kind_id[key], target_no)
 
     # PO-NUMBER GROUPS SETTLE NEXT (2026-09-24) - every MIR row whose own PO
     # column names exactly one order we hold is that order's, all of them.
@@ -3699,6 +3810,11 @@ def run_full_match(config: _MatchConfig) -> dict:
         candidate = candidates_by_key[(key[0], key[1], mir_id)]
         assigned[key] = (candidate.mir, candidate.score, candidate.coverage, None)
 
+    # SHARED RECEIPTS ("Keep both" pins) - once everything is assigned, so
+    # the split sees every line that ended up holding the row.
+    receipt_share: dict[tuple[str, int], Decimal] = dict(boe_share)
+    _split_shared_rows(config, assigned, items_by_key, shared_pin_keys, receipt_share)
+
     # Matches belonging to a RETIRED order have to be cleared explicitly
     # (2026-09-18). Every other stale match is deleted by the per-item loops
     # below, which only visit items still in `po_items`/`import_items` - and
@@ -3746,6 +3862,7 @@ def run_full_match(config: _MatchConfig) -> dict:
                 # across runs the way dismissed_* is - removing the pin has to
                 # clear the badge on the next run. See ManualMirMatch.
                 manually_pinned=("po", item.id) in pinned_keys,
+                receipt_share=receipt_share.get(("po", item.id)),
                 tier=tier,
                 match_score=score.quantize(Decimal("0.0001")),
                 qty_diff_pct=qty_diff,
@@ -3815,7 +3932,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             # across runs the way dismissed_* is - removing the pin has to
             # clear the badge. Same as the domestic loop above.
             manually_pinned=key in pinned_keys,
-            receipt_share=boe_share.get(key),
+            receipt_share=receipt_share.get(key),
             mir_exchange_rate=mir_fx,
             exchange_rate_mismatched=fx_mismatched,
             tier=tier,

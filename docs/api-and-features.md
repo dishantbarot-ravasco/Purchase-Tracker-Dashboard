@@ -500,9 +500,13 @@ is a `_PlantConfig` factory producing three views, the other a single view for a
 **Endpoints.** `GET .../mir-candidates?q=` returns up to 80 active MIR rows, newest first, collapsed to
 **one entry per MIR number** with `rowCount`, `sheetRows` (every Excel row of that document) and
 `claimedBy`. With no `q` it returns rows whose PO column mentions this PO plus recent ones; `q` filters
-MIR number, party or material. `PATCH .../mir-match` takes `{itemRef, mirNo, reason, clear}`: a
-non-empty `mirNo` pins, an empty `mirNo` pins the line as deliberately unmatched, `clear: true` removes
-the pin. An unknown `mirNo` is a 400; a retired PO or unknown `itemRef` a 404. The response carries
+MIR number, party or material. The Import picker also sends `itemRef`, so the endpoint can mark a
+holder on the same order and Bill of Entry as the edited line, for a receipt booked under that BOE,
+`sharesReceipt: true` - that line keeps its share whatever is chosen (see "Pins on a shared Bill of
+Entry" below), so the picker does not warn about it. `PATCH .../mir-match` takes
+`{itemRef, mirNo, reason, clear, share}`: a non-empty `mirNo` pins, an empty `mirNo` pins the line as deliberately unmatched, `clear: true` removes
+the pin, and `share: true` (read with `_request_bool()`, stored as `ManualMirMatch.shared`, migration
+`0061`) makes it a "Keep both" pin. An unknown `mirNo` is a 400; a retired PO or unknown `itemRef` a 404. The response carries
 `manualPinsApplied`, `stalePins` and `unfilledPins` from the synchronous `run_full_match()`. The
 pin row is written before that re-match (no `ATOMIC_REQUESTS`), so a request killed mid-match keeps
 the pin and the next scheduled match applies it.
@@ -563,8 +567,37 @@ picker reports domestic holders only.
 **`claimedBy` is read from the match table, not from the pins**, and counts a document held through a
 multi-shipment group (`group_entries`) as well as a primary `mir_entry` - a row held by an ordinary
 automatic match is just as worth warning about as one held by someone else's pin. Only active POs'
-matches count. The popup says what happens to the holder: *"That line will be re-matched automatically
-and may end up with no MIR at all"* - true, the assignment runs again from scratch.
+matches count.
+
+**When the document is already held, the picker asks: Keep both, Move it here, or Cancel** (project
+owner, 2026-09-25: *"do you want to keep both; remove previous one or cancel"*). Each option says what
+it costs:
+
+- **Move it here** (`share` false) - the row is this line's alone. The holder is re-matched from
+  scratch and *"may end up with no MIR"*, which is true.
+- **Keep both** (`share` true) - the pin takes its document's best row **whoever holds it, and claims
+  nothing**, so the holder keeps the row through whichever stage gave it before. Once everything is
+  assigned, `_split_shared_rows()` has every line holding that row count its share by ordered quantity
+  (`receipt_share` on the match; the domestic models gained the field in `0061`), so a 1,000 KG line
+  and a 5,000 KG line on one 1,000 KG receipt count 1/6 and 5/6 of it rather than each reading the
+  whole. The split happens only when it is honest: every holder counts that one row alone and in
+  full, and all quantities are known and in one unit. Otherwise the row stays unsplit and the flags
+  show the full figure. The reconciliation card says the receipt is shared (`po-reconcile.js`'s
+  `receiptShareNote()`).
+
+**Pins on a shared Bill of Entry (2026-09-25).** Vapi 1000001317 has three lines on one BOE, booked in
+MIR as one 24,000 KG row (MIR43/05), and BOE settlement shares that row across all three. A pin used
+to claim it exclusively, so pinning any line to MIR43/05 unmatched the other two, and pinning all
+three left two "unfilled". A pin on an import line naming a document whose every row cites that line's
+own BOE is now handed to BOE settlement (`_pin_defers_to_boe()`), which offers the pinned line only
+that document and treats the pin as its evidence. The line is still marked pinned, and the siblings
+keep their shares. If settlement cannot place it (different Bills of Lading, quantities that cannot be
+split), the pin falls back to an ordinary exclusive claim, never to the automatic pick.
+
+**A pin survives refreshes and syncs.** It is stored apart from both spreadsheets and re-applied on every
+match run, ahead of every automatic stage. It stops applying only when it goes stale (the line's
+description changed) or unfilled (the document has no free row, or left MIR). Both are reported,
+never silently re-matched.
 
 `manually_pinned` on the six `*POMirMatch` models is **derived, not preserved** - rewritten every run, so
 removing a pin clears the badge (`manuallyPinned` in the API). `matching_core.py` keeps its "no model
@@ -572,7 +605,7 @@ imports" shape: `manual_match_model` and `syncrun_plant` are injected by the thr
 modules.
 
 **One picker, two routers.** `po-modal.js`'s `wireMirPicker()` takes an `api` object
-(`candidates(q)` / `save(body)`), so Domestic (`apiForPlant()`) and Import (`apiImports()`) share one
+(`candidates(q, itemRef)` / `save(body)`), so Domestic (`apiForPlant()`) and Import (`apiImports()`) share one
 panel and collision popup. It is a picker, not a free-text box: typing a number blind is how you pin a
 line to a document that does not exist.
 

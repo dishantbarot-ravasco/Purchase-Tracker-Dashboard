@@ -334,6 +334,53 @@ class TestImportBoeNumberPairing:
             assert m.qty_mismatched is False
             assert m.rate_mismatched is False
 
+    def _akros_boe(self):
+        """Vapi 1000001317 as it is: three lines, one BOE, one 24,000 KG
+        receipt. 650/24,000 recurs, which the rounding test relies on."""
+        po = _make_import_po("1000001317")
+        lines = [
+            _boe_line(po, boe="8937898", qty=Decimal("200"), net_price=Decimal("6.00"), item_id="1"),
+            _boe_line(po, boe="8937898", qty=Decimal("650"), net_price=Decimal("4.50"), item_id="2"),
+            _boe_line(po, boe="8937898", qty=Decimal("23150"), net_price=Decimal("2.20"), item_id="3"),
+        ]
+        total = sum((ln.qty_as_per_boe * ln.net_price for ln in lines), Decimal("0"))
+        rate = (total / Decimal("24000") * Decimal("93.80")).quantize(Decimal("0.0001"))
+        receipt = _receipt(invoice_no="8937898", qty=Decimal("24000"), rate=rate, mir_no="MIR43/05")
+        return po, lines, receipt
+
+    def test_a_recurring_share_is_rounded_not_read_as_a_qty_mismatch(self):
+        """650/24,000 x 24,000 came out 649.9999... KG, and the zero-tolerance
+        flag marked the line qty mismatched at a displayed 0.00%."""
+        _po, lines, _receipt_row = self._akros_boe()
+
+        run_full_match()
+
+        for line in lines:
+            assert HRSImportPOMirMatch.objects.get(po_line_item=line).qty_mismatched is False
+
+    @pytest.mark.parametrize("pinned_refs", [["0"], ["2"], ["0", "1", "2"]])
+    def test_pinning_lines_to_their_boe_receipt_keeps_every_line_on_it(self, pinned_refs):
+        """Pinning one line to MIR43/05 took the row for that line alone and
+        left the other two unmatched; pinning all three left two "unfilled".
+        A pin naming the receipt its own BOE was booked under is settled by
+        BOE sharing instead (matching_core._pin_defers_to_boe())."""
+        from apps.core.models import ManualMirMatch, SyncRun
+
+        po, lines, receipt = self._akros_boe()
+        for ref in pinned_refs:
+            ManualMirMatch.objects.create(
+                plant=SyncRun.Plant.HRS, po_kind=ManualMirMatch.POKind.IMPORT, po_number=po.po_number,
+                item_ref=ref, mir_no="MIR43/05", item_description=lines[int(ref)].description)
+
+        result = run_full_match()
+
+        assert result["manual_pins_unfilled"] == []
+        for n, line in enumerate(lines):
+            match = HRSImportPOMirMatch.objects.get(po_line_item=line)
+            assert match.mir_entry_id == receipt.id
+            assert match.manually_pinned is (str(n) in pinned_refs)
+            assert match.receipt_share is not None
+
     def test_a_boe_shared_by_different_bills_of_lading_is_not_trusted(self):
         """1000001560: two shipments, two Bills of Lading, one BOE number
         in the CSV - a copy error, so the BOE is not used to pair them."""

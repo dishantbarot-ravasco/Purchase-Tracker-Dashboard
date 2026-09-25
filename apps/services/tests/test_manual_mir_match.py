@@ -238,6 +238,45 @@ class TestPinCollision:
         assert result["manual_pins_applied"] == 1
         assert [(p["poNumber"], p["mirNo"]) for p in result["manual_pins_unfilled"]] == [(po_a.po_number, "MIR-ONE")]
 
+    def test_keep_both_leaves_the_holder_on_the_row_and_splits_it_by_quantity(self):
+        """The picker's "Keep both" (project owner, 2026-09-25): the pinned
+        line uses the receipt without taking it, and each holder counts its
+        share by ordered quantity - 1,000 and 3,000 KG ordered against one
+        4,000 KG receipt, so neither reads over-delivered."""
+        po_a = _po("3000009001")
+        item_a = _item(po_a, qty=Decimal("1000"))
+        po_b = _po("3000009002")
+        item_b = _item(po_b, qty=Decimal("3000"))
+        row = _mir("MIR-ONE", "10", po_number_raw=po_a.po_number, qty=Decimal("4000"))
+
+        pin = _pin(po_b.po_number, "0", "MIR-ONE")
+        pin.shared = True
+        pin.save()
+        result = run_full_match()
+
+        m_a, m_b = _match_for(item_a), _match_for(item_b)
+        assert m_a.mir_entry_id == row.id and m_b.mir_entry_id == row.id
+        assert m_b.manually_pinned and not m_a.manually_pinned
+        assert m_a.receipt_share == Decimal("0.250000")
+        assert m_b.receipt_share == Decimal("0.750000")
+        assert m_a.qty_mismatched is False and m_b.qty_mismatched is False
+        assert result["manual_pins_unfilled"] == []
+
+    def test_move_it_here_is_still_exclusive_and_unsplit(self):
+        """The same pin without `shared` keeps today's "move it here": the
+        holder is re-matched (to nothing, here) and no share is recorded."""
+        po_a = _po("3000009001")
+        item_a = _item(po_a)
+        po_b = _po("3000009002")
+        item_b = _item(po_b)
+        _mir("MIR-ONE", "10", po_number_raw=po_a.po_number)
+
+        _pin(po_b.po_number, "0", "MIR-ONE")
+        run_full_match()
+
+        assert _match_for(item_a) is None
+        assert _match_for(item_b).receipt_share is None
+
 
 @pytest.mark.django_db
 class TestPinStaleness:

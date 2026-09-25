@@ -586,8 +586,9 @@ for value, and on a cleared line a `landed` pair from `landedRateInr` / `receive
 "Landed rate (duty + IGST)" row with the matcher's 0.01% allowance, `RECON_LANDED_RATE_REL_EPS`, so a
 duty-only gap reads "matches" there while the pre-duty row above still shows it). The landed row is
 left out for a shared receipt (`receiptShare`), which is compared at the BOE's blended rate; the card
-shows `notes` instead - the line's share of the receipt, and for an exchange-rate difference both
-rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
+shows `notes` instead - the line's share of the receipt (`receiptShareNote(share, tier)`: a BOE
+share on tier `boe_number`, otherwise a "Keep both" manual match's share; Domestic lines carry it
+too), and for an exchange-rate difference both rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
 each line at its own ordered value) + one `reconLineHtml()` per line. `reconControlsHtml()` carries the
 confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag, dismiss/reinstate link
 (only when `reconAnyFlag()`) and the `.mir-change-link` with `data-item-ref`/`data-current-mir`.
@@ -608,13 +609,18 @@ The Domestic PO modal and the shared MIR picker.
   list.
 - **MIR picker** (feature: [api-and-features.md](api-and-features.md)): `mirPickerHtml()` renders one
   `#mirPicker`; `wireMirPicker(container, api, poNumber, onDone)` takes an injected
-  `api = {candidates(q), save(body)}` so Domestic (per-plant `<prefix>/purchase-orders/<po>/mir-candidates?q=`
-  and PATCH `.../mir-match`) and Import (`/api/imports/purchase-orders/<plant>/<po>/...`) share one
+  `api = {candidates(q, itemRef), save(body)}` so Domestic (per-plant `<prefix>/purchase-orders/<po>/mir-candidates?q=`
+  and PATCH `.../mir-match`) and Import (`/api/imports/purchase-orders/<plant>/<po>/...`, whose candidates call also sends `itemRef`) share one
   implementation. `openMirPicker()` moves the panel under the clicked `.recon-line`;
   `loadMirCandidates()` (search debounced 250 ms); `renderMirCandidates()` shows date, party,
   material, qty/rate, sheet rows and who currently holds the document (`claimedBy`, via
-  `mirClaimSummary()`); `chooseMirCandidate()` confirms a collision; `applyMirMatch()` sends
-  `{itemRef, mirNo, clear, reason}` (`mirNo: ''` = "no MIR", `clear: true` = back to automatic).
+  `mirClaimSummary()`, which skips holders marked `sharesReceipt` - this line's Bill of Entry siblings,
+  which keep their share either way). On a collision `chooseMirCandidate()` opens `#mirPickerChoice`
+  (built from DOM nodes, since the claim text carries sheet descriptions) with **Keep both** (focused),
+  **Move it here** and **Cancel**, each explained in a line below the buttons; `applyMirMatch()` sends
+  `{itemRef, mirNo, clear, share, reason}` (`mirNo: ''` = "no MIR", `clear: true` = back to automatic,
+  `share: true` = Keep both). `mirLabel()` prints a MIR number without doubling a "MIR" prefix Vapi's
+  numbers already carry.
   When the response's `unfilledPins` names this line (every row of that MIR document is already
   held by a newer pin), it says so instead of "Matched" - in the status line and, because
   `onDone()` re-renders the modal and takes the status line with it, in a `window.alert()`.
@@ -881,7 +887,7 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   tried and looked wrong with 8 vs 13 cards), info and row-flag CSS tooltips (instant, unlike native
   `title`), tables (sticky headers inside `.table-wrap`, which is a two-axis scroll container, so a CSS
   tooltip inside it is clipped), status pills and badges, legend, disclaimer, modal shell, correction
-  box, MIR picker, reconciliation cards, steppers, the Domestic list's "Also in Import Purchases"
+  box, MIR picker and its "already matched" choice (`.mir-choice*`), reconciliation cards, steppers, the Domestic list's "Also in Import Purchases"
   box (`.cross-kind-*`), dark mode.
 - **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,
   `login-page.css`) - extracted from inline `<style>` blocks for CSP; they use `brand.css` tokens

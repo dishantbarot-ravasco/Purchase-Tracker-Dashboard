@@ -811,6 +811,12 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mir-picker input[type="search"] { flex:1; min-width:180px; padding:7px 10px; border:1px solid var(--border-strong); border-radius:7px; font-size:12.5px; font-family:inherit; }
 .mir-picker-secondary { padding:7px 14px; border-radius:7px; border:1px solid var(--border-strong); background:transparent; color:var(--slate-soft); cursor:pointer; font-size:12px; font-weight:600; }
 .mir-picker-secondary:hover { background:var(--gray-soft); color:var(--slate); }
+/* "Already matched" choice - Keep both / Move it here / Cancel (po-modal.js's chooseMirCandidate()). */
+.mir-choice { margin-top:10px; padding:12px 14px; border:1px solid var(--amber-text); border-radius:8px; background:var(--amber-soft); font-size:12.5px; color:var(--slate); }
+.mir-choice p { margin:0 0 8px; font-weight:600; }
+.mir-choice-buttons { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+.mir-choice .mir-choice-primary { background:var(--navy-solid); color:var(--on-accent); border-color:var(--navy-solid); }
+.mir-choice ul { margin:0; padding-left:18px; color:var(--slate-soft); }
 /* Capped and scrollable: a plant's MIR file runs to ~1,500 rows and the
    endpoint returns up to 80 documents, which would otherwise push the rest
    of the modal off screen. */

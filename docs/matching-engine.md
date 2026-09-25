@@ -27,9 +27,11 @@ trusting a count.
    each surviving pair carrying an evidence tier and a `_pair_weight()`. Also record the rate-based
    shipment group (`_shipment_group()`) and the rows citing this PO (`_po_number_group_rows()`).
 4. **Settle in order**, all against one `claimed_mir_ids` set shared by domestic and import:
-   manual pins first, then PO-number groups (one row per line by `_assign_pairs()`, extras to the
+   manual pins first (exclusive ones claim their row; "Keep both" ones claim nothing; one naming its
+   own BOE's receipt is deferred to BOE settlement), then BOE settlement, then PO-number groups (one row per line by `_assign_pairs()`, extras to the
    best-matching line), then rate groups (a group that lost a member is demoted to per-row edges),
-   then the optimal assignment `_assign_pairs()` over everything left.
+   then the optimal assignment `_assign_pairs()` over everything left, then `_split_shared_rows()`
+   for rows a "Keep both" pin shares.
 5. **Write**: delete matches of retired orders; upsert or delete one `*POMirMatch` /
    `*ImportPOMirMatch` row per line with `_diffs_and_flag()`'s figures; rebuild every
    `group_entries` link in bulk (`_rebuild_group_links()`).
@@ -751,13 +753,19 @@ PO-number groups (a BOE names one shipment, a PO number a whole order), and writ
 - **Several lines on one BOE**: with at least as many receipts as lines, one receipt per line by
   `_assign_pairs()`, extras to the line they identify best. With FEWER receipts than lines the BOE was
   booked as one receipt (a 2,000 + 14,000 KG BOE as one 16,000 KG row), so every line takes every row
-  and counts `receipt_share` = its BOE qty / the BOE's total, and is compared at the BOE's blended rate
+  and counts `receipt_share` = its BOE qty / the BOE's total, its share of the qty and money rounded
+  to MIR's own precision (`_scaled_group()`: 3 places, 2 for money - 650/24,000 recurs, and the
+  unrounded 649.9999 KG flagged a 650 KG line "qty mismatched" at a displayed 0.00%), and is compared at the BOE's blended rate
   and landed rate (`_blended_matchables()`) - that receipt is booked at one blended rate (1000001317:
   MIR43/05's 216.09 is exactly the qty-weighted rate of lines at 6.00, 4.50 and 2.20 USD). Blending is
   skipped when any line of the BOE has no exchange rate, so one line's bare foreign price cannot spread.
 - **A BOE shared by lines with different Bills of Lading is not trusted** - separate shipments cannot
   clear on one BOE (1000001560's second shipment carries its first's BOE in the CSV, while its MIR
   receipt cites another) - and is left to ordinary matching.
+- **A manual pin on a line of the BOE, naming the receipt its BOE was booked under, is settled here**
+  rather than by an exclusive claim (`pinned_to`; see
+  [api-and-features.md](api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21)): the
+  pinned line is offered only that document, with no vote asked and no contradiction gate.
 - It runs in `run_full_match()` only; the standalone `match_import_po_mir_line_item()` (no production
   caller) clears `receipt_share` / `mir_exchange_rate` / `exchange_rate_mismatched` rather than guess.
 
@@ -1068,8 +1076,11 @@ below); trust the code.
   line, mir_rows)` returns the same pair per unit for the PO modal's card. See
   [Import PO ↔ MIR](#import-po--mir-convert-currency-first).
 - `_boe_key(value)`, `_boe_settlement(config, import_items, items_by_key, skip_keys, claimed, *, scorer,
-  known_pos)` -> `{key: (candidates, share, matchable)}`, `_blended_matchables()` - Bill of Entry
-  pairing and shared receipts; `_exchange_rate_explains(config, line, mir_rows, landed_value=None)` ->
+  known_pos, pinned_to=None)` -> `{key: (candidates, share, matchable)}`, `_blended_matchables()` - Bill
+  of Entry pairing and shared receipts; `_pin_defers_to_boe(config, line, rows)`;
+  `_share_of(amount, share, places)` and `_scaled_group(group, share)` (the rounded share, with
+  `_QTY_PLACES` / `_MONEY_PLACES`); `_split_shared_rows(config, assigned, items_by_key, shared_pin_keys,
+  receipt_share)` - "Keep both" pins; `_exchange_rate_explains(config, line, mir_rows, landed_value=None)` ->
   `(implied rate, is exchange-rate difference)`, with `_EXCHANGE_RATE_GRID` /
   `_EXCHANGE_RATE_GRID_TOLERANCE` / `_EXCHANGE_RATE_MAX_MOVE_PCT`. `TIER_BOE_NUMBER = "boe_number"`.
   See [Import PO ↔ MIR](#import-po--mir-convert-currency-first).
@@ -1118,6 +1129,10 @@ below); trust the code.
   `(ordered pins, stale)`.
 - `_forced_candidate(...)` - a pinned pair's `_Candidate`, skipping identification but measuring
   everything; an impossible date is zeroed, not a veto; ranked at tier 4.
+- In `run_full_match()`, `claim_pin()` applies one pin: an exclusive pin takes a free row of its
+  document, a shared one (`ManualMirMatch.shared`) the best row whoever holds it, claiming nothing
+  (`shared_pin_keys`). `deferred_pins` are the import pins `_pin_defers_to_boe()` hands to BOE
+  settlement; one it could not place goes through `claim_pin()` after it.
 - A pin whose MIR document has no free row (a newer pin took it, or the number is gone from MIR)
   leaves its line unmatched - never an automatic fallback - and is reported in
   `manual_pins_unfilled`, not counted in `manual_pins_applied`.

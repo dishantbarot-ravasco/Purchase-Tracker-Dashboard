@@ -179,7 +179,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - Every CSV export uses `SafeCsvWriter`. [data export](docs/api-and-features.md#data-export)
 - Treat every match as a suggestion; never wire an automatic action off one.
   [match accuracy](docs/api-and-features.md#match-accuracy-manual-validation-is-required-not-optional)
-- A manual pin names a MIR number, not a row, and `po_kind` belongs in every pin query.
+- A manual pin names a MIR number, not a row, and `po_kind` belongs in every pin query. "Keep both"
+  (`shared`) claims nothing; an import pin naming its own BOE's receipt defers to BOE settlement.
   [pins](docs/api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21)
 - Corrections mutate the real row plus an audit row, re-match synchronously, and are overwritten by
   the next sync. Matcher `defaults` never carry `dismissed_*`; only `_save_po_mir_match()` clears it,

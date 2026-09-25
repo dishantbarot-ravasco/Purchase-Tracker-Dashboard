@@ -448,7 +448,9 @@ Cross-plant human decisions and reference data, all with a `plant` column.
 - `ManualMirMatch` - a human pin of a PO line to a MIR **number** (blank means "leave unmatched");
   unique on `(plant, po_kind, po_number, item_ref)`. `po_kind` (`domestic`/`import`) is in the key
   because one PO number can exist in both tables. `item_ref` is the line's zero-based position by
-  pk; `item_description` is a staleness tripwire.
+  pk; `item_description` is a staleness tripwire. `shared` (migration `0061`) is the picker's "Keep
+  both": the pin uses the document without taking it from its holder. The same migration gives the
+  three domestic `*POMirMatch` models `receipt_share`, the fraction of a shared receipt a line counts.
 - `MaterialCategoryReference` - company-wide category/subcategory lookup, unique on
   `normalized_description` (exact match after `normalize_material()`, never SAP code). Loaded by
   `load_material_category_reference`; editable in Django Admin.

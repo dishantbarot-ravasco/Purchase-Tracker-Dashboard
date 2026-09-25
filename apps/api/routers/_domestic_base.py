@@ -372,6 +372,9 @@ def _line_item_dict(item, item_ref=""):
         # address a line: item_id is neither unique nor always present.
         "itemRef": item_ref,
         "manuallyPinned": bool(match and getattr(match, "manually_pinned", False)),
+        # Set when a "Keep both" pin shares this line's MIR row with another
+        # line (ManualMirMatch.shared): the fraction of it this line counts.
+        "receiptShare": float(match.receipt_share) if match and match.receipt_share is not None else None,
         "description": item.description,
         "qty": float(item.qty) if item.qty is not None else None,
         "uom": item.uom,
@@ -1613,6 +1616,9 @@ def make_set_mir_match(cfg: _PlantConfig):
         mir_no = (request.data.get("mirNo") or "").strip()
         reason = (request.data.get("reason") or "").strip()
         clear = bool(request.data.get("clear"))
+        # "Keep both": use the document without taking it from its current
+        # holder - see ManualMirMatch.shared. Meaningless without a mirNo.
+        shared = _request_bool(request.data.get("share"), False) and bool(mir_no)
 
         po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
         if not po:
@@ -1641,6 +1647,7 @@ def make_set_mir_match(cfg: _PlantConfig):
                 item_ref=item_ref,
                 defaults=dict(
                     mir_no=mir_no,
+                    shared=shared,
                     # Captured now, compared on every later run - see
                     # ManualMirMatch's docstring on staleness.
                     item_description=target.description or "",
@@ -1660,6 +1667,7 @@ def make_set_mir_match(cfg: _PlantConfig):
             "itemRef": item_ref,
             "mirNo": "" if clear else mir_no,
             "cleared": clear,
+            "shared": False if clear else shared,
             "manualPinsApplied": result.get("manual_pins_applied"),
             "stalePins": result.get("manual_pins_stale", []),
             "unfilledPins": result.get("manual_pins_unfilled", []),

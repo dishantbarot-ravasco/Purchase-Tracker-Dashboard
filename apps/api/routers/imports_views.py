@@ -65,7 +65,7 @@ from apps.api.routers._domestic_base import (
 from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 # The matcher's own line numbering, imported rather than re-derived so the
 # API and matching_core can never disagree about what a pin addresses.
-from apps.services.matching_core import _import_rate_value_inr, import_landed_rates, line_item_positions
+from apps.services.matching_core import _boe_key, _import_rate_value_inr, import_landed_rates, line_item_positions
 from apps.services.parsers.common import normalize_material
 from apps.services import bl_tracking
 from apps.services import import_flags as flags
@@ -1211,6 +1211,26 @@ def mir_candidates(request, plant, po_number):
     for mir_no, holders in _import_claims_for_mir_numbers(plant, numbers).items():
         claims.setdefault(mir_no, []).extend(holders)
 
+    # A line of THIS order on the same Bill of Entry as the line being edited
+    # does not lose a receipt booked under that BOE when this line is pinned
+    # to it - BOE settlement shares it between them (matching_core's
+    # _pin_defers_to_boe()). Marked, so the picker does not warn about it.
+    item_ref = (request.query_params.get("itemRef") or "").strip()
+    items = list(item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+    positions = line_item_positions(items)
+    boe_by_ref = {positions[i.id][1]: _boe_key(i.boe_number) for i in items}
+    own_boe = boe_by_ref.get(item_ref, "")
+    rows_by_no: dict = {}
+    for r in rows:
+        rows_by_no.setdefault(r.mir_no, []).append(r)
+    if own_boe:
+        for mir_no, holders in claims.items():
+            if not all(_boe_key(r.invoice_no) == own_boe for r in rows_by_no.get(mir_no, [])):
+                continue
+            for h in holders:
+                if h.get("isImport") and h["poNumber"] == po.po_number and boe_by_ref.get(h["itemRef"]) == own_boe:
+                    h["sharesReceipt"] = True
+
     seen: dict = {}
     for row in rows:
         if not row.mir_no:
@@ -1286,6 +1306,9 @@ def set_mir_match(request, plant, po_number):
     mir_no = (request.data.get("mirNo") or "").strip()
     reason = (request.data.get("reason") or "").strip()
     clear = bool(request.data.get("clear"))
+    # "Keep both": use the document without taking it from its current
+    # holder - see ManualMirMatch.shared. Meaningless without a mirNo.
+    shared = _request_bool(request.data.get("share"), False) and bool(mir_no)
 
     po = po_model.objects.filter(po_number=po_number, is_active=True).first()
     if not po:
@@ -1311,6 +1334,7 @@ def set_mir_match(request, plant, po_number):
             item_ref=item_ref,
             defaults=dict(
                 mir_no=mir_no,
+                shared=shared,
                 item_description=target.description or "",
                 reason=reason,
                 created_by=request.user if getattr(request.user, "pk", None) else None,
@@ -1324,6 +1348,7 @@ def set_mir_match(request, plant, po_number):
         "itemRef": item_ref,
         "mirNo": "" if clear else mir_no,
         "cleared": clear,
+        "shared": False if clear else shared,
         "manualPinsApplied": result.get("manual_pins_applied"),
         "stalePins": result.get("manual_pins_stale", []),
         "unfilledPins": result.get("manual_pins_unfilled", []),

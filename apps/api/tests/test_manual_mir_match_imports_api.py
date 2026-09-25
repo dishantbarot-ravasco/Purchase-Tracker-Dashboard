@@ -86,6 +86,16 @@ class TestImportSetMirMatch:
         assert self.item.mir_match.mir_entry_id == self.mir.id
         assert self.item.mir_match.manually_pinned is True
 
+    def test_keep_both_is_stored_as_a_shared_pin(self):
+        """`share` is a body flag, read by meaning: the string "false" must
+        not store a shared pin (bool("false") is True)."""
+        res = self.client.patch(self.url, {"itemRef": "0", "mirNo": "MIR-A", "share": True}, format="json")
+        assert res.status_code == 200 and res.json()["shared"] is True
+        assert ManualMirMatch.objects.get().shared is True
+
+        self.client.patch(self.url, {"itemRef": "0", "mirNo": "MIR-A", "share": "false"}, format="json")
+        assert ManualMirMatch.objects.get().shared is False
+
     def test_viewer_cannot_pin(self):
         client = APIClient()
         client.force_authenticate(user=make_user(email="v@ravasco.com", role="viewer"))
@@ -171,6 +181,26 @@ class TestImportMirCandidates:
         assert claimed[0]["poNumber"] == other_po.po_number
         assert claimed[0]["isImport"] is True
         assert claimed[0]["manuallyPinned"] is True
+
+    def test_a_sibling_on_the_same_boe_is_marked_as_sharing_the_receipt(self):
+        """1000001317: every line of the order was warned it would unmatch the
+        other two, though BOE settlement shares the receipt between them.
+        A holder on the same order and Bill of Entry, for a receipt booked
+        under that BOE, is marked sharesReceipt; the picker skips it."""
+        HRSImportPOLineItem.objects.filter(pk=self.item.pk).update(boe_number="8937898")
+        sibling = _import_item(self.po, description="Chloroprene M-42", item_id="2")
+        HRSImportPOLineItem.objects.filter(pk=sibling.pk).update(boe_number="8937898")
+        receipt = _mir("MIR43/05", "1")
+        HRSMIREntry.objects.filter(pk=receipt.pk).update(invoice_no="8937898")
+        from apps.services.matching import run_full_match
+        run_full_match()
+
+        claimed = self.client.get(self.url, {"q": "MIR43/05", "itemRef": "0"}).json()["candidates"][0]["claimedBy"]
+        sib = [c for c in claimed if c["itemRef"] == "1"]
+        assert sib and sib[0]["sharesReceipt"] is True
+        # Without the line being edited, nothing can be said about siblings.
+        claimed_anon = self.client.get(self.url, {"q": "MIR43/05"}).json()["candidates"][0]["claimedBy"]
+        assert not any(c.get("sharesReceipt") for c in claimed_anon)
 
     def test_claimed_by_also_reports_a_DOMESTIC_holder(self):
         """Both kinds compete for the same MIR table, so the import picker

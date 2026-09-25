@@ -257,6 +257,7 @@ function mirPickerHtml() {
       '<button type="button" id="mirPickerNone" class="mir-picker-secondary">No MIR - not received</button>' +
       '<button type="button" id="mirPickerAuto" class="mir-picker-secondary">Back to automatic</button>' +
     '</div>' +
+    '<div class="mir-choice" id="mirPickerChoice" role="group" aria-label="This MIR is already matched" hidden></div>' +
     '<div id="mirPickerStatus"></div>' +
     '<div class="ov-disclaimer">A manual match survives every re-match and re-sync until someone changes it back. It does not alter the MIR or the PO - only which receipt this line is reconciled against.</div>' +
   '</div>';
@@ -266,8 +267,11 @@ function mirPickerHtml() {
  * when nothing does. The line item being edited is excluded - re-pinning a
  * line to the document it already holds is not a collision. */
 function mirClaimSummary(candidate, selfPoNumber, selfItemRef) {
+  // sharesReceipt: a line of this order on the same Bill of Entry, which
+  // keeps its share of a BOE-booked receipt whatever is chosen here
+  // (imports_views.mir_candidates()), so it is not a collision.
   const others = (candidate.claimedBy || []).filter(
-    c => !(c.poNumber === selfPoNumber && c.itemRef === selfItemRef));
+    c => !(c.poNumber === selfPoNumber && c.itemRef === selfItemRef) && !c.sharesReceipt);
   if (!others.length) return '';
   return others.map(c => 'PO ' + c.poNumber + ', line ' + (Number(c.itemRef) + 1) +
     ' (' + (c.description || 'no description') + ')' + (c.manuallyPinned ? ' - itself a manual match' : '')).join('; ');
@@ -305,22 +309,58 @@ function renderMirCandidates(candidates) {
   });
 }
 
-/** The popup the project owner asked for. Names exactly what taking this
- * document costs, and says what happens to the line that loses it -
- * "re-matched automatically, and it may end up unmatched" rather than a
- * vague "this will break something", because the matcher really does get
- * another go at it (matching_core's assignment runs again from scratch). */
+/** A MIR number as a reader says it: Vapi's already read "MIR43/05", so
+ * prefixing "MIR " there printed "MIR MIR43/05". */
+function mirLabel(mirNo) {
+  return /^mir/i.test(mirNo || '') ? mirNo : 'MIR ' + mirNo;
+}
+
+/** The popup the project owner asked for, with the three answers they
+ * asked for (2026-09-25): keep both, move it here, or cancel. Names exactly
+ * what each costs - "Move" says the other line is re-matched automatically
+ * and may end up unmatched, because the matcher really does get another go
+ * at it; "Keep both" says the receipt is then split by ordered quantity,
+ * which is what matching_core's _split_shared_rows() does. Built from DOM
+ * nodes, not markup: the claim text carries descriptions from the sheet. */
 function chooseMirCandidate(mirNo, candidates) {
   const candidate = candidates.find(c => c.mirNo === mirNo);
   if (!candidate) return;
   const claim = mirClaimSummary(candidate, MIR_PICKER.poNumber, MIR_PICKER.itemRef);
-  if (claim) {
-    const msg = 'MIR ' + mirNo + ' is currently matched to ' + claim + '.\n\n' +
-      'Matching it here releases it from that line. That line will be re-matched automatically and may end up with no MIR at all.\n\n' +
-      'Continue?';
-    if (!window.confirm(msg)) return;
-  }
-  applyMirMatch({ mirNo: mirNo });
+  if (!claim) { applyMirMatch({ mirNo: mirNo }); return; }
+  const box = document.getElementById('mirPickerChoice');
+  if (!box) return;
+  box.textContent = '';
+  const text = document.createElement('p');
+  text.textContent = mirLabel(mirNo) + ' is already matched to ' + claim + '.';
+  box.appendChild(text);
+  const options = [
+    { label: 'Keep both', cls: 'mir-choice-primary', hint: 'Both lines use this receipt, and each counts its share by ordered quantity.', run: () => applyMirMatch({ mirNo: mirNo, share: true }) },
+    { label: 'Move it here', cls: '', hint: 'Only this line uses it. The other line is re-matched automatically and may end up with no MIR.', run: () => applyMirMatch({ mirNo: mirNo }) },
+    { label: 'Cancel', cls: '', hint: '', run: () => {} },
+  ];
+  const row = document.createElement('div');
+  row.className = 'mir-choice-buttons';
+  options.forEach(o => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = ('mir-picker-secondary ' + o.cls).trim();
+    btn.textContent = o.label;
+    btn.onclick = () => { box.hidden = true; box.textContent = ''; o.run(); };
+    row.appendChild(btn);
+  });
+  box.appendChild(row);
+  const hints = document.createElement('ul');
+  options.filter(o => o.hint).forEach(o => {
+    const li = document.createElement('li');
+    const b = document.createElement('b');
+    b.textContent = o.label + ': ';
+    li.appendChild(b);
+    li.appendChild(document.createTextNode(o.hint));
+    hints.appendChild(li);
+  });
+  box.appendChild(hints);
+  box.hidden = false;
+  row.firstChild.focus();
 }
 
 async function applyMirMatch(opts) {
@@ -333,6 +373,7 @@ async function applyMirMatch(opts) {
     itemRef: p.itemRef,
     mirNo: opts.mirNo || '',
     clear: !!opts.clear,
+    share: !!opts.share,
     reason: opts.reason || '',
   };
   try {
@@ -346,11 +387,11 @@ async function applyMirMatch(opts) {
       String(u.poNumber) === String(p.poNumber) && String(u.itemRef) === String(p.itemRef) && u.mirNo === body.mirNo);
     if (unfilled) {
       status.className = 'override-status err';
-      status.textContent = 'Saved, but MIR ' + body.mirNo + ' is already fully taken by another pinned line, so this line is now unmatched. Pick a different MIR or free that one first.';
+      status.textContent = 'Saved, but ' + mirLabel(body.mirNo) + ' is already fully taken by another pinned line, so this line is now unmatched. Pick a different MIR or free that one first.';
     } else {
       status.className = 'override-status ok';
       status.textContent = opts.clear ? 'Back to automatic matching.'
-        : (body.mirNo ? 'Matched to MIR ' + body.mirNo + '.' : 'Marked as not received.');
+        : (body.mirNo ? 'Matched to ' + mirLabel(body.mirNo) + (body.share ? ', shared with the line that already had it.' : '.') : 'Marked as not received.');
     }
     announce(status.textContent);
     // A pin re-runs the whole plant's matching, so other rows can move too -
@@ -377,7 +418,7 @@ async function loadMirCandidates(q) {
   if (!list || !MIR_PICKER) return;
   list.innerHTML = '<div class="empty-note-sm">Loading&hellip;</div>';
   try {
-    const data = await MIR_PICKER.api.candidates(q);
+    const data = await MIR_PICKER.api.candidates(q, MIR_PICKER.itemRef);
     if (!MIR_PICKER) return;  // closed while the fetch was in flight
     renderMirCandidates(data.candidates || []);
   } catch (e) {
@@ -398,10 +439,12 @@ function openMirPicker(ctx) {
   if (ctx.rowEl) ctx.rowEl.classList.add('mir-editing');
   document.getElementById('mirPickerFor').textContent =
     'Line ' + (Number(ctx.itemRef) + 1) + ': ' + (ctx.description || 'no description') +
-    ' - currently ' + (ctx.currentMir ? 'MIR ' + ctx.currentMir : 'not matched') +
+    ' - currently ' + (ctx.currentMir ? mirLabel(ctx.currentMir) : 'not matched') +
     (ctx.manuallyPinned ? ' (set by hand)' : '');
   document.getElementById('mirPickerStatus').textContent = '';
   document.getElementById('mirPickerStatus').className = '';
+  const choice = document.getElementById('mirPickerChoice');
+  if (choice) { choice.hidden = true; choice.textContent = ''; }
   const search = document.getElementById('mirPickerSearch');
   search.value = '';
   loadMirCandidates('');

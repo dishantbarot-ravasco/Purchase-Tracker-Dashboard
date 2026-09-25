@@ -230,6 +230,12 @@ class ManualMirMatch(models.Model):
         help_text="MIR document number to match this line against. Blank means 'leave this line unmatched'.",
     )
     reason = models.TextField(blank=True)
+    # "Keep both" (2026-09-25, project owner): the pin uses the document
+    # without taking it from the line that already holds it, and every line
+    # holding one receipt counts its share by ordered quantity. False is
+    # "move it here" - the row is this line's alone, and whoever held it is
+    # re-matched. See matching_core.run_full_match()'s shared pins.
+    shared = models.BooleanField(default=False)
 
     created_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="manual_mir_matches")
     created_by_email = models.CharField(max_length=255, blank=True)

@@ -218,11 +218,26 @@ function reconAnyFlag(qtyDiffPct, rateDiffPct, uomMismatch, isFlagged) {
   return qty || rate || !!uomMismatch || !!isFlagged;
 }
 
+// A line counting only part of one MIR receipt. BOE settlement splits a
+// receipt across its Bill of Entry's lines (tier 'boe_number'); a "Keep
+// both" manual match splits one across whichever lines hold it. Both by
+// ordered quantity.
+function receiptShareNote(share, tier) {
+  if (share == null) return '';
+  const pct = (share * 100).toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '%';
+  return tier === 'boe_number'
+    ? 'One MIR receipt covers several lines of this Bill of Entry; this line counts ' + pct +
+      ' of it (its share of the BOE quantity), and the rate is checked at the blended rate of the BOE.'
+    : 'This MIR receipt is shared with another line (a "Keep both" manual match); this line counts ' + pct +
+      ' of it, its share of the ordered quantity.';
+}
+
 function domesticReconLine(it, index, po, plantKey) {
   return {
     index, description: it.description, uom: it.uom,
     chips: [{ label: 'Delivery', value: it.deliveryDate ? formatDateIN(it.deliveryDate) : '' }],
     ordered: { qty: it.qty, rate: it.netPrice, value: it.netValue != null ? it.netValue : (it.qty != null && it.netPrice != null ? it.qty * it.netPrice : null) },
+    notes: [receiptShareNote(it.receiptShare, it.matchTier)].filter(Boolean),
     received: it.received, mirs: it.matchedMirs, matched: !!it.matched,
     tier: it.matchTier, score: it.matchScore, pinned: !!it.manuallyPinned, itemRef: it.itemRef,
     currentMirNo: it.matchedMirNo, uomMismatch: !!it.uomMismatch,
@@ -272,11 +287,7 @@ function importReconLine(it, index, po, plantKey) {
     // rate, which this line's own figure is not - the note below says so.
     landed: m.landedRateInr != null && m.receiptShare == null ? { ordered: m.landedRateInr, received: m.receivedFinalRate } : null,
     notes: [
-      m.receiptShare != null
-        ? 'One MIR receipt covers several lines of this Bill of Entry; this line counts ' +
-          (m.receiptShare * 100).toLocaleString('en-IN', { maximumFractionDigits: 1 }) +
-          '% of it (its share of the BOE quantity), and the rate is checked at the blended rate of the BOE.'
-        : '',
+      receiptShareNote(m.receiptShare, m.tier),
       m.exchangeRateMismatched && m.mirExchangeRate != null
         ? 'Exchange rate differs: MIR works at ' + m.mirExchangeRate.toFixed(2) + ', the Imports CSV records ' +
           it.exchangeRate + '. The price agrees at the rate MIR uses - correct the exchange rate on the CSV.'

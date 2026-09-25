@@ -396,6 +396,11 @@ class RTPAchhadPOMirMatch(models.Model):
     # rather than preserved like dismissed_* - it is derived from whether a
     # pin currently exists, so removing the pin must clear the badge.
     manually_pinned = models.BooleanField(default=False)
+    # Set when a "Keep both" pin shares this line's MIR row with another
+    # line: each counts the row's qty and value times its share of the
+    # holders' ordered quantity. NULL for an ordinary match. Same meaning as
+    # the import match's receipt_share; read by _domestic_base._counted_mirs().
+    receipt_share = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)
