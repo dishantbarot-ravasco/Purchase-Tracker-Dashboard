@@ -835,40 +835,25 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 
 .mat-toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
 .mat-search { flex:1; min-width:220px; padding:9px 13px; border:1px solid var(--border-strong); border-radius:9px; font-size:13px; }
-/* Raw Material Analysis KPI block - three titled groups (In the warehouse /
-   Still to come / Needs checking), see materials.js's kpiGroups. Cards keep
-   .kpi-card for the shared border, hover, focus ring and tooltip anchoring;
-   .mat-kpi lays out label -> value -> sub-line. Side by side from 1360px, one
-   group per row below that, two cards per row on a phone. */
-.mat-kpi-groups { display:grid; grid-template-columns: 3fr 2fr 3fr; gap:14px 18px; margin-bottom:20px; }
-.mat-kpi-group { min-width:0; }
-.mat-kpi-group-title { margin:0 0 8px 2px; font-size:12px; font-weight:700; color:var(--slate-soft); letter-spacing:.02em; }
-.mat-kpi-cards { display:grid; gap:12px; }
-.mat-kpi-cards-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.mat-kpi-cards-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.kpi-card.mat-kpi { display:flex; flex-direction:column; gap:6px; min-width:0; padding:14px 16px; border-left-width:4px; }
-.mat-kpi-label { display:flex; align-items:flex-start; gap:2px; font-size:12.5px; font-weight:600; line-height:1.3; color:var(--slate-soft); }
-.mat-kpi-flag { flex:none; margin-left:auto; opacity:.9; }
-.mat-kpi-value { display:flex; align-items:baseline; gap:6px; min-width:0; }
-.kpi-card.mat-kpi .val { font-size:24px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.mat-kpi-unit { font-size:12px; font-weight:700; color:var(--slate-soft); }
-.mat-kpi-sub { font-size:11.5px; line-height:1.35; color:var(--slate-soft); }
-/* An alert card at zero: nothing to act on, so no red wash - a green edge
-   says "checked, all clear" instead. */
-.kpi-card.mat-kpi.is-clear { background:var(--card); border-left-color:var(--dash-green); }
-.kpi-card.mat-kpi.is-clear .val { color:var(--navy); }
-/* Side by side, a card is ~170px and a label with its icons can wrap - two
-   lines are reserved so every value in the row sits on one baseline. */
-@media (min-width: 1360px) { .mat-kpi-label { min-height:2.6em; } }
-@media (max-width: 1359px) {
-  .mat-kpi-groups { grid-template-columns: 3fr 2fr; }
-  .mat-kpi-group:last-child { grid-column: 1 / -1; }
+/* Raw Material Analysis KPI row - the same .kpi-grid/.kpi-card as Domestic
+   Purchase Orders (materials.js's cardDef), laid out as an even grid instead
+   of 190px flex cards: eight across on a wide screen, four on a laptop, two
+   on a phone, so the row never wraps 5 + 3. The figure scales with the
+   viewport (capped at the PO row's 28px) so "Rs 64.86 Cr" or "4,889 MT" fits
+   a card an eighth of the row wide instead of being clipped. */
+.kpi-grid.mat-kpi-grid { display:grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap:14px; }
+.mat-kpi-grid .kpi-card { min-width:0; }
+.mat-kpi-grid .kpi-card .val { font-size: clamp(20px, 1.5vw, 28px); }
+.mat-kpi-valrow { display:flex; align-items:baseline; gap:5px; white-space:nowrap; padding-right:18px; }
+.mat-kpi-unit { font-size:12px; font-weight:800; color:var(--slate-soft); }
+@media (max-width: 1499px) {
+  .kpi-grid.mat-kpi-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .mat-kpi-grid .kpi-card .val { font-size:26px; }
 }
-@media (max-width: 899px) { .mat-kpi-groups { grid-template-columns: 1fr; } }
 @media (max-width: 640px) {
-  .mat-kpi-cards-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .mat-kpi-cards-3 > :last-child { grid-column: 1 / -1; }
-  .kpi-card.mat-kpi .val { font-size:21px; }
+  .kpi-grid.mat-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px; }
+  .mat-kpi-grid .kpi-card { padding:14px; }
+  .mat-kpi-grid .kpi-card .val { font-size:20px; }
 }
 
 .mini-stepper { display:flex; align-items:center; gap:0; }

@@ -683,24 +683,26 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   band other than `none`, or `daysToMsl === 0`), `daysLeftCellHtml()` (confidence dot; negative
   stock shows "Stock < 0" with a sheet-error tooltip, checked before the band; band `none` shows "-";
   a watched material that did not move shows "No movement").
-- `renderMaterialsView()` - 8 KPI cards in three titled groups (`kpiGroups`: In the warehouse -
-  `total`, `value`, `lowstock`; Still to come - `transit`, `qtyordered`; Needs checking - `qtydisc`,
-  `ratedisc`, `flags`), each a label, a count-up value (plus a `unit` for `qtyordered`) and a
-  one-line sub-figure. `total` and `value` clear; `transit` and `qtyordered` share `filterKey:
-  'openpo'` and light up together. An alert card at zero gets `is-clear` (no red wash). **The two
-  open-order totals are taken over DISTINCT open lines** (deduped on the line object), because the
-  fuzzy link can attach one line to several materials ("SBR 1502" links to SBR 1712 too) and
-  summing per material counted it once per material. `qtyordered` headlines KG and lists other
-  units under it. Layout lives in `style.css`'s `.mat-kpi-*` rules (groups side by side from
-  1360px, 3fr/2fr with Needs checking below down to 900px, stacked under that). Then
+- `renderMaterialsView()` - 8 KPI cards in Domestic Purchase Orders' own `.kpi-card` markup (flag
+  icon, count-up value, uppercase label + info tooltip): `total`, `value`, `transit`, `qtyordered`,
+  `qtydisc`, `ratedisc`, `lowstock`, `flags`. The breakdowns behind each figure (stock-sheet vs
+  order-only counts, open line count, over/short split, other units) are in the tooltips.
+  `total` and `value` clear; `transit` and `qtyordered` share `filterKey: 'openpo'` and light up
+  together. **The two open-order totals are taken over DISTINCT open lines** (deduped on the line
+  object), because the fuzzy link can attach one line to several materials ("SBR 1502" links to
+  SBR 1712 too) and summing per material counted it once per material. `qtyordered` headlines
+  weight, in MT from 10,000 KG (so it fits), with a `.mat-kpi-unit` beside the value. The row is
+  `.kpi-grid.mat-kpi-grid` in `style.css`: an even grid, 8 across from 1500px, 4 below, 2 on a
+  phone, with the value size scaling so nothing clips. Then
   Category/Sub Category/Flags selects, the drill-down
   chart (stock rows only), then `#matListRegion` (`MAT_LIST_CTX`, `materialsListRegionHtml()` sorted
   latest first by `materialLatestDate()`, `renderMaterialsListRegion()`, `wireMaterialsListRegion()`;
   `status`/`category`/`subCategory` header selects take the full render, `material` text and
   `progress` stay in the region).
 - `renderMaterialsChart()` / `wireMaterialsChart()` - Inventory Value by Category -> Subcategory ->
-  Material (top 12 plus "Other", breadcrumb, height via `data-height-px`); a material bar opens
-  `openMaterialModal()`.
+  Material (top 5 by value via `materialsChartBars()`, no "Other" bar - a note under the chart says
+  how many more there are and what they hold; breadcrumb, height via `data-height-px`); a material
+  bar opens `openMaterialModal()`.
 
 ### frontend/js/material-modal.js
 
