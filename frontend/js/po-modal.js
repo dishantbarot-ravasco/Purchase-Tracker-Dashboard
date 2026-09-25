@@ -125,10 +125,13 @@ async function openPoModal(compositeKey) {
   // Match Accuracy Programme fix 3.G: arithmetic-mismatch flags
   // (dataQualityFlagHtml, flags.js) alongside the existing remarks-derived
   // categories (poFlagHtml) - a real source-sheet typo, not a matching
-  // artifact, so it's shown even when po._categories is empty.
+  // artifact, so it's shown even when there are no categories. Lists
+  // _allCategories, not _categories: a dismissed flag must stay listed here
+  // (struck through, with "reinstate") even though it no longer counts.
   const arithmeticFlagsHtml = (po.dataQualityFlags || []).map(dataQualityFlagHtml).join('');
-  const catsHtml = (po._categories || []).length || arithmeticFlagsHtml
-    ? po._categories.map(c => poFlagHtml(c, po, plantKey)).join('') + arithmeticFlagsHtml
+  const allCats = po._allCategories || po._categories || [];
+  const catsHtml = allCats.length || arithmeticFlagsHtml
+    ? allCats.map(c => poFlagHtml(c, po, plantKey)).join('') + arithmeticFlagsHtml
     : '<div class="empty-note-sm">No data quality flags on this PO.</div>';
   // "revert" puts the old value back (shared.js's wireRevertLinks()). Shown
   // only to someone who could have made the correction in the first place,

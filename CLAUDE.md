@@ -141,8 +141,12 @@ Read the linked section before breaking any of these. Each is there because it w
   and date gates; evidence tiers dominate ranking and `MATCH_THRESHOLD` does not gate matches.
   [PO ↔ MIR](docs/matching-engine.md#po--mir)
 - Value comparisons are pre-tax (MIR `net` at HRS/Achhad, `taxable_value` at Vapi); imports compare
-  `net_value x exchange_rate`, never the duty-inclusive `total_inclusive_value`.
-  [PO ↔ MIR](docs/matching-engine.md#po--mir)
+  `net_value x exchange_rate`, never the duty-inclusive `total_inclusive_value`. Import *rate* is the
+  exception: a cleared line also agrees on landed value / BOE qty against MIR final value / qty, per
+  unit, never as totals. Import receipts pair by Bill of Entry number first (MIR `invoice_no`), with
+  one corroborating vote, and a BOE shared across different Bills of Lading is not trusted.
+  [PO ↔ MIR](docs/matching-engine.md#po--mir),
+  [import rate](docs/matching-engine.md#import-po--mir-convert-currency-first)
 - Receipts citing exactly one known PO all belong to it; every counted row is saved in
   `group_entries`, and readers must read it.
   [one PO, many receipts](docs/matching-engine.md#one-po-many-receipts---the-po-number-is-the-join-key-2026-09-24)
@@ -201,6 +205,7 @@ Read the linked section before breaking any of these. Each is there because it w
 - Refresh paths call `clearDataCaches()` and release `MANUAL_SYNC_RUNNING` on every exit.
   [freshness watcher](docs/frontend.md#the-dashboard-keeps-itself-fresh---mainjss-freshness-watcher)
 - Deep-link params are attacker-supplied: whitelist, render via `textContent`, consume in `finally`.
+  `?po=` is Domestic unless `kind=import` - one PO number can be both.
   [deep links](docs/frontend.md#search-po-deep-links-into-the-dashboard-rather-than-)
 - Don't merge `brand.css` and `style.css`, and never define the same custom property in both.
   [CSS collisions](docs/frontend.md#css-custom-property-collisions)
@@ -281,6 +286,7 @@ Read the linked section before breaking any of these. Each is there because it w
 | Full-table SELECTs inside per-row loops → quadratic matching | [matching](docs/matching-engine.md#performance-the-engine-was-quadratic) |
 | `_assign_pairs()` never terminating on a positive-gain cycle (twice) | [matching](docs/matching-engine.md#_assign_pairs-needs-both-its-termination-guards) |
 | `legacy_po_matches()` running 844k times where it could never match | [matching](docs/matching-engine.md#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason) |
+| The contradiction gate re-scanning every known PO per line item (26.8M calls), pushing a Vapi pin's synchronous re-match past gunicorn's 30 s timeout - an HTML 502 after the pin had committed | [matching](docs/matching-engine.md#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason) |
 | Renaming a PO upstream forking it into two permanent rows; orphans reported only to stdout | [data-sync](docs/data-sync.md#purchase-orders-are-retired-not-deleted---and-until-2026-09-18-they-were-neither) |
 | `fail_silently=True` making every sender's `except` unreachable | [email](docs/auth-security-email.md#outgoing-email) |
 | Testing a send failure by monkeypatching `send_mail`, which passes with the bug present | [email](docs/auth-security-email.md#outgoing-email) |
@@ -299,7 +305,10 @@ Read the linked section before breaking any of these. Each is there because it w
 | A licence number with and without its leading zero reading as two authorisations; unguarded multi-value cell splits; Balance = Sanctioned read as "nothing spent" | [api](docs/api-and-features.md#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
 | A `<input type="number">` reporting `''` for garbage, saving a NULL over a real figure | [api](docs/api-and-features.md#validation-runs-before-the-write-not-after) |
 | A newest-first pin order computed then thrown away; one PO number existing as Domestic and Import so a pin hits the wrong table (the domestic endpoint lacked `po_kind` until 2026-09-24) | [api](docs/api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21) |
+| Import customs clearance counted as delivery, so a cleared PO never received at the plant could never be Overdue; the Import status cards' tooltips describing rules the code did not apply | [matching](docs/matching-engine.md#appsservicesimport_flagspy) |
+| A dismissed PO-level flag still counting on the KPI cards (only the modal honoured it); the status doughnut's Overdue slice filtering to the card's larger overlay set | [api](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag) |
 | A `critical` category firing on every not-yet-due order, red on nearly every row | [api](docs/api-and-features.md#row-flags-are-four-buckets-one-icon-each-2026-09-22) |
+| Raw Material's in-transit KPIs summing per material (a fuzzy-linked PO line counted once per material it touched), counting the full ordered qty of a part-delivered line, and adding KG to metres | [frontend](docs/frontend.md#frontendjsmaterialsjs) |
 | Stale modal data from a fast row-switch | [frontend](docs/frontend.md#modals-one-shared-shell-and-the-stale-response-guard) |
 | `[hidden]` losing a specificity tie to a `display` rule (now a global `[hidden]{display:none !important}` in `brand.css`) | [frontend](docs/frontend.md#other-traps) |
 | Duplicate CSS custom properties across two stylesheets | [frontend](docs/frontend.md#css-custom-property-collisions) |

@@ -47,6 +47,20 @@ function materialRateFieldName(plantKey) {
  * to /login.html on a 401 (expired/missing session cookie) instead of
  * returning it to the caller, since every caller would otherwise have to
  * handle that case identically anyway. */
+/** The error for a response that is not JSON. A 502/504 is the proxy giving
+ * up on a request gunicorn killed at its worker timeout, and the view may
+ * have committed part of its work first (a manual MIR pin is saved before
+ * its re-match runs), so "try again" alone would hide that the change may
+ * already be in. */
+function unexpectedResponseError(status) {
+  const timedOut = status === 502 || status === 504;
+  const err = new Error(timedOut
+    ? 'The server took too long to respond. The change may still have been saved - refresh the page to check before trying again.'
+    : 'The server sent an unexpected response. Please try again, or contact IT if this keeps happening.');
+  err.status = status;
+  return err;
+}
+
 async function apiForPlant(plantKey, path, opts) {
   opts = opts || {};
   const res = await authFetch(PLANTS[plantKey].apiPrefix + path, opts);
@@ -69,15 +83,39 @@ async function apiForPlant(plantKey, path, opts) {
   try {
     data = await res.json();
   } catch (e) {
-    const err = new Error('The server sent an unexpected response. Please try again, or contact IT if this keeps happening.');
-    err.status = res.status;
-    throw err;
+    throw unexpectedResponseError(res.status);
   }
   if (!res.ok) {
     const err = new Error(data.error || data.detail || 'Something went wrong. Please try again.');
     // Exposed so a caller can tell apart e.g. a 409 ("already in progress",
     // not really an error - see main.js's sync-trigger handling) from a
     // real failure, without parsing message text.
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+// GET /api/imports/... isn't under any single plant's apiPrefix (it's the
+// combined cross-plant router, not "hrs"/"achhad"/"vapi" prefixed) - a
+// small direct fetch wrapper instead of routing it through apiForPlant()
+// and picking an arbitrary plant key, same 401-redirect/error-shape
+// contract as apiForPlant() in shared.js.
+async function apiImports(path, opts) {
+  const res = await authFetch('/api/imports' + path, opts || {});
+  if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Not authenticated'); }
+  // See shared.js's apiForPlant() for why res.json() is guarded - same fix
+  // applied here for consistency (this is the imports-router equivalent of
+  // that same fetch wrapper). Lives here, not in main.js, because Search PO
+  // (search-po-page.js) searches import orders too and loads no main.js.
+  let data;
+  try {
+    data = await res.json();
+  } catch (e) {
+    throw unexpectedResponseError(res.status);
+  }
+  if (!res.ok) {
+    const err = new Error(data.error || data.detail || 'Something went wrong. Please try again.');
     err.status = res.status;
     throw err;
   }
@@ -1033,9 +1071,7 @@ async function savePoField(fieldsUrl, itemId, field, value, reason) {
   try {
     data = await res.json();
   } catch (e) {
-    const err = new Error('The server sent an unexpected response. Please try again, or contact IT if this keeps happening.');
-    err.status = res.status;
-    throw err;
+    throw unexpectedResponseError(res.status);
   }
   if (!res.ok) {
     const err = new Error(data.error || data.detail || 'Something went wrong. Please try again.');

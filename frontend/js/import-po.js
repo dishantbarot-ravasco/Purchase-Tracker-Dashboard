@@ -31,9 +31,10 @@ function shipmentStepperHtml(po) {
 // render in renderImportPoList()), not the raw F1-F7 codes.
 //
 // Import is the one view that can report BOTH partial delivery and "on
-// order" at once: `partialDelivery` is per-item (import_flags.py's
-// partial_delivery()) while `deliveryDateStatus` is a date comparison, so a
-// PO with one item landed and another still due is both. rowFlagsHtml()
+// order" at once: `partialDelivery` reads each item's MIR receipts
+// (import_flags.py's partial_delivery()) while `deliveryDateStatus` is a
+// date comparison on the items not yet received, so a PO with one item
+// landed and another still due is both. rowFlagsHtml()
 // resolves that in favour of partial, the more specific fact.
 function importRowFlags(po) {
   return rowFlagsHtml({
@@ -68,9 +69,14 @@ const IMPORT_FLAG_LABELS = {
 // (qty PO-vs-BOE, qty BOE-vs-MIR, rate BOE-vs-MIR); info = the F1-F7 data
 // quality flags, deduped by code (a PO can carry the same code on more than
 // one line item).
+//
+// A flag an editor dismissed on the PO's Flags & Corrections tab is left out
+// (poFlagDismissed()), so it stops counting on the KPI row and in the row
+// flags. An F1-F7 code is left out only once every flag of that code on the
+// PO is dismissed - each is dismissed per line item (`code:item_id`).
 function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
   const cats = [];
-  if (po.qtyDiscrepancy) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical', key: 'qtydisc' });
+  if (poQtyDiscPo(po)) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical', key: 'qtydisc' });
   if (poQtyDiscMir(po)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical', key: 'qtydiscmir' });
   if (poRateDiscMir(po)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical', key: 'ratedisc' });
   // 2026-09-08 (Data Quality Flags clarity pass, extended to Imports) - same
@@ -85,19 +91,33 @@ function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
   // (2026-09-10 fix) - same reasoning as flags.js's computePoFlags()'s own
   // comment.
   const live = i => i.mirMatch && !i.mirMatch.dismissedByOverride;
-  if (items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
+  // Not on an order that is not due yet - see importOrderNotDueYet().
+  if (!importOrderNotDueYet(po) && items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
   if (items.some(i => live(i) && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.finalValueMismatched)) cats.push({ label: 'Final Amount Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.uomMismatch)) cats.push({ label: 'UOM Mismatch in MIR', severity: 'info' });
+  // A rate gap that is really a different exchange rate (2026-09-25): the
+  // matcher cleared rateMismatched and set exchangeRateMismatched instead -
+  // see matching_core._exchange_rate_explains(). Info, not critical: the
+  // CSV's exchange rate needs correcting, the vendor's price does not.
+  if (items.some(i => live(i) && i.mirMatch.exchangeRateMismatched)) cats.push({ label: 'Exchange Rate Differs from MIR', severity: 'info' });
+  const liveCats = cats.filter(c => !poFlagDismissed(po, c.label));
   const seenCodes = new Set();
   (po.dataQualityFlags || []).forEach(f => {
-    if (seenCodes.has(f.code)) return;
+    if (seenCodes.has(f.code) || poFlagDismissed(po, f.code + ':' + (f.item_id || ''))) return;
     seenCodes.add(f.code);
-    cats.push({ label: IMPORT_FLAG_LABELS[f.code] || (f.code + ': ' + f.message), severity: 'info', key: 'flags' });
+    liveCats.push({ label: IMPORT_FLAG_LABELS[f.code] || (f.code + ': ' + f.message), severity: 'info', key: 'flags' });
   });
-  return cats;
+  return liveCats;
+}
+
+// PO-level "Qty Mismatch (PO vs BOE)", unless an editor dismissed it. The
+// BOE-vs-MIR and rate checks below it have the same dismissal rule; all
+// three feed the KPI cards, the table filter and the row flags.
+function poQtyDiscPo(po) {
+  return !!po.qtyDiscrepancy && !poFlagDismissed(po, 'Qty Mismatch (PO vs BOE)');
 }
 
 // BL Number cell content, shared by the "View all" table and the top5 grid -
@@ -142,16 +162,17 @@ function renderImportPoList(el) {
   };
   let filtered = all.filter(inRange);
 
-  // A PO "has" a MIR condition if ANY of its line items does - same
-  // any-item-triggers-the-PO-level-flag convention Domestic's own
-  // po_has_qty_discrepancy() uses server-side; there's no server-computed
-  // PO-level MIR aggregate for imports (only per-item mirMatch), so this is
-  // done client-side here instead.
-  const poInwarded = p => (p.items || []).some(i => i.mirMatch);
-  // Excludes a dismissed match (2026-09-10 fix) - same reasoning as
-  // flags.js's computePoFlags()/importCriticalFlagsFor() own comment.
-  const poQtyDiscMir = p => (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.qtyDiffPct > 0);
-  const poRateDiscMir = p => (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.rateDiffPct > 0);
+  // Material Inwarded is server-computed (import_flags.material_inwarded()):
+  // every line fully received in MIR, the same rule as Domestic's Received.
+  const poInwarded = p => !!p.materialInwarded;
+  // A PO "has" a MIR mismatch if ANY of its line items does. Excludes a
+  // dismissed match (2026-09-10 fix) and a PO-level dismissal of the flag
+  // itself (poFlagDismissed()) - same reasoning as flags.js's
+  // computePoFlags().
+  const poQtyDiscMir = p => !poFlagDismissed(p, 'Qty Mismatch in MIR (BOE vs MIR)') &&
+    (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.qtyDiffPct > 0);
+  const poRateDiscMir = p => !poFlagDismissed(p, 'Rate Mismatch in MIR (BOE vs MIR)') &&
+    (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.rateDiffPct > 0);
   filtered.forEach(po => {
     po._categories = importCategoriesFor(po, poQtyDiscMir, poRateDiscMir);
     // Same _qtyFlag/_rateFlag/_maxDiffPct shape as Domestic's computePoFlags()
@@ -160,7 +181,7 @@ function renderImportPoList(el) {
     // magnitude available client-side; the PO-vs-BOE qty flag has no
     // equivalent % here) so the row tint reflects the same discrepancy the
     // "Qty/Rate Discrepancies (BOE vs MIR)" KPI cards already count.
-    po._qtyFlag = po.qtyDiscrepancy || poQtyDiscMir(po);
+    po._qtyFlag = poQtyDiscPo(po) || poQtyDiscMir(po);
     po._rateFlag = poRateDiscMir(po);
     const itemDiffs = (po.items || []).flatMap(i => i.mirMatch ? [i.mirMatch.qtyDiffPct, i.mirMatch.rateDiffPct, i.mirMatch.valueDiffPct] : []).filter(v => v != null);
     po._maxDiffPct = itemDiffs.length ? Math.max(...itemDiffs) : 0;
@@ -199,7 +220,7 @@ function renderImportPoList(el) {
   const counts = {
     inwarded: filtered.filter(poInwarded).length,
     partial: filtered.filter(p => p.partialDelivery).length,
-    qtyDisc: filtered.filter(p => p.qtyDiscrepancy).length,
+    qtyDisc: filtered.filter(poQtyDiscPo).length,
     qtyDiscMir: filtered.filter(poQtyDiscMir).length,
     rateDiscMir: filtered.filter(poRateDiscMir).length,
     overdue: filtered.filter(p => p.deliveryDateStatus === 'Overdue').length,
@@ -242,14 +263,14 @@ function renderImportPoList(el) {
   // shipment-stage trio Domestic has no equivalent of.
   const cardDef = [
     { key: 'total', cls: '', label: 'Total Import POs', val: total, tip: 'All import purchase orders in the selected date range.' },
-    { key: 'inwarded', cls: 'received', label: 'Material Inwarded', val: counts.inwarded, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this import PO has a matched MIR entry.' },
-    { key: 'partial', cls: 'partial', label: 'Partial Delivered', val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Some, but not all, line items received against this import PO.' },
+    { key: 'inwarded', cls: 'received', label: 'Material Inwarded', val: counts.inwarded, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this import PO has fully arrived - matched to a MIR entry, and not short of the quantity cleared. An over-delivered line still counts; a short one shows as Partial Delivered instead. Same rule as Domestic Purchases.' },
+    { key: 'partial', cls: 'partial', label: 'Partial Delivered', val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Something has arrived in MIR against this import PO but the order is not complete - a line item has no MIR entry yet, or one arrived short. A Bill of Entry quantity below the PO quantity is counted under Qty Mismatches (PO vs BOE), not here.' },
     { key: 'qtydisc', cls: 'critical', label: 'Qty Mismatches (PO vs BOE)', val: counts.qtyDisc, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity ordered differs from the quantity cleared on the Bill of Entry.' },
     { key: 'qtydiscmir', cls: 'critical', label: 'Qty Mismatches in MIR (BOE vs MIR)', val: counts.qtyDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: Bill of Entry quantity differs from the matched MIR entry\'s quantity.' },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches in MIR', val: counts.rateDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: landed rate (converted to INR) differs from the matched MIR entry\'s rate.' },
-    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the PO is still not fully received.' },
-    { key: 'onorder', cls: 'pending', label: 'Pending Deliveries / On Order', val: counts.onOrder, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully matched.' },
-    { key: 'unknowndate', cls: 'unknown', label: 'Delivery Date Unknown', val: counts.unknownDate, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file, so overdue/pending status can\'t be determined.' },
+    { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches in MIR', val: counts.rateDiscMir, flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: the MIR rate agrees with neither the PO rate converted to INR (before duty) nor, once cleared, the landed rate (landed value per BOE unit, duty and IGST included) against MIR\'s final value per unit. Customs duty alone therefore no longer flags; what remains is usually an exchange-rate difference or a real price difference.' },
+    { key: 'overdue', cls: 'overdue', label: 'Overdue', val: counts.overdue, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and a line item is still not fully received in MIR. Customs clearance alone does not count as delivered - a cleared shipment with no MIR entry is still overdue.' },
+    { key: 'onorder', cls: 'pending', label: 'Pending Deliveries / On Order', val: counts.onOrder, flag: KPI_FLAG_COLORS.pending, tip: 'Not yet due, and not yet fully received in MIR.' },
+    { key: 'unknowndate', cls: 'unknown', label: 'Delivery Date Unknown', val: counts.unknownDate, flag: KPI_FLAG_COLORS.unknown, tip: 'A line item not yet fully received in MIR has no delivery date on file, so it can\'t be called overdue or on order.' },
     { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: counts.flags, flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on this import PO - quantity/rate mismatch (PO vs BOE or BOE vs MIR), PO not found in MIR, tax type/net/taxable/final value mismatch, UOM mismatch, or a BOE/customs paperwork flag (F1-F7). Use "Filter by Flags" below to narrow to one specific issue.' },
     { key: 'placed', cls: 'pending', label: 'Awaiting Bill of Lading', val: counts.placed, flag: KPI_FLAG_COLORS.pending, tip: 'PO placed - shipment not yet on a Bill of Lading.' },
     { key: 'shipped', cls: 'partial', label: 'In Transit', val: counts.shipped, flag: KPI_FLAG_COLORS.partial, tip: 'Bill of Lading issued - not yet cleared through customs.' },
@@ -554,7 +575,7 @@ function importListRegionHtml() {
   const sf = state.importStatusFilter;
   if (sf === 'inwarded') tableRecs = filtered.filter(poInwarded);
   else if (sf === 'partial') tableRecs = filtered.filter(p => p.partialDelivery);
-  else if (sf === 'qtydisc') tableRecs = filtered.filter(p => p.qtyDiscrepancy);
+  else if (sf === 'qtydisc') tableRecs = filtered.filter(poQtyDiscPo);
   else if (sf === 'qtydiscmir') tableRecs = filtered.filter(poQtyDiscMir);
   else if (sf === 'ratedisc') tableRecs = filtered.filter(poRateDiscMir);
   else if (sf === 'critical') tableRecs = filtered.filter(p => p._qtyFlag || p._rateFlag);

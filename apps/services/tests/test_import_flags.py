@@ -79,47 +79,105 @@ class TestQtyDiscrepancy:
 
 # ── Delivery-date status (On order / Overdue / Delivered / Unknown) ────────────
 
+def mir_match(qty_diff_pct=Decimal("0"), qty_over_delivered=None, dismissed=False):
+    """Stand-in for an Import PO<->MIR match row - only the attributes
+    import_flags.py reads off `item.mir_match`."""
+    return SimpleNamespace(qty_diff_pct=qty_diff_pct, qty_over_delivered=qty_over_delivered,
+                           dismissed_by_override=dismissed)
+
+
 class TestDeliveryDateStatus:
-    def test_delivered_once_cleared_regardless_of_date(self):
-        """A BOE-cleared item counts as Delivered even if its own delivery
-        date is still in the future - clearance is the stronger signal."""
-        i = item(boe_number="BOE1", delivery_date=TODAY + datetime.timedelta(days=30))
+    def test_delivered_once_fully_received_in_mir_regardless_of_date(self):
+        """A line fully received in MIR is Delivered even if its own delivery
+        date is still in the future."""
+        i = item(boe_number="BOE1", delivery_date=TODAY + datetime.timedelta(days=30), mir_match=mir_match())
         assert f.delivery_date_status(i, TODAY) == f.STATUS_DELIVERED
+
+    def test_cleared_but_not_in_mir_is_overdue_once_past_due(self):
+        """Customs clearance is not delivery. A cleared line with no MIR
+        receipt, past its date, is Overdue - the old rule called it
+        Delivered, so 15 of Vapi's 38 cleared POs could never read overdue."""
+        i = item(boe_number="BOE1", delivery_date=TODAY - datetime.timedelta(days=1))
+        assert f.delivery_date_status(i, TODAY) == f.STATUS_OVERDUE
+
+    def test_short_receipt_is_not_delivered(self):
+        """A line received short in MIR is still outstanding."""
+        i = item(delivery_date=TODAY - datetime.timedelta(days=1),
+                 mir_match=mir_match(qty_diff_pct=Decimal("20"), qty_over_delivered=False))
+        assert f.delivery_date_status(i, TODAY) == f.STATUS_OVERDUE
+
+    def test_over_receipt_is_delivered(self):
+        """Over-delivery still means the material arrived."""
+        i = item(delivery_date=TODAY - datetime.timedelta(days=1),
+                 mir_match=mir_match(qty_diff_pct=Decimal("20"), qty_over_delivered=True))
+        assert f.delivery_date_status(i, TODAY) == f.STATUS_DELIVERED
+
+    def test_dismissed_match_is_not_a_receipt(self):
+        """A reviewer-dismissed pairing is wrong, not an arrival."""
+        i = item(delivery_date=TODAY - datetime.timedelta(days=1), mir_match=mir_match(dismissed=True))
+        assert f.delivery_date_status(i, TODAY) == f.STATUS_OVERDUE
 
     def test_unknown_when_no_delivery_date(self):
         """No parseable delivery date at all yields Unknown, not a guess."""
         assert f.delivery_date_status(item(delivery_date=None), TODAY) == f.STATUS_UNKNOWN
 
-    def test_overdue_when_date_in_past_and_not_cleared(self):
-        """A delivery date already in the past, with no BOE clearance, is Overdue."""
+    def test_overdue_when_date_in_past_and_not_received(self):
+        """A delivery date already in the past, with no MIR receipt, is Overdue."""
         i = item(delivery_date=TODAY - datetime.timedelta(days=1))
         assert f.delivery_date_status(i, TODAY) == f.STATUS_OVERDUE
 
-    def test_on_order_when_date_today_or_future_and_not_cleared(self):
-        """A delivery date today or later, not yet cleared, is still On Order."""
+    def test_on_order_when_date_today_or_future_and_not_received(self):
+        """A delivery date today or later, not yet received, is still On Order."""
         i = item(delivery_date=TODAY)
         assert f.delivery_date_status(i, TODAY) == f.STATUS_ON_ORDER
 
 
-# ── Partial-delivery detection across a whole PO ────────────────────────────────
+# ── Partial delivery and Material Inwarded across a whole PO (MIR-based) ───────
 
 class TestPartialDelivery:
-    def test_true_when_boe_qty_short_of_po_qty(self):
-        """Any line item whose BOE-cleared qty falls short of its ordered qty
-        marks the whole PO as a partial delivery."""
-        items = [item(qty_as_per_po=Decimal("100"), qty_as_per_boe=Decimal("80"))]
+    def test_true_when_one_line_received_and_another_not(self):
+        items = [item(mir_match=mir_match()), item()]
         assert f.partial_delivery(items) is True
 
-    def test_false_when_boe_qty_meets_or_exceeds_po_qty(self):
-        """BOE qty meeting (or exceeding) the ordered qty is a complete delivery."""
-        items = [item(qty_as_per_po=Decimal("100"), qty_as_per_boe=Decimal("100"))]
+    def test_true_when_the_only_line_arrived_short(self):
+        items = [item(mir_match=mir_match(qty_diff_pct=Decimal("10"), qty_over_delivered=False))]
+        assert f.partial_delivery(items) is True
+
+    def test_false_when_every_line_fully_received(self):
+        items = [item(mir_match=mir_match()), item(mir_match=mir_match(qty_diff_pct=Decimal("5"), qty_over_delivered=True))]
         assert f.partial_delivery(items) is False
 
-    def test_false_when_boe_qty_not_yet_present(self):
-        """No BOE qty yet means nothing has been confirmed short - not yet
-        classifiable as a partial delivery either."""
-        items = [item(qty_as_per_po=Decimal("100"), qty_as_per_boe=None)]
+    def test_false_when_boe_short_but_nothing_in_mir(self):
+        """A BOE quantity below the PO quantity is a partial SHIPMENT, which
+        the PO-vs-BOE qty card already counts - not a partial delivery. The
+        old rule returned True here."""
+        items = [item(qty_as_per_po=Decimal("100"), qty_as_per_boe=Decimal("80"))]
         assert f.partial_delivery(items) is False
+
+    def test_false_when_only_receipt_is_dismissed(self):
+        items = [item(mir_match=mir_match(dismissed=True)), item()]
+        assert f.partial_delivery(items) is False
+
+
+class TestMaterialInwarded:
+    def test_true_only_when_every_line_fully_received(self):
+        assert f.material_inwarded([item(mir_match=mir_match()), item(mir_match=mir_match())]) is True
+
+    def test_false_when_any_line_has_no_receipt(self):
+        """The old Import card counted a PO as soon as ANY line had a
+        receipt, while its tooltip said every line."""
+        assert f.material_inwarded([item(mir_match=mir_match()), item()]) is False
+
+    def test_false_when_a_line_is_short(self):
+        items = [item(mir_match=mir_match(qty_diff_pct=Decimal("10"), qty_over_delivered=False))]
+        assert f.material_inwarded(items) is False
+
+    def test_undetermined_direction_is_not_invented_as_short(self):
+        items = [item(mir_match=mir_match(qty_diff_pct=Decimal("10"), qty_over_delivered=None))]
+        assert f.material_inwarded(items) is True
+
+    def test_false_for_a_po_with_no_lines(self):
+        assert f.material_inwarded([]) is False
 
 
 # ── Data quality flags (F1-F7 codes, per import_flags.py's own rule table) ─────

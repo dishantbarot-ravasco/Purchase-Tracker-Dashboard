@@ -1047,6 +1047,39 @@ class TestPoNumberContradicts:
     def test_blank_never_contradicts(self):
         assert _po_number_contradicts("1100000820", "", frozenset({"1100000820"})) is False
 
+    def test_known_set_is_scanned_once_per_mir_cell_not_once_per_line_item(self, monkeypatch):
+        """The gate runs for every (line item, candidate) pair, but whether a
+        MIR cell names one of our orders depends on the cell alone. Scanning
+        every known number afresh per line item was 26.8 million calls and
+        ~80 s of one Vapi run, which pushed a manual MIR pin's synchronous
+        re-match past gunicorn's 30 s timeout (2026-09-25, PO 1000001317).
+        Asked on behalf of 50 line items, the scan must happen once: 50
+        per-item checks plus one pass over the 200 known numbers, not
+        50 x 200."""
+        import apps.services.matching_core as mc
+        mc._cited_po_numbers.cache_clear()
+        real = mc._po_number_matches
+        calls = []
+
+        def counting(po_number, raw):
+            calls.append(po_number)
+            return real(po_number, raw)
+
+        monkeypatch.setattr(mc, "_po_number_matches", counting)
+        known = frozenset(str(1200000000 + i) for i in range(200))
+        cell = "1200000007"
+        asking = [str(1300000000 + i) for i in range(50)]
+        results = [_po_number_contradicts(po, cell, known) for po in asking]
+        mc._cited_po_numbers.cache_clear()
+
+        assert all(results)
+        assert len(calls) <= len(asking) + len(known)
+
+    def test_accepts_a_plain_set_of_known_numbers(self):
+        """The cache needs a hashable key; a caller passing a set must still
+        get the right answer rather than a TypeError."""
+        assert _po_number_contradicts("1100000820", "1100000785", {"1100000820", "1100000785"}) is True
+
 
 class TestDateVerdict:
     def test_receipt_after_order_is_plausible(self):

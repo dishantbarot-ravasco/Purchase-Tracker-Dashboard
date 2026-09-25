@@ -614,6 +614,10 @@ class RTPAchhadImportPOMirMatch(models.Model):
         PO_NUMBER = "po_number", "PO number match (exact)"
         MATERIAL = "material", "Material description match"
         WEIGHTED = "weighted", "Vendor-gated weighted match (legacy, pre-2026-09 imports redesign)"
+        # MIR's invoice_no on an import receipt is the Bill of Entry number
+        # (2026-09-25) - an exact, per-shipment join key. See
+        # matching_core's BOE settlement in run_full_match().
+        BOE_NUMBER = "boe_number", "Bill of Entry number match (exact)"
 
     po_line_item = models.OneToOneField(RTPAchhadImportPOLineItem, on_delete=models.CASCADE, related_name="mir_match")
     mir_entry = models.ForeignKey(RTPAchhadMIREntry, on_delete=models.CASCADE, related_name="import_po_matches")
@@ -664,6 +668,22 @@ class RTPAchhadImportPOMirMatch(models.Model):
     # HRSPOMirMatch.manually_pinned. Recomputed on every run_full_match()
     # rather than preserved like dismissed_*.
     manually_pinned = models.BooleanField(default=False)
+    # This line's share of a receipt that covers several lines of one Bill
+    # of Entry (2026-09-25) - e.g. a 2,000 KG and a 14,000 KG line booked in
+    # MIR as one 16,000 KG row. Each line counts the row's quantity and value
+    # times its share (its BOE qty over the BOE's total). NULL for an
+    # ordinary match, which counts its rows in full. See matching_core's BOE
+    # settlement and _domestic_base._counted_mirs().
+    receipt_share = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    # Exchange-rate difference (2026-09-25). The exchange rate MIR's receipt
+    # implies (the CSV rate scaled by MIR's final rate over the landed rate),
+    # set only on a cleared line with a rate gap. When it is a customs-style
+    # rate (on the 0.05 grid every customs-notified rate sits on) different
+    # from the CSV's own, the gap is an exchange-rate difference, not a
+    # price one: exchange_rate_mismatched is True and rate_mismatched False.
+    # See matching_core._exchange_rate_explains().
+    mir_exchange_rate = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    exchange_rate_mismatched = models.BooleanField(default=False)
     qty_mismatched = models.BooleanField(default=False)
     rate_mismatched = models.BooleanField(default=False)
     data_mismatch = models.BooleanField(default=False)

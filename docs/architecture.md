@@ -439,6 +439,9 @@ Cross-plant human decisions and reference data, all with a `plant` column.
   these record it. Kept as two models because domestic and import schemas differ.
 - `MaterialCorrection` - the same for stock-lot edits, keyed on `(plant, lot_id)` since each plant's
   lot table has its own id space.
+- `*ImportPOMirMatch.receipt_share` / `mir_exchange_rate` / `exchange_rate_mismatched` and tier
+  `boe_number` (migration `0060`) - Bill of Entry pairing, shared receipts and exchange-rate differences;
+  see [matching-engine.md](matching-engine.md#import-po--mir-convert-currency-first).
 - `FlagDismissal` - current dismissed state (upserted, not a log) for read-time-computed PO flags;
   unique on `(plant, po_number, flag_key)`. `flag_key` is opaque: a domestic flag label, or
   `<code>:<item_id>` for import flags.

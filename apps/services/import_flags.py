@@ -1,9 +1,10 @@
 """
 Derived fields and data-quality flags for Import Purchase Orders, computed at
 READ time (in apps/api/routers/imports_views.py) from already-fetched PO/item
-rows, rather than stored - there is no separate reconciliation pass here the
-way HRS/Achhad/Vapi's PO<->MIR matching has (no MIR-equivalent data source for
-imports yet), so there is nothing to persist beyond the raw synced fields.
+rows, rather than stored. Import lines are matched to MIR by the same engine
+as domestic ones (matching_core.match_import_po_mir_line_item()); the
+receipt-based rollups here (delivery status, partial delivery, material
+inwarded) read that match off `item.mir_match`, and never write anything.
 
 Kept dependency-free (no Django imports) so this can be unit-tested with
 nothing but plain Python and plain objects/dicts, same goal as
@@ -71,6 +72,43 @@ def po_has_qty_discrepancy(items) -> bool:
     return any(qty_discrepancy(i)[0] for i in items)
 
 
+# ── MIR receipt (the same rule Domestic's flags.js uses) ────────────────────
+
+def _live_match(item):
+    """The line's PO<->MIR match, or None when it has none or a reviewer
+    dismissed it. A dismissed match means "this pairing is wrong", so it is
+    not an arrival - same as flags.js's lineItemArrived(). getattr() with a
+    default because a Django reverse one-to-one with no row raises an
+    AttributeError subclass, and test stand-ins have no such attribute."""
+    match = getattr(item, "mir_match", None)
+    if match is None or getattr(match, "dismissed_by_override", False):
+        return None
+    return match
+
+
+def item_received(item) -> bool:
+    """Has anything arrived in MIR against this line?"""
+    return _live_match(item) is not None
+
+
+def item_fully_received(item) -> bool:
+    """Arrived and not short. Mirrors flags.js's lineItemFullyReceived():
+    an over-delivered line still counts as received, a short one does not,
+    and a line whose direction could not be measured (qty_over_delivered
+    None) is not invented as short."""
+    match = _live_match(item)
+    if match is None:
+        return False
+    qty_diff = getattr(match, "qty_diff_pct", None)
+    return not (qty_diff is not None and qty_diff > 0 and getattr(match, "qty_over_delivered", None) is False)
+
+
+def material_inwarded(items) -> bool:
+    """Every line fully received in MIR - the Import "Material Inwarded" KPI,
+    same definition as Domestic's Received status."""
+    return bool(items) and all(item_fully_received(i) for i in items)
+
+
 # ── Delivery date status (spec section 2) ───────────────────────────────────
 
 STATUS_UNKNOWN = "Unknown"
@@ -80,11 +118,13 @@ STATUS_DELIVERED = "Delivered"
 
 
 def delivery_date_status(item, today: datetime.date) -> str:
-    """A cleared item is always "Delivered" regardless of its own delivery
-    date field (customs clearance is a stronger, later signal than a
-    planned delivery date); otherwise Unknown/Overdue/On Order based on
-    whether delivery_date is set and in the past."""
-    if shipment_stage(item) == STAGE_CLEARED:
+    """"Delivered" once the line is fully received in MIR; otherwise
+    Unknown/Overdue/On Order from delivery_date. Customs clearance alone is
+    not delivery: a BOE says the goods cleared the port, not that they
+    reached the plant, and measured 2026-09-25 on Vapi 15 of 38 cleared
+    import POs had no MIR receipt at all - they could never read Overdue
+    while clearance counted as delivered."""
+    if item_fully_received(item):
         return STATUS_DELIVERED
     if item.delivery_date is None:
         return STATUS_UNKNOWN
@@ -109,14 +149,12 @@ def po_delivery_date_status(items, today: datetime.date) -> str:
 # ── Partial delivery (spec section 2, PO level) ─────────────────────────────
 
 def partial_delivery(items) -> bool:
-    """True if any item's cleared BOE quantity is strictly less than what
-    was ordered - a real partial shipment, not just any qty mismatch
-    (qty_discrepancy() above also flags a BOE qty that's *higher* than
-    ordered, which isn't a "partial" delivery)."""
-    return any(
-        i.qty_as_per_boe is not None and i.qty_as_per_po is not None and i.qty_as_per_boe < i.qty_as_per_po
-        for i in items
-    )
+    """Something has arrived in MIR but the order is not complete - a line
+    has no receipt yet, or one arrived short. Same rule as Domestic's
+    Partial Delivered status. A BOE quantity below the ordered quantity is a
+    partial SHIPMENT, not a partial delivery, and is already counted by the
+    "Qty Mismatches (PO vs BOE)" card via qty_discrepancy()."""
+    return any(item_received(i) for i in items) and not all(item_fully_received(i) for i in items)
 
 
 # ── Data quality flags F1-F7 (spec section 4) ───────────────────────────────

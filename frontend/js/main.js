@@ -277,7 +277,10 @@ function readDeepLinkParams() {
   if (!po && !material) return null;
   const plantParam = params.get('plant');
   const plant = (plantParam === 'all' || PLANT_KEYS.indexOf(plantParam) !== -1) ? plantParam : null;
-  return { po: po, material: material, plant: plant };
+  // `kind` is 'import' or it is Domestic - anything else in the URL is
+  // ignored, never trusted as a purchase type.
+  const kind = params.get('kind') === 'import' ? 'import' : 'domestic';
+  return { po: po, material: material, plant: plant, kind: kind };
 }
 
 /** Points the view/plant tabs at the deep link's target BEFORE the first
@@ -289,11 +292,13 @@ function applyDeepLinkToState(link) {
     state.view = 'materials';
   } else {
     state.view = 'po';
-    state.purchaseType = 'domestic'; // ?po= is a Domestic PO number (Search PO only searches those)
+    // ?po= alone is a Domestic PO number; Search PO adds kind=import for an
+    // import order, since one number can exist as both.
+    state.purchaseType = link.kind;
   }
 }
 
-/** Strips only the three deep-link params, leaving anything else on the URL
+/** Strips only the four deep-link params, leaving anything else on the URL
  * (and the path) alone, then rewrites the address bar in place. replaceState,
  * not pushState: the reader never navigated anywhere, so this must not add a
  * history entry that Back would walk into. Called once the link has been
@@ -302,7 +307,7 @@ function clearDeepLinkParams() {
   if (!window.history || !window.history.replaceState) return;
   let url;
   try { url = new URL(window.location.href); } catch (e) { return; }
-  ['po', 'material', 'plant'].forEach(k => url.searchParams.delete(k));
+  ['po', 'material', 'plant', 'kind'].forEach(k => url.searchParams.delete(k));
   const search = url.searchParams.toString();
   window.history.replaceState(null, '', url.pathname + (search ? '?' + search : '') + url.hash);
 }
@@ -324,6 +329,18 @@ function showDeepLinkMiss(message) {
 
 async function openDeepLinkTarget(link) {
   try {
+    if (link.po && link.kind === 'import') {
+      await ensureImportPOsLoaded();
+      // One combined cache, each row tagged with its own plant - same
+      // plant-first resolution as the Domestic branch below.
+      const hit = (IMPORT_PO_CACHE || []).find(p => p.poNumber === link.po && (!link.plant || link.plant === 'all' || p.plant === link.plant));
+      if (!hit) {
+        showDeepLinkMiss('Import purchase order ' + link.po + ' is no longer in ' + (link.plant && link.plant !== 'all' ? PLANTS[link.plant].label : 'any plant') + '. It may have been renamed or withdrawn upstream - search for it again from Search PO.');
+        return;
+      }
+      await openImportPoModal(hit.plant + '::' + hit.poNumber);
+      return;
+    }
     if (link.po) {
       const keys = (link.plant && link.plant !== 'all') ? [link.plant] : PLANT_KEYS;
       await ensurePOsLoaded(keys);
@@ -875,31 +892,48 @@ function renderPurchaseTypeTabs() {
   el.innerHTML = PURCHASE_TYPES.map(pt =>
     '<div class="sub-tab ' + (state.purchaseType === pt.key ? 'active' : '') + '" data-ptype="' + pt.key + '" tabindex="0" role="tab" aria-selected="' + (state.purchaseType === pt.key) + '">' + escapeHtml(pt.label) + '</div>'
   ).join('');
-  el.querySelectorAll('[data-ptype]').forEach(t => t.onclick = async () => {
+  el.querySelectorAll('[data-ptype]').forEach(t => t.onclick = () => {
     if (t.dataset.ptype === state.purchaseType) return;
-    state.purchaseType = t.dataset.ptype;
-    state.statusFilter = null; state.showAllPOs = false; state.chartMonthFilter = null;
-    state.categoryFilter = null; state.subCategoryFilter = null; state.flagsFilter = null; state.tablePage = 1;
-    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
-    resetImportFilters();
-    renderPurchaseTypeTabs();
-    const content = document.getElementById('content');
-    if (!content) return;
-    if (state.purchaseType === 'import' && !IMPORT_PO_CACHE) {
-      // Unlike Domestic (already loaded on initial dashboard load), Import
-      // PO data is fetched lazily on first visit to this tab - a real fetch,
-      // not the "no fetch needed" case the comment used to describe here.
-      content.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading import purchase orders&hellip;</div></div>';
-      try {
-        await ensureImportPOsLoaded();
-      } catch (e) {
-        console.error('Failed to load import purchase orders:', e);
-        content.innerHTML = '<div class="noaccess">Couldn\'t load import purchase orders right now. Please refresh, or contact IT if this keeps happening.</div>';
-        return;
-      }
-    }
-    renderPoList(content);
+    switchPurchaseType(t.dataset.ptype);
   });
+}
+
+/** Switches Domestic <-> Import, resetting every list filter, and renders
+ * the new list. Returns true once it is on screen, false if its data could
+ * not be loaded. `opts.importPoNumber` pre-fills the Import list's PO Number
+ * filter - how the Domestic list's "Also in Import Purchases" links land on
+ * the order they named (po-list.js's importCrossHitsHtml()). */
+async function switchPurchaseType(ptype, opts) {
+  opts = opts || {};
+  state.purchaseType = ptype;
+  state.statusFilter = null; state.showAllPOs = false; state.chartMonthFilter = null;
+  state.categoryFilter = null; state.subCategoryFilter = null; state.flagsFilter = null; state.tablePage = 1;
+  state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
+  resetImportFilters();
+  if (opts.importPoNumber) state.importColFilters.poNumber = opts.importPoNumber;
+  renderPurchaseTypeTabs();
+  const content = document.getElementById('content');
+  if (!content) return false;
+  // Either side can be the one not loaded yet: Import is fetched on first
+  // visit, and Domestic is too when the page opened on an Import deep link.
+  const missing = ptype === 'import'
+    ? !IMPORT_PO_CACHE
+    : selectedPlantKeys().some(k => !PURCHASE_ORDERS_BY_PLANT[k]);
+  if (missing) {
+    content.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading ' + (ptype === 'import' ? 'import ' : '') + 'purchase orders&hellip;</div></div>';
+    try {
+      if (ptype === 'import') await ensureImportPOsLoaded();
+      else await ensurePOsLoaded(selectedPlantKeys());
+    } catch (e) {
+      console.error('Failed to load ' + ptype + ' purchase orders:', e);
+      content.innerHTML = '<div class="noaccess">Couldn\'t load ' + (ptype === 'import' ? 'import ' : '') + 'purchase orders right now. Please refresh, or contact IT if this keeps happening.</div>';
+      return false;
+    }
+    // The reader may have clicked the other tab while this was loading.
+    if (state.purchaseType !== ptype) return false;
+  }
+  renderPoList(content);
+  return true;
 }
 
 async function loadSyncStatus() {
@@ -1212,33 +1246,6 @@ function currentPOs() {
     });
   });
   return merged;
-}
-
-// GET /api/imports/... isn't under any single plant's apiPrefix (it's the
-// combined cross-plant router, not "hrs"/"achhad"/"vapi" prefixed) - a
-// small direct fetch wrapper instead of routing it through apiForPlant()
-// and picking an arbitrary plant key, same 401-redirect/error-shape
-// contract as apiForPlant() in shared.js.
-async function apiImports(path, opts) {
-  const res = await authFetch('/api/imports' + path, opts || {});
-  if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Not authenticated'); }
-  // See shared.js's apiForPlant() for why res.json() is guarded - same fix
-  // applied here for consistency (this is the imports-router equivalent of
-  // that same fetch wrapper).
-  let data;
-  try {
-    data = await res.json();
-  } catch (e) {
-    const err = new Error('The server sent an unexpected response. Please try again, or contact IT if this keeps happening.');
-    err.status = res.status;
-    throw err;
-  }
-  if (!res.ok) {
-    const err = new Error(data.error || data.detail || 'Something went wrong. Please try again.');
-    err.status = res.status;
-    throw err;
-  }
-  return data;
 }
 
 async function ensureImportPOsLoaded() {

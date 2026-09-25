@@ -169,6 +169,9 @@ TIER_PO_NUMBER = "po_number"
 # score, so "tier" now just records which identification factor fired for
 # the winning candidate - PO number, or material description alone.
 TIER_MATERIAL = "material"
+# An import receipt whose MIR invoice_no is the line's Bill of Entry number
+# (2026-09-25) - see _boe_settlement().
+TIER_BOE_NUMBER = "boe_number"
 
 # *_diff_pct columns are DecimalField(max_digits=6, decimal_places=2) - see
 # CLAUDE.md's "*_diff_pct columns need a clamp" note.
@@ -228,6 +231,11 @@ class _MatchConfig:
     mir_final_value: Callable[[object], object] = (
         lambda mir: getattr(mir, "invoice_final_value", None) or getattr(mir, "total_amount", None)
     )
+    # The MIR column that carries an import receipt's Bill of Entry number.
+    # All three plants' MIR sheets enter it in the invoice-number column for
+    # an import (measured 2026-09-25: 46 Vapi MIR rows cite one of the 43 BOE
+    # numbers in the Imports master CSV) - see _boe_settlement().
+    mir_boe_number: Callable[[object], object] = lambda mir: getattr(mir, "invoice_no", "")
 
     # Which plant this config is for, as parsers/common.py's
     # NOT_STOCKED_BY_PLANT keys it ("hrs"/"achhad"/"vapi") and as
@@ -910,7 +918,7 @@ def _names_known_po(po_number_raw: str, known_pos) -> bool:
     raw = (po_number_raw or "").strip()
     if not raw or not is_usable_po_reference(raw):
         return False
-    return any(_po_number_matches(known, raw) for known in known_pos)
+    return bool(_cited_po_numbers(raw, _as_frozenset(known_pos)))
 
 
 def cites_a_po(po_number_raw: str, known_pos) -> bool:
@@ -1222,13 +1230,26 @@ def _po_number_contradicts(po_number: str, mir_po_number_raw: str, known_po_numb
     material identification rather than being excluded from everything - an
     unrecognized reference is treated as no evidence, never as evidence
     against. Values that are not PO-shaped at all never reach that decision
-    (see is_usable_po_reference())."""
+    (see is_usable_po_reference()).
+
+    The "names one we hold" half is _cited_po_numbers(), which is cached per
+    (cell, known set). It depends on the MIR cell alone, never on this PO, so
+    scanning every known number afresh for every line item re-derived the
+    same answer: 26.8 million _po_number_matches() calls and ~80 s of a
+    110 s profiled Vapi run (2026-09-25), which pushed a manual MIR pin's
+    synchronous re-match past gunicorn's request timeout."""
     raw = (mir_po_number_raw or "").strip()
     if not raw or not is_usable_po_reference(raw):
         return False
     if _po_number_matches(po_number, raw):
         return False
-    return any(_po_number_matches(known, raw) for known in known_po_numbers)
+    return bool(_cited_po_numbers(raw, _as_frozenset(known_po_numbers)))
+
+
+def _as_frozenset(values) -> frozenset:
+    """`values` as a frozenset, so it can key an lru_cache. run_full_match()
+    already passes known_po_numbers()'s frozenset, which is returned as is."""
+    return values if isinstance(values, frozenset) else frozenset(values)
 
 
 # Returned by _date_verdict() when the two dates cannot describe the same
@@ -1517,6 +1538,45 @@ class _Matchable(NamedTuple):
     tax_type: str | None = None
     total_value: Decimal | None = None
     total_inclusive_value: Decimal | None = None
+    # A customs-cleared import line's landed value (total_inclusive_value:
+    # assessable value + duty + IGST, covering qty), set only when the line
+    # has a BOE and both figures - its rate may then also be checked on the
+    # landed basis, see _landed_rate_diff(). Separate from
+    # total_inclusive_value, which only the extended-fields plants set and
+    # which drives the final-value data-mismatch check instead.
+    landed_value: Decimal | None = None
+
+
+# How far a landed (duty + IGST) rate may sit from MIR's final rate and still
+# count as the same rate. Both are derived - a total in rupees divided by a
+# quantity - so the paise the two sheets round their totals to show up as
+# 0.001-0.005% on a crore-sized line; 0.01% absorbs that and nothing larger.
+# The zero-tolerance FLAG_DIFF_PCT still governs the directly-quoted rate.
+_LANDED_RATE_ROUNDING_PCT = Decimal("0.01")
+
+# Customs-notified exchange rates sit on a 0.05 grid (every exchange rate in
+# the three Imports CSVs does, 2026-09-25). A rate gap whose implied MIR
+# exchange rate lands on that grid, within this much, reads as a different
+# exchange rate - not a different price. Measured on Vapi's BOE-paired
+# lines, the genuine cases land within 0.0005; 0.002 leaves room for MIR's
+# 4-decimal rates while keeping an arbitrary price change off the grid four
+# times in five.
+_EXCHANGE_RATE_GRID = Decimal("0.05")
+_EXCHANGE_RATE_GRID_TOLERANCE = Decimal("0.002")
+# ...and only a plausible exchange-rate move: 1000001360 (6.2% off, implied
+# 100.08) and the RoDTEP lines (8-9%) are not exchange rates.
+_EXCHANGE_RATE_MAX_MOVE_PCT = Decimal("5")
+
+
+def _boe_key(value) -> str:
+    """A Bill of Entry number as a comparable key: stripped, no spaces, no
+    spreadsheet float tail ("8463157.0"), leading zeros dropped. Empty when
+    the cell holds nothing usable."""
+    text = str(value or "").strip().replace(" ", "")
+    if text.endswith(".0"):
+        text = text[:-2]
+    text = text.lstrip("0")
+    return text if len(text) >= 5 else ""
 
 
 def _uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b):
@@ -2097,6 +2157,222 @@ def _tax_type_mismatch(tax_type: str | None, mir) -> bool:
     return False  # tax_type text doesn't recognizably say either - don't guess
 
 
+def _landed_rate_diff(config: _MatchConfig, item: _Matchable, mir, qty_a, qty_received, group, uom_mismatch):
+    """Percent gap between a cleared import line's LANDED rate and MIR's
+    FINAL rate, or None when either side cannot be formed.
+
+    Why (2026-09-25, measured on Vapi's 27 matched import lines): MIR books an
+    import at its duty-paid cost, but the line's quoted rate is pre-duty
+    (net_price x exchange_rate), so the plain rate check read the customs duty
+    itself as a mismatch - 5 lines sat at exactly 8.25% (7.5% basic duty plus
+    the 10% surcharge on it). The CSV's total_inclusive_value is the landed
+    cost (assessable value + duty + IGST) and MIR's final value is taxable
+    value + IGST, so the two are like for like, including a duty-free licence
+    line where neither carries duty or IGST.
+
+    Compared PER UNIT, never as totals: the landed value covers the BOE
+    quantity while a MIR receipt covers whatever arrived, so totals turn a
+    part-delivery into a value gap (1000001560: 22.3% apart as totals, 0.00%
+    per unit). Both quantities are already in the same base unit here
+    (qty_a from _uom_adjust(), qty_received the row's or the group's)."""
+    if item.landed_value is None or uom_mismatch or not qty_a or not qty_received:
+        return None
+    mir_final = group.final if group is not None else config.mir_final_value(mir)
+    if mir_final is None:
+        return None
+    return _diff_pct(Decimal(item.landed_value) / qty_a, Decimal(mir_final) / qty_received)
+
+
+def import_landed_rates(config: _MatchConfig, import_line_item, mir_rows: list) -> tuple:
+    """(landed rate ordered, final rate received), both INR per unit of the
+    line's own unit, for the PO modal's reconciliation card - the pair
+    _landed_rate_diff() compares, so the card and the flag cannot disagree.
+    (None, None) unless the line is cleared with a landed value and a BOE qty,
+    and the receipts' quantity and final value are both known."""
+    it = import_line_item
+    if not (it.boe_number and it.total_inclusive_value and it.qty_as_per_boe):
+        return None, None
+    ordered = Decimal(it.total_inclusive_value) / Decimal(it.qty_as_per_boe)
+    received_qty = received_against_line(config, it.uom, mir_rows)["qty"]
+    finals = [config.mir_final_value(m) for m in mir_rows]
+    if not received_qty or not finals or any(v is None for v in finals):
+        return ordered, None
+    return ordered, sum(Decimal(v) for v in finals) / received_qty
+
+
+def _exchange_rate_explains(config: _MatchConfig, import_line_item, mir_rows: list, landed_value=None) -> tuple:
+    """(implied MIR exchange rate, is it an exchange-rate difference) for a
+    cleared import line whose rate disagrees.
+
+    Why (2026-09-25): once receipts were paired by BOE, the lines still off
+    by 0.4-3% all had the same shape - MIR's figures work out at a DIFFERENT
+    customs-style exchange rate than the CSV records (1000001351: CSV 92.50,
+    MIR 94.20; 1000001452: CSV 94.20, MIR 96.60), and those MIR rates are
+    ones the CSV itself uses on other shipments of the same weeks. The vendor
+    charged what the PO says; the CSV's exchange rate is not the BOE's.
+
+    The implied rate is the CSV rate scaled by MIR's final rate over the
+    landed rate (import_landed_rates() - both per unit, so a part-delivery or
+    a shared receipt does not distort it). It counts as an exchange-rate
+    difference only when it sits on the customs 0.05 grid, differs from the
+    CSV's rate by at least one grid step, and is a plausible move
+    (_EXCHANGE_RATE_MAX_MOVE_PCT). Anything else stays a rate mismatch."""
+    fx = import_line_item.exchange_rate
+    ordered, received = import_landed_rates(config, import_line_item, mir_rows)
+    if ordered is not None and landed_value is not None:
+        # A shared receipt is compared at the BOE's blended landed rate.
+        ordered = Decimal(landed_value) / Decimal(import_line_item.qty_as_per_boe)
+    if not (fx and ordered and received):
+        return None, False
+    implied = Decimal(fx) * received / ordered
+    nearest = (implied / _EXCHANGE_RATE_GRID).to_integral_value() * _EXCHANGE_RATE_GRID
+    on_grid = abs(implied - nearest) <= _EXCHANGE_RATE_GRID_TOLERANCE
+    differs = abs(nearest - Decimal(fx)) >= _EXCHANGE_RATE_GRID
+    plausible = abs(implied - Decimal(fx)) / Decimal(fx) * Decimal("100") <= _EXCHANGE_RATE_MAX_MOVE_PCT
+    return implied.quantize(Decimal("0.0001")), bool(on_grid and differs and plausible)
+
+
+def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys, claimed_mir_ids, *,
+                    scorer, known_pos) -> dict:
+    """Pairs import lines with the MIR receipts that cite their Bill of
+    Entry number. Returns {("import", item.id): (candidates, share,
+    matchable)} - every MIR row the line takes, with the _Candidate evidence
+    for each, the line's share of those rows (None = counted in full), and
+    the _Matchable to compare them against (the line's own, or for a shared
+    receipt its BOE-blended one - see below).
+
+    Why (2026-09-25): MIR enters an import receipt's BOE number in its
+    invoice-number column, an exact per-shipment key the matcher never read.
+    It paired imports on vendor, material and money instead, and Akros ships
+    Chloroprene in identical 16,000 KG loads - 9 of Vapi's 27 import
+    pairings held another shipment's receipt (1000001357 and 1000001446
+    held each other's), which read as 0.4-23% rate gaps, and about 20 lines
+    with a BOE-cited receipt in MIR were left unmatched.
+
+    Identification still needs one corroborating vote - the vendor or the
+    material agrees - so a domestic invoice that happens to carry the same
+    number cannot attach, and a MIR row whose PO column names a different
+    order of ours is left alone (_po_number_contradicts()).
+
+    Several lines on one BOE: when there are at least as many receipts as
+    lines, each line takes one receipt by the same optimal assignment every
+    other match uses, and any extra receipt joins the line it identifies
+    best. When there are FEWER receipts than lines, the BOE was booked in
+    MIR as one receipt for several lines (Akros: a 2,000 and a 14,000 KG line,
+    one 16,000 KG row), so every line takes every row and counts its share,
+    its BOE qty over the BOE's total - the only way one receipt can be
+    compared against each of the lines it covers without counting it twice.
+    Such a receipt is booked at ONE blended rate (1000001317: MIR43/05's
+    216.09 is exactly the qty-weighted rate of lines priced 6.00, 4.50 and
+    2.20 USD), so each line is compared at the BOE's blended rate and landed
+    rate, not its own - otherwise every line of it reads as a rate gap.
+
+    A BOE number shared by lines with DIFFERENT Bills of Lading is not
+    trusted: those are separate shipments, which one BOE cannot clear
+    (1000001560's second shipment carries its first's BOE in the CSV, while
+    its MIR receipt cites another). Such a BOE is left to ordinary matching."""
+    lines_by_boe: dict[str, list] = {}
+    for item in import_items:
+        key = ("import", item.id)
+        boe = _boe_key(getattr(item, "boe_number", ""))
+        if boe and key not in skip_keys and key in items_by_key:
+            lines_by_boe.setdefault(boe, []).append(item)
+    if not lines_by_boe:
+        return {}
+    rows_by_boe: dict[str, list] = {}
+    for mir in config.mir_model.objects.filter(is_active=True).exclude(id__in=claimed_mir_ids):
+        boe = _boe_key(config.mir_boe_number(mir))
+        if boe in lines_by_boe:
+            rows_by_boe.setdefault(boe, []).append(mir)
+
+    settled: dict = {}
+    for boe, lines in lines_by_boe.items():
+        bills = {(item.bill_of_lading_number or "").strip() for item in lines} - {""}
+        if len(bills) > 1:
+            continue
+        rows = sorted(rows_by_boe.get(boe, []), key=lambda m: m.id)
+        evidence: dict = {}  # (key, mir id) -> _Candidate, identified pairs only
+        for item in lines:
+            key = ("import", item.id)
+            po = item.purchase_order
+            for mir in rows:
+                if _po_number_contradicts(po.po_number, mir.po_number_raw, known_pos):
+                    continue
+                cand = _forced_candidate(config, items_by_key[key], mir, po, scorer=scorer, known_pos=known_pos)
+                if cand.vendor_matched or cand.material_matched:
+                    evidence[(key, mir.id)] = cand
+        usable = sorted({mir_id for _k, mir_id in evidence}, key=int)
+        if not usable:
+            continue
+        keys = [("import", item.id) for item in lines]
+        if len(keys) == 1:
+            settled[keys[0]] = (
+                [evidence[(keys[0], m)] for m in usable if (keys[0], m) in evidence], None, items_by_key[keys[0]])
+            continue
+        if len(usable) >= len(keys):
+            taken = _assign_pairs({
+                k: [(m, _pair_weight(evidence[(k, m)])) for m in usable if (k, m) in evidence] for k in keys
+            })
+            chosen: dict = {k: [evidence[(k, m)]] for k, m in taken.items()}
+            for m in usable:
+                if m in taken.values():
+                    continue
+                options = [k for k in keys if (k, m) in evidence]
+                if not options:
+                    continue
+                best = max(options, key=lambda k: (
+                    evidence[(k, m)].material_score, _pair_weight(evidence[(k, m)]), -k[1]))
+                chosen.setdefault(best, []).append(evidence[(best, m)])
+            for k, cands in chosen.items():
+                settled[k] = (cands, None, items_by_key[k])
+            continue
+        # Fewer receipts than lines: one receipt covers the whole BOE.
+        qtys = {("import", item.id): item.qty_as_per_boe for item in lines}
+        uoms = {normalize_uom(item.uom) for item in lines}
+        total = sum((q for q in qtys.values() if q), Decimal("0"))
+        if len(uoms) != 1 or not total or any(not q for q in qtys.values()):
+            continue  # no honest way to split - leave these lines to ordinary matching
+        # Blending needs every line in INR: a line with no exchange rate
+        # carries a bare foreign-currency price, and averaging it in would
+        # spread that one line's data error across every line of the BOE.
+        if all(item.exchange_rate for item in lines):
+            blended = _blended_matchables(items_by_key, keys, qtys, total)
+        else:
+            blended = {k: items_by_key[k] for k in keys}
+        for k in keys:
+            cands = [evidence[(k, m)] for m in usable if (k, m) in evidence]
+            if cands:
+                settled[k] = (cands, Decimal(qtys[k]) / total, blended[k])
+    return settled
+
+
+def _blended_matchables(items_by_key, keys, qtys, total) -> dict:
+    """Each line of a shared-receipt BOE compared at the BOE's qty-weighted
+    rate and landed rate (see _boe_settlement()). A figure missing on any
+    line leaves that figure unblended - a partial average would be invented."""
+    ms = {k: items_by_key[k] for k in keys}
+
+    def per_unit(get):
+        vals = [(get(ms[k]), Decimal(qtys[k])) for k in keys]
+        if any(v is None for v, _q in vals):
+            return None
+        return sum((Decimal(v) * q for v, q in vals), Decimal("0")) / total
+
+    rate = per_unit(lambda m: m.rate)
+    landed = per_unit(lambda m: (Decimal(m.landed_value) / Decimal(m.qty)) if (m.landed_value and m.qty) else None)
+    out = {}
+    for k in keys:
+        m, q = ms[k], Decimal(qtys[k])
+        m = m._replace(rate=rate, value=rate * q) if rate is not None else m
+        if landed is not None:
+            m = m._replace(
+                landed_value=landed * q,
+                total_inclusive_value=landed * q if m.total_inclusive_value is not None else None,
+            )
+        out[k] = m
+    return out
+
+
 def _diffs_and_flag(
     config: _MatchConfig, item: _Matchable, mir, *,
     qty_override: Decimal | None = None, rate_override: Decimal | None = None, value_override: Decimal | None = None,
@@ -2236,6 +2512,13 @@ def _diffs_and_flag(
 
     tax_type_flagged = _tax_type_mismatch(item.tax_type, mir)
 
+    landed_diff = _landed_rate_diff(config, item, mir, qty_a, qty_received, group, uom_mismatch)
+    if landed_diff is not None:
+        if landed_diff <= _LANDED_RATE_ROUNDING_PCT:
+            rate_diff = Decimal("0")
+        elif rate_diff is None or landed_diff < rate_diff:
+            rate_diff = landed_diff
+
     qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct
     rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
     is_flagged = qty_mismatched or rate_mismatched
@@ -2309,8 +2592,18 @@ def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po:
     priced in the PO's own currency, not INR."""
     po = import_line_item.purchase_order
     rate_inr, value_inr = _import_rate_value_inr(import_line_item)
+    # The landed-rate check (_landed_rate_diff()) needs the line cleared,
+    # with a landed value and the BOE quantity that value covers.
+    landed_value = (
+        import_line_item.total_inclusive_value
+        if getattr(import_line_item, "boe_number", "") and import_line_item.total_inclusive_value
+        and import_line_item.qty_as_per_boe else None
+    )
     if not config.import_extended_fields:
-        return _Matchable(import_line_item.description, import_line_item.qty_as_per_boe, import_line_item.uom, rate_inr, value_inr)
+        return _Matchable(
+            import_line_item.description, import_line_item.qty_as_per_boe, import_line_item.uom, rate_inr, value_inr,
+            landed_value=landed_value,
+        )
     total_value_inr = (
         _import_total_value_inr(po.total_value, import_line_item.exchange_rate) if is_single_item_po else None
     )
@@ -2319,6 +2612,7 @@ def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po:
         tax_type=import_line_item.tax_type or None,
         total_value=total_value_inr,
         total_inclusive_value=import_line_item.total_inclusive_value,
+        landed_value=landed_value,
     )
 
 
@@ -2538,6 +2832,12 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         uom_mismatch=uom_mismatch,
         field_coverage=coverage.quantize(Decimal("0.01")),
         severity=severity,
+        # BOE settlement and the exchange-rate check need every line of the
+        # plant at once, so they run in run_full_match() only; this
+        # single-line path clears what a previous full run may have left.
+        receipt_share=None,
+        mir_exchange_rate=None,
+        exchange_rate_mismatched=False,
     )
     if config.import_extended_fields:
         defaults.update(dict(
@@ -3255,6 +3555,38 @@ def run_full_match(config: _MatchConfig) -> dict:
         assigned[key] = (best.mir, best.score, best.coverage, None)
         claimed_mir_ids.add(best.mir.id)
 
+    # BILL OF ENTRY NUMBERS SETTLE NEXT (2026-09-25) - an import receipt whose
+    # MIR invoice_no is a line's BOE number belongs to that line; see
+    # _boe_settlement(). Ahead of PO-number groups because a BOE names one
+    # shipment where a PO number names a whole order: an import PO with two
+    # shipments has both receipts citing the same PO, and only the BOE says
+    # which line each one fills (1000001508's two lines held each other's).
+    boe_share: dict[tuple[str, int], Decimal] = {}
+    boe_keys: set = set()
+    for key, (cands, share, matchable) in _boe_settlement(
+        config, import_items, items_by_key, pinned_keys, claimed_mir_ids, scorer=scorer, known_pos=known_pos,
+    ).items():
+        items_by_key[key] = matchable
+        rows = sorted((c.mir for c in cands), key=lambda m: m.id)
+        found_here = {c.mir.id: c for c in cands}
+        primary = _best_by_evidence(found_here, rows)
+        for c in cands:
+            candidates_by_key[(key[0], key[1], c.mir.id)] = c
+        group = None
+        if len(rows) > 1 or share is not None:
+            group = _aggregate_rows(config, items_by_key[key], rows, by_po_number=True)
+            if share is not None:
+                group = group._replace(
+                    qty=group.qty * share,
+                    value=group.value * share if group.value is not None else None,
+                    taxable=group.taxable * share if group.taxable is not None else None,
+                    final=group.final * share if group.final is not None else None,
+                )
+                boe_share[key] = share
+        assigned[key] = (primary.mir, primary.score, primary.coverage, group)
+        claimed_mir_ids.update(m.id for m in rows)
+        boe_keys.add(key)
+
     # PO-NUMBER GROUPS SETTLE NEXT (2026-09-24) - every MIR row whose own PO
     # column names exactly one order we hold is that order's, all of them.
     # The project owner's rule: the PO number was added to MIR precisely so
@@ -3281,7 +3613,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     po_group_keys: set = set()
     lines_by_row: dict[int, dict] = {}  # mir id -> {key: candidate}
     for key, cited in po_cited.items():
-        if key in pinned_keys:
+        if key in pinned_keys or key in boe_keys:
             continue
         for candidate in cited:
             if candidate.mir.id not in claimed_mir_ids:
@@ -3289,7 +3621,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     rows_by_line: dict[tuple[str, int], list] = {}
     first_pass = _assign_pairs({
         key: [(c.mir.id, _pair_weight(c)) for c in po_cited[key] if c.mir.id in lines_by_row]
-        for key in po_cited if key not in pinned_keys
+        for key in po_cited if key not in pinned_keys and key not in boe_keys
     })
     for key, mir_id in first_pass.items():
         rows_by_line.setdefault(key, []).append(lines_by_row.pop(mir_id)[key])
@@ -3338,7 +3670,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     # which is the evidence the rows actually carry.
     demoted_keys: list[tuple[str, int]] = []
     grouped_keys = [k for k in sorted(groups_by_key, key=lambda k: (-edges[k][0][1], str(k)))
-                    if k not in pinned_keys and k not in po_group_keys]
+                    if k not in pinned_keys and k not in po_group_keys and k not in boe_keys]
     for key in grouped_keys:
         primary_id = edges[key][0][0]
         members = group_members[(key[0], key[1], primary_id)]
@@ -3357,6 +3689,7 @@ def run_full_match(config: _MatchConfig) -> dict:
         # would otherwise be handed a second, automatic row. Same for a line
         # settled by its PO-number group.
         if key not in groups_by_key and key not in pinned_keys and key not in po_group_keys
+        and key not in boe_keys
     }
     for key in demoted_keys:
         remaining = [(mir_id, weight) for mir_id, weight in row_edges[key] if mir_id not in claimed_mir_ids]
@@ -3452,7 +3785,11 @@ def run_full_match(config: _MatchConfig) -> dict:
         evidence = candidates_by_key[("import", item.id, mir.id)]
         material_matched, po_number_matched = evidence.material_matched, evidence.po_number_matched
         vendor_matched = evidence.vendor_matched
-        tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
+        key = ("import", item.id)
+        if key in boe_keys:
+            tier = TIER_BOE_NUMBER
+        else:
+            tier = TIER_PO_NUMBER if po_number_matched else TIER_MATERIAL
         (
             qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
@@ -3460,12 +3797,27 @@ def run_full_match(config: _MatchConfig) -> dict:
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
             qty_over_delivered,
         ) = _diffs_and_flag(config, matchable, mir, group=group)
+        # An exchange-rate difference is not a price difference - see
+        # _exchange_rate_explains(). Only a cleared line has the landed figure
+        # it is measured against.
+        mir_fx, fx_mismatched = None, False
+        if rate_mismatched and getattr(item, "boe_number", ""):
+            mir_fx, fx_mismatched = _exchange_rate_explains(
+                config, item, list(group.entries) if group is not None else [mir],
+                landed_value=matchable.landed_value if key in boe_share else None)
+            if fx_mismatched:
+                rate_diff, rate_mismatched = Decimal("0"), False
+                is_flagged = qty_mismatched
+                severity = _severity(uom_mismatch, qty_diff, rate_diff, value_diff)
         defaults = dict(
             mir_entry=mir,
             # Derived from whether a pin currently applies, NOT preserved
             # across runs the way dismissed_* is - removing the pin has to
             # clear the badge. Same as the domestic loop above.
-            manually_pinned=("import", item.id) in pinned_keys,
+            manually_pinned=key in pinned_keys,
+            receipt_share=boe_share.get(key),
+            mir_exchange_rate=mir_fx,
+            exchange_rate_mismatched=fx_mismatched,
             tier=tier,
             match_score=score.quantize(Decimal("0.0001")),
             qty_diff_pct=qty_diff,

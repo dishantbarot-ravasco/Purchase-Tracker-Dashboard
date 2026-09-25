@@ -102,7 +102,13 @@ combined import list narrows silently, import single-PO reads 404); the reasonin
   `"no"`, `"off"`, `""` are false). `dismissed` defaults to `true` when omitted. The pin endpoints'
   `clear` still uses `bool(...)`; the frontend sends real JSON booleans there.
 - **Re-matching is synchronous.** Any correction to a matching-relevant field, and every pin change,
-  calls that plant's `run_full_match()` inside the request. Idempotent and cheap at these volumes.
+  calls that plant's `run_full_match()` inside the request. Idempotent, and it has to stay well
+  inside gunicorn's 30 s worker timeout (Vapi, the largest, is ~15 s): past it the worker is killed,
+  the browser gets an HTML 502, and the write before the re-match has already committed while the
+  re-match itself rolls back. That happened to pins on 2026-09-25 - see
+  [hot paths](matching-engine.md#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason).
+  The frontend reports a 502/504 as "may still have been saved" (`shared.js`'s
+  `unexpectedResponseError()`).
 - **`timezone.localdate()`, never `date.today()`** for anything date-relative (delivery status, licence
   countdowns, snapshot gap). Render runs UTC; `TIME_ZONE` is IST.
 
@@ -368,8 +374,13 @@ selection. The same treatment covers **Import Purchases** (`import-po.js`'s `imp
 `flags.js`'s `importCriticalFlagsFor()`, reading the nested `mirMatch`) and **Raw Material Analysis**
 (`materials.js`, `material-modal.js`), each view computing its own categories.
 
-**Note on "PO Not Found in MIR" density**: Import's and Materials' linked-item universe includes every
-still-open order by construction, so this fires for most on-order items. Expected, not a bug.
+**"PO Not Found in MIR" is not raised on an order that is not due yet** (2026-09-25) - nothing has
+arrived and the delivery date has not passed, so there is nothing for MIR to hold. It fired on every
+such order by construction, which put every open order into the Data Quality Flags count on all three
+views. The test is the row flags' own "on order and not partial": domestic `po._status === 'pending'`
+(`computePoFlags()`, and per line in `materials.js`), import `flags.js`'s `importOrderNotDueYet()`
+(`deliveryDateStatus === 'On Order' && !partialDelivery`, used by both `importCategoriesFor()` and
+`importCriticalFlagsFor()`). An overdue, part-arrived or undated order still raises it.
 
 **The regex categorisation is intentionally imprecise, same as the original.** A remark mentioning "no
 Item ID/Vendor Code printed" matches "Vendor code scheme inconsistency" via a bare `/vendor code/i`.
@@ -385,8 +396,9 @@ any mismatches, blue for partial delivery, yellow for on order and purple for al
 
 Server-relevant rules: the "on order" and "partial" inputs come from the API's own fields for Import
 (`deliveryDateStatus === 'On Order'`, `partialDelivery`, both from `import_flags.py`); **"PO Not Found in
-MIR" is suppressed from the red bucket while a row is ON ORDER** (it fires on every not-yet-due order by
-construction, and would have made red mean nothing), but still counts on overdue and partial rows;
+MIR" is suppressed from the red bucket while a row is ON ORDER** (it would have made red mean nothing)
+but still counts on overdue and partial rows - the category itself is no longer raised for such an
+order (see above), so this suppression is now a second guard rather than the only one;
 **overdue is not a fifth bucket** (the status pill already turns red); and **`partial` wins over
 `onOrder`** when Import can report both. Details in [frontend.md](frontend.md).
 
@@ -491,7 +503,9 @@ is a `_PlantConfig` factory producing three views, the other a single view for a
 MIR number, party or material. `PATCH .../mir-match` takes `{itemRef, mirNo, reason, clear}`: a
 non-empty `mirNo` pins, an empty `mirNo` pins the line as deliberately unmatched, `clear: true` removes
 the pin. An unknown `mirNo` is a 400; a retired PO or unknown `itemRef` a 404. The response carries
-`manualPinsApplied`, `stalePins` and `unfilledPins` from the synchronous `run_full_match()`.
+`manualPinsApplied`, `stalePins` and `unfilledPins` from the synchronous `run_full_match()`. The
+pin row is written before that re-match (no `ATOMIC_REQUESTS`), so a request killed mid-match keeps
+the pin and the next scheduled match applies it.
 `unfilledPins` lists pins whose MIR document had no free row left (a newer pin holds it, or the number
 is gone from MIR): the line is left unmatched, never auto-matched, and the picker tells the user
 instead of saying "Matched".
@@ -600,15 +614,22 @@ fields and the same clear-on-undo rule. Endpoints: `PATCH [<p>/]purchase-orders/
 `import_flags.py`'s flags are per item and carry a stable code). The rows ride back on each PO as
 `flagDismissals` (domestic list payload, import detail payload).
 
-Frontend: a dismissed flag **stays visible but muted** (struck through, tooltip with who / when / why),
-wired by one shared `wireDismissLinks()`; the optional reason is a plain `window.prompt()`.
+Frontend: a dismissed flag **stays visible but muted** in the PO's Flags & Corrections tab (struck
+through, tooltip with who / when / why), wired by one shared `wireDismissLinks()`; the optional reason is
+a plain `window.prompt()`. **It stops counting everywhere else** (2026-09-25): the KPI cards, "Filter by
+Flags", the row flags and row tint all read it through `flags.js`'s `poFlagDismissed()`. Until then only
+the modal honoured it, so a dismissed "Rate Mismatch in MIR" still counted on the Rate Mismatches card.
+An Import F1-F7 code stops counting only once every one of its per-line flags is dismissed. The Plant
+Data Correction email reads match-level dismissals only (`dismissed_by_override`), not these.
 
 ### Import purchases
 
 Import POs for all three plants are parsed by the shared `parsers/import_po_csv.py`, with a read-time
-layer in `import_flags.py`: shipment-stage rollup, PO-vs-BOE qty discrepancy, delivery-date status,
-partial-delivery detection, and 7 data-quality flags (`po_flags()`). That layer predates import↔MIR
-matching and is still used.
+layer in `import_flags.py`: shipment-stage rollup, PO-vs-BOE qty discrepancy, the receipt-based
+Material Inwarded / Partial Delivered / delivery-date status, and 7 data-quality flags (`po_flags()`).
+The receipt-based three read each line's MIR match with the same rules as Domestic's status buckets
+(2026-09-25); before that they read customs clearance and BOE quantities, so a cleared shipment never
+received at the plant read Delivered, and the cards' tooltips described something the code did not count.
 
 `imports_views.py` is cross-plant by design (plant is a path segment; all three import CSVs are
 byte-identical, so there is no per-plant divergence to protect). `_PLANTS` maps each plant key to its PO
@@ -621,10 +642,23 @@ booleans are read with `getattr` defaults because not every plant's import match
 Each line also carries its canonical `category` / `subCategory`, so Raw Material Analysis can file an
 import-only material row correctly.
 
-There is **no server-computed PO-level MIR rollup for imports**: `import-po.js`'s `renderImportPoList()`
-computes `poInwarded` / `poQtyDiscMir` / `poRateDiscMir` client-side (a PO has a condition if any line
-does). The server's PO-level `qtyDiscrepancy` (`import_flags.po_has_qty_discrepancy()`) is the PO-vs-BOE
-check, not a MIR one.
+PO-level receipt rollups are server-computed: `materialInwarded`, `partialDelivery` and
+`deliveryDateStatus` on each list row (`import_flags.py`). The MIR *mismatch* rollups are not:
+`import-po.js`'s `renderImportPoList()` computes `poQtyDiscMir` / `poRateDiscMir` client-side (a PO has a
+mismatch if any live line does). The server's PO-level `qtyDiscrepancy`
+(`import_flags.po_has_qty_discrepancy()`) is the PO-vs-BOE check, not a MIR one.
+
+**The import rate check accepts the landed basis too** (2026-09-25): a cleared line agrees if MIR's
+final rate matches landed value / BOE qty within 0.01%, or its rate matches the pre-duty rate exactly -
+see [matching-engine.md](matching-engine.md#import-po--mir-convert-currency-first). `mirMatch` carries
+the pair as `landedRateInr` / `receivedFinalRate` (null until cleared), from
+`matching_core.import_landed_rates()`, and the PO modal's card shows it as a "Landed rate" row. It also
+carries `mirExchangeRate` / `exchangeRateMismatched` (a rate gap that is a different customs exchange
+rate - an info "Exchange Rate Differs from MIR" category, not a Rate Mismatch) and `receiptShare` (a
+line's share of one receipt covering several lines of its Bill of Entry; `_counted_mirs()` scales each
+row's `qtyInPoUnit` / `value` and the `received` totals by it, leaving the row's own `qty`). Tier
+`boe_number` means MIR cites the line's BOE number and reads as high confidence. See
+[matching-engine.md](matching-engine.md#import-po--mir-convert-currency-first).
 
 **Every import endpoint filters `is_active=True`** - the list, `purchase_order_detail`,
 `correct_field`, `mir_candidates` and `set_mir_match` - so a retired import PO 404s by direct URL the
@@ -873,8 +907,9 @@ endpoints.
 - **`_mir_match_dict()` / `_item_dict()` / `_po_dict()`**: the payload. `_mir_match_dict()` adds
   `orderedRateInr` / `orderedValueInr` from `_import_rate_value_inr()` and reads optional columns with
   `getattr` defaults. `_item_dict()` adds `shipmentStage`, `qtyDiscrepancy[Pct]`, `deliveryDateStatus`
-  (from `import_flags`, with `timezone.localdate()`). `_po_dict(detail=True)` adds vendor / billing
-  fields, corrections and flag dismissals.
+  (from `import_flags`, with `timezone.localdate()`). `_po_dict()` adds the PO-level
+  `shipmentStage`, `deliveryDateStatus`, `partialDelivery`, `materialInwarded` and `qtyDiscrepancy`;
+  `_po_dict(detail=True)` adds vendor / billing fields, corrections and flag dismissals.
 - **`purchase_orders`**: all readable plants' active POs, sorted newest first; out-of-scope plants are
   skipped silently. **`purchase_order_detail`**: 404 for unknown or out-of-scope plant; does not filter
   `is_active`.

@@ -630,8 +630,8 @@ downloads); the panel and badges are in [frontend.md](frontend.md). Five things 
 **`sync-status` serves its copy of the counts from a 60-second per-plant cache**
 (`_domestic_base._cached_mir_without_po_summary()`). Measured 135/53/163 ms (HRS/Achhad/Vapi) against a
 `/sync-status` that otherwise answers in ~20-30 ms, on the endpoint the freshness watcher polls every
-60 s. The cost is `_names_known_po()` scanning every known PO number per row - the same shape as
-`_po_number_contradicts()`, and **not** something to work around by re-deriving a faster second idea
+60 s. The cost is `names_a_held_po()` scanning every known PO number per row - the shape the
+contradiction gate had before it read `_cited_po_numbers()`'s cache - and **not** something to work around by re-deriving a faster second idea
 of what a known PO number is. What is cached is plant-derived data, not a response, and the
 permission check still runs per request - this is not the
 [`cache_page` trap](auth-security-email.md#non-negotiables). `/mir-without-po` itself is uncached.
@@ -713,6 +713,67 @@ order. The landed figure keeps its own comparison, the final-value check. Vapi w
 `import_extended_fields=True` (all three plants now), imports also get the tax-type, taxable-value
 (`_import_total_value_inr()`, single-line POs only) and final-value checks, and the extended columns
 are written.
+
+**Rate is accepted on either of two bases - pre-duty or landed (2026-09-25).** MIR books an import at
+its duty-paid cost, so the pre-duty `net_price x exchange_rate` read the duty itself as a rate
+mismatch: on Vapi's 27 matched import lines, 5 sat at exactly 8.25% (7.5% basic duty plus the 10%
+surcharge on it). The Imports CSV's `total_inclusive_value` is the landed cost (assessable value + duty
++ IGST) and MIR's final value is taxable value + IGST, so for a **cleared** line (BOE number, landed
+value and BOE qty all present) `_landed_rate_diff()` also compares landed value / BOE qty against MIR's
+final value / qty received. The stored `rate_diff_pct` is 0 when that per-unit gap is within
+`_LANDED_RATE_ROUNDING_PCT` (0.01% - two derived rates carry the paise their totals were rounded to),
+else the smaller of the two gaps. Rules that came out of measuring it:
+
+- **Per unit, never as totals.** The landed value covers the BOE qty and a receipt covers what
+  arrived, so totals turn a part-delivery into a value gap (1000001560: 22.3% apart as totals, 0.00%
+  per unit). The quantity basis also differs row to row - some rows' `net_value` covers the full PO
+  qty, the landed value always the BOE qty - so a ratio of landed to net value is not safe either.
+- **Either basis agreeing is enough.** The landed figure alone newly flagged 1000001450 and the second
+  1000001560 shipment, where it runs 0.46% and 1.3% high while the pre-duty rate matches exactly.
+- **Only the diff changes, not scoring.** Ranking still uses the pre-duty rate, so no pairing moved:
+  re-matched on local data, 0 of 1,044 pairings changed, and Vapi import lines with a rate gap went
+  19 -> 14 (POs on the card 18 -> 13). What remains is mostly exchange-rate difference (0.4-3%), the
+  RoDTEP Neoprene lines about 9% above even the landed rate (likely scrip-paid duty missing from the
+  landed figure - unconfirmed), and source-data errors (1000001508's blank exchange rate).
+
+**Import receipts pair by Bill of Entry number first (2026-09-25).** MIR enters an import receipt's BOE
+number in its `invoice_no` column (`_MatchConfig.mir_boe_number`), an exact per-shipment key: 46 Vapi
+MIR rows cite one of the Imports CSV's 43 BOE numbers. The matcher paired imports on vendor, material
+and money instead, and Akros ships Chloroprene in identical 16,000 KG loads, so 9 of Vapi's 27 import
+pairings held another shipment's receipt (1000001357 and 1000001446 held each other's) - which is what
+most of the "exchange-rate differences" of 0.4-3% actually were - and about 20 lines with a BOE-cited
+receipt sat unmatched. `_boe_settlement()` runs in `run_full_match()` right after manual pins, ahead of
+PO-number groups (a BOE names one shipment, a PO number a whole order), and writes tier `boe_number`:
+
+- **One corroborating vote is still required** - the vendor or the material agrees - and a MIR row whose
+  PO column names a different order of ours is skipped, so a domestic invoice that happens to carry the
+  same number cannot attach.
+- **Several lines on one BOE**: with at least as many receipts as lines, one receipt per line by
+  `_assign_pairs()`, extras to the line they identify best. With FEWER receipts than lines the BOE was
+  booked as one receipt (a 2,000 + 14,000 KG BOE as one 16,000 KG row), so every line takes every row
+  and counts `receipt_share` = its BOE qty / the BOE's total, and is compared at the BOE's blended rate
+  and landed rate (`_blended_matchables()`) - that receipt is booked at one blended rate (1000001317:
+  MIR43/05's 216.09 is exactly the qty-weighted rate of lines at 6.00, 4.50 and 2.20 USD). Blending is
+  skipped when any line of the BOE has no exchange rate, so one line's bare foreign price cannot spread.
+- **A BOE shared by lines with different Bills of Lading is not trusted** - separate shipments cannot
+  clear on one BOE (1000001560's second shipment carries its first's BOE in the CSV, while its MIR
+  receipt cites another) - and is left to ordinary matching.
+- It runs in `run_full_match()` only; the standalone `match_import_po_mir_line_item()` (no production
+  caller) clears `receipt_share` / `mir_exchange_rate` / `exchange_rate_mismatched` rather than guess.
+
+**An exchange-rate difference is its own info flag, not a rate mismatch (2026-09-25).** After BOE
+pairing the remaining 0.4-3% gaps all had one shape: MIR works at a different customs-style exchange
+rate than the CSV row records (1000001351: CSV 92.50, MIR 94.20; 1000001452: CSV 94.20, MIR 96.60), and
+the MIR rates are ones the CSV itself uses on other shipments of the same weeks. On a cleared line with a
+rate mismatch, `_exchange_rate_explains()` computes the implied rate (CSV rate x MIR final rate / landed
+rate, per unit) and, when it sits on the 0.05 grid every customs rate sits on (within
+`_EXCHANGE_RATE_GRID_TOLERANCE` 0.002; the real cases land within 0.0001), differs from the CSV's by at
+least one step and moves less than `_EXCHANGE_RATE_MAX_MOVE_PCT` (5%), sets `exchange_rate_mismatched`
+and `mir_exchange_rate`, stores `rate_diff_pct` 0 and clears `rate_mismatched`. Off-grid gaps stay rate
+mismatches (1000001360 implies 100.08, the RoDTEP lines 101.99). Measured on local data after both
+changes: Vapi import lines matched 27 -> 50, red rate mismatches 14 -> 8 (2 RoDTEP, 1360, 1370 at 0.02%,
+and source-data errors on 1318, 1397 and 1508), 10 lines on the exchange-rate flag, 0 domestic pairings
+changed.
 
 **Which import quantity is compared:** `qty_as_per_boe`, not `qty_as_per_po`. The Bill of Entry
 quantity is what customs recorded as clearing - the equivalent of what MIR logs as received.
@@ -848,18 +909,29 @@ by the full run.
 
 ### Two hot paths in matching are cached or short-circuited for a reason
 
-`_po_number_contradicts()` scans **every known PO number** for **every candidate** of **every line
-item**, so anything it calls is on a cubic-ish path. Profiled on one Vapi run: `_po_number_matches`
-at 851,590 calls and `_po_tokens` at 1,691,328 - **12.5 s of a 15.6 s run**.
+`_po_number_contradicts()` runs for **every candidate** of **every line item**, and its question -
+does this MIR cell name one of our orders? - is a scan over **every known PO number**. So anything it
+calls is on a cubic-ish path.
 
+- **The scan is asked once per MIR cell, not once per line item.** The answer depends on the cell and
+  the known set alone, never on the PO being matched, so the gate reads it from `_cited_po_numbers()`
+  (`lru_cache`d on `(cell, known frozenset)`) and does only the one per-item comparison itself.
+  `_names_known_po()` reads the same cache. Before this (2026-09-25) the gate re-scanned per item:
+  profiled on Vapi, **26.8 million** `_po_number_matches` calls, ~80 s of a 110 s profiled run
+  (53 s unprofiled). That pushed a manual MIR pin's synchronous re-match past gunicorn's 30 s worker
+  timeout on Render - the save came back as an HTML 502, "Could not save: unexpected response",
+  while the pin row itself had already committed. Now 14.5 s unprofiled, with every pairing at all
+  three plants identical (compared row for row, old gate against new, both rolled back).
+  `test_known_set_is_scanned_once_per_mir_cell_not_once_per_line_item` counts the calls.
 - `_po_tokens` is `lru_cache`d (8192). It is a pure function of a short string from a corpus of well
   under 2,000 values, and returns a **tuple** so a cached value cannot be mutated by one caller and
-  handed back corrupted to the next. `_cited_po_numbers()` and `_vendor_similarity()` are cached for
-  the same reason.
+  handed back corrupted to the next. `_cited_po_numbers()` returns a frozenset and
+  `_vendor_similarity()` is cached for the same reason.
 - `_po_number_matches` skips the `legacy_po_matches()` fallback unless **both** sides contain `/`.
   Without that guard it ran 844,956 times in one Vapi run, none of which could match.
 
-`_names_known_po()` has the same shape and is why `sync-status` caches `mir_without_po`'s summary.
+`names_a_held_po()` (reporting, no shape floor) still scans per call, which is why `sync-status`
+caches `mir_without_po`'s summary.
 
 ### The five core helpers live once, in `matching_core.py`
 
@@ -928,8 +1000,10 @@ below); trust the code.
   `legacy_po_matches()` fallback.
 - `_names_this_po(po_number, raw)` - `_po_number_matches` on the stored number or its
   `clean_po_number()` form.
-- `_names_known_po(raw, known_pos)` - raw is PO-shaped and names any known number. Used by the
-  candidate index.
+- `_names_known_po(raw, known_pos)` - raw is PO-shaped and names any known number, read from the
+  `_cited_po_numbers()` cache. Used by the candidate index.
+- `_as_frozenset(values)` - `values` as a frozenset so it can key that cache; a frozenset is
+  returned as is.
 - `cites_a_po(raw, known_pos)` / `names_a_held_po(raw, known_pos)` - reporting only, never matching:
   "has a PO" is PO-shaped or names a held order; the second is the shape-free "names a held order".
   Used by `mir_without_po.py` and `no_po_vendors.purchases_without_po_summary()`.
@@ -964,7 +1038,8 @@ below); trust the code.
 **Gates and ranking**
 
 - `_po_number_contradicts(po_number, raw, known)` - raw is PO-shaped, doesn't name this order, and
-  names another known one.
+  names another known one (`_cited_po_numbers()` is non-empty - see
+  [hot paths](#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason)).
 - `_date_verdict(config, po_date, mir_date)` - 0 (unknown), `DATE_IMPOSSIBLE`, 0.6 (early within
   grace) or linear decay to 0.15.
 - `_identification_pool(...)` - applies the gates and 2-of-3 (or vendor + one), scores each
@@ -987,6 +1062,17 @@ below); trust the code.
 - `_score_components()` / `_score()` - weighted financial closeness and `field_coverage`.
 - `_import_rate_value_inr(line)` / `_import_total_value_inr(total, fx)` - currency conversion; value
   is `net_value x exchange_rate`, pre-duty.
+- `_landed_rate_diff(config, item, mir, qty_a, qty_received, group, uom_mismatch)` - the landed-basis
+  rate gap `_diffs_and_flag()` also accepts, set only when `_Matchable.landed_value` is (a cleared
+  import line); `_LANDED_RATE_ROUNDING_PCT` is its rounding allowance. `import_landed_rates(config,
+  line, mir_rows)` returns the same pair per unit for the PO modal's card. See
+  [Import PO ↔ MIR](#import-po--mir-convert-currency-first).
+- `_boe_key(value)`, `_boe_settlement(config, import_items, items_by_key, skip_keys, claimed, *, scorer,
+  known_pos)` -> `{key: (candidates, share, matchable)}`, `_blended_matchables()` - Bill of Entry
+  pairing and shared receipts; `_exchange_rate_explains(config, line, mir_rows, landed_value=None)` ->
+  `(implied rate, is exchange-rate difference)`, with `_EXCHANGE_RATE_GRID` /
+  `_EXCHANGE_RATE_GRID_TOLERANCE` / `_EXCHANGE_RATE_MAX_MOVE_PCT`. `TIER_BOE_NUMBER = "boe_number"`.
+  See [Import PO ↔ MIR](#import-po--mir-convert-currency-first).
 - `_save_po_mir_match(model, line, previous_mir_id, defaults)` - every PO↔MIR `update_or_create`;
   clears `dismissed_*` when the line's MIR row changed. `run_full_match()` reads every line's previous
   MIR in one query per model; the single-item paths pass `_LOOK_UP`.
@@ -1123,15 +1209,24 @@ regex runs per distinct description), a vendor-excluded row never counted again 
 
 ### apps/services/import_flags.py
 
-Read-time, dependency-free import PO derivations used by `imports_views.py`, independent of MIR
-matching: `shipment_stage()` / `po_shipment_stage()` (Placed → Shipped (BL) → Cleared (BOE), PO
-takes the least advanced), `qty_discrepancy()` / `po_has_qty_discrepancy()` (PO vs BOE; missing BOE
-qty is not a discrepancy), `delivery_date_status()` / `po_delivery_date_status()` (cleared is always
-Delivered; callers must pass `timezone.localdate()`), `partial_delivery()` (BOE < ordered only), and
-data-quality flags F1-F7 (`item_flags()`, plus F3 in `po_flags()` for mixed landed-cost completeness
-within one BOE). Its flag `code`s feed Import flag dismissal keys (`<code>:<item_id>`). The module
-docstring's "no MIR-equivalent data source for imports yet" predates import↔MIR matching; BOE↔MIR is
-done by `match_import_po_mir_line_item()`.
+Read-time, dependency-free import PO derivations used by `imports_views.py`. It writes nothing; the
+receipt-based rollups read each line's match off `item.mir_match` (via `getattr`, so a line with no
+match and a test stand-in both read as "no receipt"):
+
+- `shipment_stage()` / `po_shipment_stage()` - Placed → Shipped (BL) → Cleared (BOE); the PO takes the
+  least advanced.
+- `qty_discrepancy()` / `po_has_qty_discrepancy()` - PO vs BOE; a missing BOE qty is not a discrepancy.
+- `item_received()` / `item_fully_received()` / `material_inwarded()` - the Domestic rules from
+  `flags.js`'s `lineItemArrived()` / `lineItemFullyReceived()`: a dismissed match is no receipt, a
+  short receipt is not full, an over-delivered one is, and a null direction is not treated as short.
+- `delivery_date_status()` / `po_delivery_date_status()` - Delivered once fully received in MIR,
+  otherwise Unknown / Overdue / On Order from the date; callers must pass `timezone.localdate()`.
+  **Customs clearance is not delivery** (2026-09-25): the old rule called every cleared line
+  Delivered, so on Vapi 15 of 38 cleared POs with no MIR receipt could never read Overdue.
+- `partial_delivery()` - something received in MIR but not every line fully received. A BOE below the
+  ordered qty is a partial shipment, counted by the PO-vs-BOE qty card instead.
+- Data-quality flags F1-F7 (`item_flags()`, plus F3 in `po_flags()` for mixed landed-cost
+  completeness within one BOE). Their `code`s feed Import flag dismissal keys (`<code>:<item_id>`).
 
 ### apps/core/management/commands/match_hrs.py
 

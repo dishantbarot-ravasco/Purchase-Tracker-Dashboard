@@ -157,3 +157,239 @@ class TestImportPoMirCurrencyConversion:
         run_full_match()
 
         assert HRSImportPOMirMatch.objects.filter(po_line_item=line_item).count() == 1
+
+
+def _cleared_duty_paid_line(po, *, boe_number="BOE1", duty=Decimal("1.0825"), igst=Decimal("1.18")):
+    """A cleared line whose landed value carries duty and IGST, exactly as the
+    Imports master CSV's total_inclusive_value does: $1.95 x 93.80 =
+    Rs.182.91 pre-duty per KG, x 1.0825 (7.5% basic duty plus its 10%
+    surcharge) x 1.18 IGST per KG landed, on the 100 KG BOE."""
+    line_item = _make_import_line_item(po)
+    line_item.boe_number = boe_number
+    line_item.total_inclusive_value = (Decimal("100") * Decimal("182.91") * duty * igst).quantize(Decimal("0.01"))
+    line_item.save()
+    return line_item
+
+
+def _duty_paid_mir(qty=Decimal("100"), rate=Decimal("198.00")):
+    """MIR books an import at its duty-paid rate (182.91 x 1.0825 = 198.00),
+    with IGST on top in the final value."""
+    mir = _make_mir_entry(qty=qty, rate=rate)
+    mir.invoice_final_value = (qty * rate * Decimal("1.18")).quantize(Decimal("0.01"))
+    mir.save()
+    return mir
+
+
+@pytest.mark.django_db
+class TestImportLandedRate:
+    """The rate check also accepts the landed basis (2026-09-25): on Vapi 5
+    lines read exactly 8.25% "rate mismatch", which was the customs duty
+    itself. See matching_core._landed_rate_diff()."""
+
+    def test_duty_paid_mir_rate_agrees_with_the_landed_rate(self):
+        po = _make_import_po()
+        line_item = _cleared_duty_paid_line(po)
+        _duty_paid_mir()
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.rate_diff_pct == Decimal("0")
+        assert match.rate_mismatched is False
+
+    def test_uncleared_line_is_still_compared_pre_duty_only(self):
+        """No BOE yet means no landed figure to trust, so the same 8.25% gap
+        is still reported."""
+        po = _make_import_po()
+        line_item = _cleared_duty_paid_line(po, boe_number="")
+        _duty_paid_mir()
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.rate_mismatched is True
+        assert Decimal("8") < match.rate_diff_pct < Decimal("8.5")
+
+    def test_part_delivery_is_compared_per_unit_not_as_totals(self):
+        """60 of 100 KG received: the totals are 40% apart, the rate is not."""
+        po = _make_import_po()
+        line_item = _cleared_duty_paid_line(po)
+        _duty_paid_mir(qty=Decimal("60"))
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.rate_mismatched is False
+        assert match.qty_mismatched is True
+
+    def test_a_real_gap_on_both_bases_still_flags_with_the_closer_one(self):
+        """MIR 3% above even the duty-paid rate: flagged, and the stored gap
+        is the landed-basis 3%, not the pre-duty 11.5%."""
+        po = _make_import_po()
+        line_item = _cleared_duty_paid_line(po)
+        _duty_paid_mir(rate=Decimal("203.94"))
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.rate_mismatched is True
+        assert Decimal("2.9") < match.rate_diff_pct < Decimal("3.1")
+
+    def test_exact_pre_duty_rate_still_agrees_when_landed_runs_high(self):
+        """Either basis agreeing is enough: a MIR rate equal to the pre-duty
+        rate is not flagged because the landed figure carries a charge MIR
+        does not (seen on Vapi 1000001450, landed 0.46% high)."""
+        po = _make_import_po()
+        line_item = _cleared_duty_paid_line(po, duty=Decimal("1.0047"))
+        _make_mir_entry(rate=Decimal("182.91"))
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.rate_mismatched is False
+
+
+def _boe_line(po, *, boe, qty=Decimal("100"), net_price=Decimal("1.95"), fx=Decimal("93.80"), bl="", item_id="1"):
+    """A cleared, duty-free line: landed = qty x price x fx x 1.18 IGST."""
+    line = HRSImportPOLineItem.objects.create(
+        purchase_order=po, item_id=item_id, description="PTFE Coated Fabric", hsn="5903",
+        qty_as_per_po=qty, qty_as_per_boe=qty, uom="KG", net_price=net_price, net_value=qty * net_price,
+        tax_type="IGST", currency_after_taxes="INR", exchange_rate=fx, boe_number=boe, bill_of_lading_number=bl,
+        total_inclusive_value=(qty * net_price * fx * Decimal("1.18")).quantize(Decimal("0.01")),
+    )
+    return line
+
+
+def _receipt(*, invoice_no, qty=Decimal("100"), rate=Decimal("182.91"), ref="7", mir_no="MIR001",
+             party="Global Polymers Inc", material="PTFE Coated Fabric"):
+    mir = _make_mir_entry(qty=qty, rate=rate, source_row_ref=ref, party_name=party, material_description=material)
+    mir.mir_no = mir_no
+    mir.invoice_no = invoice_no
+    mir.invoice_final_value = (qty * rate * Decimal("1.18")).quantize(Decimal("0.01"))
+    mir.save()
+    return mir
+
+
+@pytest.mark.django_db
+class TestImportBoeNumberPairing:
+    """MIR's invoice_no on an import receipt is the Bill of Entry number
+    (2026-09-25) - see matching_core._boe_settlement()."""
+
+    def test_the_receipt_citing_the_boe_wins_over_a_better_scoring_one(self):
+        """Two identical 100 KG receipts from the same vendor: the matcher
+        used to pick on money alone, which is how 9 of Vapi's 27 import
+        pairings held another shipment's receipt."""
+        po = _make_import_po()
+        line = _boe_line(po, boe="8826527")
+        _receipt(invoice_no="SUPPLIER-INV-1", ref="7", mir_no="MIR-OTHER")
+        cited = _receipt(invoice_no="8826527", qty=Decimal("99"), ref="8", mir_no="MIR-BOE")
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line)
+        assert match.mir_entry_id == cited.id
+        assert match.tier == "boe_number"
+
+    def test_swapped_receipts_go_to_the_shipment_they_cite(self):
+        """1000001357 and 1000001446 held each other's receipts."""
+        po_a, po_b = _make_import_po("IMPA"), _make_import_po("IMPB")
+        line_a = _boe_line(po_a, boe="8826527")
+        line_b = _boe_line(po_b, boe="8329085")
+        for_a = _receipt(invoice_no="8826527", ref="7", mir_no="MIR-A")
+        for_b = _receipt(invoice_no="8329085", ref="8", mir_no="MIR-B")
+
+        run_full_match()
+
+        assert HRSImportPOMirMatch.objects.get(po_line_item=line_a).mir_entry_id == for_a.id
+        assert HRSImportPOMirMatch.objects.get(po_line_item=line_b).mir_entry_id == for_b.id
+
+    def test_a_citing_row_from_another_vendor_for_another_material_does_not_attach(self):
+        po = _make_import_po()
+        line = _boe_line(po, boe="8826527")
+        _receipt(invoice_no="8826527", party="Unrelated Traders", material="Steel Wire Rod")
+
+        run_full_match()
+
+        assert not HRSImportPOMirMatch.objects.filter(po_line_item=line, tier="boe_number").exists()
+
+    def test_one_receipt_for_a_whole_boe_is_shared_by_its_lines(self):
+        """Akros books a 2,000 KG and a 14,000 KG line as one 16,000 KG
+        receipt at one blended rate. Each line counts its share and is
+        compared at the BOE's blended rate - 1000001317's three lines read
+        62%, 49% and 4% rate gaps against their own rates."""
+        po = _make_import_po()
+        small = _boe_line(po, boe="9055911", qty=Decimal("2000"), net_price=Decimal("6.00"), item_id="1")
+        large = _boe_line(po, boe="9055911", qty=Decimal("14000"), net_price=Decimal("1.80"), item_id="2")
+        blended = (Decimal("2000") * Decimal("6.00") + Decimal("14000") * Decimal("1.80")) / Decimal("16000") * Decimal("93.80")
+        _receipt(invoice_no="9055911", qty=Decimal("16000"), rate=blended.quantize(Decimal("0.0001")))
+
+        run_full_match()
+
+        m_small = HRSImportPOMirMatch.objects.get(po_line_item=small)
+        m_large = HRSImportPOMirMatch.objects.get(po_line_item=large)
+        assert m_small.mir_entry_id == m_large.mir_entry_id
+        assert m_small.receipt_share == Decimal("0.125000")
+        assert m_large.receipt_share == Decimal("0.875000")
+        for m in (m_small, m_large):
+            assert m.qty_mismatched is False
+            assert m.rate_mismatched is False
+
+    def test_a_boe_shared_by_different_bills_of_lading_is_not_trusted(self):
+        """1000001560: two shipments, two Bills of Lading, one BOE number
+        in the CSV - a copy error, so the BOE is not used to pair them."""
+        po = _make_import_po()
+        a = _boe_line(po, boe="3587956", bl="BL-ONE", item_id="1")
+        b = _boe_line(po, boe="3587956", bl="BL-TWO", item_id="2")
+        _receipt(invoice_no="3587956", ref="7", mir_no="MIR-A")
+        _receipt(invoice_no="3729236", ref="8", mir_no="MIR-B")
+
+        run_full_match()
+
+        tiers = set(HRSImportPOMirMatch.objects.filter(po_line_item__in=[a, b]).values_list("tier", flat=True))
+        assert "boe_number" not in tiers
+
+
+@pytest.mark.django_db
+class TestImportExchangeRateDifference:
+    """A rate gap that is a different customs exchange rate is reported as
+    one, not as a rate mismatch (2026-09-25) - see
+    matching_core._exchange_rate_explains()."""
+
+    def test_a_customs_style_rate_difference_is_an_exchange_rate_flag(self):
+        """1000001351: CSV 92.50, MIR works at 94.20."""
+        po = _make_import_po()
+        line = _boe_line(po, boe="8994955", fx=Decimal("92.50"))
+        _receipt(invoice_no="8994955", rate=(Decimal("1.95") * Decimal("94.20")).quantize(Decimal("0.0001")))
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line)
+        assert match.exchange_rate_mismatched is True
+        assert match.rate_mismatched is False
+        assert match.rate_diff_pct == Decimal("0")
+        assert match.mir_exchange_rate == Decimal("94.2000")
+
+    def test_an_off_grid_gap_stays_a_rate_mismatch(self):
+        """1000001360: MIR implies 100.08, not a customs rate - a real gap."""
+        po = _make_import_po()
+        line = _boe_line(po, boe="8751721", fx=Decimal("94.20"))
+        _receipt(invoice_no="8751721", rate=(Decimal("1.95") * Decimal("100.076")).quantize(Decimal("0.0001")))
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line)
+        assert match.exchange_rate_mismatched is False
+        assert match.rate_mismatched is True
+        assert match.mir_exchange_rate is not None
+
+    def test_a_move_too_large_for_an_exchange_rate_stays_a_rate_mismatch(self):
+        """On the grid but 10% away - not a plausible exchange-rate move."""
+        po = _make_import_po()
+        line = _boe_line(po, boe="8751722", fx=Decimal("94.20"))
+        _receipt(invoice_no="8751722", rate=(Decimal("1.95") * Decimal("103.60")).quantize(Decimal("0.0001")))
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line)
+        assert match.exchange_rate_mismatched is False
+        assert match.rate_mismatched is True

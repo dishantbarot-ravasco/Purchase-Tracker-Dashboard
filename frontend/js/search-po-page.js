@@ -3,6 +3,10 @@
 // config/security_headers.py). Content unchanged from the inline version -
 // a straight extraction, not a rewrite.
 let POS_BY_PLANT = {}; // lazy-loaded per plant, cached for this page's lifetime
+// Import orders come from one combined cross-plant endpoint, each row tagged
+// with its own `plant`. null = the fetch failed (warned about, never read as
+// "no import orders").
+let IMPORT_POS = [];
 let loadPromise = null;
 let dataReady = false; // true once loadPromise has actually resolved - see runSearch()'s spinner check
 
@@ -50,6 +54,15 @@ let dataReady = false; // true once loadPromise has actually resolved - see runS
 // is still in flight (or already resolved) just returns the same promise.
 function ensureLoaded() {
   if (loadPromise) return loadPromise;
+  const importLoad = (async () => {
+    try {
+      const data = await apiImports('/purchase-orders');
+      IMPORT_POS = data.purchaseOrders || [];
+    } catch (e) {
+      console.error('search-po: failed to load import purchase orders:', e);
+      IMPORT_POS = null; // failed, not empty - see renderResults()
+    }
+  })();
   loadPromise = Promise.all(PLANT_KEYS.map(async key => {
     try {
       const data = await apiForPlant(key, '/purchase-orders');
@@ -58,7 +71,7 @@ function ensureLoaded() {
       console.error('search-po: failed to load purchase orders for ' + key + ':', e);
       POS_BY_PLANT[key] = null; // failed, not empty - see renderResults()
     }
-  })).then(() => { dataReady = true; });
+  }).concat([importLoad])).then(() => { dataReady = true; });
   return loadPromise;
 }
 
@@ -173,14 +186,22 @@ function renderResults(f) {
   const matches = [];
   PLANT_KEYS.forEach(key => {
     (POS_BY_PLANT[key] || []).forEach(po => {
-      if (poMatchesFilters(po, f)) matches.push({ po, plantKey: key });
+      if (poMatchesFilters(po, f)) matches.push({ po, plantKey: key, kind: 'domestic' });
     });
+  });
+  // Import orders carry the fields poMatchesFilters() reads (poNumber,
+  // vendorName, items[].description, createdDate), so one filter serves
+  // both. A plant key the frontend does not know is skipped rather than
+  // rendered with an undefined label.
+  (IMPORT_POS || []).forEach(po => {
+    if (PLANTS[po.plant] && poMatchesFilters(po, f)) matches.push({ po, plantKey: po.plant, kind: 'import' });
   });
 
   const resultsEl = document.getElementById('resultsArea');
-  const warnHtml = failedPlants.length
-    ? '<div class="search-empty text-red pad-y10">Note: ' + failedPlants.map(k => escapeHtml(PLANTS[k].label)).join(', ') +
-      ' failed to load - results from ' + (failedPlants.length > 1 ? 'those plants are' : 'that plant is') + ' missing. Refresh and try again.</div>'
+  const failedSources = failedPlants.map(k => PLANTS[k].label).concat(IMPORT_POS === null ? ['Import purchase orders'] : []);
+  const warnHtml = failedSources.length
+    ? '<div class="search-empty text-red pad-y10">Note: ' + failedSources.map(escapeHtml).join(', ') +
+      ' failed to load, so ' + (failedSources.length > 1 ? 'their' : 'its') + ' results are missing. Refresh and try again.</div>'
     : '';
 
   // Human-readable recap of what was actually searched for - useful once
@@ -202,7 +223,8 @@ function renderResults(f) {
     '<div class="search-empty pad-b12 text-left fs-12-5">' + matches.length + ' result' + (matches.length > 1 ? 's' : '') + ' for ' + criteria + '</div>' +
     '<div class="search-results">' + matches.map((m, i) => {
       const po = m.po;
-      const matchedCount = (po.items || []).filter(it => it.matched).length;
+      const matchedCount = (po.items || []).filter(it => itemIsMatched(it, m.kind)).length;
+      const value = poValue(po, m.kind);
       const totalCount = (po.items || []).length;
       // When a material filter is active, surface which line item(s) it
       // actually matched - "Vendor A, PO 12345" alone wouldn't otherwise
@@ -220,10 +242,13 @@ function renderResults(f) {
       return '<div class="search-result-card" data-idx="' + i + '" tabindex="0" role="button" aria-label="View details for PO ' + escapeHtml(po.poNumber) + '">' +
         '<div class="search-result-top">' +
           '<span class="search-result-po">' + poNumberHtml + '</span>' +
-          '<span class="search-result-plant">' + escapeHtml(PLANTS[m.plantKey].label) + '</span>' +
+          '<span class="search-result-badges">' +
+            (m.kind === 'import' ? '<span class="search-result-plant search-result-import">Import</span>' : '') +
+            '<span class="search-result-plant">' + escapeHtml(PLANTS[m.plantKey].label) + '</span>' +
+          '</span>' +
         '</div>' +
         '<div class="search-result-meta">' + vendorHtml + ' &middot; Created ' + escapeHtml(formatDateIN(po.createdDate)) +
-          ' &middot; ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : 'Value not recorded') +
+          ' &middot; ' + (value != null ? formatInr(value) : 'Value not recorded') +
           ' &middot; ' + matchedCount + ' / ' + totalCount + ' line items matched to MIR</div>' +
         materialHtml +
       '</div>';
@@ -243,8 +268,25 @@ function renderResults(f) {
 // space, a slash and brackets (e.g. '3000001104 (Changed Purchase Order)',
 // 'HRS/HO/26-27/003'), and a material description is free text from a
 // spreadsheet.
-function dashboardPoHref(plantKey, poNumber) {
-  return '/?plant=' + encodeURIComponent(plantKey) + '&po=' + encodeURIComponent(poNumber);
+//
+// `kind=import` opens Import Purchases instead: one PO number can exist as
+// both a Domestic and an Import order, so the number alone cannot say which
+// one was clicked.
+function dashboardPoHref(plantKey, poNumber, kind) {
+  return '/?plant=' + encodeURIComponent(plantKey) + '&po=' + encodeURIComponent(poNumber) +
+    (kind === 'import' ? '&kind=import' : '');
+}
+
+// A Domestic line carries a flat `matched`; an Import line carries its MIR
+// match as an object (imports_views.py's _mir_match_dict()), null when none.
+function itemIsMatched(it, kind) {
+  return kind === 'import' ? !!it.mirMatch : !!it.matched;
+}
+
+// Domestic sends the PO total incl. tax; Import sends its lines' summed
+// total inclusive value, already in INR.
+function poValue(po, kind) {
+  return kind === 'import' ? po.totalInclusiveValue : po.totalInclTax;
 }
 function dashboardMaterialHref(description) {
   // No plant: Raw Material Analysis rolls a material up across all three
@@ -258,11 +300,16 @@ function dashboardMaterialHref(description) {
 // no match-confidence/flag-severity styling.
 function showDetail(match) {
   const po = match.po;
+  const isImport = match.kind === 'import';
+  // An import line's quantity is the PO's own (qtyAsPerPo), and its price is
+  // in the PO currency, so it is shown as a bare number, never as rupees.
+  const qtyOf = it => isImport ? it.qtyAsPerPo : it.qty;
+  const priceOf = it => it.netPrice == null ? '-' : (isImport ? escapeHtml(String(it.netPrice)) : formatInr(it.netPrice));
   const itemsHtml = (po.items || []).length
-    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price</th><th>MIR Status</th><th>Material</th></tr></thead><tbody>' +
-        po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (it.qty != null ? it.qty : '-') +
-          '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + (it.netPrice != null ? formatInr(it.netPrice) : '-') +
-          '</td><td><span class="status-pill ' + (it.matched ? 'matched">Matched' : 'unmatched">Not yet matched') + '</span></td>' +
+    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price' + (isImport ? ' (PO currency)' : '') + '</th><th>MIR Status</th><th>Material</th></tr></thead><tbody>' +
+        po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (qtyOf(it) != null ? qtyOf(it) : '-') +
+          '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + priceOf(it) +
+          '</td><td><span class="status-pill ' + (itemIsMatched(it, match.kind) ? 'matched">Matched' : 'unmatched">Not yet matched') + '</span></td>' +
           // Per line item, not once for the PO: a PO can carry several
           // different materials, and "stock and consumption for THIS
           // material" is the question a reader has while looking at that row.
@@ -274,19 +321,26 @@ function showDetail(match) {
   const remarksHtml = po.remarks
     ? '<div class="detail-block mt-16"><h4>Remarks</h4><div class="line">' + escapeHtml(po.remarks) + '</div></div>'
     : '';
+  const value = poValue(po, match.kind);
+  // The import list payload carries no vendor GSTIN (a foreign supplier
+  // rarely has one); its shipment fields take that line instead.
+  const vendorExtraHtml = isImport
+    ? '<div class="line">Country of origin: ' + escapeHtml(po.countryOfOrigin || '-') + '</div>' +
+      '<div class="line">Bill of Lading: ' + escapeHtml(po.billOfLadingNumber || '-') + '</div>'
+    : '<div class="line">GSTIN: ' + escapeHtml(po.vendorGstin || '-') + '</div>';
 
   document.getElementById('detailArea').innerHTML =
     '<div class="detail-panel">' +
       '<span class="detail-close" id="detailCloseBtn">&times;</span>' +
       '<div class="detail-title">' + escapeHtml(po.poNumber) + '</div>' +
-      '<div class="detail-meta">' + escapeHtml(PLANTS[match.plantKey].label) + ' &middot; Domestic Purchases</div>' +
+      '<div class="detail-meta">' + escapeHtml(PLANTS[match.plantKey].label) + ' &middot; ' + (isImport ? 'Import Purchases' : 'Domestic Purchases') + '</div>' +
       '<div class="detail-grid">' +
         '<div class="detail-block"><h4>Vendor</h4>' +
           '<div class="line">' + escapeHtml(po.vendorName || '-') + '</div>' +
-          '<div class="line">GSTIN: ' + escapeHtml(po.vendorGstin || '-') + '</div>' +
+          vendorExtraHtml +
         '</div>' +
         '<div class="detail-block"><h4>Commercials</h4>' +
-          '<div class="line">Total incl. tax: ' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</div>' +
+          '<div class="line">' + (isImport ? 'Total inclusive value: ' : 'Total incl. tax: ') + (value != null ? formatInr(value) : '-') + '</div>' +
           '<div class="line">Payment terms: ' + escapeHtml(po.paymentTerms || '-') + '</div>' +
           '<div class="line">Incoterms: ' + escapeHtml(po.incoterms || '-') + '</div>' +
         '</div>' +
@@ -294,7 +348,7 @@ function showDetail(match) {
       '<h4 class="detail-h4-label">Items</h4>' +
       itemsHtml +
       remarksHtml +
-      '<div class="mt-20"><a href="' + escapeHtml(dashboardPoHref(match.plantKey, po.poNumber)) + '" class="btn btn-navy">Open this PO in the dashboard &rarr;</a></div>' +
+      '<div class="mt-20"><a href="' + escapeHtml(dashboardPoHref(match.plantKey, po.poNumber, match.kind)) + '" class="btn btn-navy">Open this PO in the dashboard &rarr;</a></div>' +
     '</div>';
   document.getElementById('detailCloseBtn').onclick = () => { document.getElementById('detailArea').innerHTML = ''; };
   document.getElementById('detailArea').scrollIntoView({ behavior: 'smooth', block: 'start' });

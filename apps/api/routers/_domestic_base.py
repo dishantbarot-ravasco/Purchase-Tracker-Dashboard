@@ -332,6 +332,15 @@ def _counted_mirs(match, po_uom: str = "") -> tuple[list[dict], dict | None]:
     rows = list(match.group_entries.all()) or [match.mir_entry]
     rows.sort(key=lambda m: (m.mir_date.isoformat() if m.mir_date else "", m.mir_no or ""))
     totals = received_against_line(_match_config_for(match), po_uom, rows)
+    # An import line sharing one receipt with the other lines of its Bill of
+    # Entry counts only its share of it (receipt_share, 2026-09-25) - the
+    # same scaling the matcher compared. `qty` stays the row's own figure,
+    # so the receipt still reads as the document it is.
+    share = getattr(match, "receipt_share", None)
+
+    def _scaled(v):
+        return v * share if (v is not None and share is not None) else v
+
     out = [{
         "mirNo": r["mir"].mir_no,
         "mirDate": r["mir"].mir_date.isoformat() if r["mir"].mir_date else None,
@@ -339,14 +348,14 @@ def _counted_mirs(match, po_uom: str = "") -> tuple[list[dict], dict | None]:
         "sheetRow": _sheet_row(r["mir"]),
         "qty": _f_or_none(r["mir"].qty),
         "uom": r["mir"].uom,
-        "qtyInPoUnit": _f_or_none(r["qtyInPoUnit"]),
+        "qtyInPoUnit": _f_or_none(_scaled(r["qtyInPoUnit"])),
         "rate": _f_or_none(r["mir"].rate),
-        "value": _f_or_none(r["value"]),
+        "value": _f_or_none(_scaled(r["value"])),
     } for r in totals["rows"]]
     received = {
-        "qty": _f_or_none(totals["qty"]),
+        "qty": _f_or_none(_scaled(totals["qty"])),
         "rate": _f_or_none(totals["rate"]),
-        "value": _f_or_none(totals["value"]),
+        "value": _f_or_none(_scaled(totals["value"])),
         "comparable": totals["comparable"],
     }
     return out, received

@@ -172,12 +172,20 @@ function renderPoList(el) {
   // the same statusFilter value a KPI-card click would set) and the header
   // Status <select> (see the "View all" table below) - one status value,
   // three ways to set it, never out of sync with each other.
+  //
+  // The doughnut is a PARTITION of po._status (its slices add up to Total),
+  // while the Overdue and Date Unknown cards are overlays that also count
+  // partly-delivered POs. So those two slices are not the cards: they count
+  // only the POs where nothing has arrived yet, and they filter with a
+  // 'status:' key (po._status itself, see poListRegionHtml()) rather than the
+  // card's key. Until 2026-09-25 they shared the card's key, so a slice
+  // reading 15 opened a list of 41.
   const statusChartData = [
     { key: 'received', label: STATUS_LABELS.received, val: counts.received, color: '#16a34a' },
     { key: 'partial', label: STATUS_LABELS.partial, val: counts.partial, color: '#2563eb' },
     { key: 'pending', label: STATUS_LABELS.pending, val: counts.pending, color: '#d97706' },
-    { key: 'overdue', label: STATUS_LABELS.overdue, val: counts.overdue, color: '#dc2626' },
-    { key: 'unknown', label: STATUS_LABELS.unknown, val: counts.unknown, color: '#64748b' },
+    { key: 'status:overdue', label: STATUS_LABELS.overdue + ' - nothing received', val: counts.overdue, color: '#dc2626' },
+    { key: 'status:unknown', label: STATUS_LABELS.unknown + ' - nothing received', val: counts.unknown, color: '#64748b' },
   ].filter(s => s.val > 0);
 
   const monthTotals = {};
@@ -519,6 +527,12 @@ function poListRegionHtml() {
     const wantedLabel = state.statusFilter.slice(4);
     tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
   }
+  // A status-doughnut slice for a bucket whose card is an overlay - see
+  // statusChartData's comment. Matches the slice's own count exactly.
+  else if (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('status:')) {
+    const wantedStatus = state.statusFilter.slice(7);
+    tableRecs = filtered.filter(po => po._status === wantedStatus);
+  }
   else if (state.statusFilter && state.statusFilter !== 'total') tableRecs = filtered.filter(po => po._status === state.statusFilter);
   // Table-only filters (never touch the KPI counts/charts above, which stay
   // scoped to `filtered` = the from/to date range + category filter only) -
@@ -565,8 +579,11 @@ function poListRegionHtml() {
   // triggered this render - the list would narrow correctly while the box
   // the reader is typing into went blank under the cursor. (Found exactly
   // that way while verifying this split.)
-  const statusOptionsHtml = Object.keys(STATUS_LABELS).map(k =>
-    '<option value="' + k + '"' + (state.statusFilter === k ? ' selected' : '') + '>' + escapeHtml(STATUS_LABELS[k]) + '</option>'
+  // Plus the doughnut's two 'status:' slices (see statusChartData), so the
+  // select still shows what is selected after a slice click.
+  const statusOptionsHtml = Object.keys(STATUS_LABELS).concat(['status:overdue', 'status:unknown']).map(k =>
+    '<option value="' + k + '"' + (state.statusFilter === k ? ' selected' : '') + '>' +
+      escapeHtml(k.startsWith('status:') ? STATUS_LABELS[k.slice(7)] + ' - nothing received' : STATUS_LABELS[k]) + '</option>'
   ).join('');
   const filterCells = [
     '<input type="text" class="col-filter-input" data-cf="poNumber" placeholder="Search..." value="' + escapeHtml(state.colFilters.poNumber) + '">',
@@ -662,7 +679,63 @@ function poListRegionHtml() {
             '<div>' + miniStepperHtml(po) + '</div>' +
             '<div><span class="row-link" data-po="' + key + '">View details</span></div></div>';
         }).join('') + '</div>';
-    })();
+    })() +
+    importCrossHitsHtml();
+}
+
+// ── Import orders found by a Domestic search ──────────────────────────────
+// Project owner, 2026-09-25: searching the Domestic list by PO number or
+// vendor for an order that is in fact an import should still find it, and
+// clicking it should go to Import Purchases. The Domestic rows are left
+// exactly as they are; the import hits are listed under them, by the same
+// two header filters (contains, case-insensitive - applyColFilters()'s
+// rule), for the plants currently selected. The import cache is fetched on
+// the first such search and the region re-renders once it lands.
+let IMPORT_CROSS_LOAD = null;
+
+function importCrossHits() {
+  const po = (state.colFilters.poNumber || '').toLowerCase();
+  const vendor = (state.colFilters.vendor || '').toLowerCase();
+  if (!po && !vendor) return [];
+  if (!IMPORT_PO_CACHE) {
+    if (!IMPORT_CROSS_LOAD) {
+      IMPORT_CROSS_LOAD = ensureImportPOsLoaded()
+        .then(() => { if (state.view === 'po' && state.purchaseType === 'domestic') renderPoListRegion(); })
+        // No hint is the whole cost of a failure here; the Import tab
+        // reports its own load errors when visited.
+        .catch(e => console.error('Import cross-search: failed to load import purchase orders:', e))
+        .finally(() => { IMPORT_CROSS_LOAD = null; });
+    }
+    return [];
+  }
+  const keys = selectedPlantKeys();
+  return IMPORT_PO_CACHE.filter(p =>
+    keys.indexOf(p.plant) !== -1 &&
+    (!po || (p.poNumber || '').toLowerCase().includes(po)) &&
+    (!vendor || (p.vendorName || '').toLowerCase().includes(vendor)));
+}
+
+function importCrossHitsHtml() {
+  const hits = importCrossHits();
+  if (!hits.length) return '';
+  const shown = hits.slice(0, 10);
+  return '<div class="cross-kind-hits">' +
+    '<div class="cross-kind-title">Also in Import Purchases (' + hits.length + ')</div>' +
+    shown.map(p =>
+      '<div class="cross-kind-row">' +
+        '<span class="row-link" tabindex="0" role="button" data-import-po="' + escapeHtml(p.plant + '::' + p.poNumber) + '">' + escapeHtml(p.poNumber) + '</span>' +
+        '<span>' + escapeHtml(p.vendorName || '-') + '</span>' +
+        '<span class="text-muted">' + escapeHtml(PLANTS[p.plant] ? PLANTS[p.plant].label : p.plant) + ' &middot; ' + escapeHtml(formatDateIN(p.createdDate) || '-') + '</span>' +
+      '</div>'
+    ).join('') +
+    (hits.length > shown.length ? '<div class="text-muted fs-12-5">and ' + (hits.length - shown.length) + ' more - open Import Purchases to see them all.</div>' : '') +
+  '</div>';
+}
+
+/** Moves to Import Purchases filtered to that order, and opens it. */
+async function openImportPoFromDomestic(compositeKey) {
+  const poNumber = compositeKey.slice(compositeKey.indexOf('::') + 2);
+  if (await switchPurchaseType('import', { importPoNumber: poNumber })) await openImportPoModal(compositeKey);
 }
 
 /** Re-renders the list region alone, in place. Falls back to a full
@@ -686,6 +759,7 @@ function wirePoListRegion() {
   const toggleBtn = document.getElementById('toggleAllBtn');
   if (toggleBtn) toggleBtn.onclick = () => { state.showAllPOs = !state.showAllPOs; state.tablePage = 1; renderPoListRegion(); };
   region.querySelectorAll('[data-po]').forEach(el2 => el2.onclick = () => openPoModal(el2.dataset.po));
+  region.querySelectorAll('[data-import-po]').forEach(el2 => el2.onclick = () => openImportPoFromDomestic(el2.dataset.importPo));
 
   const prevPageBtn = document.getElementById('prevPageBtn');
   if (prevPageBtn) prevPageBtn.onclick = () => { state.tablePage = Math.max(1, state.tablePage - 1); renderPoListRegion(); };

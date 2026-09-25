@@ -273,6 +273,15 @@ const FLAG_CATEGORY_RULES = [
   { label: 'Vendor code scheme inconsistency', test: t => /vendor code/i.test(t) },
   { label: 'Non raw material or different category', test: t => /(not raw material|different category|capital equipment|tooling)/i.test(t) },
 ];
+// Is this PO-level flag (keyed by its label, or `code:item_id` for an Import
+// F1-F7 flag) currently dismissed? The one reader for po.flagDismissals'
+// state outside the renderers below, so the KPI cards, "Filter by Flags"
+// and the row flags agree with the Flags & Corrections tab. A reinstated
+// flag keeps its row with dismissed=false.
+function poFlagDismissed(po, flagKey) {
+  return (po.flagDismissals || []).some(f => f.flagKey === flagKey && f.dismissed);
+}
+
 // Renders one PO-level flag (a Quantity/Rate-Value Discrepancy critical
 // flag, or the single Data Quality Flag category derived from `remarks`)
 // with a dismiss/reinstate control, reading the current dismissed state
@@ -316,6 +325,15 @@ function poFlagHtml(c, po, plantKey, isImport) {
 // per-PO (not the list-level closures those functions are, which need the
 // whole filtered array in scope) so a single PO detail modal can build its
 // own category list independent of which list view opened it.
+// An import order that is simply not due yet: its delivery date has not
+// passed and nothing has arrived - rowFlagsHtml()'s own onOrder && !partial
+// test, in import terms (see importRowFlags()). "PO Not Found in MIR" is not
+// raised for one (2026-09-25), the same rule computePoFlags() applies to a
+// domestic order.
+function importOrderNotDueYet(po) {
+  return po.deliveryDateStatus === 'On Order' && !po.partialDelivery;
+}
+
 function importCriticalFlagsFor(po) {
   const cats = [];
   const items = po.items || [];
@@ -332,9 +350,11 @@ function importCriticalFlagsFor(po) {
   // they were previously discarded. `!i.mirMatch` (no mir_match payload at
   // all - imports_views.py's _mir_match_dict() returns null below
   // MATCH_THRESHOLD) is the import equivalent of Domestic's `!it.matched`.
-  if (items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
+  if (!importOrderNotDueYet(po) && items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
   // See computePoFlags()'s own comment on this same flag.
   if (items.some(i => live(i) && i.mirMatch.vendorMatched === false)) cats.push({ label: 'Vendor Name Mismatch in MIR', severity: 'info' });
+  // See importCategoriesFor()'s own comment on this flag.
+  if (items.some(i => live(i) && i.mirMatch.exchangeRateMismatched)) cats.push({ label: 'Exchange Rate Differs from MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
@@ -450,6 +470,7 @@ const DISCREPANCY_LEGEND = [
   { label: 'Quantity Mismatch in MIR', severity: 'critical', meaning: 'Received quantity does not exactly match the ordered quantity.', detail: 'Zero tolerance - 999kg against a 1000kg order still flags. Can be a short shipment, an over shipment, or a receipt logged against the wrong PO.' },
   { label: 'Rate Mismatch in MIR', severity: 'critical', meaning: 'Received rate does not exactly match the PO rate.', detail: 'Zero tolerance - any difference at all flags. Can be a price change not reflected on the PO, or a billing error. Value is deliberately not compared: it is qty x rate, so a quantity mismatch alone would double-count as a second, unrelated-looking problem.' },
   { label: 'PO Not Found in MIR', severity: 'critical', meaning: 'No MIR entry could be matched to this line item at all.', detail: 'No exact PO-number match, and nothing scored high enough on the weighted match. The goods may not have arrived yet, or the receipt was logged in a way the matcher could not link back.' },
+  { label: 'Exchange Rate Differs from MIR', severity: 'info', meaning: 'An import receipt agrees with the PO once a different exchange rate is used - MIR works at the customs rate on the Bill of Entry, the Imports CSV records another.', detail: 'The price in the PO currency is right; the exchange rate on the Imports CSV row is not the one on the BOE. Fix the exchange rate on the CSV at source. Shown instead of a Rate Mismatch only when the rate MIR implies is a customs-style rate (on the 0.05 grid) within 5% of the rate on the CSV.' },
   { label: 'Vendor Name Mismatch in MIR', severity: 'info', meaning: 'Matched on PO number and material, but the party name disagrees with the PO vendor.', detail: 'The match itself is sound - the order number and the amounts agree - so this is a name to fix at source: usually a typo, a placeholder left in the Party Name column, or one supplier written two ways across the two files.' },
   { label: 'Tax Type Mismatch in MIR', severity: 'info', meaning: 'The tax structure used (e.g. IGST vs CGST+SGST) is not consistent between the PO and the matched MIR entry.' },
   { label: 'Net Value Mismatch in MIR', severity: 'info', meaning: 'The pre-tax net value on the matched MIR entry differs from the PO’s net value by more than a small rounding allowance.' },
@@ -506,6 +527,8 @@ const CATEGORY_COLORS = {
   // Slate, with the other data-completeness gaps: a name typed wrong in
   // one of the two files, not a money or compliance problem.
   'Vendor Name Mismatch in MIR': '#64748b',
+  // Slate too: a CSV figure to correct, not a price the vendor got wrong.
+  'Exchange Rate Differs from MIR': '#64748b',
   'Non raw material or different category': '#64748b',
   'Delivery date anomaly': '#2563eb',
 };
@@ -624,7 +647,14 @@ function computePoFlags(po) {
   // straight off `matched` (no MIR entry crossed MATCH_THRESHOLD for this
   // line item at all) rather than any match-row field, since there's no
   // match row to read from in that case.
-  if (items.some(it => !it.matched)) cats.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
+  // NOT raised on an order that is not due yet (2026-09-25): nothing has
+  // arrived and the delivery date has not passed, so there is nothing for
+  // MIR to hold. The same rule rowFlagsHtml() applies to the red icon, now
+  // applied to the category itself so the Data Quality Flags count, the
+  // "Filter by Flags" option and the Raw Material tab all agree. An overdue
+  // or part-arrived order still raises it.
+  po._status = po._status || computeStatus(po);
+  if (po._status !== 'pending' && items.some(it => !it.matched)) cats.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
   // Identification 2-of-3 (2026-09-18, Achhad and HRS - see matching_core.py's
   // _MatchConfig.identification_two_of_three). `vendorMatched` is true
   // everywhere the vendor gate is still mandatory, so this flag never fires on
@@ -646,7 +676,20 @@ function computePoFlags(po) {
   if (items.some(it => it.finalValueMismatched && !it.dismissedByOverride)) cats.set('Final Amount Mismatch in MIR', { label: 'Final Amount Mismatch in MIR', severity: 'info' });
   if (items.some(it => it.uomMismatch && !it.dismissedByOverride)) cats.set('UOM Mismatch in MIR', { label: 'UOM Mismatch in MIR', severity: 'info' });
   if (po.remarks) { const c = categorizeFlag(po.remarks); cats.set(c.label, c); }
-  po._categories = Array.from(cats.values());
+  // A flag an editor dismissed on the PO's Flags & Corrections tab
+  // (FlagDismissal, keyed by the label) stops counting everywhere a count
+  // is read - the KPI cards, "Filter by Flags", the row flags. Until
+  // 2026-09-25 only the modal honoured it, so a dismissed "Rate Mismatch in
+  // MIR" still counted on the Rate Mismatches card. _allCategories keeps
+  // the dismissed ones for the modal, which must still list them so they
+  // can be reinstated.
+  po._allCategories = Array.from(cats.values());
+  po._categories = po._allCategories.filter(c => !poFlagDismissed(po, c.label));
+  const live = label => cats.has(label) && !poFlagDismissed(po, label);
+  po._qtyOverFlag = live('Over-Delivered in MIR');
+  po._qtyUnderFlag = live('Short-Delivered in MIR');
+  po._qtyFlag = po._qtyOverFlag || po._qtyUnderFlag || live('Quantity Mismatch in MIR');
+  po._rateFlag = live('Rate Mismatch in MIR');
   po._hasInfoFlag = po._categories.some(c => c.severity === 'info');
 }
 

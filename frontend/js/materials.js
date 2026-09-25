@@ -360,6 +360,9 @@ function importPoAsMaterialOrder(po) {
         finalValueMismatched: !!m.finalValueMismatched,
         uomMismatch: !!m.uomMismatch,
         stockMatched: !!m.stockMatched,
+        // What has arrived, in this line's own unit - the same `received`
+        // block a domestic line carries, so openQtyOfLine() treats both alike.
+        received: m.received || null,
         foreignPrice: it.netPrice,
         exchangeRate: it.exchangeRate,
       };
@@ -414,6 +417,53 @@ function linkedPoItemsForMaterial(material, plantKeys) {
 function isOpenPoLine(po, item) {
   po._status = po._status || computeStatus(po);
   return po._status !== 'received' && !lineItemFullyReceived(item);
+}
+
+// How much of an open line is STILL TO COME, in the line's own unit
+// (2026-09-25). The ordered quantity less what its matched MIR receipts add
+// up to - `received` is the server's own figure (matching_core's
+// received_against_line(), already converted to this line's unit). A line
+// short-delivered 400 of 500 KG has 100 KG in transit, not 500. Falls back to
+// the whole ordered quantity when nothing comparable has arrived: no match,
+// a match a reviewer dismissed (not an arrival - see lineItemArrived()), or a
+// unit clash the server could not convert.
+function openQtyOfLine(item) {
+  if (item.qty == null) return null;
+  const r = item.received;
+  if (!lineItemArrived(item) || !r || !r.comparable || r.qty == null) return item.qty;
+  return Math.max(0, item.qty - r.qty);
+}
+
+function openValueOfLine(item) {
+  const qty = openQtyOfLine(item);
+  return item.netPrice != null && qty != null ? item.netPrice * qty : 0;
+}
+
+// Unit families for adding up open quantities - a mirror of
+// parsers/common.py's _UOM_FAMILIES (same codes, same factors), so KG and MT
+// add up and metres never get added to kilograms. An unrecognised unit stays
+// out of every total and is only counted, same "never guess" rule as the
+// backend's normalize_uom().
+const MAT_UOM_FAMILIES = {
+  KG: ['KG', 1], KGS: ['KG', 1], GM: ['KG', 0.001], MT: ['KG', 1000], MTS: ['KG', 1000], TO: ['KG', 1000], TON: ['KG', 1000], QTL: ['KG', 100],
+  L: ['L', 1], LTR: ['L', 1], LTRS: ['L', 1], KL: ['L', 1000], ML: ['L', 0.001],
+  NOS: ['NOS', 1], PCS: ['NOS', 1], PC: ['NOS', 1], EA: ['NOS', 1], UNIT: ['NOS', 1], SET: ['NOS', 1],
+  M: ['M', 1], CM: ['M', 0.01], MM: ['M', 0.001], MTR: ['M', 1], MTRS: ['M', 1],
+};
+
+// Open quantity across a set of distinct open lines, per base unit:
+// { totals: { KG: n, M: n, ... }, unrecognised: <line count> }.
+function summariseOpenQty(openLines) {
+  const totals = {};
+  let unrecognised = 0;
+  openLines.forEach(x => {
+    const qty = openQtyOfLine(x.item);
+    if (qty == null) return;
+    const fam = MAT_UOM_FAMILIES[String(x.item.uom || '').trim().toUpperCase().replace(/\.$/, '')];
+    if (!fam) { unrecognised++; return; }
+    totals[fam[0]] = (totals[fam[0]] || 0) + qty * fam[1];
+  });
+  return { totals, unrecognised };
 }
 
 // Rows for materials that are ON ORDER but have no RM Stock lot at all
@@ -524,7 +574,12 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       // (`l.item`), same per-item scoping as the qty/rate checks just
       // above - never misattributed from a different line item on the same
       // multi-item PO.
-      if (!l.item.matched) catMap.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
+      // Not on an order that is simply not due yet (2026-09-25): nothing has
+      // arrived and the delivery date has not passed, so there is nothing
+      // for MIR to hold. Same rule as rowFlagsHtml()'s suppression of this
+      // label on an On Order row - left in, every open order read as a Data
+      // Quality Flag, and every order-only row carried one.
+      if (!l.item.matched && l.po._status !== 'pending') catMap.set('PO Not Found in MIR', { label: 'PO Not Found in MIR', severity: 'critical' });
       if (!dismissed && l.item.taxTypeMismatch) catMap.set('Tax Type Mismatch in MIR', { label: 'Tax Type Mismatch in MIR', severity: 'info' });
       if (!dismissed && l.item.netValueMismatched) catMap.set('Net Value Mismatch in MIR', { label: 'Net Value Mismatch in MIR', severity: 'info' });
       if (!dismissed && l.item.taxableValueMismatched) catMap.set('Taxable Value Mismatch in MIR', { label: 'Taxable Value Mismatch in MIR', severity: 'info' });
@@ -540,7 +595,7 @@ function computeMaterialPoLinkage(materials, plantKeys) {
       material: m,
       links,
       openLinks,
-      openValue: openLinks.reduce((s, x) => s + (x.item.netPrice != null && x.item.qty != null ? x.item.netPrice * x.item.qty : 0), 0),
+      openValue: openLinks.reduce((s, x) => s + openValueOfLine(x.item), 0),
       categories,
       qtyFlag: categories.some(c => c.label === 'Quantity Mismatch in MIR'),
       rateFlag: categories.some(c => c.label === 'Rate Mismatch in MIR'),
@@ -656,9 +711,27 @@ function renderMaterialsView() {
   const linkageByKey = new Map(linkage.map(l => [normalizeMaterial(l.material.description), l]));
 
   const totalMaterials = filtered.length;
+  const orderOnlyCount = filtered.filter(m => m.orderOnly).length;
+  const lotCount = filtered.reduce((s, m) => s + (m.lots ? m.lots.length : 0), 0);
   const totalValue = filtered.reduce((s, m) => s + (m.value || 0), 0);
-  const inTransitValue = linkage.reduce((s, l) => s + l.openValue, 0);
-  const qtyOrderedOpen = linkage.reduce((s, l) => s + l.openLinks.reduce((s2, x) => s2 + (x.item.qty || 0), 0), 0);
+  // EACH OPEN LINE COUNTED ONCE (2026-09-25). The link is fuzzy, so one PO
+  // line can link to several materials - "SBR 1502" clears the 0.3 token
+  // threshold against both SBR 1502 and SBR 1712 - and summing per material
+  // added that line's value once per material it touched. The KPI totals are
+  // taken over the distinct lines instead; the line objects are stable
+  // within a render (see materialOrders()), so identity is the key.
+  const openLineMap = new Map();
+  linkage.forEach(l => l.openLinks.forEach(x => { if (!openLineMap.has(x.item)) openLineMap.set(x.item, x); }));
+  const openLines = Array.from(openLineMap.values());
+  const inTransitValue = openLines.reduce((s, x) => s + openValueOfLine(x.item), 0);
+  const openQty = summariseOpenQty(openLines);
+  // The headline unit is KG when anything is ordered by weight (nearly every
+  // raw material), else whichever unit carries the most; the rest are listed
+  // under it rather than added to it.
+  const qtyUnits = Object.keys(openQty.totals).sort((a, b) => (b === 'KG') - (a === 'KG') || openQty.totals[b] - openQty.totals[a]);
+  const qtyHeadUnit = qtyUnits[0] || 'KG';
+  const qtyOtherParts = qtyUnits.slice(1).map(u => Math.round(openQty.totals[u]).toLocaleString('en-IN') + ' ' + u);
+  if (openQty.unrecognised) qtyOtherParts.push(openQty.unrecognised + (openQty.unrecognised === 1 ? ' line' : ' lines') + ' in other units');
   // The material set behind BOTH "Inventory Value in Transit" and "Quantity
   // Ordered" - the two cards are different aggregates over the same rows, so
   // clicking either one filters the table to exactly this set (2026-09-21).
@@ -685,34 +758,73 @@ function renderMaterialsView() {
     flagCategoryCounts[c.label] = (flagCategoryCounts[c.label] || 0) + 1;
   }));
 
-  // Same visual language as Purchase Orders' KPI row (renderPoList()) -
-  // colored left border + flag icon for discrepancy/quality cards, plain
-  // counts for the rest. Order: plain counts -> in-transit pair -> the two
-  // "critical" (money/quantity) discrepancy cards -> Data Quality Flags last.
-  // `fmt` picks the count-up animation's display formatter (wired below,
-  // near the [data-matkpi] click handlers) - 'inr' for the two currency
-  // cards, 'locale' for the plain comma-grouped quantity, 'int' for the rest.
-  const cardDef = [
-    { key: 'total', cls: '', label: 'Materials Tracked', raw: totalMaterials, fmt: 'int', tip: 'Distinct materials in stock, summed across every vendor lot, plus materials on an open order with no stock lot yet.' },
-    { key: 'value', cls: '', label: 'Total Inventory Value (Warehouse)', raw: totalValue, fmt: 'inr', tip: 'Current stock quantity x rate, summed across every lot in the selected plant(s).' },
-    { key: 'transit', filterKey: 'openpo', cls: 'partial', label: 'Inventory Value in Transit (Open POs)', raw: inTransitValue, fmt: 'inr', tip: 'Value of ordered-but-not-yet-received line items linked to this material.' },
-    { key: 'qtyordered', filterKey: 'openpo', cls: 'partial', label: 'Quantity Ordered (Open POs)', raw: qtyOrderedOpen, fmt: 'locale', tip: 'Total quantity still open on purchase orders linked to this material.' },
-    { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', raw: qtyDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: a linked PO line item\'s quantity differs from its matched MIR entry.' },
-    { key: 'ratedisc', cls: 'critical', label: 'Rate Mismatches', raw: rateDiscMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Rate mismatch in MIR: a linked PO line item\'s rate differs from its matched MIR entry.' },
-    { key: 'lowstock', cls: 'critical', label: 'Low Stock (Reorder Soon)', raw: lowStockMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.critical, tip: 'Under 15 days of cover at the current consumption rate, or already at/below Achhad\'s minimum stock level.' },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', raw: flaggedMats.length, fmt: 'int', flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on a linked PO line item for this material - quantity/rate mismatch, PO not found in MIR, tax type/net/taxable/final value mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
+  // Quantity mismatches split by direction for the card's sub-line, the same
+  // over/short split Purchase Orders shows as two cards of its own.
+  const qtyDirOf = (l, over) => l.links.some(x => !x.item.dismissedByOverride && x.item.qtyDiffPct != null && x.item.qtyDiffPct > FLAG_PCT && x.item.qtyOverDelivered === over);
+  const qtyOverCount = qtyDiscMats.filter(l => qtyDirOf(l, true)).length;
+  const qtyShortCount = qtyDiscMats.filter(l => qtyDirOf(l, false)).length;
+  const plural = (n, one, many) => n.toLocaleString('en-IN') + ' ' + (n === 1 ? one : many);
+
+  // THREE GROUPS, NOT ONE WRAPPING ROW (2026-09-25 readability pass). Eight
+  // same-sized cards wrapped 5 + 3 with no order a reader could follow, the
+  // uppercase labels ran to three lines, and a zero Low Stock card sat on a
+  // red background as if something were wrong. The cards now answer three
+  // questions left to right - what is in the warehouse, what is still coming,
+  // what needs checking - each with a one-line sub-figure saying what the
+  // number is made of. An alert card at zero drops its red (`is-clear`).
+  //
+  // `fmt` picks the count-up formatter (wireKpiCountUps()): 'inr' for money,
+  // 'locale' for a comma-grouped quantity, 'int' for counts. `unit` sits
+  // beside the number, outside the element the count-up rewrites.
+  const kpiGroups = [
+    { title: 'In the warehouse', cards: [
+      { key: 'total', cls: '', label: 'Materials tracked', raw: totalMaterials, fmt: 'int',
+        sub: (totalMaterials - orderOnlyCount).toLocaleString('en-IN') + ' in stock sheet' + (orderOnlyCount ? ', ' + orderOnlyCount.toLocaleString('en-IN') + ' on order only' : ''),
+        tip: 'Distinct material names on the stock sheet (every vendor lot of one material is one row, including lots now at zero), plus materials on an open order that have no stock lot yet.' },
+      { key: 'value', cls: '', label: 'Inventory value', raw: totalValue, fmt: 'inr', sub: plural(lotCount, 'stock lot', 'stock lots') + (isAllPlants() ? ', all plants' : ''),
+        tip: 'The stock sheet\'s own Value column, summed across every lot in the selected plant(s). A lot the sheet shows with negative stock subtracts here - fix it in the sheet.' },
+      { key: 'lowstock', cls: 'critical', label: 'Low stock', raw: lowStockMats.length, fmt: 'int', alert: true, sub: 'under 15 days of cover',
+        tip: 'Under 15 days of cover at the recent consumption rate (only where that rate has enough snapshot history to show a Days Left figure), or already at or below Achhad\'s minimum stock level.' },
+    ] },
+    { title: 'Still to come', cards: [
+      { key: 'transit', filterKey: 'openpo', cls: 'partial', label: 'Value in transit', raw: inTransitValue, fmt: 'inr',
+        sub: plural(openLines.length, 'open PO line', 'open PO lines') + ', ' + plural(openPoMats.length, 'material', 'materials'),
+        tip: 'What is still to arrive on open purchase order lines (domestic and import) linked to these materials: ordered quantity less what MIR has already received, at the PO rate in INR. Each PO line is counted once, even when it links to more than one material.' },
+      { key: 'qtyordered', filterKey: 'openpo', cls: 'partial', label: 'Quantity to come', raw: openQty.totals[qtyHeadUnit] || 0, fmt: 'locale', unit: qtyHeadUnit,
+        sub: qtyOtherParts.length ? '+ ' + qtyOtherParts.join(', ') : 'on the same open lines',
+        tip: 'Quantity still to arrive on the same open lines, converted to one unit per kind (MT and grams to KG, and so on) and never added across kinds - metres, litres and pieces are listed under the headline figure instead. Lines in a unit the app does not recognise are counted, not added.' },
+    ] },
+    { title: 'Needs checking', cards: [
+      { key: 'qtydisc', cls: 'critical', label: 'Quantity mismatches', raw: qtyDiscMats.length, fmt: 'int', alert: true, flag: KPI_FLAG_COLORS.critical,
+        sub: qtyDiscMats.length ? qtyOverCount + ' over, ' + qtyShortCount + ' short' : 'none found',
+        tip: 'Materials with a linked PO line whose quantity differs from what MIR received - zero tolerance, dismissed matches excluded. "Short" includes a part-delivery still in progress; the two directions can add up to less than the total when a unit clash stopped the direction being worked out.' },
+      { key: 'ratedisc', cls: 'critical', label: 'Rate mismatches', raw: rateDiscMats.length, fmt: 'int', alert: true, flag: KPI_FLAG_COLORS.critical,
+        sub: rateDiscMats.length ? 'PO rate differs from MIR' : 'none found',
+        tip: 'Materials with a linked PO line whose rate differs from its matched MIR entry - zero tolerance, dismissed matches excluded. Value is not compared, since a quantity difference would move it too.' },
+      { key: 'flags', cls: 'flags', label: 'Data quality flags', raw: flaggedMats.length, fmt: 'int', alert: true, flag: KPI_FLAG_COLORS.quality,
+        sub: 'any flag, mismatches included',
+        tip: 'Materials with any flag on a linked PO line: quantity or rate mismatch, PO not found in MIR (not counted on an order that is not due yet), tax type, net, taxable or final value mismatch, UOM mismatch, or a paperwork note from the remarks. Use "Filter by Flags" below for one issue.' },
+    ] },
   ];
-  const kpiHtml = cardDef.map(c => {
+  const cardDef = kpiGroups.flatMap(g => g.cards);
+  const kpiCardHtml = c => {
     // `filterKey` is what a click sets, `key` is the card's own identity.
     // They differ only for the two open-PO cards, which are two aggregates
     // over ONE row set - so selecting either lights up both, which is honest
     // about what the table is now showing.
-    const fk = c.filterKey || c.key;
-    const on = !!c.filterKey ? state.matStatusFilter === fk : state.matStatusFilter === c.key;
-    return '<div class="kpi-card ' + c.cls + ' ' + (on ? 'active' : '') + '" data-matkpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + on + '">' +
-    (c.flag ? flagIconHtml(c.flag) : '') +
-    '<div class="val" data-count-target="' + c.raw + '" data-count-fmt="' + c.fmt + '">0</div><div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>';
-  }).join('');
+    const on = state.matStatusFilter === (c.filterKey || c.key);
+    const clear = c.alert && !c.raw;
+    return '<div class="kpi-card mat-kpi ' + c.cls + (clear ? ' is-clear' : '') + (on ? ' active' : '') + '" data-matkpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + on + '">' +
+      '<div class="mat-kpi-label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + (c.flag && !clear ? flagIconHtml(c.flag, 'mat-kpi-flag') : '') + '</div>' +
+      '<div class="mat-kpi-value"><span class="val" data-count-target="' + c.raw + '" data-count-fmt="' + c.fmt + '">0</span>' +
+        (c.unit ? '<span class="mat-kpi-unit">' + escapeHtml(c.unit) + '</span>' : '') + '</div>' +
+      '<div class="mat-kpi-sub">' + escapeHtml(c.sub) + '</div></div>';
+  };
+  const kpiHtml = kpiGroups.map(g =>
+    '<section class="mat-kpi-group" aria-label="' + escapeHtml(g.title) + '">' +
+      '<h3 class="mat-kpi-group-title">' + escapeHtml(g.title) + '</h3>' +
+      '<div class="mat-kpi-cards mat-kpi-cards-' + g.cards.length + '">' + g.cards.map(kpiCardHtml).join('') + '</div>' +
+    '</section>').join('');
 
   // Everything below the chart is rendered by materialsListRegionHtml()
   // from this context, so a Material-search keystroke can rebuild the list
@@ -734,7 +846,7 @@ function renderMaterialsView() {
       '<p><strong>Matched columns.</strong> "Inventory Value in Transit", "Quantity Ordered" and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
       '<p><strong>Days Left.</strong> Estimated from recent stock-snapshot history, not reported by the sheet. The confidence dot beside it shows how much history it is based on.</p>'
     ) +
-    '<div class="kpi-grid">' + kpiHtml + '</div>' +
+    '<div class="mat-kpi-groups">' + kpiHtml + '</div>' +
     // "Filter by Category" / "Filter by Sub Category" / "Filter by Flags"
     // bar - moved above the chart (project owner, 2026-09-04) so the chart
     // itself already reflects the selection. All three are "global"

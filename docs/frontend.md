@@ -44,7 +44,7 @@ render (`shared.js`'s `applyDynamicStyles()`, `admin-page.js`'s `renderBarList()
 the CSP itself.
 
 Cross-file references are ordinary globals, and some go "backwards" at call time (for example
-`shared.js`'s `dismissMatch()` calls `apiImports()` from `main.js`, and `closeModal()` lives in
+`shared.js`'s `dismissMatch()` calls `closeModal()`, which lives in
 `charts.js`). That works because nothing is called until the page has finished loading. It is also
 why ESLint's `no-undef` is off (see [`.eslintrc.json`](#eslintrcjson)).
 
@@ -189,7 +189,10 @@ no filters, leaving them to find by hand the record they had just searched for.
 `/?plant=all&material=<description>` (`dashboardMaterialHref()`); `main.js`'s `readDeepLinkParams()`
 reads them in `init()` before the tabs render, `applyDeepLinkToState()` points the view/plant at the
 target (so the right plant is fetched once, not twice), and `openDeepLinkTarget()` opens that PO's
-or material's own modal after the first render. A `?po=` link always means Domestic Purchases.
+or material's own modal after the first render. A `?po=` link means Domestic Purchases unless it
+carries `kind=import`, which Search PO adds for an import order - one number can exist as both, so
+the number alone cannot say which was clicked. `kind` is whitelisted (`import`, else Domestic), and
+an import link resolves against `IMPORT_PO_CACHE` by number and plant, then `openImportPoModal()`.
 
 Four details: `plant` is honoured only if it is a real plant key or `all` - **everything in a URL is
 attacker-supplied**, and the miss message (`showDeepLinkMiss()`) goes through `textContent`, never
@@ -199,7 +202,7 @@ all three anyway (resolved by exact normalized description first, then `findMate
 target that no longer resolves (a **retired/renamed PO** is the realistic case - see
 [data-sync.md](data-sync.md)) says so in a `.validation-note` instead of opening silently as if
 nothing was asked for; and the params are **consumed** - `clearDeepLinkParams()` strips `po`,
-`material` and `plant` from the address bar (via `replaceState`, so Back is unaffected) once the link
+`material`, `plant` and `kind` from the address bar (via `replaceState`, so Back is unaffected) once the link
 has been acted on.
 
 **That last one was the opposite way round for a few hours and was wrong.** The first version left
@@ -420,7 +423,13 @@ few module-level variables for the correction box and modal a11y.
   `materialRateFieldName()` (`rate` at Achhad, `basic_rate` elsewhere - a real schema difference).
 - **`apiForPlant(plantKey, path, opts)`** - `authFetch` under the plant's prefix; 401 -> login;
   guards `res.json()` so a non-JSON proxy page becomes a readable `Error`; non-OK throws with
-  `err.status` set (callers use it to treat a 409 as "already running").
+  `err.status` set (callers use it to treat a 409 as "already running"). **`apiImports(path, opts)`**
+  is the same contract for `/api/imports` (here rather than in `main.js` because Search PO uses it
+  too). Both, and `savePoField()`, build that non-JSON error with **`unexpectedResponseError(status)`**:
+  a 502/504 is gunicorn killing the request at its worker timeout, and since a pin or correction is
+  written before its synchronous re-match, the message says the change *may still have been saved -
+  refresh to check* rather than inviting a blind retry (see
+  [api-and-features.md](api-and-features.md#endpoint-conventions-worth-knowing-before-adding-one)).
 - **Client ports of backend normalizers:** `normalizeMaterial`, `tokenizeMaterial`, `normalizeVendor`,
   `vendorContains` (containment with a 4-character floor). Kept in sync by hand with
   `parsers/common.py` / the matcher.
@@ -506,20 +515,27 @@ Status, flag and badge logic shared by every list and modal. Feature semantics a
 - **Row flags:** `ROW_FLAG_BUCKETS` and `rowFlagsHtml({partial, onOrder, categories})` - at most four
   icons (partial beats on-order, then one red "Mismatch", then one purple "Data quality"), category
   names in a `data-tooltip` CSS tooltip. "PO Not Found in MIR" is dropped from red only when the row
-  is on order and not partial. `rowFlagKeyHtml()` renders the four-colour key above the glossary.
+  is on order and not partial - and `computePoFlags()` (domestic, via `po._status === 'pending'`) and
+  `importOrderNotDueYet(po)` (import, used by `importCriticalFlagsFor()` and `import-po.js`'s
+  `importCategoriesFor()`) no longer raise that category for such an order at all, so the Data
+  Quality Flags counts agree with the icons. `rowFlagKeyHtml()` renders the four-colour key above the glossary.
 - **Categories:** `FLAG_CATEGORY_RULES` + `categorizeFlag(remarks)` (regex, first match wins,
   otherwise "Other data quality issue"), `DISCREPANCY_LEGEND` (glossary with optional `detail`),
   `CATEGORY_COLORS` / `categoryColor()` (one hue per category for legend dots and modal chips; a
   missing key silently falls back to purple), `renderLegendHtml()` (reads `state.legendOpen`; dots
   via `data-dot-color`).
 - **Domestic status:** `computePoFlags(po)` stamps `_qtyFlag`, `_rateFlag`, `_qtyOverFlag`,
-  `_qtyUnderFlag`, `_maxDiffPct`, `_categories`, `_hasInfoFlag`, excluding dismissed matches.
+  `_qtyUnderFlag`, `_maxDiffPct`, `_categories`, `_allCategories`, `_hasInfoFlag`, excluding dismissed
+  matches. `_categories` and the four flags also exclude a dismissed PO-level flag
+  (`poFlagDismissed(po, label)`); `_allCategories` keeps it, and is what `po-modal.js` lists so a
+  dismissed flag can be reinstated.
   `computeStatus(po)` returns `received`/`partial`/`pending`/`unknown` (and `overdue` only when
   nothing arrived and the date passed) and **also stamps the overlays** `po._overdue` and
   `po._noDeliveryDate`. `lineItemArrived()` / `lineItemFullyReceived()` (short-delivered is not
   received; a null direction is treated as received). `STATUS_LABELS.pending` is "On Order".
   `computePoDeliveryDate()` (earliest unmatched line's date).
-- **Import/material flags:** `importCriticalFlagsFor(po)`, `importFlagHtml(f, po, plantKey)` (flag
+- **Import/material flags:** `poFlagDismissed(po, flagKey)` (the one reader of `po.flagDismissals`
+  outside the renderers), `importCriticalFlagsFor(po)`, `importFlagHtml(f, po, plantKey)` (flag
   key `<code>:<item_id>`), `poFlagHtml(c, po, plantKey, isImport)` (flag key = label),
   `materialFlagHtml(m)`, `materialUomNoteHtml(lot)`, `dataQualityFlagHtml(f)` with
   `DATA_QUALITY_CHECK_LABELS`, `mirStockMatchHtml(lot, plantKey)` (a unit clash gets the amber
@@ -542,10 +558,20 @@ builds 11 KPI cards (`total`, `received`, `partial`, `qtydisc`, `qtyover`, `qtyu
 `overdue`, `pending`, `unknown`, `flags`; `total` clears), the "Filter by Flags" select (fixed options
 plus one `cat:<label>` per category present), the month bar chart (click toggles
 `state.chartMonthFilter`) and status doughnut (click toggles `state.statusFilter`), then the list
-region. `PO_LIST_CTX` carries `{el, filtered, totalPages}`. `poListRegionHtml()` applies the status
+region. **The doughnut is a partition of `po._status`, the Overdue and Date Unknown cards are
+overlays**, so those two slices count only POs where nothing has arrived, are labelled "... - nothing
+received", and set `status:overdue` / `status:unknown` (filtered on `po._status`, also offered in the
+header Status select). They used to share the cards' keys, so a slice reading 15 opened a list of 41. `PO_LIST_CTX` carries `{el, filtered, totalPages}`. `poListRegionHtml()` applies the status
 filter, month filter and `applyColFilters()`, sorts newest first, and renders a top-5 grid or a
 paginated (10/page) "View all" table with the header filter row; row links carry
-`data-po="<plant>::<poNumber>"` and open `openPoModal()`. `wirePoListRegion()` wires pagination,
+`data-po="<plant>::<poNumber>"` and open `openPoModal()`. Under the list,
+`importCrossHitsHtml()` adds **"Also in Import Purchases (N)"** when the PO Number or Vendor header
+filter matches an import order at the selected plants (same contains rule as `applyColFilters()`, up
+to 10 shown): project owner, 2026-09-25 - searching Domestic for what turns out to be an import order
+should still find it. The Domestic rows are untouched. `importCrossHits()` starts the import fetch on
+the first such search (`IMPORT_CROSS_LOAD`, one in flight) and re-renders the region when it lands; a
+failed fetch just means no hint. A hit's `data-import-po` link runs `openImportPoFromDomestic()`:
+`switchPurchaseType('import', {importPoNumber})`, then `openImportPoModal()`. `wirePoListRegion()` wires pagination,
 jump-to-page, the "N filters active - Clear" chip (full render) and the `[data-cf]` header filters
 (`createdFrom`/`createdTo`/`status` full render, the rest debounced region render).
 
@@ -556,7 +582,12 @@ real figures, every matched MIR receipt with its MIR sheet row). The received si
 API (`received`, `matchedMirs`); it is never summed in the browser, so units always agree with the
 matcher. Two adapters produce one neutral line shape: `domesticReconLine(it, index, po, plantKey)`
 and `importReconLine(...)` (BOE quantity, INR rate from `orderedRateInr`, PO net value x exchange rate
-for value). `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
+for value, and on a cleared line a `landed` pair from `landedRateInr` / `receivedFinalRate`, drawn as a
+"Landed rate (duty + IGST)" row with the matcher's 0.01% allowance, `RECON_LANDED_RATE_REL_EPS`, so a
+duty-only gap reads "matches" there while the pre-duty row above still shows it). The landed row is
+left out for a shared receipt (`receiptShare`), which is compared at the BOE's blended rate; the card
+shows `notes` instead - the line's share of the receipt, and for an exchange-rate difference both
+rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
 each line at its own ordered value) + one `reconLineHtml()` per line. `reconControlsHtml()` carries the
 confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag, dismiss/reinstate link
 (only when `reconAnyFlag()`) and the `.mir-change-link` with `data-item-ref`/`data-current-mir`.
@@ -592,8 +623,11 @@ The Domestic PO modal and the shared MIR picker.
 
 The Import Purchases list and modal. Constants `IMPORT_STAGES`, `IMPORT_STAGE_LABELS`,
 `IMPORT_STAGE_PILL_CLASS`, `IMPORT_FLAG_LABELS` (F1-F7). `importCategoriesFor()` builds each PO's
-categories client-side (there is no server PO-level MIR aggregate for imports); `importRowFlags()`
-(partial and on-order can both be true here). `renderImportPoList(el)` mirrors the domestic view with
+categories client-side, leaving out dismissed PO-level flags; `poQtyDiscPo()` is the dismissal-aware
+PO-vs-BOE check; `importRowFlags()` (partial and on-order can both be true here). Material Inwarded,
+Partial Delivered, Overdue, On Order and Date Unknown read the server's receipt-based
+`materialInwarded` / `partialDelivery` / `deliveryDateStatus` (see `import_flags.py`), the same rules
+as Domestic. `renderImportPoList(el)` mirrors the domestic view with
 13 KPI cards including the shipment-stage trio, a trend chart on `totalInclusiveValue`, a stage
 doughnut, the RoDTEP Ledger / Advance License buttons, and `#importListRegion`
 (`IMPORT_LIST_CTX`, `importListRegionHtml()`, `renderImportListRegion()`, `wireImportListRegion()`;
@@ -628,14 +662,32 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   **once per plant, not per lot** (the ledger is per material), days-left = summed qty / summed rate,
   confidence = weakest band. `orderOnlyMaterials()` adds a row for open lines that link to no stock
   material (`orderOnly: true`, key `order::<normalized description>` via `materialModalKey()`).
-- `computeMaterialPoLinkage(materials, plantKeys)` - per material: `links`, `openLinks`, `openValue`,
-  per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. `computeMaterialStatus()`
+- `openQtyOfLine(item)` / `openValueOfLine(item)` - what is still to come on an open line: ordered
+  qty less the server's `received.qty` (already in the line's unit; `importPoAsMaterialOrder()`
+  passes the import match's `received` through), or the whole qty when nothing comparable arrived
+  (no match, a dismissed match, a unit clash). `summariseOpenQty(lines)` totals open qty per base
+  unit through `MAT_UOM_FAMILIES`, a mirror of `parsers/common.py`'s `_UOM_FAMILIES` - keep the two
+  in step. Unrecognised units are counted, never added.
+- `computeMaterialPoLinkage(materials, plantKeys)` - per material: `links`, `openLinks`, `openValue`
+  (still-to-come value), per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. "PO Not
+  Found in MIR" is not raised for a line whose PO is `pending` (nothing arrived, not past due) -
+  the same rule as `rowFlagsHtml()`'s On Order suppression; left in, every open order and every
+  order-only row counted as a Data Quality Flag. `computeMaterialStatus()`
   (`overdue`/`partial`/`onorder`/`received`/`instock`), `isMaterialLowStock()` (< 15 days with a
   band other than `none`, or `daysToMsl === 0`), `daysLeftCellHtml()` (confidence dot; negative
   stock shows "Stock < 0" with a sheet-error tooltip, checked before the band; band `none` shows "-";
   a watched material that did not move shows "No movement").
-- `renderMaterialsView()` - 8 KPI cards (`total` and `value` clear; `transit` and `qtyordered` share
-  `filterKey: 'openpo'` and light up together), Category/Sub Category/Flags selects, the drill-down
+- `renderMaterialsView()` - 8 KPI cards in three titled groups (`kpiGroups`: In the warehouse -
+  `total`, `value`, `lowstock`; Still to come - `transit`, `qtyordered`; Needs checking - `qtydisc`,
+  `ratedisc`, `flags`), each a label, a count-up value (plus a `unit` for `qtyordered`) and a
+  one-line sub-figure. `total` and `value` clear; `transit` and `qtyordered` share `filterKey:
+  'openpo'` and light up together. An alert card at zero gets `is-clear` (no red wash). **The two
+  open-order totals are taken over DISTINCT open lines** (deduped on the line object), because the
+  fuzzy link can attach one line to several materials ("SBR 1502" links to SBR 1712 too) and
+  summing per material counted it once per material. `qtyordered` headlines KG and lists other
+  units under it. Layout lives in `style.css`'s `.mat-kpi-*` rules (groups side by side from
+  1360px, 3fr/2fr with Needs checking below down to 900px, stacked under that). Then
+  Category/Sub Category/Flags selects, the drill-down
   chart (stock rows only), then `#matListRegion` (`MAT_LIST_CTX`, `materialsListRegionHtml()` sorted
   latest first by `materialLatestDate()`, `renderMaterialsListRegion()`, `wireMaterialsListRegion()`;
   `status`/`category`/`subCategory` header selects take the full render, `material` text and
@@ -709,9 +761,8 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
 - Helpers: `resetFilters()`, `resetImportFilters()`, `isAllPlants()`, `selectedPlantKeys()`,
   `plantDisplayLabel()`, `plantKeyFor(item)` (a merged All-Plants row carries `_plantKey`; lookups
   always use `<plant>::<id>` because ids are per-plant), `currentPOs()`, `currentImportPOs()`,
-  `ensurePOsLoaded(keys)` (GET `<prefix>/purchase-orders`), `ensureImportPOsLoaded()` and
-  `apiImports(path, opts)` (the `/api/imports` wrapper, same contract as `apiForPlant`),
-  `clearDataCaches()`.
+  `ensurePOsLoaded(keys)` (GET `<prefix>/purchase-orders`), `ensureImportPOsLoaded()` (via
+  `shared.js`'s `apiImports()`), `clearDataCaches()`.
 - `init()` - `requireAuth()`, deep-link read, nav/user/theme, the `#root` shell (sync bar with
   `#syncBadges`, `#refreshStatus`, Export Data and Refresh Data buttons, the disclaimer, three tab
   rows, `#viewContent`), first `loadAndRender()`, deep-link open, `startFreshnessWatch()`,
@@ -719,7 +770,10 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   else it clears caches and re-reads the DB.
 - Tabs: `renderViewTabs()` (`.view-tab`; also re-reads sync status because some badges are
   view-specific), `renderPlantTabs()` (`.plant-tab`, All Plants first), `renderPurchaseTypeTabs()`
-  (`.sub-tab`, Purchase Orders only; lazily loads imports on first visit). The three levels use three
+  (`.sub-tab`, Purchase Orders only), whose clicks go through **`switchPurchaseType(ptype, opts)`**:
+  resets every list filter, loads whichever side is missing (Import on first visit; Domestic too
+  when the page opened on an Import deep link), renders, and returns `false` on a failed load or if
+  the reader switched again meanwhile. `opts.importPoNumber` pre-fills the Import PO Number filter. The three levels use three
   different components on purpose ([api-and-features.md](api-and-features.md)).
 - `loadSyncStatus()` - GET `<prefix>/sync-status`. All Plants: one badge per plant plus syncing and
   snapshot-gap badges. Single plant: "PO Updated" / "MIR" / "RM" / "Matching" badges (display labels
@@ -758,8 +812,16 @@ plant is `null` and warned about, never treated as empty). Filters: PO number, v
 (each needs `MIN_FILTER_LEN` = 2 characters to count) and a created date range; live search is
 debounced `SEARCH_DEBOUNCE_MS` (250 ms), Enter/Search runs immediately, and `searchRequestId` drops a
 stale result. `highlightMatch()` wraps the first hit in `<mark class="search-hit">` with every piece
-still escaped. `showDetail()` is a simpler panel than the dashboard modal and links out with
-`dashboardPoHref()` / per-line `dashboardMaterialHref()`.
+still escaped. **Import orders are searched too** (project owner, 2026-09-25): `ensureLoaded()`
+also fetches GET `/api/imports/purchase-orders` into `IMPORT_POS` (`null` on failure, named in the
+same warning), the same `poMatchesFilters()` runs over them, and a hit carries an **Import** badge
+beside its plant - a number can exist as both a Domestic and an Import order, and both are listed.
+`itemIsMatched()` and `poValue()` bridge the two payload shapes (an import line's MIR match is the
+`mirMatch` object; its value is `totalInclusiveValue`, in INR). `showDetail()` is a simpler panel than
+the dashboard modal - for an import it shows country of origin and Bill of Lading instead of GSTIN,
+PO quantity, and net price as a bare number in the PO currency - and links out with
+`dashboardPoHref(plant, po, kind)` (adding `kind=import` for an import order) / per-line
+`dashboardMaterialHref()`.
 
 ### frontend/js/review-page.js
 
@@ -811,7 +873,7 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
 ### frontend/css/*.css (stylesheets)
 
 - **`brand.css`** (every page) - brand tokens, top nav, user menu, theme toggle, buttons, forms,
-  stat/action/user cards, search results, admin user form (`.uf-*`, also used by the Change Password
+  stat/action/user cards, search results (`.search-result-badges`, and `.search-result-import` for the Import badge), admin user form (`.uf-*`, also used by the Change Password
   modal), toasts, the global `[hidden]` rule, the closed set of CSP utility classes (add one only for
   a real call site), `.sr-only` / `.sr-only-focusable` / `.skip-link`, and its dark-mode blocks.
 - **`style.css`** (`index.html` only) - `--dash-*` and dashboard tokens, sync bar and refresh status,
@@ -819,7 +881,8 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   tried and looked wrong with 8 vs 13 cards), info and row-flag CSS tooltips (instant, unlike native
   `title`), tables (sticky headers inside `.table-wrap`, which is a two-axis scroll container, so a CSS
   tooltip inside it is clipped), status pills and badges, legend, disclaimer, modal shell, correction
-  box, MIR picker, reconciliation cards, steppers, dark mode.
+  box, MIR picker, reconciliation cards, steppers, the Domestic list's "Also in Import Purchases"
+  box (`.cross-kind-*`), dark mode.
 - **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,
   `login-page.css`) - extracted from inline `<style>` blocks for CSP; they use `brand.css` tokens
   (several review/admin rules carry literal fallbacks, e.g. `var(--green, #16a34a)`, because the

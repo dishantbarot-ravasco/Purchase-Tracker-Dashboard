@@ -52,6 +52,7 @@ from apps.api.routers._domestic_base import (
     _claims_for_mir_numbers,
     _counted_mirs,
     _held_mir_numbers,
+    _match_config_for,
     _mir_row_dict,
     _po_material_categories,
     _request_bool,
@@ -64,7 +65,7 @@ from apps.api.routers._domestic_base import (
 from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 # The matcher's own line numbering, imported rather than re-derived so the
 # API and matching_core can never disagree about what a pin addresses.
-from apps.services.matching_core import _import_rate_value_inr, line_item_positions
+from apps.services.matching_core import _import_rate_value_inr, import_landed_rates, line_item_positions
 from apps.services.parsers.common import normalize_material
 from apps.services import bl_tracking
 from apps.services import import_flags as flags
@@ -151,6 +152,9 @@ def _mir_match_dict(item):
         return None
     counted_mirs, received = _counted_mirs(match, item.uom)
     ordered_rate_inr, ordered_value_inr = _import_rate_value_inr(item)
+    landed_ordered, landed_received = import_landed_rates(
+        _match_config_for(match), item, list(match.group_entries.all()) or [match.mir_entry],
+    )
     return {
         "matchId": match.id,
         "tier": match.tier,
@@ -163,6 +167,20 @@ def _mir_match_dict(item):
         # always INR) - see matching_core._import_rate_value_inr().
         "orderedRateInr": _f(ordered_rate_inr),
         "orderedValueInr": _f(ordered_value_inr),
+        # The landed-rate pair the rate check also accepts (2026-09-25): the
+        # CSV's landed value per BOE unit (duty + IGST in) against MIR's
+        # final value per unit received. Null until the line is cleared. See
+        # matching_core._landed_rate_diff().
+        "landedRateInr": _f(landed_ordered),
+        "receivedFinalRate": _f(landed_received),
+        # Exchange-rate difference (2026-09-25): the rate MIR's receipt
+        # implies and whether the rate gap is that difference rather than a
+        # price one - see matching_core._exchange_rate_explains().
+        "mirExchangeRate": _f(getattr(match, "mir_exchange_rate", None)),
+        "exchangeRateMismatched": bool(getattr(match, "exchange_rate_mismatched", False)),
+        # This line's share of a receipt covering several lines of its BOE,
+        # or null when it counts its receipts in full.
+        "receiptShare": _f(getattr(match, "receipt_share", None)),
         "qtyDiffPct": _f(match.qty_diff_pct),
         # Over vs under delivery (2026-09-18). True = more received than
         # ordered, false = less, null = no quantity comparison was possible.
@@ -320,8 +338,11 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_r
         "totalInclusiveValue": float(total_incl_value) if total_incl_value else 0.0,
         "billOfLadingNumber": bl_number,
         "shipmentStage": flags.po_shipment_stage(items),
+        # Receipt-based, from each line's MIR match (import_flags.py) - the
+        # same rules Domestic's status buckets use, not customs clearance.
         "deliveryDateStatus": flags.po_delivery_date_status(items, today),
         "partialDelivery": flags.partial_delivery(items),
+        "materialInwarded": flags.material_inwarded(items),
         "qtyDiscrepancy": flags.po_has_qty_discrepancy(items),
         "dataQualityFlags": flags.po_flags(po.po_number, items),
         # Always included (not detail-only) - the combined list is the only

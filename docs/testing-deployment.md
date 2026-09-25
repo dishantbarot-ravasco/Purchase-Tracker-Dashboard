@@ -503,7 +503,7 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_email_delivery_is_observable.py | yes | Source guard: no `fail_silently=True`; a failed admin alert logs ERROR and never claims "sent". |
 | test_email_dispatch_pool.py | yes | Bounded OTP/bulk email thread pools: no thread per email, OTP lane never blocked, inline fallback. |
 | test_google_client_query.py | no | `find_file_id_by_title()` Drive query construction and escaping, newest-first pick among duplicates, `list_files_in_folder()` pagination (fake service, no API call). |
-| test_import_flags.py | no | Import PO stage (placed/shipped/cleared) and BOE qty discrepancy flags. |
+| test_import_flags.py | no | Import PO stage (placed/shipped/cleared), BOE qty discrepancy, and the MIR-receipt rules for delivery status, partial delivery and Material Inwarded (cleared-but-not-received is Overdue; BOE short is not partial). |
 | test_license_links.py | yes | Import line License Type/Number normalisation and join to the RoDTEP/Advance License ledgers. |
 | test_manual_mir_match.py | yes | Domestic manual MIR pins in `run_full_match()`: pin outranks matcher, survives rematch, forced-unmatched, collisions. |
 | test_manual_mir_match_imports.py | yes | Import MIR pins: `po_kind` separation, domestic vs import pins competing for one MIR table. |
@@ -521,7 +521,7 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_po_number_groups.py | yes | One PO, many MIR receipts: every receipt naming the PO is saved and compared as one total. |
 | test_received_against_line.py | no | `received_against_line()` sums matched MIR qty in the PO line's unit. |
 | test_run_full_match_achhad_pipeline.py | yes | Achhad `run_full_match()` against real rows (no stock vendor column, legacy PO formats). |
-| test_run_full_match_import_pipeline.py | yes | Import PO<->MIR matching with currency conversion and BOE qty. |
+| test_run_full_match_import_pipeline.py | yes | Import PO<->MIR matching with currency conversion and BOE qty, and the landed-rate basis: a duty-paid MIR rate agrees on a cleared line, not on an uncleared one, per unit on a part-delivery, the closer gap is stored, and an exact pre-duty rate still agrees; Bill of Entry pairing (the citing receipt wins, swapped receipts return, corroboration required, shared receipts split by share at the blended rate, a BOE across different Bills of Lading ignored) and the exchange-rate flag (on-grid difference flagged, off-grid or too-large move stays a rate mismatch). |
 | test_run_full_match_pipeline.py | yes | HRS `run_full_match()` against real rows: flags, vendor gate, NO_PO vendors, idempotency. |
 | test_run_full_match_atomic.py | yes | `run_full_match()` is one transaction: a failure part-way rolls back writes already made. |
 | test_run_full_match_vapi_pipeline.py | yes | Vapi `run_full_match()`: taxable value, vendor containment, date-confirmed rate flags. |
@@ -586,7 +586,8 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_password_reset.py | yes | Admin password reset via `update_user()`. |
 | test_po_status_inputs.py | yes | Line-item fields the frontend's `computeStatus()` depends on. |
 | test_prune_revoked_tokens.py | yes | `prune_revoked_tokens` deletes only expired rows. |
-| test_raw_material_order_payload.py | yes | `locationTag` on lots and per-line import categories. |
+| test_import_po_receipt_status.py | yes | The import list endpoint's `materialInwarded` / `partialDelivery` / `deliveryDateStatus` over real match rows - cleared but not in MIR, short, over, dismissed, BOE short - and a shared receipt counting only its `receiptShare`. |
+| test_raw_material_order_payload.py | yes | `locationTag` on lots, per-line import categories, and the `received` qty (in the PO line's unit) on domestic lines and import matches that Raw Material's in-transit KPIs subtract. |
 | test_read_endpoint_plant_scoping.py | yes | Read endpoints honour `PTUser.plants` (404 not 403 for import details). |
 | test_readiness_probe.py | yes | `/api/health/ready` ok/degraded/stale/down semantics. |
 | test_refresh_token_never_in_body.py | yes | Refresh token only ever in the httpOnly cookie. |

@@ -27,6 +27,8 @@
 const RECON_QTY_EPS = 0.0005;
 const RECON_RATE_EPS = 0.005;
 const RECON_VALUE_EPS = 1;
+// Relative, as a fraction: matching_core._LANDED_RATE_ROUNDING_PCT (0.01%).
+const RECON_LANDED_RATE_REL_EPS = 0.0001;
 
 function reconQty(v) {
   return v == null ? '-' : Number(v).toLocaleString('en-IN', { maximumFractionDigits: 3 });
@@ -73,8 +75,9 @@ function reconStatus(line) {
 function reconControlsHtml(line, plantKey) {
   let out = '';
   if (line.matched) {
-    const conf = line.tier === 'po_number' ? 'high' : (line.score != null && line.score >= 0.75 ? 'medium' : 'low');
-    const confTitle = { high: 'High confidence: exact PO number match', medium: 'Medium confidence: weighted score ≥ 0.75', low: 'Low confidence: weighted score below 0.75 - verify manually' }[conf] +
+    const exactTier = line.tier === 'po_number' || line.tier === 'boe_number';
+    const conf = exactTier ? 'high' : (line.score != null && line.score >= 0.75 ? 'medium' : 'low');
+    const confTitle = { high: line.tier === 'boe_number' ? 'High confidence: MIR cites the Bill of Entry number of this shipment' : 'High confidence: exact PO number match', medium: 'Medium confidence: weighted score ≥ 0.75', low: 'Low confidence: weighted score below 0.75 - verify manually' }[conf] +
       (line.score != null ? ' (score ' + line.score.toFixed(2) + ')' : '');
     out += '<span class="conf-badge conf-' + conf + '" title="' + escapeHtml(confTitle) + '">' + conf + '</span>';
   }
@@ -145,6 +148,14 @@ function reconLineHtml(line, plantKey) {
     '<tr><th scope="row">Rate' + (line.rateNote ? ' <span class="recon-muted">' + escapeHtml(line.rateNote) + '</span>' : '') + '</th><td class="num">' + reconMoney(o.rate) + '</td>' +
       '<td class="num">' + (r ? reconMoney(r.rate) : '-') + '</td>' +
       (r ? reconDiffHtml(o.rate, r.rate, 'rate', v => reconMoney(v), RECON_RATE_EPS) : '<td class="recon-diff">-</td>') + '</tr>' +
+    (line.landed ?
+      '<tr><th scope="row">Landed rate <span class="recon-muted">(duty + IGST, per ' + escapeHtml(line.uom || 'unit') + ')</span></th><td class="num">' + reconMoney(line.landed.ordered) + '</td>' +
+        '<td class="num">' + (r ? reconMoney(line.landed.received) : '-') + '</td>' +
+        // Same 0.01% rounding allowance the matcher uses for this basis
+        // (matching_core._LANDED_RATE_ROUNDING_PCT), so the card never shows a
+        // difference the rate flag ignored.
+        (r ? reconDiffHtml(line.landed.ordered, line.landed.received, 'rate', v => reconMoney(v), Math.abs(line.landed.ordered) * RECON_LANDED_RATE_REL_EPS) : '<td class="recon-diff">-</td>') + '</tr>'
+      : '') +
     '<tr><th scope="row">Value' + (line.valueNote ? ' <span class="recon-muted">' + escapeHtml(line.valueNote) + '</span>' : '') + '</th><td class="num">' + reconMoney(o.value) + '</td>' +
       '<td class="num">' + (r ? reconMoney(r.value) : '-') + '</td>' +
       (r ? reconDiffHtml(o.value, r.value, 'value', v => reconMoney(v), RECON_VALUE_EPS) : '<td class="recon-diff">-</td>') + '</tr>';
@@ -164,6 +175,7 @@ function reconLineHtml(line, plantKey) {
     '<div class="recon-table-scroll"><table class="recon-table"><thead><tr><th scope="col"></th><th scope="col" class="num">Ordered (PO)</th><th scope="col" class="num">Received (MIR)</th><th scope="col" class="num">Difference</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table></div>' +
     (line.uomMismatch ? '<div class="recon-note">Units cannot be converted between the PO and MIR - compare the receipts below by hand.</div>' : '') +
+    (line.notes || []).map(n => '<div class="recon-note">' + escapeHtml(n) + '</div>').join('') +
     reconReceiptsHtml(line) +
     (line.footerHtml ? '<footer class="recon-foot">' + line.footerHtml + '</footer>' : '') +
   '</article>';
@@ -251,7 +263,25 @@ function importReconLine(it, index, po, plantKey) {
       rate: m.orderedRateInr != null ? m.orderedRateInr : null,
       value: it.netValue != null && it.exchangeRate != null ? it.netValue * it.exchangeRate : (m.orderedValueInr != null ? m.orderedValueInr : null),
     },
-    rateNote: fxNote ? '(' + fxNote + ')' : '(in INR)',
+    rateNote: fxNote ? '(' + fxNote + ', before duty)' : '(in INR)',
+    // Cleared lines only: the landed rate (duty + IGST in) against MIR's
+    // final rate - the second basis the matcher's rate check accepts
+    // (matching_core._landed_rate_diff()), shown so a line whose pre-duty
+    // rate reads "8.25% higher" visibly agrees once duty is counted.
+    // Not for a shared receipt: that is compared at the BOE's blended landed
+    // rate, which this line's own figure is not - the note below says so.
+    landed: m.landedRateInr != null && m.receiptShare == null ? { ordered: m.landedRateInr, received: m.receivedFinalRate } : null,
+    notes: [
+      m.receiptShare != null
+        ? 'One MIR receipt covers several lines of this Bill of Entry; this line counts ' +
+          (m.receiptShare * 100).toLocaleString('en-IN', { maximumFractionDigits: 1 }) +
+          '% of it (its share of the BOE quantity), and the rate is checked at the blended rate of the BOE.'
+        : '',
+      m.exchangeRateMismatched && m.mirExchangeRate != null
+        ? 'Exchange rate differs: MIR works at ' + m.mirExchangeRate.toFixed(2) + ', the Imports CSV records ' +
+          it.exchangeRate + '. The price agrees at the rate MIR uses - correct the exchange rate on the CSV.'
+        : '',
+    ].filter(Boolean),
     valueNote: it.netValue != null && it.exchangeRate != null ? '(PO net value in INR)' : '(landed, INR)',
     received: m.received, mirs: m.matchedMirs, matched: !!it.mirMatch,
     tier: m.tier, score: m.matchScore, pinned: !!it.manuallyPinned, itemRef: it.itemRef,

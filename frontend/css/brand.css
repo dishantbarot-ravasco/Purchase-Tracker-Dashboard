@@ -300,6 +300,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   color: var(--gold-text); background: var(--gold-pale); border: 1px solid var(--gold-border);
   border-radius: var(--radius); padding: 3px 9px;
 }
+.search-result-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+/* Marks an Import Purchases hit; navy so it never reads as a second plant. */
+.search-result-import { color: var(--navy); background: var(--bg-section); border-color: var(--border); }
 .search-result-meta { font-size: 12.5px; color: var(--text-muted); margin-top: 6px; }
 .search-empty { text-align: center; color: var(--text-muted); font-size: 13px; padding: 40px 20px; }
 /* Shared empty-state icon+message - see shared.js's emptyStateHtml(); same
