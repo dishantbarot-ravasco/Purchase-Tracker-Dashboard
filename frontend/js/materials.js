@@ -224,7 +224,11 @@ function aggregateMaterialsByName(lots) {
       vendors: g.vendors, lots: g.lots, anchorLot: g.lots[0],
       consumption: {
         avgDaily: avgDaily > 0 ? avgDaily : null,
-        daysLeft: avgDaily > 0 ? g.qty / avgDaily : null,
+        // Negative stock is a sheet error, not an empty store: no Days Left
+        // for it, so it can neither read as a real figure nor trip Low
+        // Stock. Same rule as consumption_periods.days_of_cover().
+        daysLeft: avgDaily > 0 && g.qty >= 0 ? g.qty / avgDaily : null,
+        negativeStock: g.qty < 0,
         confidence: weakest ? weakest.confidence : 'none',
         coverageDays: weakest ? weakest.coverageDays : 0,
         observedDays: weakest ? weakest.observedDays : 0,
@@ -238,8 +242,13 @@ function aggregateMaterialsByName(lots) {
 // (daysToMsl === 0 - see _domestic_base.py's _lot_dict()) on any
 // contributing lot - wired into the Status filter (matStatusFilter
 // 'lowstock') alongside the existing qtydisc/ratedisc/flags states.
+// The days-of-cover half counts only when daysLeftCellHtml() shows the
+// number: under band 'none' the cell reads "-", and a Low Stock row whose
+// Days Left cell is blank cannot be checked by the person reading it. The
+// msl half needs no rate, so it is not gated.
 function isMaterialLowStock(m) {
-  if (m.consumption && m.consumption.daysLeft != null && m.consumption.daysLeft < 15) return true;
+  const c = m.consumption;
+  if (c && c.confidence !== 'none' && c.daysLeft != null && c.daysLeft < 15) return true;
   return (m.lots || []).some(l => l.daysToMsl === 0);
 }
 
@@ -247,12 +256,20 @@ function isMaterialLowStock(m) {
 // tooltipped with the coverage it's based on - the visible half of the
 // decision to show a days-left figure even on thin history (see
 // apps/services/consumption_engine.py's module docstring). Band 'none'
-// renders an em dash instead of a number - a two-day estimate must never
-// look identical to a month-long one.
+// renders "-" instead of a number - a two-day estimate must never look
+// identical to a month-long one. A watched material that did not move
+// arrives with its plant's band and a null rate (consumption_periods.py's
+// MaterialRates.no_movement) and reads "No movement".
 function daysLeftCellHtml(m) {
   const c = m.consumption;
   const confidence = (c && c.confidence) || 'none';
   const dotClass = CONF_DOT_CLASS[confidence] || CONF_DOT_CLASS.none;
+  // Checked before the band: a negative quantity is a sheet error worth
+  // seeing whatever the coverage.
+  if (c && c.negativeStock) {
+    return '<span class="days-left-cell"><span class="days-left-value">Stock &lt; 0</span>' +
+      '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="The stock sheet shows a negative quantity for this material - a data error to fix in the sheet. Days Left cannot be worked out from it." tabindex="0"></span></span>';
+  }
   if (confidence === 'none' || !c) {
     return '<span class="days-left-cell"><span class="days-left-value">-</span>' +
       '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="Not enough snapshot history yet" tabindex="0"></span></span>';

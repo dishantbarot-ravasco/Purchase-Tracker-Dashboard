@@ -38,8 +38,10 @@ sitting in one pile. Split, each bucket has an owner.
 
 What decides the bucket, and why it is the matcher's own logic. Membership
 is NOT a fresh interpretation of po_number_raw - it reuses
-matching_core._names_known_po()/known_po_numbers(), the same pair the
-contradiction gate uses. That matters: HRS writes its legacy PO series five
+matching_core.known_po_numbers() and _po_number_matches(), the comparison
+the contradiction gate uses (through cites_a_po()/names_a_held_po(), which
+drop only the gate's 8-digit floor: a short HRS legacy number naming one of
+our orders is a PO for this report's purposes). That matters: HRS writes its legacy PO series five
 different ways (see PO_MIR_Audit/PO_number_convention.md), so a plain
 string comparison against the PO table puts ~120 HRS rows in PO_UNKNOWN
 that the matcher itself considers perfectly well known. A drill-down that
@@ -69,11 +71,10 @@ Two deliberate scope choices:
 
 from django.db.models import Count
 
-from apps.services.matching_core import known_po_numbers, _names_known_po
+from apps.services.matching_core import cites_a_po, known_po_numbers, names_a_held_po
 from apps.services.parsers.common import (
     INTERNAL_TRANSFER,
     NO_PO_SUPPLIER,
-    is_usable_po_reference,
     no_po_vendor_entry,
 )
 
@@ -126,13 +127,13 @@ def classify_mir_row(po_number_raw: str, party_name: str, matched: bool, known_p
     entry = no_po_vendor_entry(party_name or "")
     if entry and entry[0] == INTERNAL_TRANSFER:
         return None
-    if not is_usable_po_reference(po_number_raw or ""):
+    if not cites_a_po(po_number_raw, known_pos):
         # Listed whether or not it matched - see the module docstring's
         # first scope choice for why.
         return NO_PO
     if matched:
         return None
-    return PO_KNOWN_UNMATCHED if _names_known_po(po_number_raw, known_pos) else PO_UNKNOWN
+    return PO_KNOWN_UNMATCHED if names_a_held_po(po_number_raw, known_pos) else PO_UNKNOWN
 
 
 def mir_without_po_rows(mir_model: type, match_config) -> list[dict]:

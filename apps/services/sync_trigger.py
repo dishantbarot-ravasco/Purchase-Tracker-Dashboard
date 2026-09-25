@@ -157,11 +157,49 @@ def is_advance_license_sync_in_progress() -> bool:
 
 # ── Domestic sync+match pipeline ─────────────────────────────────────────────
 
+# A step that only derives from what an earlier step wrote is skipped when
+# that step failed: compute_<plant>_consumption re-reading yesterday's
+# snapshots after sync_<plant>_stock failed would record a SUCCESS row and
+# make a stale ledger look freshly computed. Matching is deliberately not
+# gated - it pairs whatever PO/MIR/Stock rows are in the DB, and a PO sync
+# failing says nothing about whether the MIR sync that did succeed is worth
+# matching.
+_STEP_PREREQUISITES = {
+    "compute_hrs_consumption": "sync_stock",
+    "compute_achhad_consumption": "sync_achhad_stock",
+    "compute_vapi_consumption": "sync_vapi_stock",
+}
+
+_SYNCRUN_PLANT = {"hrs": "HRS", "achhad": "RTP-ACHHAD", "vapi": "RTP-VAPI"}
+
+
+def _record_skipped_consumption(plant_key: str, prerequisite: str) -> None:
+    """A FAILED consumption SyncRun saying why the step did not run, so the
+    dashboard's sync status and progress count show it rather than leaving
+    the previous run's SUCCESS as the latest word."""
+    from django.utils import timezone
+
+    from apps.core.models import SyncRun
+
+    now = timezone.now()
+    SyncRun.objects.create(
+        plant=_SYNCRUN_PLANT[plant_key], source=SyncRun.Source.CONSUMPTION, status=SyncRun.Status.FAILED,
+        started_at=now, finished_at=now,
+        error_detail=f"Skipped - {prerequisite} failed, so there were no new stock snapshots to compute from.",
+    )
+
+
 def _run_pipeline(plant_key: str) -> None:
     from apps.services.security_alerts import notify_admins_sync_failure
 
+    failed: set[str] = set()
     try:
         for cmd_name in _PLANT_COMMANDS[plant_key]:
+            prerequisite = _STEP_PREREQUISITES.get(cmd_name)
+            if prerequisite in failed:
+                log.error("sync_trigger: skipping %s for plant=%s - %s failed", cmd_name, plant_key, prerequisite)
+                _record_skipped_consumption(plant_key, prerequisite)
+                continue
             try:
                 call_command(cmd_name)
             except SystemExit:
@@ -169,9 +207,11 @@ def _run_pipeline(plant_key: str) -> None:
                 # after already recording a failed SyncRun row themselves
                 # (see each command's own `finally` block) - logged here
                 # just so it's visible in this trigger's own trace too.
+                failed.add(cmd_name)
                 log.error("sync_trigger: %s exited with failure for plant=%s", cmd_name, plant_key)
                 notify_admins_sync_failure(plant_key, cmd_name)
             except Exception as exc:
+                failed.add(cmd_name)
                 log.exception("sync_trigger: %s raised an unexpected error for plant=%s", cmd_name, plant_key)
                 notify_admins_sync_failure(plant_key, cmd_name, detail=str(exc))
     finally:

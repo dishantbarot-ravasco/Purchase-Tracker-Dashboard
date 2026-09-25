@@ -491,7 +491,10 @@ is a `_PlantConfig` factory producing three views, the other a single view for a
 MIR number, party or material. `PATCH .../mir-match` takes `{itemRef, mirNo, reason, clear}`: a
 non-empty `mirNo` pins, an empty `mirNo` pins the line as deliberately unmatched, `clear: true` removes
 the pin. An unknown `mirNo` is a 400; a retired PO or unknown `itemRef` a 404. The response carries
-`manualPinsApplied` and `stalePins` from the synchronous `run_full_match()`.
+`manualPinsApplied`, `stalePins` and `unfilledPins` from the synchronous `run_full_match()`.
+`unfilledPins` lists pins whose MIR document had no free row left (a newer pin holds it, or the number
+is gone from MIR): the line is left unmatched, never auto-matched, and the picker tells the user
+instead of saying "Matched".
 
 **It names a MIR NUMBER, not a MIR row, and that is the central decision.** One MIR document routinely
 covers several material lines, so `mir_no` is not unique. The unique column is `source_row_ref` - the
@@ -577,9 +580,14 @@ for every plant and both PO kinds; each router passes its own model class. Endpo
 `PATCH imports/matches/po-mir/<plant>/<id>/dismiss`. Body `{"dismissed": true|false, "reason": "..."}`;
 response `{status, matchId, dismissedByOverride, dismissedReason}`, 404 for an unknown id. **Clearing a
 dismissal also clears the three audit columns** - an undone decision should not keep stale provenance.
-**Every matcher's `update_or_create` `defaults` never touches `dismissed_*`, so a dismissal survives every
-re-match** (`test_dismiss_match.py::test_editor_can_dismiss_with_reason_and_it_survives_rematch`). A
-match that is deleted and recreated by a later run (re-pointed to another row) is a new row and loses it.
+**Every matcher's `update_or_create` `defaults` never carries `dismissed_*`, so a dismissal survives every
+re-match that keeps the same pairing** (`test_dismiss_match.py::test_editor_can_dismiss_with_reason_and_it_survives_rematch`).
+A PO↔MIR match row is keyed on its line item, so a run that pairs the line with a **different** MIR row
+updates the same row in place - and `matching_core._save_po_mir_match()` clears the dismissal then,
+since it judged the old receipt and would otherwise hide the new one's flags
+(`test_manual_mir_match.py::test_a_dismissal_survives_a_rematch_but_not_a_repointed_match`). A match
+that is deleted and recreated by a later run is a new row and loses it too. MIR↔Stock rows are keyed
+on the (MIR row, lot) pair, so they cannot be re-pointed.
 Dismissal also removes the match from the Plant Data Correction email.
 
 **PO-level flag dismissal.** The Quantity / Rate-Value critical flags and Data Quality Flag categories are

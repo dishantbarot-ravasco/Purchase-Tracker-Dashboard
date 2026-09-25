@@ -13,6 +13,7 @@ one per row.
 
 import pytest
 
+from apps.services.matching_core import known_po_numbers
 from apps.services.mir_without_po import (
     NO_PO,
     PO_KNOWN_UNMATCHED,
@@ -62,12 +63,23 @@ class TestClassifyMirRow:
 
     def test_the_matcher_decides_what_a_known_po_is_not_string_equality(self):
         """HRS writes its legacy slashed series several ways, so the drill-down
-        borrows `_names_known_po()` rather than comparing strings. If this ever
+        borrows the matcher's `_po_number_matches()` rather than comparing strings. If this ever
         regresses to `raw in known_pos`, ~120 HRS rows move into PO_UNKNOWN and
         somebody goes upstream to chase orders already in the database."""
         known = frozenset({"HRS/HO/26-27/003"})
         assert classify_mir_row("HRS/HO/26-27/003", "A Supplier", False, known) == PO_KNOWN_UNMATCHED
         assert classify_mir_row("Hrs/0003/2026-27", "A Supplier", False, known) == PO_KNOWN_UNMATCHED
+
+    def test_a_short_legacy_number_naming_our_po_is_not_no_po(self):
+        """HRS's legacy series is 1-4 digits, read from MIR as '1074.0' -
+        under is_usable_po_reference()'s 8-digit floor. On 2026-09-25 that put
+        124 of HRS's 193 "no PO" receipts in NO_PO although each named one of
+        our own orders. Naming a PO we hold is a PO."""
+        known = frozenset({"1074"})
+        assert classify_mir_row("1074.0", "Madura Industrial Textiles", False, known) == PO_KNOWN_UNMATCHED
+        assert classify_mir_row("1074.0", "Madura Industrial Textiles", True, known) is None
+        # A short number we do NOT hold is still no evidence of an order.
+        assert classify_mir_row("1075.0", "Madura Industrial Textiles", False, known) == NO_PO
 
 
 @pytest.mark.django_db
@@ -86,9 +98,40 @@ class TestSummaryAgainstTheDatabase:
         from apps.core.models import HRSMIREntry
         from apps.services.no_po_vendors import purchases_without_po_summary
 
-        badge = purchases_without_po_summary(HRSMIREntry)
+        badge = purchases_without_po_summary(HRSMIREntry, known_po_numbers(self._config()))
         summary = mir_without_po_summary(HRSMIREntry, self._config())
         assert summary["buckets"][NO_PO]["rowCount"] == badge["total"]
+
+    def test_badge_and_drilldown_both_count_a_short_known_po_as_a_po(self):
+        """Seeded so the two can actually disagree: one blank receipt (a real
+        no-PO purchase) and one citing HRS legacy PO '1074' as MIR writes it."""
+        import datetime
+        from decimal import Decimal
+
+        from apps.core.models import HRSDomesticPOLineItem, HRSDomesticPurchaseOrder, HRSMIREntry
+        from apps.services.no_po_vendors import purchases_without_po_summary
+
+        po = HRSDomesticPurchaseOrder.objects.create(
+            po_drive_folder_name="1074", po_number="1074", po_created_date=datetime.date(2026, 4, 1),
+            vendor_name="Madura Industrial Textiles",
+        )
+        HRSDomesticPOLineItem.objects.create(
+            purchase_order=po, item_id="1", description="Belting Fabric", hsn="5911",
+            qty=Decimal("100"), uom="MTR", net_price=Decimal("10"), net_value=Decimal("1000"),
+        )
+        for ref, raw in (("1", ""), ("2", "1074.0")):
+            HRSMIREntry.objects.create(
+                month="May-26", mir_no="MIR" + ref, mir_date=datetime.date(2026, 5, 1),
+                party_name="Some Supplier Pvt Ltd", po_number_raw=raw, material_description="Carbon Black",
+                qty=Decimal("1"), uom="KG", rate=Decimal("1"), net=Decimal("1"), taxable_value=Decimal("1"),
+                invoice_final_value=Decimal("1"), source_row_ref=ref, is_active=True,
+            )
+
+        badge = purchases_without_po_summary(HRSMIREntry, known_po_numbers(self._config()))
+        summary = mir_without_po_summary(HRSMIREntry, self._config())
+        assert badge["total"] == 1
+        assert summary["buckets"][NO_PO]["rowCount"] == 1
+        assert summary["buckets"][PO_KNOWN_UNMATCHED]["rowCount"] == 1
 
     def test_every_returned_row_carries_a_known_bucket(self):
         from apps.core.models import HRSMIREntry

@@ -110,6 +110,16 @@ class TestMaterialsConsumptionBlock:
         # 800 left at 100/day (200 units over 2 covered days).
         assert material["consumption"]["daysLeft"] == pytest.approx(8.0)
 
+    def test_negative_stock_gets_no_days_left(self):
+        # A sheet error, not an empty store: a negative figure must not come
+        # back as a negative Days Left, which read as a real Low Stock alarm.
+        _hrs_lot_issuing([(2, 0), (1, 100), (0, 200)], todays_stock=Decimal("-40"))
+        rebuild_plant_consumption("hrs")
+
+        [material] = _get("/api/materials", "v6@ravasco.com")
+        assert material["consumption"]["avgDaily"] == pytest.approx(100.0)
+        assert material["consumption"]["daysLeft"] is None
+
     def test_a_lot_with_no_ledger_rows_gets_a_null_consumption_block(self):
         # A brand-new lot with one snapshot has no interval to measure.
         _hrs_lot_issuing([(0, 0)])
@@ -117,6 +127,25 @@ class TestMaterialsConsumptionBlock:
 
         [material] = _get("/api/materials", "v3@ravasco.com")
         assert material["consumption"] is None
+
+    def test_a_watched_material_that_did_not_move_reads_no_movement_not_no_data(self):
+        # Two consecutive snapshots of a material whose issue book never
+        # moved, beside one that did: the plant has 2 covered days (band
+        # `low`), so the quiet material was genuinely watched. It must carry
+        # that coverage with a null rate - the frontend's "No movement" -
+        # not the null block that means "not enough history".
+        _hrs_lot_issuing([(2, 0), (1, 100), (0, 200)])
+        _hrs_lot_issuing([(2, 0), (1, 0), (0, 0)], description="Sulphur Powder")
+        rebuild_plant_consumption("hrs")
+
+        by_desc = {m["description"]: m for m in _get("/api/materials", "v5@ravasco.com")}
+        quiet = by_desc["Sulphur Powder"]["consumption"]
+        assert quiet is not None
+        assert quiet["avgDaily"] is None
+        assert quiet["daysLeft"] is None
+        assert quiet["confidence"] == "low"
+        assert quiet["coverageDays"] == 2
+        assert by_desc["Natural Rubber"]["consumption"]["avgDaily"] == pytest.approx(100.0)
 
     def test_a_falling_balance_with_a_static_issue_book_is_not_consumption(self):
         # The restatement case, end to end: the sheet rewrote the figure and

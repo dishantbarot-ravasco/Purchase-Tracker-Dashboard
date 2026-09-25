@@ -315,7 +315,12 @@ async function openMaterialModal(compositeKey) {
       // materialOrders()), tagged so they are never mistaken for domestic
       // ones, with the INR value the In Transit figure counts them at.
       ? '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Plant</th><th>Qty</th><th>Value (INR)</th><th>Status</th></tr></thead><tbody>' +
-          openLinked.map(l => '<tr><td><b>' + escapeHtml(l.po.poNumber) + '</b>' +
+          // The PO number opens that order's own detail modal (Domestic or
+          // Import), wired below by [data-open-po].
+          openLinked.map(l => '<tr><td><span class="row-link" tabindex="0" role="button"' +
+            ' data-open-po="' + escapeHtml(l.plantKey + '::' + l.po.poNumber) + '"' +
+            ' data-open-po-kind="' + (l.po.isImport ? 'import' : 'domestic') + '"' +
+            ' title="Open this purchase order">' + escapeHtml(l.po.poNumber) + '</span>' +
             (l.po.isImport ? ' <span class="badge-import" title="' + escapeHtml(importPriceTitle(l.item)) + '">Import</span>' : '') +
             '</td><td>' + escapeHtml(l.po.vendorName || '-') + '</td><td>' + escapeHtml(l.plantLabel) +
             '</td><td>' + (l.item.qty != null ? l.item.qty : '-') + ' ' + escapeHtml(l.item.uom || '') +
@@ -380,6 +385,15 @@ async function openMaterialModal(compositeKey) {
   const materialUrlFor = (el) => materialFieldsUrl(el.dataset.plant, el.dataset.item);
   wireEditIcons(body, materialUrlFor, switchToFlagsTab, onMaterialSaved);
   wireRevertLinks(body, materialUrlFor, onMaterialSaved);
+
+  // Purchase Activity's PO numbers. Opening the PO replaces this modal; the
+  // PO modal's own "View full material analysis" link leads back. Enter and
+  // Space activate it too, since it is a span with role="button".
+  body.querySelectorAll('[data-open-po]').forEach(el2 => {
+    const open = () => (el2.dataset.openPoKind === 'import' ? openImportPoModal : openPoModal)(el2.dataset.openPo);
+    el2.onclick = open;
+    el2.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
+  });
 
   const panelIds = { overview: 'matModalOverview', stockplant: 'matModalStockPlant', poactivity: 'matModalPoActivity', pricetrend: 'matModalPriceTrend', flags: 'matModalFlags' };
   body.querySelectorAll('[data-tab]').forEach(tab => tab.onclick = () => {

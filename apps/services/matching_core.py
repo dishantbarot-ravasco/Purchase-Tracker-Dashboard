@@ -913,6 +913,32 @@ def _names_known_po(po_number_raw: str, known_pos) -> bool:
     return any(_po_number_matches(known, raw) for known in known_pos)
 
 
+def cites_a_po(po_number_raw: str, known_pos) -> bool:
+    """True when a MIR row has a purchase order behind it, for the "purchased
+    without a PO" count and its drill-down (never for matching decisions).
+
+    Either the reference is PO-shaped (is_usable_po_reference()), or it names
+    an order we hold. The second half is what the shape test alone missed:
+    HRS's legacy series is 1-4 digits ('1074', '11', read from MIR as
+    '1074.0'), under the 8-digit floor, so on 2026-09-25 124 of HRS's 193
+    "no PO" receipts in fact named one of our own POs - 67 of them already
+    matched to it. The shape floor stays in place for the contradiction gate,
+    where a short number colliding across financial years would veto a real
+    match; saying "this receipt cites PO 1074, which we hold" risks nothing."""
+    raw = (po_number_raw or "").strip()
+    if not raw:
+        return False
+    return is_usable_po_reference(raw) or names_a_held_po(raw, known_pos)
+
+
+def names_a_held_po(po_number_raw: str, known_pos) -> bool:
+    """True when a MIR row's PO column names one of `known_pos`, with no
+    shape floor - the reporting half of cites_a_po(). _names_known_po()
+    above is the matcher's stricter form and stays its only user."""
+    raw = (po_number_raw or "").strip()
+    return bool(raw) and any(_po_number_matches(known, raw) for known in known_pos)
+
+
 def _candidate_mir_entries(
     config: _MatchConfig,
     vendor_name: str,
@@ -1979,8 +2005,15 @@ def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | 
     this MUST run before scoring/diffing against MIR, not be optional.
       - rate: net_price * exchange_rate. Falls back to bare net_price if
         exchange_rate is missing.
-      - value: total_inclusive_value (the real landed-in-India INR figure)
-        when present, else net_value * exchange_rate."""
+      - value: net_value * exchange_rate, falling back to the bare
+        net_value when exchange_rate is missing. Pre-tax, like every other
+        value comparison: MIR's value (net / taxable_value) excludes duty.
+        total_inclusive_value is the landed figure WITH customs duty, and
+        compared here it read every import short by roughly the duty rate -
+        re-measured 2026-09-25 on Vapi's 25 matched pairs, median gap 18.0%
+        against 8.8% for net_value * exchange_rate. The landed figure still
+        has its own comparison, the final-value check (_import_matchable()
+        passes it as total_inclusive_value)."""
     exchange_rate = import_line_item.exchange_rate
     if import_line_item.net_price is None:
         rate_inr = None
@@ -1989,9 +2022,7 @@ def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | 
     else:
         rate_inr = import_line_item.net_price
 
-    if import_line_item.total_inclusive_value is not None:
-        value_inr = import_line_item.total_inclusive_value
-    elif import_line_item.net_value is not None and exchange_rate is not None:
+    if import_line_item.net_value is not None and exchange_rate is not None:
         value_inr = import_line_item.net_value * exchange_rate
     else:
         value_inr = import_line_item.net_value
@@ -2291,6 +2322,32 @@ def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po:
     )
 
 
+_LOOK_UP = object()
+
+_DISMISSAL_CLEARED = dict(dismissed_by_override=False, dismissed_by=None, dismissed_at=None, dismissed_reason="")
+
+
+def _save_po_mir_match(match_model, line_item, previous_mir_id, defaults: dict):
+    """update_or_create() for a PO<->MIR match row, keyed on its line item.
+
+    A dismissal survives re-runs - the matcher's defaults never carry
+    dismissed_* - but only while the line still points at the SAME MIR row.
+    A dismissal is a person's judgment on one pairing ("this receipt's qty
+    gap is fine"); when a later run pairs the line with a different receipt,
+    keeping it would silently hide that receipt's flags, which nobody has
+    looked at. So a re-pointed match has its dismissal cleared.
+
+    `previous_mir_id` is the row's mir_entry_id before this run (None when
+    there was no row), or _LOOK_UP to read it here - the single-item paths
+    do that; run_full_match() reads all of them in one query up front."""
+    if previous_mir_id is _LOOK_UP:
+        previous_mir_id = match_model.objects.filter(po_line_item=line_item).values_list("mir_entry_id", flat=True).first()
+    if previous_mir_id is not None and previous_mir_id != defaults["mir_entry"].id:
+        defaults = {**defaults, **_DISMISSAL_CLEARED}
+    match, _ = match_model.objects.update_or_create(po_line_item=line_item, defaults=defaults)
+    return match
+
+
 def _rebuild_group_links(match_model, links: dict) -> None:
     """Replaces every row of `match_model.group_entries`' link table with
     `links` ({match id: [MIR id, ...]}). The link table belongs to this one
@@ -2389,9 +2446,9 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
         qty_over_delivered,
     ) = _diffs_and_flag(config, item, best_entry, group=group)
-    match, _ = config.po_mir_match_model.objects.update_or_create(
-        po_line_item=po_line_item,
-        defaults=dict(
+    match = _save_po_mir_match(
+        config.po_mir_match_model, po_line_item, _LOOK_UP,
+        dict(
             mir_entry=best_entry,
             tier=tier,
             match_score=best_score.quantize(Decimal("0.0001")),
@@ -2497,10 +2554,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
             taxable_value_mismatched=taxable_value_mismatched,
             final_value_mismatched=final_value_mismatched,
         ))
-    match, _ = config.import_po_mir_match_model.objects.update_or_create(
-        po_line_item=import_line_item,
-        defaults=defaults,
-    )
+    match = _save_po_mir_match(config.import_po_mir_match_model, import_line_item, _LOOK_UP, defaults)
     match.group_entries.set(group.entries if group is not None else [])
     return match
 
@@ -2546,11 +2600,13 @@ def match_mir_entry_stock(config: _MatchConfig, mir_entry, pool: "_StockLotPool 
 
     Identification/Financial-Check extension (2026-09-08, HRS/Achhad/Vapi -
     config.stock_extended_fields gates this, see this function's own
-    per-plant callers): unlike PO<->MIR, date is NEVER an alternative
-    identification path here - Material description (normalized exact
-    match, same comparison as before this extension existed) stays the
-    sole, mandatory identification factor for every plant, vendor-gated
-    when config.stock_vendor_field is set (HRS/Vapi) or not (Achhad).
+    per-plant callers): date ALONE never identifies here. Material
+    description is the identification factor for every plant, vendor-gated
+    when config.stock_vendor_field is set (HRS/Vapi) or not (Achhad). The
+    one path that identifies without a description match is date PLUS rate
+    (the same-day, same-price tier), and only behind the grade-code
+    contradiction gate and tier-1 exclusivity - see matching-engine.md's
+    "date + rate" section. Date on its own stays out, for the reason below.
 
     An earlier version of this function let Rec. DT. (exact date match
     against MIR's own Date) stand in for material as an identification
@@ -3163,6 +3219,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     # item order - that ordering is the whole tie-break when two pins name
     # the same single-row MIR document, and iterating the item list instead
     # silently threw it away.
+    unfilled_pins = []
     items_by_kind_id = {("po", item.id): item for item in po_items}
     items_by_kind_id.update({("import", item.id): item for item in import_items})
     for key, pin in pins.items():
@@ -3181,7 +3238,10 @@ def run_full_match(config: _MatchConfig) -> dict:
             # The document has no free row left (another pin took it, or the
             # number no longer exists in MIR at all). Left unmatched rather
             # than silently falling back to the automatic pick, which would
-            # contradict the instruction the reader gave.
+            # contradict the instruction the reader gave - but reported in
+            # manual_pins_unfilled, since an instruction that could not be
+            # carried out is something the person who gave it must hear.
+            unfilled_pins.append(pin)
             continue
         matchable = items_by_key.get(key)
         if matchable is None:
@@ -3319,6 +3379,12 @@ def run_full_match(config: _MatchConfig) -> dict:
 
     # (match id -> member MIR ids) per model, written in bulk after both loops.
     group_links: dict[str, dict[int, list]] = {"po": {}, "import": {}}
+    # Each line item's MIR row before this run, read once per model so
+    # _save_po_mir_match() can tell a re-pointed match without a query per line.
+    previous_mir = {
+        kind: dict(model.objects.values_list("po_line_item_id", "mir_entry_id"))
+        for kind, model in (("po", config.po_mir_match_model), ("import", config.import_po_mir_match_model))
+    }
 
     po_matched = 0
     for item in po_items:
@@ -3339,9 +3405,9 @@ def run_full_match(config: _MatchConfig) -> dict:
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
             qty_over_delivered,
         ) = _diffs_and_flag(config, matchable, mir, group=group)
-        match, _ = config.po_mir_match_model.objects.update_or_create(
-            po_line_item=item,
-            defaults=dict(
+        match = _save_po_mir_match(
+            config.po_mir_match_model, item, previous_mir["po"].get(item.id),
+            dict(
                 mir_entry=mir,
                 # Derived from whether a pin currently applies, NOT preserved
                 # across runs the way dismissed_* is - removing the pin has to
@@ -3426,10 +3492,8 @@ def run_full_match(config: _MatchConfig) -> dict:
                 taxable_value_mismatched=taxable_value_mismatched,
                 final_value_mismatched=final_value_mismatched,
             ))
-        match, _ = config.import_po_mir_match_model.objects.update_or_create(
-            po_line_item=item,
-            defaults=defaults,
-        )
+        match = _save_po_mir_match(
+            config.import_po_mir_match_model, item, previous_mir["import"].get(item.id), defaults)
         if group is not None:
             group_links["import"][match.id] = [m.id for m in group.entries]
         import_po_matched += 1
@@ -3477,9 +3541,13 @@ def run_full_match(config: _MatchConfig) -> dict:
         # so it was ignored this run - that is a thing a human needs to know
         # about and re-decide, and the whole reason the detection exists
         # instead of applying the pin to whatever now sits at that position.
-        "manual_pins_applied": len(pinned_keys),
+        "manual_pins_applied": len(pinned_keys) - len(unfilled_pins),
         "manual_pins_stale": [
             {"poNumber": p.po_number, "itemRef": p.item_ref, "mirNo": p.mir_no} for p in stale_pins
+        ],
+        "manual_pins_unfilled": [
+            {"poNumber": p.po_number, "itemRef": p.item_ref, "mirNo": p.mir_no, "poKind": p.po_kind}
+            for p in unfilled_pins
         ],
         "ran_at": timezone.now(),
     }

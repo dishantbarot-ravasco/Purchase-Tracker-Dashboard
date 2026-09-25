@@ -128,6 +128,26 @@ class TestImportPoMirCurrencyConversion:
         match = HRSImportPOMirMatch.objects.get(po_line_item=line_item)
         assert match.rate_mismatched is False
 
+    def test_net_value_is_compared_pre_duty_not_the_landed_figure(self):
+        """MIR's net is pre-tax, so the import side's net value must be too:
+        net_value x exchange_rate ($195 x 93.80 = Rs.18,291, exactly MIR's
+        net), not total_inclusive_value, the landed figure with customs duty
+        (here 18% on top). Comparing the landed figure read every import
+        short by the duty rate. The landed figure keeps its own check, the
+        final-value comparison, which does flag here."""
+        po = _make_import_po()
+        line_item = _make_import_line_item(po)
+        line_item.total_inclusive_value = line_item.net_value * line_item.exchange_rate * Decimal("1.18")
+        line_item.save()
+        _make_mir_entry()
+
+        run_full_match()
+
+        match = HRSImportPOMirMatch.objects.get(po_line_item=line_item)
+        assert match.value_diff_pct is not None and match.value_diff_pct < Decimal("1")
+        assert match.net_value_mismatched is False
+        assert match.final_value_mismatched is True
+
     def test_rerunning_is_idempotent_no_duplicate_match_rows(self):
         po = _make_import_po()
         line_item = _make_import_line_item(po)

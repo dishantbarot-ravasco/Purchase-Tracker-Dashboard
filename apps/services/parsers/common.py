@@ -446,7 +446,7 @@ def is_no_po_vendor(name: str) -> bool:
 #
 # SAME RULE AS NO_PO_VENDORS: suppress the match, never the row. The rows stay
 # in the MIR table, still reconcile against their purchase orders, and are
-# counted and labelled for the dashboard by services/no_rm_stock_vendors.py.
+# counted and labelled for the dashboard by services/rm_untracked.py.
 # Excluding them silently would recreate exactly the confusion that registry
 # exists to end - an unmatched Madura row and a genuinely failed match are
 # indistinguishable on screen otherwise.
@@ -457,9 +457,9 @@ def is_no_po_vendor(name: str) -> bool:
 # here, because it cannot be keyed the same way: "rubber compound" is genuinely
 # stocked at Achhad (27 real matches, most on exact names) and never at Vapi,
 # so a shared material list would destroy real matches. That registry would
-# have to be per-plant and material-keyed, which is a different design; it is
-# on hold pending the project owner's own scope list. Do not widen this dict
-# into that - add the new thing separately.
+# have to be per-plant and material-keyed, which is a different design - and it
+# now exists separately, as NOT_STOCKED_MATERIALS below. Do not widen this dict
+# into that.
 #
 # Source: project owner, 2026-09-21.
 
@@ -545,7 +545,8 @@ def is_no_rm_stock_vendor(name: str) -> bool:
 #     /rubber comp|silsheet/ destroyed 43 real matches. The anchored pattern
 #     below matches ONLY the bare phrase with an optional unit suffix, so a
 #     named grade can never be caught by it.
-#   - Packing narrowed from bags/drums/wooden to CRATES AND PALLETS ONLY. All
+#   - Packing narrowed from bags/drums/wooden to CRATES ONLY (see the pattern's
+#     own comment for why pallets are out too). All
 #     three plants stock EVA/LD/BATA bags, and HRS stocks 'WOODEN STOPPER 12"'
 #     and 'WOODEN CIRCLE 4"'. Only MS crates are genuinely untracked.
 #

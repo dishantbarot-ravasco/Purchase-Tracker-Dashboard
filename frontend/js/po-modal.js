@@ -333,14 +333,29 @@ async function applyMirMatch(opts) {
     reason: opts.reason || '',
   };
   try {
-    await p.api.save(body);
-    status.className = 'override-status ok';
-    status.textContent = opts.clear ? 'Back to automatic matching.'
-      : (body.mirNo ? 'Matched to MIR ' + body.mirNo + '.' : 'Marked as not received.');
+    const res = await p.api.save(body);
+    // The pin is saved but could not be applied: every row of that MIR
+    // document is already held by a newer pin (run_full_match()'s
+    // manual_pins_unfilled). The line is left unmatched, never auto-matched
+    // behind the reader's back, so they must be told rather than shown
+    // "Matched".
+    const unfilled = body.mirNo && ((res && res.unfilledPins) || []).some(u =>
+      String(u.poNumber) === String(p.poNumber) && String(u.itemRef) === String(p.itemRef) && u.mirNo === body.mirNo);
+    if (unfilled) {
+      status.className = 'override-status err';
+      status.textContent = 'Saved, but MIR ' + body.mirNo + ' is already fully taken by another pinned line, so this line is now unmatched. Pick a different MIR or free that one first.';
+    } else {
+      status.className = 'override-status ok';
+      status.textContent = opts.clear ? 'Back to automatic matching.'
+        : (body.mirNo ? 'Matched to MIR ' + body.mirNo + '.' : 'Marked as not received.');
+    }
     announce(status.textContent);
     // A pin re-runs the whole plant's matching, so other rows can move too -
     // the caller reloads the list, not just this modal.
     if (p.onDone) await p.onDone();
+    // onDone() re-renders the modal, taking the status line with it - so an
+    // unapplied pin is also said in a dialog that survives the reload.
+    if (unfilled) window.alert(status.textContent);
   } catch (e) {
     status.className = 'override-status err';
     status.textContent = 'Could not save: ' + e.message;

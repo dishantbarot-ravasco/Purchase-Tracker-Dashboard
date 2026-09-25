@@ -130,7 +130,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - Nothing scheduled runs unless `qcluster` is running; missed snapshot days can't be recovered. The
   cron `0 9-20 * * *` is IST. Never rename `daily-sync-all-plants`.
   [scheduling](docs/data-sync.md#scheduling)
-- `compute_*_consumption` stays the last step of each plant's pipeline.
+- `compute_*_consumption` stays the last step of each plant's pipeline, and is skipped (with a
+  `FAILED` row saying why) when that plant's stock sync failed.
   [scheduling](docs/data-sync.md#scheduling)
 - Never use cron-job.org's "test run" on the report jobs. [scheduling](docs/data-sync.md#scheduling)
 - The Drive client is per-thread on purpose. [google_client.py](docs/data-sync.md#appsservicesgoogle_clientpy)
@@ -139,7 +140,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - Identification is 2-of-3 (PO number, vendor, material) at all plants, behind the PO-contradiction
   and date gates; evidence tiers dominate ranking and `MATCH_THRESHOLD` does not gate matches.
   [PO ↔ MIR](docs/matching-engine.md#po--mir)
-- Value comparisons are pre-tax (MIR `net` at HRS/Achhad, `taxable_value` at Vapi).
+- Value comparisons are pre-tax (MIR `net` at HRS/Achhad, `taxable_value` at Vapi); imports compare
+  `net_value x exchange_rate`, never the duty-inclusive `total_inclusive_value`.
   [PO ↔ MIR](docs/matching-engine.md#po--mir)
 - Receipts citing exactly one known PO all belong to it; every counted row is saved in
   `group_entries`, and readers must read it.
@@ -147,6 +149,9 @@ Read the linked section before breaking any of these. Each is there because it w
 - The no-PO and RM-untracked registries suppress the match, never the row; don't merge the lists.
   `NOT_STOCKED_MATERIALS` is per plant - follow the admission tests before adding an entry.
   [registries](docs/matching-engine.md#what-mirstock-deliberately-skips---two-registries-neither-shared-with-the-po-side)
+- "Purchased without a PO" uses `cites_a_po()` (PO-shaped or names a held PO); never loosen
+  `is_usable_po_reference()` itself, which guards the contradiction gate.
+  [no PO](docs/matching-engine.md#no-purchase-order-behind-it-is-three-questions-not-one-2026-09-21)
 - MIR↔Stock date+rate identification is only safe behind the grade-code gate plus tier-1
   exclusivity; stock qty must never become an identifier.
   [date + rate](docs/matching-engine.md#date--rate-is-this-pairings-po-number---behind-two-guards)
@@ -173,7 +178,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - A manual pin names a MIR number, not a row, and `po_kind` belongs in every pin query.
   [pins](docs/api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21)
 - Corrections mutate the real row plus an audit row, re-match synchronously, and are overwritten by
-  the next sync. Matcher `defaults` never touch `dismissed_*`.
+  the next sync. Matcher `defaults` never carry `dismissed_*`; only `_save_po_mir_match()` clears it,
+  when a line is re-pointed to a different MIR row.
   [inline edit](docs/api-and-features.md#inline-edit-everywhere),
   [dismiss](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag)
 - The licence CSV says which licence was used, not how much; never derive a balance from it.

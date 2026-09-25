@@ -109,6 +109,27 @@ class TestManualPinOverridesTheMatcher:
             run_full_match()
         assert _match_for(item).mir_entry_id == pinned.id
 
+    def test_a_dismissal_survives_a_rematch_but_not_a_repointed_match(self):
+        """A dismissal is a judgment on one pairing. Kept while the line still
+        points at the same receipt; cleared once it points at another, whose
+        flags nobody has looked at."""
+        po = _po()
+        item = _item(po)
+        _mir("MIR-AUTO", "10", po_number_raw=po.po_number)
+        _mir("MIR-HAND", "11", party_name="Totally Different Supplier Ltd")
+        run_full_match()
+        HRSPOMirMatch.objects.filter(po_line_item=item).update(
+            dismissed_by_override=True, dismissed_reason="qty gap agreed with vendor")
+
+        run_full_match()
+        assert _match_for(item).dismissed_by_override is True, "same MIR row: the dismissal stays"
+
+        _pin(po.po_number, "0", "MIR-HAND")
+        run_full_match()
+        match = _match_for(item)
+        assert match.dismissed_by_override is False
+        assert match.dismissed_reason == ""
+
     def test_removing_the_pin_returns_the_line_to_automatic_matching(self):
         po = _po()
         item = _item(po)
@@ -209,9 +230,13 @@ class TestPinCollision:
         ManualMirMatch.objects.filter(pk=newer.pk).update(
             updated_at=datetime.datetime(2026, 9, 20, tzinfo=datetime.timezone.utc))
 
-        run_full_match()
+        result = run_full_match()
         assert _match_for(item_b).mir_entry_id == only_row.id
         assert _match_for(item_a) is None
+        # The losing pin is reported, not counted as applied - its author
+        # was told "Matched" before this existed, for a line left unmatched.
+        assert result["manual_pins_applied"] == 1
+        assert [(p["poNumber"], p["mirNo"]) for p in result["manual_pins_unfilled"]] == [(po_a.po_number, "MIR-ONE")]
 
 
 @pytest.mark.django_db
@@ -235,10 +260,11 @@ class TestPinStaleness:
         item = _item(po)
         _mir("MIR-AUTO", "10", po_number_raw=po.po_number)
         _pin(po.po_number, "0", "MIR-NOPE")
-        run_full_match()
+        result = run_full_match()
         # NOT a silent fallback to the automatic pick, which would contradict
-        # the instruction the reader gave.
+        # the instruction the reader gave - but not silent either.
         assert _match_for(item) is None
+        assert [p["mirNo"] for p in result["manual_pins_unfilled"]] == ["MIR-NOPE"]
 
 
 @pytest.mark.django_db

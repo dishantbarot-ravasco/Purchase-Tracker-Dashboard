@@ -440,7 +440,11 @@ few module-level variables for the correction box and modal a11y.
   `prefers-reduced-motion`), `wireKpiCountUps(root)` (reads `data-count-target`/`data-count-fmt`
   `inr`/`locale`/`int` on `.kpi-card .val`), and `loadKpis()`: GET `/purchase-orders` for every
   plant in parallel, fills `#kpiTotalPos`/`#kpiSuppliers`/`#kpiThisMonth`/`#kpiThisWeek`, and adds a
-  visible "N plant(s) failed to load" note rather than counting a failed plant as zero.
+  visible "N plant(s) failed to load" note rather than counting a failed plant as zero. This Month
+  and This Week compare `createdDate` against `localISODate()` - the viewer's own calendar date.
+  Never `toISOString().slice(0, 10)`: that is the UTC date, and local midnight in IST is the
+  previous day in UTC, so "today" was yesterday (This Week dropped today's POs, and on the 1st This
+  Month counted the old month).
 - **Lists:** `LIST_FILTER_DEBOUNCE_MS`, `debounceRender(fn, ms)` (factory), `jumpToPageHtml()` /
   `wireJumpToPage()` (invalid page numbers are ignored, not clamped), `revealFilteredList(regionId)`
   (announces the list heading; scrolls only if the region's top is off-screen; jumps instead of
@@ -580,6 +584,9 @@ The Domestic PO modal and the shared MIR picker.
   material, qty/rate, sheet rows and who currently holds the document (`claimedBy`, via
   `mirClaimSummary()`); `chooseMirCandidate()` confirms a collision; `applyMirMatch()` sends
   `{itemRef, mirNo, clear, reason}` (`mirNo: ''` = "no MIR", `clear: true` = back to automatic).
+  When the response's `unfilledPins` names this line (every row of that MIR document is already
+  held by a newer pin), it says so instead of "Matched" - in the status line and, because
+  `onDone()` re-renders the modal and takes the status line with it, in a `window.alert()`.
 
 ### frontend/js/import-po.js
 
@@ -623,8 +630,10 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   material (`orderOnly: true`, key `order::<normalized description>` via `materialModalKey()`).
 - `computeMaterialPoLinkage(materials, plantKeys)` - per material: `links`, `openLinks`, `openValue`,
   per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. `computeMaterialStatus()`
-  (`overdue`/`partial`/`onorder`/`received`/`instock`), `isMaterialLowStock()` (< 15 days or
-  `daysToMsl === 0`), `daysLeftCellHtml()` (confidence dot; band `none` shows a dash).
+  (`overdue`/`partial`/`onorder`/`received`/`instock`), `isMaterialLowStock()` (< 15 days with a
+  band other than `none`, or `daysToMsl === 0`), `daysLeftCellHtml()` (confidence dot; negative
+  stock shows "Stock < 0" with a sheet-error tooltip, checked before the band; band `none` shows "-";
+  a watched material that did not move shows "No movement").
 - `renderMaterialsView()` - 8 KPI cards (`total` and `value` clear; `transit` and `qtyordered` share
   `filterKey: 'openpo'` and light up together), Category/Sub Category/Flags selects, the drill-down
   chart (stock rows only), then `#matListRegion` (`MAT_LIST_CTX`, `materialsListRegionHtml()` sorted
@@ -643,7 +652,9 @@ across **all three plants**: sibling lots by exact normalized description, linke
 `linkedPoItemsForMaterial()`. Tabs Overview (Category/Sub Category pencils on the anchor lot itself,
 Sub Category plain at Achhad, none for order-only), Stock by Plant (one row per lot with Vendor,
 Received, Location, per-row Category and Rate pencils targeting that row's own plant, used-up lots
-faded), Purchase Activity (open lines, import orders tagged with their INR conversion), Price Trend
+faded), Purchase Activity (open lines, import orders tagged with their INR conversion; each PO number is a
+`[data-open-po]` link, keyboard-activatable, that replaces this modal with `openPoModal()` or
+`openImportPoModal()` for that plant's order), Price Trend
 (line chart plus 21/50/100-day trailing averages, into `modalCharts`), and Flags & Corrections (where
 the correction box rests, plus per-row-plant revert links). Edits PATCH `materialFieldsUrl(plant,
 lot)`; after a save or dismiss every plant's materials cache is dropped and the modal reopens. For a

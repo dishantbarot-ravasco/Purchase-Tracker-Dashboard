@@ -72,8 +72,12 @@ What survives unchanged from the old engine, now computed from the ledger:
 - **Aggregation rules** (`materials.js`'s `aggregateMaterialsByName()`): days-left is **never summed
   or averaged across lots** - rates are summed and the already-summed quantity is divided by them.
   Group confidence is the **weakest** contributing band, not the best or a mean. The "Low Stock"
-  status fires on `daysLeft < 15` or any contributing lot's `daysToMsl === 0`
-  (`isMaterialLowStock()`). What changed: rates are now counted **once per plant, not once per lot**
+  status fires on `daysLeft < 15` **while the band is not `none`**, or on any contributing lot's
+  `daysToMsl === 0` (`isMaterialLowStock()`). The band gate keeps Low Stock to rows whose Days Left
+  cell shows the number: under `none` the cell reads "-", and a Low Stock row the reader cannot
+  check was possible in All Plants view, where one thinly-covered plant makes the whole group
+  `none` while another plant's rate still produced a figure. The MSL half needs no rate and is not
+  gated. What changed: rates are now counted **once per plant, not once per lot**
   (see the read path below).
 - **One query for the whole plant, not one per lot.** The old `_consumption_by_lot()` is gone; its
   replacement is two constant queries (ledger aggregate plus coverage), pinned by
@@ -209,9 +213,13 @@ Both readers go through the ledger; **nothing computes consumption per request a
 - **`_domestic_base.py`** - `_consumption_by_material()` is a one-line call to
   `consumption_periods.consumption_rates(plant, today=timezone.localdate())`. `make_materials()` calls
   it once per request; `_lot_dict()` looks the lot's material up by `normalize_material(description)`,
-  copies the block, and adds `daysLeft = lot.todays_stock / avgDaily` (this lot's own quantity at the
-  material's rate) plus `daysToMsl`. A material with no ledger rows in the window gets
-  `consumption: null`. Achhad is two queries like the others: its matrix is reconciled at build time.
+  copies the block, and adds `daysLeft = days_of_cover(lot.todays_stock, avgDaily)` (this lot's own quantity at the
+  material's rate) plus `daysToMsl`. A material with no ledger rows in the window gets the plant's
+  `MaterialRates.no_movement` block - the plant's real coverage and band with `avgDaily: null`,
+  which the frontend shows as "No movement" - or `consumption: null` when the plant's band is
+  `none`, where "did not move" and "was not watched" still cannot be told apart. Before
+  2026-09-25 every quiet material got `null` and read "Not enough snapshot history yet", the same
+  as a plant nobody had watched. Achhad is two queries like the others: its matrix is reconciled at build time.
 - **`consumption_report.py`** - one `_ledger_rows()` shared by both reports. It imports no snapshot
   model; `*RMLot` is read only for display fields, the live rate and current stock.
 
@@ -368,13 +376,22 @@ Role: read-side rollups and rates over the ledger. Every figure is a `SUM` over
 - **`consumption_rate(material_key, *, plant, window_days, today)`** - single-material trailing rate.
   Divides by `window_days`, **not coverage** - inconsistent with `consumption_rates()`. Tests only.
 - **`consumption_rates(plant, *, today, window_days=30)`** - **the live one**, used by both the
-  materials API and the emails. One aggregate query plus `coverage_in_window()`; returns
-  `{material_key: {avgDaily, quantity, confidence, coverageDays, observedDays, materialDays,
-  materialObservedDays, windowDays, windowStart, windowEnd}}`. `avgDaily = total / covered_days`
+  materials API and the emails. One aggregate query plus `coverage_in_window()`; returns a
+  `MaterialRates` dict, `{material_key: {avgDaily, quantity, confidence, coverageDays, observedDays,
+  materialDays, materialObservedDays, windowDays, windowStart, windowEnd}}`, whose `no_movement`
+  attribute is the same block with `avgDaily: None` and zero quantity for a material with no ledger
+  row (or `None` when the band is `none`). `avgDaily = total / covered_days`
   (window length if nothing is covered). Confidence comes from `_confidence_band()` on plant-wide
   coverage and observed ratios, so it is the same for every material at the plant.
 - **`coverage_in_window(plant, start, end)`** - `(covered days, observed days)` from
   `ConsumptionCoverage`.
+- **`days_of_cover(stock, avg_daily)`** - Days Left, the one implementation behind the API and the
+  emails: `stock / avg_daily`, or `None` with no rate, no stock figure, or **negative stock**. A sheet
+  showing stock below zero is a data error, not an empty store; dividing it gave a negative Days Left
+  that counted as Low Stock and read as a real warning.
+- **`whole_days(days)`** - the emails' Days Left text: rounded half-up to a whole day, as
+  `daysLeftCellHtml()`'s `Math.round` does on screen (Python's `round()` is banker's and would make
+  12.5 into 12); `"N/A"` for `None`.
 - **`DEFAULT_WINDOW_DAYS = 30`**, `_BANDS`, `plant_keys()`.
 
 With no production caller beyond `consumption_rates()`/`coverage_in_window()`, the period helpers are
@@ -409,6 +426,8 @@ dedup, SMTP time budget and failure reporting are described in
 - **`build_plant_report(plant_key, today=None)`** / **`build_plant_monthly_report(plant_key, year,
   month, today=None)`** - daily (`issuedToday`) and monthly (`issuedThisMonth`, default the last
   completed month). `daysLeft`/confidence are always present-tense, whatever month is summarised.
+- **`_ledger_rows()`** sets `daysLeft` through `days_of_cover()` and adds `negativeStock`; the rows
+  render Days Left as whole days (`whole_days()`), or "N/A (stock below zero in sheet)".
 - **`_render_consumption_rows()` / `_render_consumption_email()`** - shared category-grouped table
   and text builders (categories ordered by their biggest mover, via dict insertion order over the
   quantity-sorted rows); `_render_report_email()` / `_render_monthly_report_email()` supply title,
@@ -491,19 +510,22 @@ Role: serves the per-lot `consumption` block on each plant's `/materials` endpoi
 
 - **`_consumption_by_material(cfg)`** - `consumption_rates(cfg.syncrun_plant,
   today=timezone.localdate())`.
-- **`_lot_dict(...)`** - attaches a copy of the material's block (or `None`), adds `daysLeft` from
+- **`_lot_dict(...)`** - attaches a copy of the material's block, falling back to
+  `MaterialRates.no_movement` (or `None`), adds `daysLeft` from
   this lot's own `todays_stock`, and `daysToMsl` from `msl` (Achhad) as described above.
 - **`make_materials(cfg)`** - active lots only, one rate lookup per request.
 
 ### frontend/js/materials.js (consumption read path only)
 
 - **`aggregateMaterialsByName(lots)`** - groups lots by normalized description; sums one `avgDaily`
-  per plant (dedup on `_plantKey`), recomputes `daysLeft = group qty / avgDaily`, and takes the
+  per plant (dedup on `_plantKey`), recomputes `daysLeft = group qty / avgDaily` (null, with
+  `negativeStock: true`, when the group's quantity is below zero - `days_of_cover()`'s rule), and takes the
   weakest band (`CONF_RANK`) with its coverage figures.
-- **`isMaterialLowStock(m)`** - `daysLeft < 15` or any lot's `daysToMsl === 0`; backs the "Low Stock
+- **`isMaterialLowStock(m)`** - `daysLeft < 15` with a band other than `none`, or any lot's
+  `daysToMsl === 0`; backs the "Low Stock
   (Reorder Soon)" KPI card and the `lowstock` status filter.
 - **`daysLeftCellHtml(m)`** - the Days Left cell: "-" for band `none` or no block, "No movement" when
-  a block has no `daysLeft`, otherwise the rounded days plus a confidence dot whose tooltip states
+  a block has no `daysLeft` (a watched material that did not move - `no_movement`), otherwise the rounded days plus a confidence dot whose tooltip states
   coverage and observed days out of the window.
 
 `main.js` lists `consumption` among each plant's sync steps (`DOMESTIC_SYNC_STEPS`) but excludes it

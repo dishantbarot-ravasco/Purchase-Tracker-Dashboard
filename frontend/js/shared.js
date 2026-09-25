@@ -642,6 +642,14 @@ function animateCountUp(el, target, opts) {
 // #kpiSuppliers/#kpiThisMonth/#kpiThisWeek/#kpiRow markup for this to
 // target, moved here 2026-09-07 rather than kept as a home-page.js-only
 // function once a second page needed the exact same numbers.
+// "YYYY-MM-DD" of `d` in the viewer's own timezone. Never
+// toISOString().slice(0, 10): that is the UTC date, and local midnight in IST
+// is 18:30 the previous day in UTC, so "today" came out as yesterday - This
+// Week dropped today's POs and This Month counted the old month on the 1st.
+function localISODate(d) {
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
 async function loadKpis() {
   const results = await Promise.all(PLANT_KEYS.map(async key => {
     try {
@@ -664,11 +672,11 @@ async function loadKpis() {
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const todayISO = today.toISOString().slice(0, 10);
+  const todayISO = localISODate(today);
   const monthPrefix = todayISO.slice(0, 7);
   const weekCutoff = new Date(today);
   weekCutoff.setDate(weekCutoff.getDate() - 6);
-  const weekCutoffISO = weekCutoff.toISOString().slice(0, 10);
+  const weekCutoffISO = localISODate(weekCutoff);
 
   const thisMonthCount = allPos.filter(po => po.createdDate && po.createdDate.startsWith(monthPrefix)).length;
   const thisWeekCount = allPos.filter(po => po.createdDate && po.createdDate >= weekCutoffISO && po.createdDate <= todayISO).length;

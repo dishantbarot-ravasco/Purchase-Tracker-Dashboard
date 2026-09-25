@@ -48,7 +48,7 @@ from apps.services.match_dismiss import dismiss_match
 # line_item_positions() is the matcher's OWN numbering - imported rather
 # than re-derived so the API and matching_core can never disagree about
 # which line a manual MIR pin addresses.
-from apps.services.matching_core import line_item_positions
+from apps.services.matching_core import known_po_numbers, line_item_positions
 from apps.services.mir_without_po import (
     BUCKET_LABELS,
     BUCKET_ORDER,
@@ -58,7 +58,7 @@ from apps.services.mir_without_po import (
 from apps.services.no_po_vendors import no_po_vendor_summary, purchases_without_po_summary
 from apps.services.rm_untracked import rm_untracked_summary
 from apps.services.parsers.common import normalize_material
-from apps.services.consumption_periods import consumption_rates
+from apps.services.consumption_periods import MaterialRates, consumption_rates, days_of_cover
 from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
 from apps.services.validation import is_valid_email, is_valid_gstin
 
@@ -584,10 +584,14 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_material=None, category_ref
     # not sum the rate across sibling lots** - that was correct when each
     # lot carried its own fragment and would now multiply by the lot count.
     material_key = normalize_material(lot.description)
-    consumption = dict((consumption_by_material or {}).get(material_key) or {}) or None
+    # A material with no ledger row falls back to the plant's "watched,
+    # didn't move" block (MaterialRates.no_movement), so a quiet material
+    # reads "No movement" rather than "not enough history".
+    block = (consumption_by_material or {}).get(material_key) or getattr(consumption_by_material, "no_movement", None)
+    consumption = dict(block) if block else None
     if consumption:
         avg_daily = consumption.get("avgDaily")
-        consumption["daysLeft"] = float(lot.todays_stock) / avg_daily if avg_daily else None
+        consumption["daysLeft"] = days_of_cover(lot.todays_stock, avg_daily)
     # Achhad's Stock sheet has a Minimum Stock Level column HRS/Vapi lack
     # entirely (RTPAchhadRMLot.msl) - getattr's default None means this
     # is always None on HRS/Vapi rows without any per-plant branching, same
@@ -660,11 +664,10 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_material=None, category_ref
                 "qtyDiffPct": float(m.qty_diff_pct) if m.qty_diff_pct is not None else None,
                 "rateDiffPct": float(m.rate_diff_pct) if m.rate_diff_pct is not None else None,
                 # MIR<->Stock identification/financial-check extension
-                # (2026-09-08, HRS only for now - see matching_core.py's
-                # match_mir_entry_stock() docstring). getattr with a None
-                # default so Achhad/Vapi's rows (which don't set these,
-                # config.stock_extended_fields=False for them) still
-                # serialize cleanly instead of raising.
+                # (2026-09-08; config.stock_extended_fields is on at all three
+                # plants - see matching_core.py's match_mir_entry_stock()
+                # docstring). getattr with a None default keeps a match model
+                # without these columns serializing cleanly.
                 "valueDiffPct": float(m.value_diff_pct) if getattr(m, "value_diff_pct", None) is not None else None,
                 "materialMatched": getattr(m, "material_matched", None),
                 "dateMatched": getattr(m, "date_matched", None),
@@ -806,7 +809,7 @@ def make_correct_field(cfg: _PlantConfig):
     return correct_field
 
 
-def _consumption_by_material(cfg: _PlantConfig) -> dict[str, dict]:
+def _consumption_by_material(cfg: _PlantConfig) -> MaterialRates:
     """Every material's trailing-window consumption rate for this plant,
     keyed on `normalize_material(description)`, read from the materialised
     ledger in ONE query.
@@ -1303,7 +1306,7 @@ def make_sync_status(cfg: _PlantConfig):
             # number meant to be driven down. See
             # services/no_po_vendors.py's purchases_without_po_summary() for
             # why a vendor-level list cannot answer it.
-            "purchasesWithoutPo": purchases_without_po_summary(cfg.mir_model),
+            "purchasesWithoutPo": purchases_without_po_summary(cfg.mir_model, known_po_numbers(cfg.match_config)),
             # The same question asked three ways, 2026-09-21 (project owner:
             # "orders without a PO in MIR, which might be true or waiting for
             # a PO to be matched with them"). purchasesWithoutPo above is one
@@ -1650,6 +1653,7 @@ def make_set_mir_match(cfg: _PlantConfig):
             "cleared": clear,
             "manualPinsApplied": result.get("manual_pins_applied"),
             "stalePins": result.get("manual_pins_stale", []),
+            "unfilledPins": result.get("manual_pins_unfilled", []),
         })
 
     return set_mir_match

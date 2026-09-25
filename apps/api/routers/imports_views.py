@@ -1305,4 +1305,5 @@ def set_mir_match(request, plant, po_number):
         "cleared": clear,
         "manualPinsApplied": result.get("manual_pins_applied"),
         "stalePins": result.get("manual_pins_stale", []),
+        "unfilledPins": result.get("manual_pins_unfilled", []),
     })

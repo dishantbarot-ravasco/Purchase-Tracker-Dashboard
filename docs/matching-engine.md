@@ -36,7 +36,8 @@ trusting a count.
 6. **MIR ↔ Stock**: delete matches of inactive MIR rows, then run `match_mir_entry_stock()` for
    every active MIR row against one shared `_StockLotPool`, and bulk-delete stale match rows.
 7. **Return** counts (`po_line_items_matched`, `import_po_line_items_matched`,
-   `mir_entries_stock_matched`), `manual_pins_applied`, `manual_pins_stale` and `ran_at`.
+   `mir_entries_stock_matched`), `manual_pins_applied`, `manual_pins_stale`, `manual_pins_unfilled`
+   (pins whose MIR document had no free row, so the line was left unmatched) and `ran_at`.
 
 **`run_full_match()` is one transaction** (`@transaction.atomic` on the function itself). The pass
 deletes stale rows and upserts new ones across three match tables, so a failure part-way rolls the
@@ -347,10 +348,9 @@ Difference** table and every matched receipt; the rendering details are in
   `matchedMirs` (`qtyInPoUnit` etc.). Summing in the browser would let a PO in MT and receipts in KG
   disagree with the flags beside them. A row whose unit cannot convert makes `qty`/`rate` null
   rather than a partial sum; a row with no value makes `value` null.
-- **Imports compare what the matcher compares for qty and rate** (BOE quantity; net price x exchange
-  rate) **but not for value**: the card uses PO net value x exchange rate. The matcher's landed
-  `total_inclusive_value` includes duty while MIR's value is pre-tax, which read "15% short" on Vapi
-  1000001569 whose qty matched and whose rate was 8% HIGHER.
+- **Imports compare what the matcher compares** - BOE quantity, net price x exchange rate, and net
+  value x exchange rate. Both the card and the matcher compare value pre-duty; see
+  [Import PO ↔ MIR](#import-po--mir-convert-currency-first) for why the landed figure is not used.
 - **Each receipt shows its MIR Excel row** (`sheetRow`, the stored `source_row_ref`). It is a
   pointer for a human, never an identity - see [architecture.md](architecture.md#stable-lot-identity).
 
@@ -363,7 +363,9 @@ Gates differently per plant, reflecting the real schema difference: HRS and Vapi
 **(material description, vendor)** - HRS via `HRSRMLot.party_name`, Vapi via
 `RTPVapiRMLot.supplier_name`. Achhad gates on **material description alone** since its Stock sheet
 has no vendor column - weaker and more false-positive-prone. This pairing is **many-to-many** by
-design (one material arrives into several lots over time); there is no exclusive claiming.
+design (one material arrives into several lots over time); there is no exclusive claiming, with one
+exception: a lot identified on date + rate alone yields to a tier-1 describer (see the date + rate
+section below).
 
 **No plant uses stock quantity to identify.** HRS's `received` field (the sheet's "REC" column) reads
 `0` for nearly every real lot. On pairs that are near-certainly the same delivery (descriptions and
@@ -592,14 +594,22 @@ order behind it is three situations wearing one number, each owned by a differen
 | `po_unknown` | MIR names an order **we have never received** | Upstream - the PO master CSV generator. The one genuinely "waiting for a PO". |
 | `po_known_unmatched` | MIR names an order **we do hold** and the matcher has not linked it | Ours - a qty/description/vendor-spelling drift. |
 
-Live counts (HRS / Achhad / Vapi): **193 / 37 / 247**, **4 / 19 / 134**, **117 / 43 / 291**.
+Counts on the local copy of the data, 2026-09-25, after short legacy PO numbers began counting as
+POs (HRS / Achhad / Vapi): `no_po` **69 / 37 / 247**, `po_unknown` **4 / 19 / 134**,
+`po_known_unmatched` **57 / 1 / 101**. HRS's `no_po` was 193 before that change.
 
 [mir_without_po.py](../apps/services/mir_without_po.py) classifies; `_domestic_base.make_mir_without_po()`
 serves `GET /api/[<plant>/]mir-without-po` (rows + summary; `?bucket=` narrows, `?download=csv`
 downloads); the panel and badges are in [frontend.md](frontend.md). Five things are load-bearing:
 
-- **The bucket is decided by the MATCHER's own PO-number logic** (`known_po_numbers()` /
-  `_names_known_po()`), not a string compare against the PO table. HRS writes its legacy series five
+- **The bucket is decided by the MATCHER's own PO-number comparison** (`known_po_numbers()` /
+  `_po_number_matches()`, through `cites_a_po()` and `names_a_held_po()`), not a string compare
+  against the PO table. **"Has a PO" is PO-shaped OR names an order we hold** (`cites_a_po()`):
+  HRS's legacy series is 1-4 digits (`1074`, read from MIR as `1074.0`), under
+  `is_usable_po_reference()`'s 8-digit floor, and on 2026-09-25 that put 124 of HRS's 193 `no_po`
+  rows there although each named one of our own orders (67 already matched to it). The floor still
+  guards the contradiction gate, where a short number colliding across financial years would veto a
+  real match; for a report, "cites PO 1074, which we hold" risks nothing. HRS writes its legacy series five
   ways (see [Legacy slashed PO numbers](#legacy-slashed-po-numbers-drift-between-the-two-files)), so
   plain equality put **~120 HRS rows** in `po_unknown` that the matcher considers known. Measured:
   121 → 4 at HRS once the matcher's own test is used.
@@ -607,8 +617,9 @@ downloads); the panel and badges are in [frontend.md](frontend.md). Five things 
   negotiation, which **404s** on an unknown renderer. It is `?download=csv`.
 - **A `no_po` row the matcher matched anyway stays in the list**, flagged `matched` (identification
   needs no PO number). It is still a purchase made without an order. It is also what makes this
-  module's `no_po` total reconcile **exactly** with `purchases_without_po_summary()`'s badge;
-  `test_mir_without_po.py` pins the two together.
+  module's `no_po` total reconcile **exactly** with `purchases_without_po_summary()`'s badge, which
+  takes the plant's `known_po_numbers()` and applies the same `cites_a_po()`;
+  `test_mir_without_po.py` pins the two together, including a short legacy number.
 - **Two badges, never one combined number.** "How many did we buy without an order" is a figure
   somebody is driving down; a matching backlog is not purchasing's work.
 - **An unknown `?bucket=` is a 400, not an empty list.** An empty list reads as "nothing to fix".
@@ -661,12 +672,12 @@ used to fall through to the green `matched` badge. See [frontend.md](frontend.md
 
 ### Flag thresholds
 
-`FLAG_DIFF_PCT = 0` in all three plant modules, mirrored by `FLAG_PCT` in `main.js` - **zero
+`FLAG_DIFF_PCT = 0` in all three plant modules, mirrored by `FLAG_PCT` in `flags.js` - **zero
 tolerance**, a deliberate policy choice (the project owner asked for none, down to 1 kg in 1000 kg).
 Comparisons use strict `>`, so an exact match never flags. (`5.00` was used earlier; picked, not
 measured, and superseded.)
 
-If this policy changes, change it in one place per side: `FLAG_PCT` in `main.js` (KPI cards, row
+If this policy changes, change it in one place per side: `FLAG_PCT` in `flags.js` (KPI cards, row
 flags, line-item badges, Raw Material Analysis cards via `computeMaterialPoLinkage()`) and
 `FLAG_DIFF_PCT` in each of the three `matching*.py` files (stored `is_flagged` on both pairings; keep
 all three identical). Also re-word `DISCREPANCY_LEGEND`'s two critical entries, which say "no
@@ -689,9 +700,16 @@ real pair near zero - a ~94x gap.
 
 `matching_core._import_rate_value_inr()` (one copy, shared by all three plants) converts before
 scoring and diffing: rate = `net_price × exchange_rate` (bare `net_price` when `exchange_rate` is
-null - 2 of 37 real rows); value = `total_inclusive_value` (the landed-in-India INR figure,
-empirically closer to MIR's value than `net_value × exchange_rate`), falling back to `net_value ×
-exchange_rate`. Vapi went from 0/37 to 25/37 import line items matched. With
+null - 2 of 37 real rows); value = `net_value × exchange_rate` (bare `net_value` without a rate).
+**Value is pre-duty, like every other value comparison.** MIR's value (`net` / `taxable_value`)
+excludes customs duty, while `total_inclusive_value` is the landed figure including it. The matcher
+used the landed figure until 2026-09-25, on an early measurement that it sat closer to MIR; re-measured
+on Vapi's 25 matched pairs it did not (median gap 18.0% landed against 8.8% net x rate), and it read
+Vapi 1000001569 "15% short" on a line whose qty matched. Because value also breaks ties between
+candidates, the switch moved 7 of 26 Vapi pairings, all checked: both SBR 1502 lines now take the MIR
+row whose rate and value agree exactly, two Chloroprene lines move from a MIR 20% off on rate to one
+within 1-3%, and the one line left unmatched had been holding a receipt that belongs to another
+order. The landed figure keeps its own comparison, the final-value check. Vapi went from 0/37 to 25/37 import line items matched. With
 `import_extended_fields=True` (all three plants now), imports also get the tax-type, taxable-value
 (`_import_total_value_inr()`, single-line POs only) and final-value checks, and the extended columns
 are written.
@@ -857,8 +875,11 @@ memory note names functions in *by file*, it is one algorithm read top to bottom
 have been navigation only, in the code with the least tolerance for risk.
 
 Dismissing a match, by contrast, is identical per plant, so it lives once in `match_dismiss.py`, and
-every matcher's `update_or_create` defaults deliberately never touch `dismissed_*`, so a dismissal
-survives every re-match (see [api-and-features.md](api-and-features.md)).
+every matcher's `update_or_create` defaults deliberately never carry `dismissed_*`, so a dismissal
+survives every re-match **while the line still points at the same MIR row**. Every PO↔MIR write goes
+through `_save_po_mir_match()`, which clears the dismissal when a run re-points the line to a
+different receipt - a dismissal judged one pairing, and keeping it would hide the new receipt's
+flags, which nobody has looked at (see [api-and-features.md](api-and-features.md)).
 
 ---
 
@@ -908,7 +929,10 @@ below); trust the code.
 - `_names_this_po(po_number, raw)` - `_po_number_matches` on the stored number or its
   `clean_po_number()` form.
 - `_names_known_po(raw, known_pos)` - raw is PO-shaped and names any known number. Used by the
-  candidate index and `mir_without_po.py`.
+  candidate index.
+- `cites_a_po(raw, known_pos)` / `names_a_held_po(raw, known_pos)` - reporting only, never matching:
+  "has a PO" is PO-shaped or names a held order; the second is the shape-free "names a held order".
+  Used by `mir_without_po.py` and `no_po_vendors.purchases_without_po_summary()`.
 - `_grade_codes(tokens)` - number + short suffix, or 2+ digit number.
 - `_grade_codes_contradict(a, b)` - both non-empty, disjoint.
 
@@ -961,7 +985,11 @@ below); trust the code.
 - `_uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b)` - see
   [Units](#units-are-normalised-before-comparing---on-both-pairings).
 - `_score_components()` / `_score()` - weighted financial closeness and `field_coverage`.
-- `_import_rate_value_inr(line)` / `_import_total_value_inr(total, fx)` - currency conversion.
+- `_import_rate_value_inr(line)` / `_import_total_value_inr(total, fx)` - currency conversion; value
+  is `net_value x exchange_rate`, pre-duty.
+- `_save_po_mir_match(model, line, previous_mir_id, defaults)` - every PO↔MIR `update_or_create`;
+  clears `dismissed_*` when the line's MIR row changed. `run_full_match()` reads every line's previous
+  MIR in one query per model; the single-item paths pass `_LOOK_UP`.
 - `received_against_line(config, po_uom, mir_rows)` - public; the modal's "Received" totals in the
   PO line's unit, None on any non-convertible row.
 
@@ -996,8 +1024,7 @@ below); trust the code.
 
 **Manual pins** (the design is in [api-and-features.md](api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21))
 
-- `line_item_ref(position)` - the string position; accidentally carries the `@transaction.atomic`
-  decorator meant for `run_full_match()`.
+- `line_item_ref(position)` - the string position.
 - `line_item_positions(po_items)` - `{item id: (po_number, item_ref, description)}` numbered per PO in
   pk order; imported by `_domestic_base.py` and `imports_views.py` so API and matcher agree.
 - `_load_pins(config, positions_by_kind)` - resolves pins for both kinds in one pass, newest decision
@@ -1005,6 +1032,9 @@ below); trust the code.
   `(ordered pins, stale)`.
 - `_forced_candidate(...)` - a pinned pair's `_Candidate`, skipping identification but measuring
   everything; an impossible date is zeroed, not a veto; ranked at tier 4.
+- A pin whose MIR document has no free row (a newer pin took it, or the number is gone from MIR)
+  leaves its line unmatched - never an automatic fallback - and is reported in
+  `manual_pins_unfilled`, not counted in `manual_pins_applied`.
 
 **Persistence and entry points**
 
@@ -1066,16 +1096,18 @@ consumption key (see [consumption.md](consumption.md)). Rationale:
 
 DB layer over `NO_PO_VENDORS`. `no_po_vendor_summary(mir_model)` - one grouped query by `party_name`,
 classified in Python; returns `total`, `internalTransfer`, `noPoSupplier` and a `vendors` list,
-served as `noPoVendors`. `purchases_without_po_summary(mir_model)` - a different question: every
-active non-internal-transfer row with no usable PO reference, registered or not (`registered` /
+served as `noPoVendors`. `purchases_without_po_summary(mir_model, known_pos=frozenset())` - a
+different question: every active non-internal-transfer row with no PO behind it
+(`matching_core.cites_a_po(raw, known_pos)` False; the router passes the plant's
+`known_po_numbers()`), registered or not (`registered` /
 `unregistered`), per vendor and `byMonth` via `TruncMonth`; served as `purchasesWithoutPo` and the
 source of the "purchased without a PO" badge that `mir_without_po`'s `no_po` bucket must equal.
 
 ### apps/services/mir_without_po.py
 
 The three-bucket drill-down. `classify_mir_row(raw, party, matched, known_pos)` - pure rule:
-internal transfer → None; no usable reference → `no_po` (matched or not); matched → None; else
-`po_known_unmatched` if `_names_known_po()`, else `po_unknown`. `_matched_mir_ids(config)` - primary
+internal transfer → None; `cites_a_po()` False → `no_po` (matched or not); matched → None; else
+`po_known_unmatched` if `names_a_held_po()`, else `po_unknown`. `_matched_mir_ids(config)` - primary
 `mir_entry` **and** `group_entries` of both domestic and import match models.
 `mir_without_po_rows(mir_model, config)` - one pass, newest first within `BUCKET_ORDER`; value from
 `net`, `taxable_value` or `total_amount`, whichever the model has (`_value_fields()`).

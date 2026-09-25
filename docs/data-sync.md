@@ -469,7 +469,13 @@ reimplemented.
 - `_run_pipeline(plant_key)` / `_run_imports_pipeline(plant_key)` - run each command, catching
   `SystemExit` (a command that already recorded its own `FAILED` `SyncRun`) and any other exception;
   each failure is logged and emailed via `notify_admins_sync_failure()`, and the loop continues to
-  the next command. The lock is always released in `finally`.
+  the next command - except a step named in `_STEP_PREREQUISITES` whose prerequisite failed this
+  run: `compute_<plant>_consumption` is skipped when that plant's stock sync failed, and
+  `_record_skipped_consumption()` writes a `FAILED` consumption `SyncRun` saying why. Re-deriving
+  from yesterday's snapshots would record `SUCCESS` and make a stale ledger look freshly computed.
+  Matching is deliberately not gated: it pairs whatever is in the DB, and a failed PO sync says
+  nothing about the MIR sync that succeeded. `_imports` has no gated step. The lock is always
+  released in `finally`. Tested in `test_sync_trigger_pipeline.py`.
 - `trigger_plant_sync(plant_key)` / `trigger_plant_imports_sync(plant_key) -> bool` - acquire the
   lock with `cache.add()` (atomic; a get-then-set would race), then `async_task()` onto the qcluster.
   Return `False` when a run is already in progress, which the views turn into a 409. Under pytest

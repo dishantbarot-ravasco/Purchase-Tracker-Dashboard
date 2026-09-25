@@ -810,3 +810,53 @@ class TestConfidenceLegend:
         from apps.services.consumption_periods import _BANDS
         from apps.services.consumption_report import _CONFIDENCE_LEGEND
         assert {b for b, _ in _CONFIDENCE_LEGEND} == {b for b, *_ in _BANDS} | {"none"}
+
+
+class TestDaysLeftFormatting:
+    """Days Left reads the same in the email as on the dashboard, and a
+    negative stock figure (a sheet error) never becomes a number."""
+
+    def test_whole_days_rounds_half_up_like_the_dashboard(self):
+        from apps.services.consumption_periods import whole_days
+
+        # Python's round(12.5) is 12; the dashboard's Math.round gives 13.
+        assert whole_days(12.5) == "13"
+        assert whole_days(12.4) == "12"
+        assert whole_days(1234.6) == "1,235"
+        assert whole_days(None) == "N/A"
+
+    def test_negative_stock_has_no_days_of_cover(self):
+        from apps.services.consumption_periods import days_of_cover
+
+        assert days_of_cover(-50, 10.0) is None
+        assert days_of_cover(0, 10.0) == 0.0
+        assert days_of_cover(100, 10.0) == 10.0
+        assert days_of_cover(100, None) is None
+
+    def test_the_email_row_says_why_a_negative_stock_row_has_no_figure(self):
+        from apps.services.consumption_report import _render_consumption_rows
+
+        rows = [
+            {"material": "Sulphur", "category": "Chemicals", "vendor": "X", "issuedToday": 5,
+             "rate": None, "daysLeft": None, "negativeStock": True, "confidence": "low", "isEstimate": False},
+            {"material": "Zinc", "category": "Chemicals", "vendor": "Y", "issuedToday": 5,
+             "rate": None, "daysLeft": 12.5, "negativeStock": False, "confidence": "low", "isEstimate": False},
+        ]
+        html_out, text_rows, _ = _render_consumption_rows(rows, "issuedToday", "none")
+        text = "\n".join(text_rows)
+        assert "days left N/A (stock below zero in sheet)" in text
+        assert "days left 13 (low)" in text
+        assert ">12.5 (low)<" not in html_out and ">13 (low)<" in html_out
+
+
+@pytest.mark.django_db
+class TestNegativeStockInTheReport:
+    def test_a_material_with_negative_stock_gets_no_days_left(self):
+        y, t = _days(1, 0)
+        hrs_lot_issuing("Natural Rubber", [(y, 0), (t, 50)], category="Natural Rubber",
+                        todays_stock=Decimal("-20"))
+        rebuild_plant_consumption("hrs")
+
+        [row] = build_plant_report("hrs", today=TODAY)["rows"]
+        assert row["daysLeft"] is None
+        assert row["negativeStock"] is True

@@ -67,7 +67,13 @@ from apps.core.models import (
     SyncRun,
 )
 from apps.services.consumption_engine import SPREAD
-from apps.services.consumption_periods import DEFAULT_WINDOW_DAYS, consumption_rates, coverage_in_window
+from apps.services.consumption_periods import (
+    DEFAULT_WINDOW_DAYS,
+    consumption_rates,
+    coverage_in_window,
+    days_of_cover,
+    whole_days,
+)
 from apps.services.parsers.common import normalize_material
 from apps.services.security_alerts import _admin_emails
 
@@ -302,7 +308,8 @@ def _ledger_rows(cfg: dict, start: datetime.date, end: datetime.date, qty_key: s
             "vendor": _vendor_display(vendors.get(key)),
             qty_key: t["qty"],
             "rate": meta.get("rate"),
-            "daysLeft": (stock / avg_daily) if (avg_daily and stock is not None) else None,
+            "daysLeft": days_of_cover(stock, avg_daily),
+            "negativeStock": stock is not None and stock < 0,
             "confidence": stats.get("confidence", "none"),
             "isEstimate": t["spread"] > 0,
         })
@@ -476,7 +483,8 @@ def _render_consumption_rows(rows: list, qty_key: str, empty_message: str) -> tu
         )
         text_rows.append(f"\n{category}")
         for r in cat_rows:
-            days_left = f'{r["daysLeft"]:.1f}' if r["daysLeft"] is not None else "N/A"
+            # Whole days, as the dashboard shows them (whole_days()).
+            days_left = "N/A (stock below zero in sheet)" if r.get("negativeStock") else whole_days(r["daysLeft"])
             rate = f'{r["rate"]:.2f}' if r["rate"] is not None else "N/A"
             material = html.escape(r["material"])
             # .get(): a row built by anything other than _ledger_rows() may

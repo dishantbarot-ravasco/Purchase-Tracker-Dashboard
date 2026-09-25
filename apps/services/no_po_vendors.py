@@ -29,10 +29,10 @@ noticeable.
 from django.db.models import Count
 from django.db.models.functions import TruncMonth
 
+from apps.services.matching_core import cites_a_po
 from apps.services.parsers.common import (
     INTERNAL_TRANSFER,
     NO_PO_SUPPLIER,
-    is_usable_po_reference,
     no_po_vendor_entry,
 )
 
@@ -87,7 +87,7 @@ def no_po_vendor_summary(mir_model: type) -> dict:
     }
 
 
-def purchases_without_po_summary(mir_model: type) -> dict:
+def purchases_without_po_summary(mir_model: type, known_pos=frozenset()) -> dict:
     """Every active MIR row that is a REAL third-party purchase with no
     purchase order behind it, counted per vendor and per month.
 
@@ -111,8 +111,12 @@ def purchases_without_po_summary(mir_model: type) -> dict:
       - INTERNAL_TRANSFER parties are excluded. An inter-plant movement is
         not a purchase and will never generate a PO; including it would bury
         the real number under ~390 rows of noise at Achhad alone.
-      - Everyone else with no usable PO reference is IN, whether or not they
-        are registered. `registered` distinguishes the two on the way out:
+      - Everyone else with no PO behind the row is IN, whether or not they
+        are registered. "No PO behind it" is matching_core.cites_a_po()
+        answering False against `known_pos` (the plant's
+        known_po_numbers()) - the same test mir_without_po.py's NO_PO bucket
+        uses, so the badge and the drill-down cannot disagree. A short HRS
+        legacy number naming one of our orders is a PO, not a gap. `registered` distinguishes the two on the way out:
         a registered vendor is a KNOWN process gap, an unregistered one is a
         surprise nobody has looked at yet, and the second is the more urgent
         of the two.
@@ -130,7 +134,7 @@ def purchases_without_po_summary(mir_model: type) -> dict:
     )
     per_vendor: dict[str, int] = {}
     for row in rows:
-        if is_usable_po_reference(row["po_number_raw"] or ""):
+        if cites_a_po(row["po_number_raw"], known_pos):
             continue
         entry = no_po_vendor_entry(row["party_name"])
         if entry and entry[0] == INTERNAL_TRANSFER:
@@ -164,7 +168,7 @@ def purchases_without_po_summary(mir_model: type) -> dict:
     )
     per_month: dict[str, int] = {}
     for row in month_rows:
-        if row["m"] is None or is_usable_po_reference(row["po_number_raw"] or ""):
+        if row["m"] is None or cites_a_po(row["po_number_raw"], known_pos):
             continue
         entry = no_po_vendor_entry(row["party_name"])
         if entry and entry[0] == INTERNAL_TRANSFER:

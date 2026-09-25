@@ -37,6 +37,7 @@ Financial-year handling is India's April-March, matching the
 from __future__ import annotations
 
 import datetime
+import math
 from decimal import Decimal
 
 from django.db.models import Count, Q, Sum
@@ -403,12 +404,52 @@ def coverage_in_window(plant: str, start: datetime.date, end: datetime.date) -> 
     return len(flags), sum(1 for f in flags if f)
 
 
+def days_of_cover(stock, avg_daily) -> float | None:
+    """Days Left: current stock over the daily rate, or None when it has no
+    meaning - no rate, no stock figure, or NEGATIVE stock. A sheet showing
+    stock below zero is a data error, not an empty store; dividing it gave a
+    negative Days Left that counted as Low Stock and read as a real warning.
+    The one implementation behind the materials API and the report emails,
+    so the two cannot disagree about which figures get a number. The
+    frontend's aggregateMaterialsByName() applies the same rule to its
+    cross-lot sum.
+    """
+    if not avg_daily or stock is None or stock < 0:
+        return None
+    return float(stock) / avg_daily
+
+
+def whole_days(days: float | None) -> str:
+    """A Days Left figure as the dashboard shows it: rounded half-up to a
+    whole day (JavaScript's Math.round, which daysLeftCellHtml() uses -
+    Python's round() is banker's rounding and would turn 12.5 into 12)."""
+    if days is None:
+        return "N/A"
+    return f"{math.floor(days + 0.5):,}"
+
+
+class MaterialRates(dict):
+    """`consumption_rates()`'s result: material_key -> rate block, plus
+    `no_movement`, the block for a material with NO ledger row in the window.
+
+    The ledger only holds days something was consumed, so a material that sat
+    untouched for 30 days has no key here. Before 2026-09-25 readers treated
+    that as "no data" and showed "-" with "Not enough snapshot history yet",
+    the same as a plant nobody had watched. `no_movement` carries the plant's
+    real coverage and band with `avgDaily` None, so the reader can say "No
+    movement". It is None when the band is `none`: with that little coverage,
+    "didn't move" and "wasn't watched" still can't be told apart.
+    """
+
+    no_movement: dict | None = None
+
+
 def consumption_rates(
     plant: str,
     *,
     today: datetime.date,
     window_days: int = DEFAULT_WINDOW_DAYS,
-) -> dict[str, dict]:
+) -> MaterialRates:
     """Every material's trailing-window rate for one plant, keyed on
     `material_key`, in **one** query.
 
@@ -449,20 +490,27 @@ def consumption_rates(
     observed_ratio = observed_days / window_days if window_days else 0.0
     band = _confidence_band(coverage_ratio, observed_ratio)
 
-    out = {}
+    common = {
+        "confidence": band,
+        "coverageDays": covered_days,
+        "observedDays": observed_days,
+        "windowDays": window_days,
+        "windowStart": start.isoformat(),
+        "windowEnd": today.isoformat(),
+    }
+    out = MaterialRates()
+    if band != "none":
+        out.no_movement = {
+            "avgDaily": None, "quantity": 0.0, "materialDays": 0, "materialObservedDays": 0, **common,
+        }
     for r in rows:
         total = r["total"] or Decimal(0)
         out[r["material_key"]] = {
             "avgDaily": float(total) / denominator if denominator > 0 and total > 0 else None,
             "quantity": float(total),
-            "confidence": band,
-            "coverageDays": covered_days,
-            "observedDays": observed_days,
             "materialDays": r["days"],
             "materialObservedDays": r["observed"],
-            "windowDays": window_days,
-            "windowStart": start.isoformat(),
-            "windowEnd": today.isoformat(),
+            **common,
         }
     return out
 
