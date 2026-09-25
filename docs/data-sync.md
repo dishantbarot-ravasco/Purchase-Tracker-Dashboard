@@ -460,12 +460,12 @@ Import syncs write no `DataQualityFlag` rows (the domestic ones do).
 
 ### [apps/services/sync_trigger.py](../apps/services/sync_trigger.py)
 
-**The scheduled sync matches each plant once.** `run_daily_sync_all_plants()` syncs a plant's Import PO
-CSV first (`_run_imports_pipeline(plant, include_match=False)`), then its domestic pipeline, whose
-`match_<plant>` matches domestic and import lines together; before, the imports pipeline ran a second
-full match after it, about 50 s of worker time an hour for Vapi. When the domestic pipeline is skipped
-(a manual refresh holds its lock) and the import CSV was synced, `_run_match_only()` runs the match on
-its own. A manual refresh still triggers the two pipelines separately.
+**Each plant is one job with one match** (2026-09-25). `_pipeline_commands(plant)` is the plant's
+Import PO CSV sync followed by its domestic steps, whose `match_<plant>` matches domestic and import
+lines together; both Refresh Data (`trigger_plant_sync()`) and the hourly `run_daily_sync_all_plants()`
+run it. Before, each queued the imports pipeline as a second job with its own full match - about 50 s
+of worker time an hour for Vapi, and a slower Refresh. `trigger_plant_imports_sync()` and its endpoint
+remain for a direct import-only sync; Refresh Data no longer calls it.
 
 A plant lock holds the ISO time it was taken (`_lock_value()`). `sync_stalled(plant_key,
 syncrun_plant)` is True when the lock is over `_STALL_AFTER_SECONDS` (180 s) old and no SyncRun of that

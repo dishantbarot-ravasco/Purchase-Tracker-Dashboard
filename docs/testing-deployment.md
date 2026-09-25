@@ -7,6 +7,17 @@ services (web + qcluster worker) running one Docker image, with docker-compose a
 For the app's own structure see [architecture.md](architecture.md); for auth, security headers and
 email see [auth-security-email.md](auth-security-email.md).
 
+## Security checks (2026-09-25)
+
+- `apps/api/tests/test_plant_scope_no_leak.py` - behavioural plant scoping: seeds a PO at every plant
+  (domestic and import, with a BOE and a licence) and calls EVERY GET route in the URL table as a
+  viewer scoped to HRS, parameters filled with the other plants' values; no response may contain
+  another plant's numbers. `test_endpoint_permission_guard.py` stays as the source-level tripwire;
+  this one checks the outcome, which is what the source scan missed on the licence ledgers.
+- Dependencies: `uv export --no-dev --no-hashes --format requirements-txt > reqs.txt` then
+  `UV_LINK_MODE=copy uvx pip-audit -r reqs.txt --no-deps --disable-pip` (the copy link mode is needed
+  in the OneDrive folder). Clean on 2026-09-25 across 121 locked packages.
+
 ## Testing, lint, CI
 
 ### Test scopes

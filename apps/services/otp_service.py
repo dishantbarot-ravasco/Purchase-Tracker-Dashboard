@@ -35,6 +35,34 @@ log = logging.getLogger(__name__)
 _OTP_TTL_MINUTES = 10
 _MAX_ATTEMPTS = 5
 
+# Wrong codes allowed per account per 24 hours, across every code issued -
+# see PTUser.otp_failed_attempts. Past it, no code verifies until the window
+# ends, however many new codes are requested.
+_MAX_DAILY_FAILURES = 20
+_DAILY_WINDOW = timedelta(hours=24)
+
+
+def _daily_failures_exhausted(key: str, now) -> bool:
+    from apps.core.models import PTUser
+
+    return PTUser.objects.filter(
+        email__iexact=key, otp_failed_attempts__gte=_MAX_DAILY_FAILURES, otp_failures_since__gte=now - _DAILY_WINDOW,
+    ).exists()
+
+
+def _record_daily_failure(key: str, now) -> None:
+    """Atomic: a window older than 24 hours restarts at `now`, then the
+    count goes up with an F() update - never read-modify-write (the
+    counter trap CLAUDE.md records for the login lockout)."""
+    from django.db.models import F, Q
+
+    from apps.core.models import PTUser
+
+    PTUser.objects.filter(email__iexact=key).filter(
+        Q(otp_failures_since__isnull=True) | Q(otp_failures_since__lt=now - _DAILY_WINDOW),
+    ).update(otp_failed_attempts=0, otp_failures_since=now)
+    PTUser.objects.filter(email__iexact=key).update(otp_failed_attempts=F("otp_failed_attempts") + 1)
+
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -126,6 +154,11 @@ def verify_otp(email: str, code: str) -> bool:
 
         now = timezone.now()
 
+        if _daily_failures_exhausted(key, now):
+            entry.delete()
+            log.warning("verify_otp: %s is past %d wrong codes in 24h - refusing every code", key, _MAX_DAILY_FAILURES)
+            return False
+
         if now > entry.expires_at:
             entry.delete()
             log.debug("verify_otp: OTP expired for %s", key)
@@ -145,10 +178,13 @@ def verify_otp(email: str, code: str) -> bool:
         # constant-time wrapper needed here).
         if not _check_code(code.strip(), entry.code_hash):
             entry.save(update_fields=["attempts"])
+            _record_daily_failure(key, now)
             log.debug("verify_otp: wrong code for %s (attempt %d)", key, entry.attempts)
             return False
 
         # Success - consume the OTP immediately so it can't be replayed.
         entry.delete()
+        from apps.core.models import PTUser
+        PTUser.objects.filter(email__iexact=key).update(otp_failed_attempts=0, otp_failures_since=None)
         log.info("verify_otp: success for %s", key)
         return True

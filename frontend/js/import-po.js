@@ -939,6 +939,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   // is the right refresh here, not a modal-only one.
   const mirBase = '/purchase-orders/' + encodeURIComponent(plantKey) + '/' + encodeURIComponent(poNumber);
   wireMirPicker(body, {
+    plantKey: plantKey,
     // itemRef lets the server mark this line's Bill of Entry siblings, which
     // share a BOE-booked receipt rather than lose it (sharesReceipt).
     candidates: (q, itemRef) => apiImports(mirBase + '/mir-candidates?itemRef=' + encodeURIComponent(itemRef || '') +

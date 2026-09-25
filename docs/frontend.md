@@ -968,3 +968,9 @@ Small rules that hold across files, recorded once here:
   tracking view has a close button and, opened from a PO, a "Back to the purchase order" link; unknown
   RoDTEP scrips open their detail.
 - **Admin.** Deactivating a user asks first, like Delete and Revoke device.
+- **Background re-match.** A pin (`applyMirMatch()`) or a correction to a matching field
+  (`wireOverrideBox()`) that comes back with `rematch` pending says "Saved - re-matching in the
+  background" and awaits `shared.js`'s `waitForRematch(plantKey)` (polls sync-status every 2 s, up to
+  3 minutes) before reloading; the pin picker then checks the finished run's `unfilledPins`. The MIR
+  picker's `api` object carries `plantKey` for this. Refresh Data triggers one job per plant - the
+  imports pipeline is part of it (see [data-sync.md](data-sync.md)).

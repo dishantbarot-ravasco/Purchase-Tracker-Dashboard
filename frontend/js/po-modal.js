@@ -203,6 +203,7 @@ async function openPoModal(compositeKey) {
   // badges can move too - the same full invalidate+reload a field
   // correction already does, not a modal-only refresh.
   wireMirPicker(body, {
+    plantKey: plantKey,
     candidates: (q) => apiForPlant(plantKey,
       '/purchase-orders/' + encodeURIComponent(poNumber) + '/mir-candidates' +
       (q ? '?q=' + encodeURIComponent(q) : '')),
@@ -377,7 +378,19 @@ async function applyMirMatch(opts) {
     reason: opts.reason || '',
   };
   try {
-    const res = await p.api.save(body);
+    let res = await p.api.save(body);
+    // The re-match runs on the background worker (apps/services/rematch.py),
+    // so the pin is saved now and the result comes a little later.
+    if (rematchPending(res && res.rematch)) {
+      status.textContent = 'Saved. Re-matching in the background - this line updates in a moment…';
+      const done = await waitForRematch(p.api.plantKey);
+      if (done && MIR_PICKER === p) res = Object.assign({}, res, { unfilledPins: done.unfilledPins || [] });
+      if (!done) {
+        status.className = 'override-status ok';
+        status.textContent = 'Saved. The re-match is taking longer than usual; the page will update itself when it finishes.';
+        return;
+      }
+    }
     // The pin is saved but could not be applied: every row of that MIR
     // document is already held by a newer pin (run_full_match()'s
     // manual_pins_unfilled). The line is left unmatched, never auto-matched

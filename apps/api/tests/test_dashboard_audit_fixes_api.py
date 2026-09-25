@@ -81,9 +81,9 @@ class TestImportEditsAddressALine:
         assert self.second.exchange_rate is None
 
     def test_an_exchange_rate_edit_re_matches(self, monkeypatch):
-        from apps.api.routers import imports_views
+        from apps.services import rematch
         calls = []
-        monkeypatch.setitem(imports_views._RUN_FULL_MATCH, "hrs", lambda: calls.append(1) or {})
+        monkeypatch.setattr(rematch, "request_rematch", lambda plant: calls.append(plant) or {"state": "done"})
         for field, value in (("exchange_rate", "96.8"), ("boe_number", "123456"),
                              ("bill_of_lading_number", "BL1"), ("total_inclusive_value", "1000")):
             _client(email=f"{field}@ravasco.com").patch(self.url, {"itemId": "#0", "field": field, "value": value}, format="json")

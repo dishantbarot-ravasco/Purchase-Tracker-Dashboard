@@ -376,6 +376,11 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    # Exactly one proxy (Render's edge) sits in front of the app, the same
+    # trust device_service.get_client_ip() applies. Unset, DRF keyed its IP
+    # throttles on the WHOLE X-Forwarded-For string, which a client writes -
+    # a new header value per request was a new "IP" per request (2026-09-25).
+    "NUM_PROXIES": 1,
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",

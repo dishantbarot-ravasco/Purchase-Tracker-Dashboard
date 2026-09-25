@@ -20,7 +20,7 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer, Toke
 from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.utils import datetime_from_epoch
 
-from apps.services.token_revocation import is_refresh_jti_revoked, revoke_refresh_jti
+from apps.services.token_revocation import claim_refresh_jti, is_refresh_jti_revoked
 
 from apps.api.auth_backend import pt_user_authentication_rule
 from apps.core.models import PTUser
@@ -109,6 +109,9 @@ class PTTokenObtainPairSerializer(TokenObtainPairSerializer):
             # session needed to complete verification once the code is known
             # some other way (DEBUG console fallback, etc).
             if request is not None:
+                # A fresh session id for the half-signed-in state, so a
+                # session id planted before sign-in cannot ride along into it.
+                request.session.cycle_key()
                 request.session["pending_user_id"] = user.user_id
                 request.session.modified = True
 
@@ -194,7 +197,13 @@ class PTTokenRefreshSerializer(TokenRefreshSerializer):
         if api_settings.ROTATE_REFRESH_TOKENS:
             old_exp = refresh.payload.get("exp")
             if api_settings.BLACKLIST_AFTER_ROTATION and old_jti and old_exp:
-                revoke_refresh_jti(old_jti, datetime_from_epoch(old_exp))
+                # Atomic claim, not revoke-after-check: a parallel rotation of
+                # the same token loses here instead of minting a second chain.
+                if not claim_refresh_jti(old_jti, datetime_from_epoch(old_exp)):
+                    raise AuthenticationFailed(
+                        self.error_messages["no_active_account"],
+                        "no_active_account",
+                    )
             refresh.set_jti()
             refresh.set_exp()
             refresh.set_iat()

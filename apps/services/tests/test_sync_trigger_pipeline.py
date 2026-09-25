@@ -45,7 +45,8 @@ class TestPipelineStepGating:
     def test_a_failed_po_sync_does_not_skip_anything(self, monkeypatch):
         ran = _run(monkeypatch, "hrs", failing={"sync_po_csv"})
 
-        assert ran == sync_trigger._PLANT_COMMANDS["hrs"]
+        # The whole job, the Import PO CSV first (sync_trigger._pipeline_commands()).
+        assert ran == sync_trigger._pipeline_commands("hrs")
         assert not SyncRun.objects.filter(source=SyncRun.Source.CONSUMPTION).exists()
 
     def test_the_lock_is_released_after_a_skip(self, monkeypatch):

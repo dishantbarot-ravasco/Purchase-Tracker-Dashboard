@@ -67,6 +67,14 @@ class PTUser(models.Model):
     # once failed_login_attempts reaches 5, at which point login is refused
     # outright (even with the correct password) until it elapses.
     failed_login_attempts = models.PositiveSmallIntegerField(default=0)
+    # Wrong device/password-change codes across EVERY code issued in the last
+    # 24 hours (otp_service.verify_otp()). Each new code starts its own 5
+    # tries, and signing in again issues a new code, so per code the
+    # attempts were unbounded over time: about 25 guesses a minute for someone
+    # holding the password, the 6-digit space in about 28 days. Capped at
+    # otp_service._MAX_DAILY_FAILURES (2026-09-25).
+    otp_failed_attempts = models.PositiveSmallIntegerField(default=0)
+    otp_failures_since = models.DateTimeField(null=True, blank=True)
     locked_until = models.DateTimeField(null=True, blank=True)
 
     # "Log out everywhere" (added 2026-09-05, hardening pass) - every JWT

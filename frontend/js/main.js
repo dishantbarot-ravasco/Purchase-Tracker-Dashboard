@@ -706,17 +706,9 @@ async function triggerRealSyncAndRefresh(btn) {
       } catch (e) {
         if (e.status !== 409) throw e;
       }
-      // Also kick off that plant's Import PO CSV sync - a separate
-      // pipeline from the domestic one just triggered above (see
-      // sync_trigger.py's _run_pipeline vs _run_imports_pipeline). Found
-      // 2026-09-07 that "Refresh Data" never triggered this at all, so
-      // Import PO data only ever updated via a direct API call, never
-      // through this button.
-      try {
-        await apiImports('/sync-trigger/' + key, { method: 'POST' });
-      } catch (e) {
-        if (e.status !== 409) throw e;
-      }
+      // One job per plant: that pipeline syncs the plant's Import PO CSV
+      // first and matches once (sync_trigger.py's _pipeline_commands()).
+      // Queuing the imports pipeline here as well matched the plant twice.
     }));
     // RoDTEP and Advance License are company-wide, not per-plant (one
     // shared lock each - see sync_trigger.py's _RODTEP_LOCK_KEY/

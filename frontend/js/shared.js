@@ -38,6 +38,34 @@ function scopePlantKeysToUser(user) {
 }
 const ALL_PLANTS_LABEL = 'All Plants';
 
+// ── Background re-match (apps/services/rematch.py) ─────────────────────
+// A pin or a correction to a matching field saves at once and queues the
+// plant's re-match on the worker; the response carries `rematch` (status()).
+function rematchPending(rm) {
+  return !!rm && (rm.queued || rm.state === 'running');
+}
+
+// Waits for the plant's queued re-match to finish, polling sync-status.
+// Resolves with the finished run's status (unfilledPins etc.), or null when
+// it has not finished within REMATCH_WAIT_MS - the freshness watcher then
+// picks the change up when it lands.
+const REMATCH_POLL_MS = 2000;
+const REMATCH_WAIT_MS = 180000;
+async function waitForRematch(plantKey) {
+  const until = Date.now() + REMATCH_WAIT_MS;
+  while (Date.now() < until) {
+    await new Promise(r => setTimeout(r, REMATCH_POLL_MS));
+    let rm;
+    try {
+      rm = (await apiForPlant(plantKey, '/sync-status')).rematch;
+    } catch (e) {
+      continue;
+    }
+    if (rm && !rematchPending(rm)) return rm;
+  }
+  return null;
+}
+
 // A category filter option's text. 'Uncategorized' is the code's own
 // fallback for "no reference row for this material" and sat next to the
 // reference file's real "Others / Uncategorized" category, two buckets that
@@ -1497,6 +1525,7 @@ function wireOverrideBox(root) {
       const onSaved = SELECTED_FIELD.onSaved;
       const savedField = SELECTED_FIELD.fieldName;
       const savedItem = SELECTED_FIELD.itemId;
+      const savedPlant = SELECTED_FIELD.plantKey;
       // Clear the selection BEFORE the re-render: onSaved() typically
       // rebuilds the whole modal, which destroys this box, and leaving
       // SELECTED_FIELD pointing at a detached element makes the next
@@ -1509,6 +1538,12 @@ function wireOverrideBox(root) {
           'Remember to fix the source file too - the next sync overwrites this.';
       }
       announce('Correction saved for ' + savedLabel);
+      // A matching field re-matches on the background worker: say so, and
+      // reload once it has finished rather than showing the old match.
+      if (rematchPending(result.rematch) && savedPlant) {
+        if (statusEl.isConnected) statusEl.textContent += ' Re-matching in the background…';
+        await waitForRematch(savedPlant);
+      }
       // The save is done. A failure reloading the page after it is not a
       // failed save, and used to be reported as "Could not save".
       if (onSaved) {
@@ -1567,6 +1602,7 @@ function wireEditIcons(container, fieldsUrl, switchToTab, onSaved) {
         label: el.dataset.label || el.dataset.field,
         fieldName: el.dataset.field,
         itemId: el.dataset.item || '',
+        plantKey: el.dataset.plant || '',
         fieldType: el.dataset.fieldType || 'text',
         options: options,
         currentValue: currentValue,

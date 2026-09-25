@@ -156,6 +156,18 @@ regression test uses two real threads with separate DB connections
 
 ### Throttling, lockout, and brute-force counters
 
+**Hardened 2026-09-25 after a security review:**
+
+- **Wrong codes are capped per account per day.** Each new device code gets its own 5 tries, and
+  signing in again issues a new code, so for someone holding the password the guesses were unbounded
+  over time (about 25 a minute, the 6-digit space in about 28 days). `PTUser.otp_failed_attempts` /
+  `otp_failures_since` (migration `0063`) count wrong codes across every code for 24 hours, with
+  atomic `F()` updates; past `otp_service._MAX_DAILY_FAILURES` (20) no code verifies until the window
+  ends. A right code clears the count.
+- **`REST_FRAMEWORK["NUM_PROXIES"] = 1`**, the same one-proxy trust `get_client_ip()` applies. Unset,
+  DRF keyed its IP throttles on the whole client-written `X-Forwarded-For`, so a new header value per
+  request was a new "IP". Sign-in still has no per-IP throttle, deliberately (a shared office IP).
+
 **Login throttles are keyed per-account, not per-IP.** `AnonRateThrottle`'s default `get_cache_key()`
 keys on client IP, which `LoginRateThrottle` (5/min) and `DeviceVerifyThrottle` (10/min) inherited -
 so every caller behind the same office router/VPN/NAT exit IP shared **one** bucket. A handful of
@@ -210,6 +222,19 @@ The `token_version` bump (in `revoke_all_tokens()`, which `revoke_all_sessions()
 `F("token_version") + 1` in-DB expression instead, since it needs no decision based on the read value.
 
 ### Sessions and tokens
+
+**Refresh rotation is atomic (2026-09-25).** `token_revocation.claim_refresh_jti()` revokes the old
+jti with one insert on its unique column and reports whether THIS request did it; of two requests
+rotating the same token at once, the second is refused instead of minting a second chain. It is not
+treated as theft - two tabs refreshing together look identical, and the loser simply picks up the
+winner's cookie on `authFetch()`'s replay. **The session id is rotated** (`cycle_key()`) when a
+sign-in reaches the device-code step, so a planted session id cannot carry into it.
+
+**Known and accepted, from the same review:** the access token is still returned in the login and
+device-verify bodies for non-browser clients (documented below); one OTP store serves both sign-in and
+password change (a code for one verifies the other - Low); cookie-authenticated writes rely on
+SameSite=Lax, which is sound on `*.onrender.com` (a public-suffix domain) but should gain an Origin
+check before the app moves to a custom domain whose subdomains are not all trusted.
 
 `pt_access` (12h, path `/`) and `pt_refresh` (30 days, path-scoped to `/api/auth/`) are httpOnly,
 `SameSite=Lax`, and `Secure` whenever `DEBUG` is off. Their `max_age` is read from

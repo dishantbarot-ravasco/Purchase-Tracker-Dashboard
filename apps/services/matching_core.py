@@ -139,6 +139,7 @@ into stock across multiple lots over time), unaffected by fix 2.B.
 
 import math
 import re
+import zlib
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from difflib import SequenceMatcher
@@ -3533,6 +3534,18 @@ def _forced_candidate(config, matchable, mir, po, *, scorer, known_pos):
     )
 
 
+def _lock_plant_match(config: _MatchConfig) -> None:
+    """pg_advisory_xact_lock on a key derived from the plant, inside the
+    caller's transaction. A no-op off Postgres."""
+    from django.db import connection
+
+    if connection.vendor != "postgresql":
+        return
+    key = zlib.crc32(("run_full_match:" + (config.syncrun_plant or config.__class__.__name__)).encode())
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_xact_lock(%s)", [key])
+
+
 @transaction.atomic
 def run_full_match(config: _MatchConfig) -> dict:
     """Re-runs every matching pass for one plant - domestic PO line items
@@ -3563,6 +3576,13 @@ def run_full_match(config: _MatchConfig) -> dict:
     each sync, and synchronously after any "Edit Everywhere" field edit that
     feeds matching.
     """
+    # One match per plant at a time (2026-09-25). A pin or correction now
+    # queues its re-match on the qcluster, which runs two workers, so it can
+    # land beside the hourly sync's own match of the same plant; two
+    # overlapping runs would each delete and rewrite the other's rows. The
+    # lock is transaction-scoped - released on commit or rollback - and the
+    # second run simply waits, then matches the newer data.
+    _lock_plant_match(config)
     # is_active=True (2026-09-18): an order the master CSV no longer lists is
     # excluded from matching entirely. This is the point of the flag - a
     # renamed PO's old spelling used to stay in the order book forever and go

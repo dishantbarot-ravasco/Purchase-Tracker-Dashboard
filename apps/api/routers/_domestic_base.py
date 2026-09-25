@@ -43,7 +43,7 @@ from apps.core.models import (
     MaterialCategoryReference,
     MaterialCorrection,
 )
-from apps.services import data_stamp
+from apps.services import data_stamp, rematch
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
 # line_item_positions() is the matcher's OWN numbering - imported rather
@@ -828,10 +828,11 @@ def make_correct_field(cfg: _PlantConfig):
                 corrected_by_email=getattr(request.user, "email", ""),
             )
 
-        if field_name in _REMATCH_TRIGGER_FIELDS:
-            cfg.run_full_match()
-
         response = {"status": "ok", "field": field_name, "value": _serialize(new_value)}
+        # Re-matched on the background worker, never in the request - see
+        # apps/services/rematch.py for the 30 s gunicorn limit it hit.
+        if field_name in _REMATCH_TRIGGER_FIELDS:
+            response["rematch"] = rematch.request_rematch(cfg.key)
         warning = _field_warning(field_name, new_value)
         if warning:
             response["warning"] = warning
@@ -946,11 +947,12 @@ def make_correct_material_field(cfg: _PlantConfig):
                 corrected_by_email=getattr(request.user, "email", ""),
             )
 
+        response = {"status": "ok", "field": field_name, "value": _serialize(new_value)}
         if field_name in cfg.material_rematch_trigger_fields:
-            cfg.run_full_match()
+            response["rematch"] = rematch.request_rematch(cfg.key)
 
         data_stamp.touch(cfg.syncrun_plant)
-        return Response({"status": "ok", "field": field_name, "value": _serialize(new_value)})
+        return Response(response)
 
     return correct_material_field
 
@@ -1378,6 +1380,10 @@ def make_sync_status(cfg: _PlantConfig):
             "syncInProgress": is_sync_in_progress(cfg.key),
             # Queued but no step started for minutes: the worker is down.
             "syncStalled": sync_stalled(cfg.key, cfg.syncrun_plant),
+            # The background re-match a pin or correction queued
+            # (apps/services/rematch.py): whether one is waiting, and the last
+            # run's outcome with any pins it could not apply.
+            "rematch": rematch.status(cfg.key),
             "lastSnapshotDate": last_snapshot_date.isoformat() if last_snapshot_date else None,
             "snapshotGapDays": snapshot_gap_days,
         })
@@ -1642,6 +1648,22 @@ def make_mir_candidates(cfg: _PlantConfig):
     return mir_candidates
 
 
+def _pin_response(item_ref, mir_no, clear, shared, rm) -> dict:
+    """The pin endpoints' body, shared with imports_views.set_mir_match()."""
+    finished = rm.get("state") == "done" and not rm.get("queued")
+    return {
+        "status": "ok",
+        "itemRef": item_ref,
+        "mirNo": "" if clear else mir_no,
+        "cleared": clear,
+        "shared": False if clear else shared,
+        "rematch": rm,
+        "manualPinsApplied": rm.get("manualPinsApplied") if finished else None,
+        "stalePins": rm.get("stalePins", []) if finished else [],
+        "unfilledPins": rm.get("unfilledPins", []) if finished else [],
+    }
+
+
 def make_set_mir_match(cfg: _PlantConfig):
     """PATCH .../purchase-orders/<po>/mir-match
 
@@ -1702,20 +1724,11 @@ def make_set_mir_match(cfg: _PlantConfig):
                 ),
             )
 
-        # Synchronous, same as an "Edit Everywhere" save to a matching field
-        # (see _REMATCH_TRIGGER_FIELDS): the reader is looking at the badge
-        # they just changed, and run_full_match() is idempotent and cheap at
-        # these data volumes.
-        result = cfg.run_full_match()
-        return Response({
-            "status": "ok",
-            "itemRef": item_ref,
-            "mirNo": "" if clear else mir_no,
-            "cleared": clear,
-            "shared": False if clear else shared,
-            "manualPinsApplied": result.get("manual_pins_applied"),
-            "stalePins": result.get("manual_pins_stale", []),
-            "unfilledPins": result.get("manual_pins_unfilled", []),
-        })
+        # Queued on the background worker (apps/services/rematch.py): the pin
+        # is saved now, and the page follows the re-match through
+        # sync-status's `rematch` block. unfilledPins/stalePins are filled
+        # only when the run has already finished (always, under pytest).
+        rm = rematch.request_rematch(cfg.key)
+        return Response(_pin_response(item_ref, mir_no, clear, shared, rm))
 
     return set_mir_match

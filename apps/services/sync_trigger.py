@@ -229,12 +229,22 @@ def _record_skipped_consumption(plant_key: str, prerequisite: str) -> None:
     )
 
 
+def _pipeline_commands(plant_key: str) -> list[str]:
+    """The plant's whole pipeline, as ONE job (2026-09-25): its Import PO CSV
+    first, then the domestic steps, whose match_<plant> matches domestic and
+    import lines together. Refresh Data used to queue the domestic and the
+    imports pipelines separately, each ending in a full match of the plant,
+    and the hourly sync did the same - the plant was matched twice."""
+    imports_csv = [c for c in _IMPORT_PLANT_COMMANDS[plant_key] if not c.startswith("match_")]
+    return imports_csv + _PLANT_COMMANDS[plant_key]
+
+
 def _run_pipeline(plant_key: str) -> None:
     from apps.services.security_alerts import notify_admins_sync_failure
 
     failed: set[str] = set()
     try:
-        for cmd_name in _PLANT_COMMANDS[plant_key]:
+        for cmd_name in _pipeline_commands(plant_key):
             prerequisite = _STEP_PREREQUISITES.get(cmd_name)
             if prerequisite in failed:
                 log.error("sync_trigger: skipping %s for plant=%s - %s failed", cmd_name, plant_key, prerequisite)
@@ -366,35 +376,15 @@ def run_daily_sync_all_plants() -> None:
     added 2026-09-09), same company-wide/skip-not-queue shape as RoDTEP
     directly above, via _ADVANCE_LICENSE_LOCK_KEY.
     """
-    # ONE match per plant (2026-09-25). Each plant's Import PO CSV is synced
-    # FIRST, then its domestic pipeline, whose match_<plant> matches domestic
-    # and import lines together. Running the imports pipeline afterwards,
-    # with its own match_<plant>, repeated the whole plant's matching every
-    # hour - about 50 s of worker time for Vapi alone.
+    # One job per plant, the Import PO CSV included, one match - see
+    # _pipeline_commands(). A plant whose manual refresh already holds the
+    # lock is skipped: that run syncs and matches the same steps.
     for plant_key in _PLANT_COMMANDS:
-        imports_synced = False
-        if not cache.add(_imports_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
-            log.info(
-                "run_daily_sync_all_plants: skipping %s imports - a manual refresh is already in progress",
-                plant_key,
-            )
-        else:
-            try:
-                _run_imports_pipeline(plant_key, include_match=False)
-                imports_synced = True
-            except Exception:
-                log.exception("run_daily_sync_all_plants: imports pipeline failed for plant=%s", plant_key)
-
         if not cache.add(_lock_key(plant_key), _lock_value(), timeout=_LOCK_TIMEOUT_SECONDS):
             log.info(
                 "run_daily_sync_all_plants: skipping %s - a manual refresh is already in progress",
                 plant_key,
             )
-            # The import CSV just changed and nothing here will match it -
-            # the manual refresh holding the lock may already be past its
-            # own match step.
-            if imports_synced:
-                _run_match_only(plant_key)
             continue
         try:
             _run_pipeline(plant_key)
@@ -442,22 +432,6 @@ def trigger_plant_sync(plant_key: str) -> bool:
 
 def is_imports_sync_in_progress(plant_key: str) -> bool:
     return bool(cache.get(_imports_lock_key(plant_key)))
-
-
-def _run_match_only(plant_key: str) -> None:
-    """match_<plant> on its own - the scheduled sync's fallback when the
-    plant's domestic pipeline (which carries the match) was skipped."""
-    from apps.services.security_alerts import notify_admins_sync_failure
-
-    cmd_name = _IMPORT_PLANT_COMMANDS[plant_key][-1]
-    try:
-        call_command(cmd_name)
-    except SystemExit:
-        log.error("sync_trigger: %s exited with failure for plant=%s", cmd_name, plant_key)
-        notify_admins_sync_failure(plant_key, cmd_name)
-    except Exception as exc:
-        log.exception("sync_trigger: %s raised an unexpected error for plant=%s", cmd_name, plant_key)
-        notify_admins_sync_failure(plant_key, cmd_name, detail=str(exc))
 
 
 def _run_imports_pipeline(plant_key: str, include_match: bool = True) -> None:

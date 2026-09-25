@@ -101,14 +101,16 @@ combined import list narrows silently, import single-PO reads 404); the reasonin
   `bool("false")` is `True`. A JSON boolean is used as-is; a string reads by meaning (`"false"`, `"0"`,
   `"no"`, `"off"`, `""` are false). `dismissed` defaults to `true` when omitted. The pin endpoints'
   `clear` still uses `bool(...)`; the frontend sends real JSON booleans there.
-- **Re-matching is synchronous.** Any correction to a matching-relevant field, and every pin change,
-  calls that plant's `run_full_match()` inside the request. Idempotent, and it has to stay well
-  inside gunicorn's 30 s worker timeout (Vapi, the largest, is ~15 s): past it the worker is killed,
-  the browser gets an HTML 502, and the write before the re-match has already committed while the
-  re-match itself rolls back. That happened to pins on 2026-09-25 - see
-  [hot paths](matching-engine.md#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason).
-  The frontend reports a 502/504 as "may still have been saved" (`shared.js`'s
-  `unexpectedResponseError()`).
+- **Re-matching runs on the background worker, never in the request** (2026-09-25). A correction to
+  a matching-relevant field, and every pin change, saves at once and calls
+  `apps/services/rematch.py`'s `request_rematch(plant)`, which queues one `run_rematch()` per plant
+  on the qcluster; the response carries `rematch` (its `status()`). It used to run
+  `run_full_match()` inside the request, which scales with the data and runs on one CPU thread:
+  Vapi took 24.8 s on production against gunicorn's 30 s kill, and past it the pin had committed while
+  the re-match rolled back. A bigger Render plan would only have postponed that. The page shows
+  "Saved - re-matching" and follows `sync-status`'s `rematch` block (`shared.js`'s
+  `waitForRematch()`) until the run finishes, then reloads; pins it could not apply come back in
+  that block's `unfilledPins`. Under pytest the run is inline, so tests see its result.
 - **`timezone.localdate()`, never `date.today()`** for anything date-relative (delivery status, licence
   countdowns, snapshot gap). Render runs UTC; `TIME_ZONE` is IST.
 
@@ -1068,6 +1070,17 @@ Clearing wipes the audit columns. Does no plant check itself; callers do.
 - The RoDTEP and Advance Licence ledgers load the BOE-number set once (`_known_boe_numbers()`) and pass
   it to `_boe_exists()`: per citation it was up to three one-row lookups (48 queries per Advance
   Licence load, now 16).
+
+### apps/services/rematch.py
+
+`request_rematch(plant_key)` queues `run_rematch()` on the qcluster (`async_task`), or joins the run
+already queued (`cache.add` on a pending key); `run_rematch()` clears that key FIRST, so a save made
+while a run is under way queues the next one rather than being folded into a run that may have read
+the old data; it records `{state, startedAt, finishedAt, unfilledPins, stalePins, manualPinsApplied}`
+(or `error`) for `status(plant_key)`, which `sync-status` serves as `rematch`. `_inline()` runs it in
+process under pytest. Two runs of one plant never overlap: `matching_core.run_full_match()` takes a
+per-plant `pg_advisory_xact_lock` (`_lock_plant_match()`), so a queued re-match and the hourly sync's
+match of the same plant run one after the other.
 
 ### apps/services/data_stamp.py
 

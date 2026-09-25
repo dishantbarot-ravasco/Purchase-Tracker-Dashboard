@@ -172,7 +172,8 @@ Read the linked section before breaking any of these. Each is there because it w
 
 ### API and features
 - Every new endpoint needs both a role gate and a plant-scoping call;
-  `test_endpoint_permission_guard.py` enforces it.
+  `test_endpoint_permission_guard.py` enforces it, and `test_plant_scope_no_leak.py` checks no GET
+  hands a scoped account another plant's data.
   [conventions](docs/api-and-features.md#endpoint-conventions-worth-knowing-before-adding-one)
 - Never name a query param `format` (DRF reserves it). Read body flags with `_request_bool()`,
   never `bool(...)` (`bool("false")` is `True`). Use `timezone.localdate()`, never `date.today()`. [conventions](docs/api-and-features.md#endpoint-conventions-worth-knowing-before-adding-one)
@@ -182,8 +183,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - A manual pin names a MIR number, not a row, and `po_kind` belongs in every pin query. "Keep both"
   (`shared`) claims nothing; an import pin naming its own BOE's receipt defers to BOE settlement.
   [pins](docs/api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21)
-- Corrections mutate the real row plus an audit row, re-match synchronously, and are overwritten by
-  the next sync. Matcher `defaults` never carry `dismissed_*`; only `_save_po_mir_match()` clears it,
+- Corrections mutate the real row plus an audit row, re-match on the background worker
+  (`rematch.request_rematch()`, never inside the request), and are overwritten by the next sync. Matcher `defaults` never carry `dismissed_*`; only `_save_po_mir_match()` clears it,
   when a line is re-pointed to a different MIR row.
   [inline edit](docs/api-and-features.md#inline-edit-everywhere),
   [dismiss](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag)
@@ -299,6 +300,7 @@ Read the linked section before breaking any of these. Each is there because it w
 | The frontend never calling `/token/refresh`, signing everyone out at hour 12 | [auth](docs/auth-security-email.md#sessions-and-tokens) |
 | Two concurrent refreshes presenting one rotated token, the loser signed out | [auth](docs/auth-security-email.md#sessions-and-tokens) |
 | Password change not evicting any session; refresh token in the login response body | [auth](docs/auth-security-email.md#sessions-and-tokens) |
+| Per-code OTP attempts reset by a new sign-in (unbounded guesses over days); DRF throttles keyed on a spoofable X-Forwarded-For; a refresh token rotatable twice at once | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |
 | Per-IP login throttle locking out a whole office | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |
 | A malformed dummy bcrypt hash making unknown-email logins ~240 ms faster | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |
 | Google OAuth ignoring account lockout; non-atomic failed-login / OTP counters undercounting | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |

@@ -50,6 +50,7 @@ from apps.core.models import (
 from apps.api.routers._domestic_base import (
     _category_reference_map,
     _candidate_rows,
+    _pin_response,
     _claims_for_mir_numbers,
     _counted_mirs,
     _held_mir_numbers,
@@ -68,7 +69,7 @@ from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 # API and matching_core can never disagree about what a pin addresses.
 from apps.services.matching_core import _boe_key, _import_rate_value_inr, import_landed_rates, line_item_positions
 from apps.services.parsers.common import normalize_material
-from apps.services import bl_tracking, data_stamp
+from apps.services import bl_tracking, data_stamp, rematch
 from apps.services import import_flags as flags
 from apps.services import license_links
 from apps.services.flag_dismiss import dismiss_po_flag
@@ -520,10 +521,10 @@ def correct_field(request, plant, po_number):
             corrected_by_email=getattr(request.user, "email", ""),
         )
 
-    if field_name in _REMATCH_TRIGGER_FIELDS:
-        _RUN_FULL_MATCH[plant]()
-
     response = {"status": "ok", "field": field_name, "value": _serialize(new_value)}
+    # On the background worker - see apps/services/rematch.py.
+    if field_name in _REMATCH_TRIGGER_FIELDS:
+        response["rematch"] = rematch.request_rematch(plant)
     warning = _field_warning(field_name, new_value)
     if warning:
         response["warning"] = warning
@@ -1397,14 +1398,5 @@ def set_mir_match(request, plant, po_number):
             ),
         )
 
-    result = _RUN_FULL_MATCH[plant]()
-    return Response({
-        "status": "ok",
-        "itemRef": item_ref,
-        "mirNo": "" if clear else mir_no,
-        "cleared": clear,
-        "shared": False if clear else shared,
-        "manualPinsApplied": result.get("manual_pins_applied"),
-        "stalePins": result.get("manual_pins_stale", []),
-        "unfilledPins": result.get("manual_pins_unfilled", []),
-    })
+    # On the background worker - see apps/services/rematch.py.
+    return Response(_pin_response(item_ref, mir_no, clear, shared, rematch.request_rematch(plant)))

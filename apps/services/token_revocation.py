@@ -46,6 +46,17 @@ def revoke_refresh_jti(jti: str, expires_at) -> None:
     RevokedRefreshToken.objects.get_or_create(jti=jti, defaults={"expires_at": expires_at})
 
 
+def claim_refresh_jti(jti: str, expires_at) -> bool:
+    """Revoke `jti` and report whether THIS call did it - atomic on the
+    table's unique jti, so of two requests rotating the same refresh token at
+    once exactly one gets True (2026-09-25). The check-then-revoke it
+    replaces let both mint new tokens. The loser is refused, not treated as
+    theft: two tabs refreshing together look the same, and signing that user
+    out everywhere was a bug once already (see CLAUDE.md's traps)."""
+    _row, created = RevokedRefreshToken.objects.get_or_create(jti=jti, defaults={"expires_at": expires_at})
+    return created
+
+
 def is_refresh_jti_revoked(jti: str) -> bool:
     return RevokedRefreshToken.objects.filter(jti=jti).exists()
 
