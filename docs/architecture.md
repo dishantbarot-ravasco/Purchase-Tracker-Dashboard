@@ -433,6 +433,8 @@ The RTP-Vapi ten. The module header comment documents the MIR and Stock layouts 
 
 Cross-plant human decisions and reference data, all with a `plant` column.
 
+- `ImportPOCorrection.item_ref` (migration `0062`) - the corrected line's position, which is what
+  addresses it (see [api-and-features.md](api-and-features.md#inline-edit-everywhere)).
 - `ImportPOCorrection`, `DomesticPOCorrection` - append-only audit rows for inline edits
   (`plant`, `po_number`, `item_id` blank for PO-level, `field_name`, `old_value`, `new_value`,
   `reason`, `corrected_by`/`corrected_by_email`, `corrected_at`). The edit mutates the real row;

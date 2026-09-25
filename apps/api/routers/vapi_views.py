@@ -54,6 +54,7 @@ _CONFIG = _base._PlantConfig(
 )
 
 purchase_orders = _base.make_purchase_orders(_CONFIG)
+purchase_order_summary = _base.make_purchase_order_summary(_CONFIG)
 correct_field = _base.make_correct_field(_CONFIG)
 # Manual MIR pin (2026-09-21) - see _domestic_base.make_set_mir_match().
 mir_candidates = _base.make_mir_candidates(_CONFIG)

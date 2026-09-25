@@ -184,7 +184,12 @@ function reconLineHtml(line, plantKey) {
 // PO-level summary above the cards: how much of the order has landed.
 function reconSummaryHtml(lines, currencyLabel) {
   const total = lines.length;
+  // Received in full OR more: the same rule the list's "Material Inwarded"
+  // card applies. Counting exact quantities only read "0 of 3" on POs that
+  // card called received, because their lines were over-received; the over
+  // ones are named instead of silently dropped (2026-09-25).
   const full = lines.filter(l => reconStatus(l).cls === 'recon-full').length;
+  const over = lines.filter(l => reconStatus(l).cls === 'recon-over').length;
   const receipts = lines.reduce((n, l) => n + (l.matched ? (l.mirs || []).length : 0), 0);
   const orderedValue = lines.reduce((s, l) => s + (l.ordered.value || 0), 0);
   const receivedOf = l => (l.matched && l.received && l.received.value != null ? l.received.value : 0);
@@ -197,7 +202,8 @@ function reconSummaryHtml(lines, currencyLabel) {
   const pct = orderedValue ? fulfilled / orderedValue * 100 : 0;
   const tile = (k, v, sub) => '<div class="recon-tile"><div class="recon-tile-k">' + k + '</div><div class="recon-tile-v">' + v + '</div>' + (sub ? '<div class="recon-tile-sub">' + sub + '</div>' : '') + '</div>';
   return '<div class="recon-summary">' +
-    tile('Lines fully received', full + ' <span class="recon-muted">of ' + total + '</span>') +
+    tile('Lines fully received', (full + over) + ' <span class="recon-muted">of ' + total + '</span>',
+      over ? over + ' of them over-received' : '') +
     tile('MIR receipts', String(receipts)) +
     tile('Received value' + (currencyLabel ? ' (' + escapeHtml(currencyLabel) + ')' : ''), reconMoney(receivedValue, 0),
       'of ' + reconMoney(orderedValue, 0) + ' ordered · ' + pct.toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '% of the order fulfilled' +
@@ -251,6 +257,7 @@ function domesticReconLine(it, index, po, plantKey) {
 function importReconLine(it, index, po, plantKey) {
   const m = it.mirMatch || {};
   const currency = po.currency || 'PO currency';
+  const noFx = it.netPrice != null && it.exchangeRate == null;
   const fxNote = it.netPrice != null && it.exchangeRate != null
     ? currency + ' ' + Number(it.netPrice).toLocaleString('en-IN', { maximumFractionDigits: 4 }) + ' × ' + it.exchangeRate
     : '';
@@ -273,12 +280,20 @@ function importReconLine(it, index, po, plantKey) {
     // against it read "15% short" on a line whose qty matched and whose rate
     // was 8% HIGHER (Vapi 1000001569). Net x exchange moves with qty x rate,
     // which is what a reconciliation needs.
+    // No exchange rate on file: the line's price is in the PO currency and
+    // there is no honest INR figure to set against MIR's, so the rate and
+    // value rows show nothing to compare. They used to show the bare USD
+    // price labelled "(in INR)", reading about 9,500% "higher" (1000001508,
+    // 1000001318 - 2026-09-25).
     ordered: {
       qty: it.qtyAsPerBoe,
-      rate: m.orderedRateInr != null ? m.orderedRateInr : null,
-      value: it.netValue != null && it.exchangeRate != null ? it.netValue * it.exchangeRate : (m.orderedValueInr != null ? m.orderedValueInr : null),
+      rate: noFx ? null : (m.orderedRateInr != null ? m.orderedRateInr : null),
+      // What cleared (net price x BOE qty), the matcher's own value basis
+      // (matching_core._import_rate_value_inr()).
+      value: noFx ? null : (it.netPrice != null && it.qtyAsPerBoe != null ? it.netPrice * it.qtyAsPerBoe * it.exchangeRate
+        : (m.orderedValueInr != null ? m.orderedValueInr : null)),
     },
-    rateNote: fxNote ? '(' + fxNote + ', before duty)' : '(in INR)',
+    rateNote: noFx ? '(no exchange rate on file)' : (fxNote ? '(' + fxNote + ', before duty)' : '(in INR)'),
     // Cleared lines only: the landed rate (duty + IGST in) against MIR's
     // final rate - the second basis the matcher's rate check accepts
     // (matching_core._landed_rate_diff()), shown so a line whose pre-duty
@@ -287,13 +302,14 @@ function importReconLine(it, index, po, plantKey) {
     // rate, which this line's own figure is not - the note below says so.
     landed: m.landedRateInr != null && m.receiptShare == null ? { ordered: m.landedRateInr, received: m.receivedFinalRate } : null,
     notes: [
+      noFx ? 'This line has no exchange rate in the Imports CSV, so its ' + (po.currency || 'PO currency') + ' price cannot be compared with MIR in INR. Fill in the exchange rate to compare it.' : '',
       receiptShareNote(m.receiptShare, m.tier),
       m.exchangeRateMismatched && m.mirExchangeRate != null
         ? 'Exchange rate differs: MIR works at ' + m.mirExchangeRate.toFixed(2) + ', the Imports CSV records ' +
           it.exchangeRate + '. The price agrees at the rate MIR uses - correct the exchange rate on the CSV.'
         : '',
     ].filter(Boolean),
-    valueNote: it.netValue != null && it.exchangeRate != null ? '(PO net value in INR)' : '(landed, INR)',
+    valueNote: noFx ? '(no exchange rate on file)' : '(value of what cleared, INR, before duty)',
     received: m.received, mirs: m.matchedMirs, matched: !!it.mirMatch,
     tier: m.tier, score: m.matchScore, pinned: !!it.manuallyPinned, itemRef: it.itemRef,
     currentMirNo: (m.matchedMirs && m.matchedMirs[0] && m.matchedMirs[0].mirNo) || '',

@@ -824,6 +824,15 @@ _UOM_FAMILIES: dict[str, tuple[str, Decimal]] = {
     "EA": ("count", Decimal("1")),
     "UNIT": ("count", Decimal("1")),
     "SET": ("count", Decimal("1")),
+    # ROLLS by census, 2026-09-25: all 37 rows are HRS PO lines for fabric
+    # bought by the roll ("EE 100 fabric roll", 15 ROLLS) and received in
+    # MIR by weight. A count - so a roll against a KG is a unit clash, not
+    # the 9,999% quantity gap it read as while unmapped. BAG, Bottle and the
+    # area codes stay excluded (see the comment above), and need no mapping
+    # to stop that gap: matching_core._unlike_named_units() already refuses
+    # to compare two different unit words.
+    "ROLL": ("count", Decimal("1")),
+    "ROLLS": ("count", Decimal("1")),
     # length -> base M
     "M": ("length", Decimal("1")),
     "CM": ("length", Decimal("0.01")),

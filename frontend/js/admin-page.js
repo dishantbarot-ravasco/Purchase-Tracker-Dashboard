@@ -173,7 +173,7 @@ function renderRecentActivity(rows) {
       '<td>' + escapeHtml(r.fieldName) + '</td>' +
       '<td>' + escapeHtml(r.oldValue || 'blank') + ' &rarr; ' + escapeHtml(r.newValue || 'blank') + '</td>' +
       '<td>' + escapeHtml(r.correctedByName) + '</td>' +
-      '<td>' + escapeHtml(formatDateIN(r.correctedAt ? r.correctedAt.slice(0, 10) : null)) + '</td>' +
+      '<td>' + escapeHtml(formatDateIN(r.correctedAt ? localDateOf(r.correctedAt) : null)) + '</td>' +
     '</tr>').join('') +
     '</tbody></table></div>';
 }
@@ -234,10 +234,10 @@ function renderUsers() {
       '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
       '<div class="user-card-stats">' +
         '<div><div class="user-card-stat-val">' + (u.correctionsCount || 0) + '</div><div class="user-card-stat-label">Corrections Made</div></div>' +
-        '<div><div class="user-card-stat-val fs-13">' + escapeHtml(u.lastLoginAt ? formatDateIN(u.lastLoginAt.slice(0, 10)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
+        '<div><div class="user-card-stat-val fs-13">' + escapeHtml(u.lastLoginAt ? formatDateIN(localDateOf(u.lastLoginAt)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
       '</div>' +
       '<div class="user-card-foot">' +
-        '<span class="fs-11 text-muted">Since ' + escapeHtml(formatDateIN(u.createdAt ? u.createdAt.slice(0, 10) : null)) + '</span>' +
+        '<span class="fs-11 text-muted">Since ' + escapeHtml(formatDateIN(u.createdAt ? localDateOf(u.createdAt) : null)) + '</span>' +
         '<div class="user-card-actions">' +
           '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
           '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>' +
@@ -368,7 +368,7 @@ function renderDevices(userId, devices) {
     return;
   }
   el.innerHTML = devices.map(d => {
-    const seen = d.lastUsedAt ? formatDateIN(d.lastUsedAt.slice(0, 10)) : 'never';
+    const seen = d.lastUsedAt ? formatDateIN(localDateOf(d.lastUsedAt)) : 'never';
     return '<div class="device-row" data-device-id="' + d.id + '">' +
       '<div><div class="device-row-name">' + escapeHtml(d.deviceName || 'Unknown device') + '</div>' +
       '<div class="device-row-meta">' + escapeHtml(d.ipAddress || 'unknown IP') + ' &middot; last used ' + escapeHtml(seen) + '</div></div>' +
@@ -460,6 +460,9 @@ function showFormError(msg) {
 async function toggleActive(userId) {
   const user = USERS.find(u => u.userId === userId);
   if (!user) return;
+  // Asked, like Delete and Revoke device: deactivating signs the person out
+  // everywhere and locks them out until someone reactivates them.
+  if (user.isActive && !window.confirm('Deactivate ' + (user.fullName || user.email) + '?\n\nThey will be signed out and cannot sign in until an admin activates them again.')) return;
   try {
     await patchUser(userId, { isActive: !user.isActive });
     showToast('User ' + (user.isActive ? 'deactivated' : 'activated') + '.', 'success');

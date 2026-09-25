@@ -102,6 +102,65 @@ function vendorNormCached(name) {
   return normalized;
 }
 
+// How well `item` links to `material`: 2 for the same normalized name, the
+// token Jaccard (>= MATERIAL_LINK_THRESHOLD) for a fuzzy link, -1 for none.
+// The vendor gate applies to both, exactly as materialLinksToItem() applies it.
+function materialLinkScore(material, po, item) {
+  const matInfo = materialTokenInfo(material.description);
+  const itemInfo = materialTokenInfo(item.description);
+  if (!matInfo.norm || !itemInfo.norm) return -1;
+  let score;
+  if (matInfo.norm === itemInfo.norm) {
+    score = 2;
+  } else {
+    const a = matInfo.tokens;
+    const b = itemInfo.tokens;
+    if (!a.size || !b.size) return -1;
+    let overlapCount = 0;
+    a.forEach(t => { if (b.has(t)) overlapCount++; });
+    score = overlapCount / (a.size + b.size - overlapCount);
+    if (score < MATERIAL_LINK_THRESHOLD) return -1;
+    // A fabric of another width or grade is another material, however many
+    // words the two descriptions share ("EE-200 fabric roll, width 73cm ...,
+    // length 696m" tied with a dozen EE-200 rolls of other widths).
+    if (fabricSpecContradicts(fabricSpec(material.description), fabricSpec(item.description))) return -1;
+  }
+  return vendorGatePasses(material, po) ? score : -1;
+}
+
+// Series+grade and width (whole cm) of a conveyor-belt fabric description -
+// a port of matching_core._fabric_spec(), same patterns: "NN-200 fabric
+// roll, width 67cm" -> ['NN200', 67], MIR's "EE250 142CM" -> ['EE250', 142].
+// Memoized per string for the render, like materialTokenInfo().
+const _fabricSpecCache = new Map();
+function fabricSpec(text) {
+  const key = text || '';
+  let spec = _fabricSpecCache.get(key);
+  if (spec === undefined) {
+    const series = /\b(EEH|EE|NN|EP)\s*-?\s*(\d{2,4})/i.exec(key);
+    const width = /(\d{2,3}(?:\.\d+)?)\s*CM\b/i.exec(key);
+    spec = [series ? series[1].toUpperCase() + String(parseInt(series[2], 10)) : null, width ? Math.round(parseFloat(width[1])) : null];
+    _fabricSpecCache.set(key, spec);
+  }
+  return spec;
+}
+// Both name a series+grade and they differ, or both a width more than 1 cm
+// apart - matching_core._fabric_spec_contradicts().
+function fabricSpecContradicts(a, b) {
+  if (a[0] && b[0] && a[0] !== b[0]) return true;
+  return !!(a[1] && b[1] && Math.abs(a[1] - b[1]) > 1);
+}
+
+// materialLinksToItem()'s vendor gate on its own: a material with vendors
+// links only to a PO from one of them; one without (Achhad) links on
+// description alone.
+function vendorGatePasses(material, po) {
+  const vendorCandidates = (material.vendors && material.vendors.length) ? material.vendors : (material.vendor ? [material.vendor] : []);
+  if (!vendorCandidates.length) return true;
+  const poVendor = vendorNormCached(po.vendorName);
+  return vendorCandidates.some(v => vendorContains(vendorNormCached(v), poVendor));
+}
+
 function materialLinksToItem(material, po, item) {
   const matInfo = materialTokenInfo(material.description);
   const itemInfo = materialTokenInfo(item.description);
@@ -197,25 +256,57 @@ function aggregateMaterialsByName(lots) {
     // Group confidence stays the weakest contributing band: one plant with
     // thin snapshot coverage makes the whole group's rate thin, and taking
     // the best or the mean would overstate it.
+    //
+    // **Days Left is each plant's own, and the row shows the tightest
+    // (2026-09-25).** Pooling every plant's stock over every plant's burn let
+    // one plant's large idle stock hide another plant about to run out - and
+    // a plant with stock but no rate added its stock to the numerator while
+    // adding nothing to the denominator. Stock is summed per plant, divided
+    // by that plant's rate, and the smallest result is the row's.
     let avgDaily = 0;
     let weakest = null;
-    const ratedPlants = new Set();
+    const ratedPlants = new Map(); // plant key -> its avgDaily
+    const plantQty = new Map();
     g.lots.forEach(l => {
       const c = l.consumption;
       const conf = (c && c.confidence) || 'none';
       const plantKey = l._plantKey || '';
+      plantQty.set(plantKey, (plantQty.get(plantKey) || 0) + (l.qty || 0));
       if (c && c.avgDaily && !ratedPlants.has(plantKey)) {
-        ratedPlants.add(plantKey);
+        ratedPlants.set(plantKey, c.avgDaily);
         avgDaily += c.avgDaily;
       }
       if (!weakest || CONF_RANK[conf] < CONF_RANK[weakest.confidence]) {
         weakest = { confidence: conf, coverageDays: c ? c.coverageDays : 0, observedDays: c ? c.observedDays : 0, windowDays: c ? c.windowDays : 0 };
       }
     });
+    const perPlantDays = [];
+    ratedPlants.forEach((rate, plantKey) => {
+      const q = plantQty.get(plantKey) || 0;
+      if (q >= 0) perPlantDays.push(q / rate);
+    });
+    // Stock per unit: lots of one material can be booked in different units
+    // (Rubber Process Oil 710 is KG at HRS, LTR at Vapi), and one bare sum
+    // read 29,385. Blank units are left out of the check (Achhad's sheet
+    // leaves most blank), so only two NAMED units that differ count.
+    const qtyByUnit = new Map();
+    g.lots.forEach(l => {
+      const raw = String(l.uom || '').trim().toUpperCase().replace(/\.$/, '');
+      if (!raw) return;
+      const fam = MAT_UOM_FAMILIES[raw];
+      const unit = fam ? fam[0] : raw;
+      qtyByUnit.set(unit, (qtyByUnit.get(unit) || 0) + (l.qty || 0) * (fam ? fam[1] : 1));
+    });
+    const mixedUnits = qtyByUnit.size > 1;
     return {
       description: g.description, materialCode: g.materialCode,
       category: g.category, subCategory: g.subCategory,
       qty: g.qty, value: g.value,
+      // Set only when the lots use more than one unit: the row then shows
+      // this instead of the meaningless sum.
+      qtyLabel: mixedUnits
+        ? Array.from(qtyByUnit.entries()).map(([u, q]) => q.toLocaleString('en-IN', { maximumFractionDigits: 3 }) + ' ' + u).join(' + ')
+        : null,
       rate: g.rates.size === 1 ? Array.from(g.rates)[0] : null,
       // True if ANY contributing lot has a real Stock<->MIR match (see the
       // backend's `mirMatched` field, apps/api/routers/*_views.py) - not a
@@ -227,7 +318,7 @@ function aggregateMaterialsByName(lots) {
         // Negative stock is a sheet error, not an empty store: no Days Left
         // for it, so it can neither read as a real figure nor trip Low
         // Stock. Same rule as consumption_periods.days_of_cover().
-        daysLeft: avgDaily > 0 && g.qty >= 0 ? g.qty / avgDaily : null,
+        daysLeft: perPlantDays.length && !mixedUnits ? Math.min(...perPlantDays) : null,
         negativeStock: g.qty < 0,
         confidence: weakest ? weakest.confidence : 'none',
         coverageDays: weakest ? weakest.coverageDays : 0,
@@ -269,6 +360,11 @@ function daysLeftCellHtml(m) {
   if (c && c.negativeStock) {
     return '<span class="days-left-cell"><span class="days-left-value">Stock &lt; 0</span>' +
       '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="The stock sheet shows a negative quantity for this material - a data error to fix in the sheet. Days Left cannot be worked out from it." tabindex="0"></span></span>';
+  }
+  // An order-only row has no stock at all, so it has no history to lack.
+  if (m.orderOnly) {
+    return '<span class="days-left-cell"><span class="days-left-value">-</span>' +
+      '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="On order only - nothing of this material is in stock yet" tabindex="0"></span></span>';
   }
   if (confidence === 'none' || !c) {
     return '<span class="days-left-cell"><span class="days-left-value">-</span>' +
@@ -389,22 +485,94 @@ function materialOrders(key) {
   return entry.list;
 }
 
-// All (po, item) pairs across the given plant keys' orders (domestic and
-// import - see materialOrders()) that link to `material` - each pair tagged
-// with its plant key/label for display. Callers must have loaded both order
-// books (ensurePOsLoaded(), ensureImportPOsLoaded()) before calling this.
-function linkedPoItemsForMaterial(material, plantKeys) {
-  const out = [];
+// -- Each PO line links to its BEST material (2026-09-25) --
+// The link is fuzzy, and it used to be applied to every (material, line)
+// pair on its own: a line linked to EVERY material it cleared the 0.3 token
+// threshold against. On Vapi's fabric orders one "EE-315 fabric roll, width
+// ... GSM ..." line linked to 238 materials, 251 of 337 open lines linked
+// to 50 or more, and the Quantity Mismatch / Data Quality Flags cards
+// counted 291 and 337 materials off 337 open lines. It was also the whole
+// cost of this view: 1.3 million pair checks per render, about 1 s.
+//
+// Now a line links to the material it resembles most - the same normalized
+// name beats any fuzzy score, and only an exact tie links it to more than
+// one - found through a token index instead of by trying every material.
+// Built over the WHOLE plant scope, never the Category-filtered list, so a
+// filter can never move a line to a different material; and memoized on the
+// identity of the caches it reads, which clearDataCaches() replaces, so a
+// KPI click or filter change reuses it.
+let _lineLinkMemo = {};
+
+function buildLineLinks(materials, plantKeys) {
+  _materialTokenCache.clear();
+  _vendorNormCache.clear();
+  const normIdx = new Map();
+  const tokenIdx = new Map();
+  const push = (map, k, v) => { let arr = map.get(k); if (!arr) { arr = []; map.set(k, arr); } arr.push(v); };
+  materials.forEach((m, i) => {
+    const info = materialTokenInfo(m.description);
+    if (!info.norm) return;
+    push(normIdx, info.norm, i);
+    info.tokens.forEach(t => push(tokenIdx, t, i));
+  });
+  const byNorm = new Map();
+  const linkedItems = new Set();
   plantKeys.forEach(key => {
     materialOrders(key).forEach(po => {
       (po.items || []).forEach(item => {
-        if (materialLinksToItem(material, po, item)) {
-          out.push({ po, item, plantKey: key, plantLabel: PLANTS[key].label });
-        }
+        const info = materialTokenInfo(item.description);
+        if (!info.norm) return;
+        const cands = new Set(normIdx.get(info.norm) || []);
+        info.tokens.forEach(t => (tokenIdx.get(t) || []).forEach(i => cands.add(i)));
+        let best = -1;
+        let winners = [];
+        cands.forEach(i => {
+          const score = materialLinkScore(materials[i], po, item);
+          if (score < 0) return;
+          if (score > best + 1e-9) { best = score; winners = [i]; } else if (Math.abs(score - best) <= 1e-9) winners.push(i);
+        });
+        if (!winners.length) return;
+        linkedItems.add(item);
+        const link = { po, item, plantKey: key, plantLabel: PLANTS[key].label };
+        winners.forEach(i => push(byNorm, materialTokenInfo(materials[i].description).norm, link));
       });
     });
   });
-  return out;
+  return { byNorm, linkedItems };
+}
+
+// The line links for `materials` over `plantKeys`, rebuilt only when a cache
+// it reads was replaced. `slot` keeps the stock-only index that
+// orderOnlyMaterials() needs apart from the full one.
+function lineLinksFor(slot, materials, plantKeys) {
+  const sig = [IMPORT_PO_CACHE].concat(
+    plantKeys.map(k => PURCHASE_ORDERS_BY_PLANT[k]), plantKeys.map(k => MATERIALS_BY_PLANT[k]));
+  const memo = _lineLinkMemo[slot];
+  if (memo && memo.sig.length === sig.length && memo.sig.every((v, i) => v === sig[i])) return memo.value;
+  const value = buildLineLinks(materials, plantKeys);
+  _lineLinkMemo[slot] = { sig, value };
+  return value;
+}
+
+// Every material row for `plantKeys`, stock rows plus order-only rows - the
+// same list renderMaterialsView() shows before any filter.
+function materialScope(plantKeys) {
+  const lots = [];
+  plantKeys.forEach(key => (MATERIALS_BY_PLANT[key] || []).forEach(m =>
+    lots.push(plantKeys.length === 1 ? m : Object.assign({}, m, { _plantKey: key, _plantLabel: PLANTS[key].label }))));
+  const stock = aggregateMaterialsByName(lots);
+  return stock.concat(orderOnlyMaterials(stock, plantKeys));
+}
+
+// All (po, item) pairs across the given plant keys' orders (domestic and
+// import - see materialOrders()) whose best material is `material`'s name,
+// each tagged with its plant key/label. `material` may be a single lot (the
+// material modal's anchor), so its own vendor gate applies on top. Callers
+// must have loaded both order books first.
+function linkedPoItemsForMaterial(material, plantKeys) {
+  const index = lineLinksFor('full:' + plantKeys.join(','), materialScope(plantKeys), plantKeys);
+  const links = index.byNorm.get(normalizeMaterial(material.description)) || [];
+  return links.filter(l => vendorGatePasses(material, l.po));
 }
 
 // Is this (po, item) pair still to come? Judged on the LINE, not only on the
@@ -448,6 +616,7 @@ const MAT_UOM_FAMILIES = {
   KG: ['KG', 1], KGS: ['KG', 1], GM: ['KG', 0.001], MT: ['KG', 1000], MTS: ['KG', 1000], TO: ['KG', 1000], TON: ['KG', 1000], QTL: ['KG', 100],
   L: ['L', 1], LTR: ['L', 1], LTRS: ['L', 1], KL: ['L', 1000], ML: ['L', 0.001],
   NOS: ['NOS', 1], PCS: ['NOS', 1], PC: ['NOS', 1], EA: ['NOS', 1], UNIT: ['NOS', 1], SET: ['NOS', 1],
+  ROLL: ['NOS', 1], ROLLS: ['NOS', 1],
   M: ['M', 1], CM: ['M', 0.01], MM: ['M', 0.001], MTR: ['M', 1], MTRS: ['M', 1],
 };
 
@@ -486,8 +655,7 @@ function summariseOpenQty(openLines) {
 // value are 0, which is the truth about the warehouse, and the open order
 // shows through the same In Transit / Quantity Ordered path as any row.
 function orderOnlyMaterials(stockMaterials, plantKeys) {
-  _materialTokenCache.clear();
-  _vendorNormCache.clear();
+  const stockLinked = lineLinksFor('stock:' + plantKeys.join(','), stockMaterials, plantKeys).linkedItems;
   const groups = new Map();
   plantKeys.forEach(key => {
     materialOrders(key).forEach(po => {
@@ -495,7 +663,7 @@ function orderOnlyMaterials(stockMaterials, plantKeys) {
         if (!isOpenPoLine(po, item)) return;
         const norm = materialTokenInfo(item.description).norm;
         if (!norm) return;
-        if (stockMaterials.some(m => materialLinksToItem(m, po, item))) return;
+        if (stockLinked.has(item)) return;
         let g = groups.get(norm);
         if (!g) {
           g = { description: item.description, materialCode: '', category: '', subCategory: '', qty: 0, value: 0, rate: null,
@@ -536,13 +704,12 @@ function materialModalKey(m) {
 // Every material with >=1 linked open (non-received) PO line item, for the
 // KPI row below - computed once per render and reused across cards 3/4/5/6/7
 // rather than re-scanning PURCHASE_ORDERS_BY_PLANT per card.
-function computeMaterialPoLinkage(materials, plantKeys) {
-  // See materialTokenInfo() above: the memo caches live for exactly one pass,
-  // so a description or vendor name edited since the last render is re-read.
-  _materialTokenCache.clear();
-  _vendorNormCache.clear();
+function computeMaterialPoLinkage(materials, plantKeys, scope) {
+  // `scope` is the unfiltered material list (renderMaterialsView()'s `all`),
+  // so which material a line belongs to never depends on the filters.
+  const index = lineLinksFor('full:' + plantKeys.join(','), scope || materialScope(plantKeys), plantKeys);
   return materials.map(m => {
-    const links = linkedPoItemsForMaterial(m, plantKeys);
+    const links = index.byNorm.get(normalizeMaterial(m.description)) || [];
     links.forEach(l => { l.po._status = l.po._status || computeStatus(l.po); if (!l.po._categories) computePoFlags(l.po); });
     const openLinks = links.filter(l => isOpenPoLine(l.po, l.item));
     // Same categories a PO row's own rowFlags() shows (see renderPoList()),
@@ -703,7 +870,7 @@ function renderMaterialsView() {
   }
 
   const plantKeys = selectedPlantKeys();
-  const linkage = computeMaterialPoLinkage(filtered, plantKeys);
+  const linkage = computeMaterialPoLinkage(filtered, plantKeys, all);
   // O(1) lookup from a (category/sub-category-filtered) material back to
   // its linkage entry (flags/categories/open-PO links) while rendering the
   // table below - built from the exact same `filtered` array `linkage` was
@@ -829,7 +996,7 @@ function renderMaterialsView() {
     '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + ', plus anything on an open order that has no stock lot yet. Click a row for its full cross-plant analysis.</div>' +
     matchingDisclaimerHtml(
       'Ordered qty, in-transit value and the flag columns are matched automatically. Days Left is an estimate.',
-      '<p><strong>Matched columns.</strong> "Inventory Value in Transit", "Quantity Ordered" and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
+      '<p><strong>Matched columns.</strong> "Value in Transit", "Quantity to Come" and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
       '<p><strong>Days Left.</strong> Estimated from recent stock-snapshot history, not reported by the sheet. The confidence dot beside it shows how much history it is based on.</p>'
     ) +
     '<div class="kpi-grid mat-kpi-grid">' + kpiHtml + '</div>' +
@@ -846,14 +1013,14 @@ function renderMaterialsView() {
         '<label>Filter by Category</label>' +
         '<select id="matCatSelect" class="select-w220">' +
           '<option value="">All categories (' + all.length + ')</option>' +
-          catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
+          catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(categoryLabel(c)) + ' (' + n + ')</option>').join('') +
         '</select>' +
       '</div>' +
       '<div class="filter-group">' +
         '<label>Filter by Sub Category</label>' +
         '<select id="matSubCatSelect" class="select-w220">' +
           '<option value="">All sub-categories (' + inSelectedCategory.length + ')</option>' +
-          subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('') +
+          subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(categoryLabel(c)) + ' (' + n + ')</option>').join('') +
         '</select>' +
       '</div>' +
       '<div class="filter-group">' +
@@ -1009,8 +1176,8 @@ function materialsListRegionHtml() {
   // controls, same single-source-of-truth reasoning as Status. No more
   // Stock/Inventory Value/Latest Rate range filters (project owner,
   // 2026-09-04, removed to make room for these plus Progress).
-  const matCatColOptionsHtml = ctx.catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
-  const matSubCatColOptionsHtml = ctx.subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(c) + ' (' + n + ')</option>').join('');
+  const matCatColOptionsHtml = ctx.catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(categoryLabel(c)) + ' (' + n + ')</option>').join('');
+  const matSubCatColOptionsHtml = ctx.subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(categoryLabel(c)) + ' (' + n + ')</option>').join('');
   const matFilterCells = [
     '<input type="text" class="col-filter-input" data-mcf="material" placeholder="Search..." value="' + escapeHtml(state.matColFilters.material) + '">',
     '<select class="col-filter-input" data-mcf="category"><option value="">All</option>' + matCatColOptionsHtml + '</select>',
@@ -1020,6 +1187,11 @@ function materialsListRegionHtml() {
     '',
     '', // Days Left - no header-row control of its own, same reasoning as Stock/Inventory Value/Latest Rate above.
     '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
+      // The two filters a KPI card or flag chip sets that the select used to
+      // lack, so after such a click it read "All" while the list was narrowed.
+      '<option value="openpo"' + (state.matStatusFilter === 'openpo' ? ' selected' : '') + '>On an open order</option>' +
+      (typeof state.matStatusFilter === 'string' && state.matStatusFilter.startsWith('cat:')
+        ? '<option value="' + escapeHtml(state.matStatusFilter) + '" selected>' + escapeHtml(state.matStatusFilter.slice(4)) + '</option>' : '') +
       '<option value="qtydisc"' + (state.matStatusFilter === 'qtydisc' ? ' selected' : '') + '>Quantity Mismatch</option>' +
       '<option value="ratedisc"' + (state.matStatusFilter === 'ratedisc' ? ' selected' : '') + '>Rate Mismatch</option>' +
       '<option value="lowstock"' + (state.matStatusFilter === 'lowstock' ? ' selected' : '') + '>Low Stock</option>' +
@@ -1090,7 +1262,7 @@ function materialsListRegionHtml() {
           return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</td>' +
           '<td>' + escapeHtml(m.category || '-') + '</td>' +
           '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
-          '<td>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</td>' +
+          '<td>' + (m.qtyLabel ? escapeHtml(m.qtyLabel) : (m.qty ? m.qty.toLocaleString('en-IN') : '0')) + '</td>' +
           '<td>' + formatInr(m.value || 0) + '</td>' +
           '<td>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</td>' +
           '<td>' + daysLeftCellHtml(m) + '</td>' +
@@ -1111,7 +1283,7 @@ function materialsListRegionHtml() {
             '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</div>' +
             '<div>' + escapeHtml(m.category || 'Not available') + '</div>' +
             '<div>' + escapeHtml(m.subCategory || 'Not available') + '</div>' +
-            '<div>' + (m.qty ? m.qty.toLocaleString('en-IN') : '0') + '</div>' +
+            '<div>' + (m.qtyLabel ? escapeHtml(m.qtyLabel) : (m.qty ? m.qty.toLocaleString('en-IN') : '0')) + '</div>' +
             '<div>' + formatInr(m.value || 0) + '</div>' +
             '<div>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</div>' +
             '<div>' + daysLeftCellHtml(m) + '</div>' +

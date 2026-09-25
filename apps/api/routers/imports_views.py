@@ -49,6 +49,7 @@ from apps.core.models import (
 )
 from apps.api.routers._domestic_base import (
     _category_reference_map,
+    _candidate_rows,
     _claims_for_mir_numbers,
     _counted_mirs,
     _held_mir_numbers,
@@ -67,7 +68,7 @@ from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 # API and matching_core can never disagree about what a pin addresses.
 from apps.services.matching_core import _boe_key, _import_rate_value_inr, import_landed_rates, line_item_positions
 from apps.services.parsers.common import normalize_material
-from apps.services import bl_tracking
+from apps.services import bl_tracking, data_stamp
 from apps.services import import_flags as flags
 from apps.services import license_links
 from apps.services.flag_dismiss import dismiss_po_flag
@@ -97,7 +98,15 @@ _MIR_MODEL = {"hrs": HRSMIREntry, "achhad": RTPAchhadMIREntry, "vapi": RTPVapiMI
 # achhad_views.py/vapi_views.py, with qty_as_per_boe in place of domestic's
 # single `qty` field (see HRSImportPOMirMatch's docstring for why BOE qty,
 # not PO qty, is the one compared against MIR).
-_REMATCH_TRIGGER_FIELDS = {"vendor_name", "vendor_gstin", "description", "qty_as_per_boe", "net_price", "net_value"}
+# exchange_rate, boe_number, bill_of_lading_number and total_inclusive_value
+# joined 2026-09-25: the matcher converts to INR with the first, pairs
+# receipts by the second, gates that pairing on the third and checks the
+# landed rate with the fourth - so a correction to any of them changes a
+# match, and without a re-match it sat invisible until the next sync.
+_REMATCH_TRIGGER_FIELDS = {
+    "vendor_name", "vendor_gstin", "description", "qty_as_per_boe", "net_price", "net_value",
+    "exchange_rate", "boe_number", "bill_of_lading_number", "total_inclusive_value",
+}
 
 # plant URL segment -> (PO model, line item model, SyncRun.Plant, display label, import PO<->MIR match model)
 _PLANTS = {
@@ -199,6 +208,9 @@ def _mir_match_dict(item):
         "severity": match.severity,
         "dismissedByOverride": match.dismissed_by_override,
         "dismissedReason": match.dismissed_reason,
+        # Who dismissed it - the reconciliation card's "dismissed by"
+        # tooltip read it, and it was never sent. Prefetched with the match.
+        "dismissedBy": match.dismissed_by.email if match.dismissed_by_id and match.dismissed_by else None,
         # Relies on purchase_orders()'s prefetch_related including
         # "items__mir_match__mir_entry__stock_matches" so this reads the
         # prefetch cache, not a new query per line item - same pattern as
@@ -242,8 +254,10 @@ def _mir_match_dict(item):
     }
 
 
-def _item_dict(item, item_ref=""):
-    is_disc, disc_pct = flags.qty_discrepancy(item)
+def _item_dict(item, item_ref="", boe_total=None):
+    # boe_total: the line's BOE qty to judge its order against - a split
+    # shipment's summed rows (import_flags.boe_totals()).
+    is_disc, disc_pct = flags.qty_discrepancy(item, boe_total)
     match = getattr(item, "mir_match", None)
     return {
         "itemId": item.item_id,
@@ -276,7 +290,7 @@ def _item_dict(item, item_ref=""):
         "shipmentStage": flags.shipment_stage(item),
         "qtyDiscrepancy": is_disc,
         "qtyDiscrepancyPct": disc_pct,
-        "deliveryDateStatus": flags.delivery_date_status(item, timezone.localdate()),
+        "deliveryDateStatus": flags.delivery_date_status(item, timezone.localdate(), boe_total),
         "mirMatch": _mir_match_dict(item),
     }
 
@@ -285,6 +299,7 @@ def _correction_dict(c):
     return {
         "fieldName": c.field_name,
         "itemId": c.item_id,
+        "itemRef": c.item_ref,
         "oldValue": c.old_value,
         "newValue": c.new_value,
         "reason": c.reason,
@@ -309,7 +324,8 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_r
     # Numbered per PO in pk order - the master CSV's own row order, and the
     # same numbering the matcher uses to resolve a manual MIR pin.
     ordered_items = sorted(items, key=lambda x: x.id)
-    item_dicts = [_item_dict(i, str(n)) for n, i in enumerate(ordered_items)]
+    totals = flags.boe_totals(items)
+    item_dicts = [_item_dict(i, str(n), totals.get(id(i))) for n, i in enumerate(ordered_items)]
     # Each line's own canonical category, looked up exactly as a Stock lot's
     # is. Raw Material Analysis now counts open import lines (2026-09-24), and
     # an import-only material gets a row of its own there that can sit in the
@@ -410,7 +426,7 @@ def purchase_orders(request):
             continue
         # is_active=True - see _domestic_base.py's own note.
         qs = po_model.objects.filter(is_active=True).prefetch_related(
-            "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries",
+            "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries", "items__mir_match__dismissed_by",
         )
         result.extend(_po_dict(po, plant_key, label, category_reference=category_reference) for po in qs)
     result.sort(key=lambda d: d["createdDate"] or "", reverse=True)
@@ -433,7 +449,7 @@ def purchase_order_detail(request, plant, po_number):
         return Response({"error": "Unknown plant."}, status=404)
     po_model, _item_model, sr_plant, label, _match_model = resolved
     po = po_model.objects.prefetch_related(
-        "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries",
+        "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries", "items__mir_match__dismissed_by",
     # is_active=True: a retired order is gone from the list, so it must not
     # stay reachable by URL either - same as the domestic detail view.
     ).filter(po_number=po_number, is_active=True).first()
@@ -469,12 +485,14 @@ def correct_field(request, plant, po_number):
     if not po:
         return Response({"error": "Purchase order not found."}, status=404)
 
+    item_ref = ""
     if item_id:
         if field_name not in _ITEM_EDITABLE_FIELDS:
             return Response({"error": f"{field_name!r} is not an editable item field."}, status=400)
-        target = item_model.objects.filter(purchase_order=po, item_id=item_id).first()
-        if not target:
-            return Response({"error": "Line item not found."}, status=404)
+        target, item_ref, error = _resolve_import_line(item_model, po, item_id)
+        if error:
+            return Response({"error": error}, status=404 if target is None else 400)
+        item_id = target.item_id
     else:
         if field_name not in _PO_EDITABLE_FIELDS:
             return Response({"error": f"{field_name!r} is not an editable PO field."}, status=400)
@@ -493,6 +511,7 @@ def correct_field(request, plant, po_number):
             plant=sr_plant,
             po_number=po_number,
             item_id=item_id,
+            item_ref=item_ref,
             field_name=field_name,
             old_value="" if old_value is None else str(old_value),
             new_value="" if new_value is None else str(new_value),
@@ -508,6 +527,7 @@ def correct_field(request, plant, po_number):
     warning = _field_warning(field_name, new_value)
     if warning:
         response["warning"] = warning
+    data_stamp.touch(sr_plant)
     return Response(response)
 
 
@@ -521,6 +541,31 @@ def correct_field(request, plant, po_number):
 # refactor to parametrize it - left as its own copy rather than force a
 # fragile shared function for this pass.
 from apps.api.routers._domestic_base import _field_warning, _serialize  # noqa: E402
+
+
+def _resolve_import_line(item_model, po, address):
+    """(line, item_ref, error) for an edit's line address.
+
+    "#<n>" is the line's position (line_item_positions(), the same ref pins
+    use) and is what the modal sends. A bare item_id is still accepted from
+    older callers, but only when it names exactly one line of the order:
+    12 Vapi orders repeat one item_id across their shipment lines, and
+    `.first()` silently wrote line 2's correction onto line 1."""
+    items = list(item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+    refs = {item_id: ref for item_id, (_po, ref, _d) in line_item_positions(items).items()}
+    if address.startswith("#"):
+        want = address[1:]
+        line = next((i for i in items if refs.get(i.id) == want), None)
+        if line is None:
+            return None, "", "Line item not found."
+        return line, want, ""
+    same = [i for i in items if i.item_id == address]
+    if not same:
+        return None, "", "Line item not found."
+    if len(same) > 1:
+        return same[0], "", (f"Item {address} appears on {len(same)} lines of this order; "
+                             "refresh the page and edit it again.")
+    return same[0], refs.get(same[0].id, ""), ""
 
 
 def _coerce_value(field_name, raw_value):
@@ -640,6 +685,7 @@ def dismiss_import_po_mir_match(request, plant, match_id: int):
     match = dismiss_match(match_model, match_id, request.user, dismissed, reason)
     if not match:
         return Response({"error": "Match not found."}, status=404)
+    data_stamp.touch(_sr_plant)
     return Response({
         "status": "ok",
         "matchId": match.id,
@@ -668,6 +714,8 @@ def dismiss_flag(request, plant, po_number):
     flag_key = (request.data.get("flagKey") or "").strip()
     if not flag_key:
         return Response({"error": "flagKey is required."}, status=400)
+    if not _po_model.objects.filter(po_number=po_number, is_active=True).exists():
+        return Response({"error": "Purchase order not found."}, status=404)
     dismissed = _request_bool(request.data.get("dismissed"), True)
     reason = (request.data.get("reason") or "").strip()
     fd = dismiss_po_flag(sr_plant, po_number, flag_key, request.user, dismissed, reason)
@@ -690,14 +738,22 @@ def dismiss_flag(request, plant, po_number):
 _BOE_LINE_ITEM_MODELS = [HRSImportPOLineItem, RTPAchhadImportPOLineItem, RTPVapiImportPOLineItem]
 
 
-def _boe_exists(boe_number: str) -> bool:
+def _boe_exists(boe_number: str, known: frozenset | None = None) -> bool:
     """Whether `boe_number` appears on any plant's Import PO line items -
     the real, checkable cross-reference a RodtepUsage entry's boe_number
     should have; surfaced to the frontend as `boeVerified` so a reviewer can
     spot a typo'd/unrecognized BOE number without a separate lookup."""
     if not boe_number:
         return False
-    return any(model.objects.filter(boe_number=boe_number).exists() for model in _BOE_LINE_ITEM_MODELS)
+    return boe_number in (known if known is not None else _known_boe_numbers())
+
+
+def _known_boe_numbers() -> frozenset:
+    """Every BOE number on any plant's import lines - three queries. The
+    ledgers read it once and pass it to _boe_exists(): per citation it was
+    up to three one-row lookups each, 36 per Advance Licence load."""
+    return frozenset(n for model in _BOE_LINE_ITEM_MODELS
+                     for n in model.objects.exclude(boe_number="").values_list("boe_number", flat=True))
 
 
 def _rodtep_entry_dict(e: RodtepScrollEntry) -> dict:
@@ -714,13 +770,13 @@ def _rodtep_entry_dict(e: RodtepScrollEntry) -> dict:
     }
 
 
-def _rodtep_usage_dict(u: RodtepUsage) -> dict:
+def _rodtep_usage_dict(u: RodtepUsage, known: frozenset | None = None) -> dict:
     return {
         "id": u.id,
         "scriptNo": u.script_no,
         "usedAmount": u.used_amount,
         "boeNumber": u.boe_number,
-        "boeVerified": _boe_exists(u.boe_number),
+        "boeVerified": _boe_exists(u.boe_number, known),
         "importPoNumber": u.import_po_number,
         "usedDate": u.used_date.isoformat() if u.used_date else None,
         "notes": u.notes,
@@ -751,7 +807,7 @@ def _citation_dict(c) -> dict:
     }
 
 
-def _license_citations(scheme: str) -> tuple[dict, list]:
+def _license_citations(scheme: str, user) -> tuple[dict, list]:
     """Every import-side citation for one scheme, grouped by normalised
     licence number, plus the citations naming a licence under NO recognised
     scheme at all.
@@ -761,7 +817,11 @@ def _license_citations(scheme: str) -> tuple[dict, list]:
     because it is the same one action either reader can take (fill in the
     `License Type` column) and neither panel can be sure the other was
     opened."""
-    citations = license_links.collect_citations()
+    # Only the plants `user` may read (2026-09-25): each citation names an
+    # import PO, its plant and its landed value, and these ledgers are
+    # company-wide, so without this a plant-scoped account saw every plant's
+    # orders here while every other endpoint refused them.
+    citations = [c for c in license_links.collect_citations() if user_can_access_plant(user, c.plant_key)]
     scoped = [c for c in citations if c.scheme == scheme]
     unclassified = [c for c in citations if c.scheme == license_links.SCHEME_UNKNOWN]
     return license_links.citations_by_license(scoped), unclassified
@@ -823,7 +883,7 @@ def rodtep_ledger(request):
         row["script_no"]: row["total"]
         for row in RodtepUsage.objects.values("script_no").annotate(total=Sum("used_amount"))
     }
-    by_license, unclassified = _license_citations(license_links.SCHEME_RODTEP)
+    by_license, unclassified = _license_citations(license_links.SCHEME_RODTEP, request.user)
 
     # A script might have usage entered before its own ledger file has been
     # synced yet (see RodtepUsage's own docstring on why there's no FK) -
@@ -899,14 +959,15 @@ def rodtep_script_detail(request, script_no):
     just linked to would be the wrong answer to the question being asked."""
     entries = RodtepScrollEntry.objects.filter(script_no=script_no).order_by("sb_date")
     usages = RodtepUsage.objects.filter(script_no=script_no)
-    by_license, _ = _license_citations(license_links.SCHEME_RODTEP)
+    by_license, _ = _license_citations(license_links.SCHEME_RODTEP, request.user)
     citations = by_license.get(license_links.normalize_license_number(script_no), [])
     if not entries.exists() and not usages.exists() and not citations:
         return Response({"error": "No RoDTEP data found for this Script Number."}, status=404)
+    known_boes = _known_boe_numbers()
     return Response({
         "scriptNo": script_no,
         "entries": [_rodtep_entry_dict(e) for e in entries],
-        "usages": [_rodtep_usage_dict(u) for u in usages],
+        "usages": [_rodtep_usage_dict(u, known_boes) for u in usages],
         "imports": [_citation_dict(c) for c in citations],
         "importTotals": license_links.citation_totals(citations),
     })
@@ -970,7 +1031,7 @@ def rodtep_sync_trigger(request):
 _LICENSE_EXPIRY_SOON_DAYS = 90
 
 
-def _advance_license_material_dict(m) -> dict:
+def _advance_license_material_dict(m, known: frozenset | None = None) -> dict:
     return {
         "materialDescription": m.material_description,
         "itchsCode": m.itchs_code,
@@ -985,7 +1046,7 @@ def _advance_license_material_dict(m) -> dict:
         # Whether this workbook row's BOE is one the Import dashboard
         # actually holds - the same check RodtepUsage's own boeVerified
         # makes, and the reason a typo'd BOE stops being invisible here.
-        "boeVerified": _boe_exists(m.boe_number),
+        "boeVerified": _boe_exists(m.boe_number, known),
     }
 
 
@@ -1032,7 +1093,7 @@ def _material_rollup(materials) -> list:
     return list(rollup.values())
 
 
-def _advance_license_dict(lic, citations: list, today) -> dict:
+def _advance_license_dict(lic, citations: list, today, known_boes: frozenset | None = None) -> dict:
     # Field order matches the project owner's own requested view order:
     # License Number -> Export Product Description -> CIF Value Authorized
     # -> FOB Export Target -> Export Validity -> Material Description(s).
@@ -1054,7 +1115,7 @@ def _advance_license_dict(lic, citations: list, today) -> dict:
         "cifValueAuthorized": lic.cif_value_authorized,
         "fobValueExportTarget": lic.fob_value_export_target,
         "exportValidityDate": lic.export_validity_date.isoformat() if lic.export_validity_date else None,
-        "materials": [_advance_license_material_dict(m) for m in materials],
+        "materials": [_advance_license_material_dict(m, known_boes) for m in materials],
         # Extra fields kept alongside (not part of the requested view, but
         # already computed by the sync - no reason to withhold them from the
         # payload; the frontend simply doesn't render them today).
@@ -1105,14 +1166,15 @@ def advance_license_ledger(request):
     # the server's date is still yesterday and every countdown here would be
     # a day out. See CLAUDE.md's timezone trap.
     today = timezone.localdate()
-    by_license, unclassified = _license_citations(license_links.SCHEME_ADVANCE)
+    by_license, unclassified = _license_citations(license_links.SCHEME_ADVANCE, request.user)
     licenses = AdvanceLicense.objects.prefetch_related("materials").order_by("license_number")
 
     rows, known_numbers = [], set()
+    known_boes = _known_boe_numbers()
     for lic in licenses:
         number = license_links.normalize_license_number(lic.license_number)
         known_numbers.add(number)
-        rows.append(_advance_license_dict(lic, by_license.get(number, []), today))
+        rows.append(_advance_license_dict(lic, by_license.get(number, []), today, known_boes))
 
     last_run = (
         SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.ADVANCE_LICENSE)
@@ -1193,14 +1255,7 @@ def mir_candidates(request, plant, po_number):
 
     mir_model = _MIR_MODEL[plant]
     q = (request.query_params.get("q") or "").strip()
-    rows = mir_model.objects.filter(is_active=True)
-    if q:
-        rows = rows.filter(
-            Q(mir_no__icontains=q) | Q(party_name__icontains=q) | Q(material_description__icontains=q)
-        )
-    else:
-        rows = rows.filter(Q(po_number_raw__icontains=po_number) | Q(mir_date__isnull=False))
-    rows = list(rows.order_by("-mir_date", "-id")[:80])
+    rows = _candidate_rows(mir_model, match_model, po, q)
 
     # BOTH kinds of claim, because both compete for the same MIR rows. A
     # domestic line holding the document is exactly as much a collision as an
@@ -1305,7 +1360,7 @@ def set_mir_match(request, plant, po_number):
     item_ref = str(request.data.get("itemRef") or "").strip()
     mir_no = (request.data.get("mirNo") or "").strip()
     reason = (request.data.get("reason") or "").strip()
-    clear = bool(request.data.get("clear"))
+    clear = _request_bool(request.data.get("clear"), False)
     # "Keep both": use the document without taking it from its current
     # holder - see ManualMirMatch.shared. Meaningless without a mirNo.
     shared = _request_bool(request.data.get("share"), False) and bool(mir_no)

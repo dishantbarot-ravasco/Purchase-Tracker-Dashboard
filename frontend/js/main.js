@@ -573,7 +573,23 @@ function latestSyncTime(stamp) {
 // caches, so on the Import tab "Refresh Data" re-rendered the SAME import
 // orders it already held - the one place a reload really was the only way
 // to see new data. One helper so the three paths cannot drift apart again.
+// One sync-status request per plant shared by every caller that asks
+// within SYNC_STATUS_SHARE_MS - on page load the badges, the view tabs and
+// the resume-a-running-sync check each fetched it, three per plant. The
+// sync-progress poll and the pre-sync baseline read it directly, fresh.
+const SYNC_STATUS_SHARE_MS = 3000;
+let _syncStatusShared = {};
+function fetchSyncStatus(key) {
+  const hit = _syncStatusShared[key];
+  if (hit && Date.now() - hit.at < SYNC_STATUS_SHARE_MS) return hit.promise;
+  const promise = apiForPlant(key, '/sync-status');
+  promise.catch(() => { if (_syncStatusShared[key] && _syncStatusShared[key].promise === promise) delete _syncStatusShared[key]; });
+  _syncStatusShared[key] = { at: Date.now(), promise };
+  return promise;
+}
+
 function clearDataCaches() {
+  _syncStatusShared = {};
   PURCHASE_ORDERS_BY_PLANT = {};
   MATERIALS_BY_PLANT = {};
   IMPORT_PO_CACHE = null;
@@ -652,7 +668,7 @@ async function resumeSyncIfRunning(btn) {
   const targetKeys = selectedPlantKeys();
   let running;
   try {
-    const results = await Promise.all(targetKeys.map(key => apiForPlant(key, '/sync-status')));
+    const results = await Promise.all(targetKeys.map(key => fetchSyncStatus(key)));
     running = results.some(r => r.syncInProgress);
   } catch (e) {
     return;  // the badges already show "Sync status unavailable"
@@ -775,6 +791,7 @@ async function _pollSyncUntilDone(btn, targetKeys, baseline, opts) {
       ? 'A Drive sync is already running. The dashboard will update when it finishes.'
       : 'Sync started. This can take a few minutes.');
   }
+  let stalled = false;
   while (Date.now() - startedAt < SYNC_POLL_TIMEOUT_MS) {
     await new Promise(resolve => setTimeout(resolve, SYNC_POLL_INTERVAL_MS));
     let stillRunning;
@@ -793,6 +810,9 @@ async function _pollSyncUntilDone(btn, targetKeys, baseline, opts) {
         targetKeys.some(key => importsStatus.sync[key] && importsStatus.sync[key].syncInProgress) ||
         importsStatus.rodtepInProgress || importsStatus.advanceLicenseInProgress;
       if (baseline) done = stepsDoneSince(baseline, targetKeys, results);
+      // No worker picking the sync up: waiting longer changes nothing.
+      stalled = results.some(r => r.syncStalled);
+      if (stalled) break;
     } catch (e) {
       console.error('Polling sync-status failed:', e);
       continue; // one bad poll shouldn't abandon the wait - try again next tick
@@ -830,7 +850,9 @@ async function _pollSyncUntilDone(btn, targetKeys, baseline, opts) {
   await loadSyncStatus();
   // No alert() any more: the freshness watcher takes over from here and
   // re-renders when the background sync lands, so this is not a failure.
-  const slow = 'The sync is taking longer than usual and is still running. The page will update itself when it finishes.';
+  const slow = stalled
+    ? 'The sync was requested but the background worker has not started it, so it will not run until the worker is running again. Tell IT.'
+    : 'The sync is taking longer than usual and is still running. The page will update itself when it finishes.';
   setRefreshStatus('warn', slow);
   if (typeof announce === 'function') announce(slow);
 }
@@ -936,13 +958,28 @@ async function switchPurchaseType(ptype, opts) {
   return true;
 }
 
+// A sync queued minutes ago with no step started (sync-status's
+// syncStalled, apps/services/sync_trigger.py's sync_stalled()): the
+// background worker is not running, so "syncing..." would be untrue.
+const STALLED_SYNC_BADGE = ' <span class="badge failed" title="A sync was requested but the background worker has not started it. It will not run until the worker (qcluster) is running again - tell IT.">sync not starting</span>';
+
+// Stale-response guard: a fast plant-tab switch could let the earlier
+// plant's badges land last, and their no-PO badges then opened the panel
+// for the plant now selected.
+let syncStatusRequestId = 0;
+
 async function loadSyncStatus() {
   const el = document.getElementById('syncBadges');
+  const myRequestId = ++syncStatusRequestId;
+  const plantAtStart = state.plant;
   try {
     if (isAllPlants()) {
       const perPlant = await Promise.all(PLANT_KEYS.map(async key => {
-        const data = await apiForPlant(key, '/sync-status');
-        const times = Object.values(data.sync).map(r => r.startedAt).filter(Boolean).sort();
+        const data = await fetchSyncStatus(key);
+        // "Synced" means Drive was last read - the PO, MIR and stock steps.
+        // The newest start across EVERY source picked up a hand-run match or
+        // a consumption step, which is not the data being fresh.
+        const times = ['po_csv', 'mir', 'stock'].map(src => data.sync[src] && data.sync[src].startedAt).filter(Boolean).sort();
         // Collect every failed source's own error_detail (not just the
         // fact that something failed) so a hover on the "failed" badge
         // tells an admin WHY, not just that they need to go dig through
@@ -952,18 +989,21 @@ async function loadSyncStatus() {
         return {
           label: PLANTS[key].label,
           latest: times.length ? times[times.length - 1] : null,
-          anyFailed: Object.values(data.sync).some(r => r.status !== 'success'),
+          anyFailed: Object.values(data.sync).some(r => r.status !== 'success' && r.status !== 'partial'),
+          anyPartial: Object.values(data.sync).some(r => r.status === 'partial'),
           failedTitle: failedDetails.join(' | '),
           inProgress: !!data.syncInProgress,
+          stalled: !!data.syncStalled,
           snapshotGapDays: data.snapshotGapDays,
         };
       }));
+      if (myRequestId !== syncStatusRequestId) return;
       el.innerHTML = perPlant.map(p => {
         // syncInProgress (see apps/services/sync_trigger.py) reflects a
         // real Drive sync currently running for that plant - shown even if
         // triggered from another browser/tab/session, since it's read from
         // the shared DB-backed lock, not client-side state.
-        const syncingBadge = p.inProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '';
+        const syncingBadge = p.stalled ? STALLED_SYNC_BADGE : (p.inProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '');
         // snapshotGapDays (Snapshot Pipeline Rebuild, Phase B - see
         // apps/api/routers/_domestic_base.py's make_sync_status()) makes a
         // silently-dead daily snapshot job visible instead of looking
@@ -975,17 +1015,18 @@ async function loadSyncStatus() {
         if (!p.latest) return '<span class="badge stale">' + escapeHtml(p.label) + ': never synced</span>' + syncingBadge + gapBadge;
         const when = new Date(p.latest).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
         const titleAttr = p.anyFailed && p.failedTitle ? ' title="' + escapeHtml(p.failedTitle) + '"' : '';
-        return '<span class="badge ' + (p.anyFailed ? 'failed' : '') + '"' + titleAttr + '>' + escapeHtml(p.label) + ': ' + when + '</span>' + syncingBadge + gapBadge;
+        return '<span class="badge ' + (p.anyFailed ? 'failed' : (p.anyPartial ? 'stale' : '')) + '"' + titleAttr + '>' + escapeHtml(p.label) + ': ' + when + '</span>' + syncingBadge + gapBadge;
       }).join('');
     } else {
-      const data = await apiForPlant(state.plant, '/sync-status');
+      const data = await fetchSyncStatus(plantAtStart);
+      if (myRequestId !== syncStatusRequestId) return;
       // 'match' added 2026-09-04 - previously the matching pass (which
       // actually produces every discrepancy flag/confidence badge on this
       // dashboard) had no SyncRun tracking at all, so a real failure there
       // was invisible here even with every other source showing green -
       // see SyncRun.Source.MATCH's own comment (apps/core/models/).
       const labels = { po_csv: 'PO Updated', mir: 'MIR', stock: 'RM', match: 'Matching' };
-      const syncingBadge = data.syncInProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '';
+      const syncingBadge = data.syncStalled ? STALLED_SYNC_BADGE : (data.syncInProgress ? ' <span class="badge syncing">syncing&hellip;</span>' : '');
       // See the isAllPlants() branch above for what snapshotGapDays means
       // and why .badge.stale is reused rather than adding new CSS.
       const gapBadge = data.snapshotGapDays > 1
@@ -1078,10 +1119,18 @@ async function loadSyncStatus() {
         rmUntrackedBadge = ' <span class="badge stale" title="' + escapeHtml(title) + '">'
           + rmu.total + " not tracked in RM</span>";
       }
-      el.innerHTML = Object.keys(labels).map(src => {
+      // Consumption and the Import PO sync are shown too when they have run:
+      // the All Plants badge turns red on any failed step, so a failed
+      // consumption step read red there and all green here.
+      const optionalLabels = { consumption: 'Consumption', import_po_csv: 'Import POs' };
+      const shown = Object.keys(labels).concat(Object.keys(optionalLabels).filter(src => data.sync[src]));
+      Object.assign(labels, optionalLabels);
+      el.innerHTML = shown.map(src => {
         const run = data.sync[src];
         if (!run) return '<span class="badge stale">' + labels[src] + ': never synced</span>';
-        const cls = run.status === 'success' ? '' : 'failed';
+        // 'partial' is a warning (some rows skipped), not a failure - the
+        // same reading syncOutcome() gives it.
+        const cls = run.status === 'success' ? '' : (run.status === 'partial' ? 'stale' : 'failed');
         const when = new Date(run.startedAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
         // errorDetail (SyncRun.error_detail, apps/core/models/) was
         // always recorded server-side on a sync failure, but never
@@ -1096,7 +1145,7 @@ async function loadSyncStatus() {
       // Wired here, not delegated from #root: this container's innerHTML is
       // rebuilt on every sync-status poll, so a listener bound once to the
       // old nodes would be silently dropped on the next refresh.
-      const noPoPlant = state.plant;
+      const noPoPlant = plantAtStart;
       el.querySelectorAll('[data-nopo-bucket]').forEach(badge => {
         const open = () => openNoPoPanel(noPoPlant, badge.dataset.nopoBucket);
         badge.onclick = open;
@@ -1159,16 +1208,21 @@ let DATA_STAMP = null;        // newest SyncRun timestamp behind what is on scre
 let FRESHNESS_TIMER = null;
 let MANUAL_SYNC_RUNNING = false;  // triggerRealSyncAndRefresh() does its own reload
 
-// The newest SyncRun timestamp across every source of every selected plant.
+// The newest SyncRun timestamp, or non-sync data change, across every
+// selected plant.
 // Returns null rather than throwing on a failed poll - one bad tick must
 // never take the watcher down (same reasoning as pollSyncUntilDone()'s own
 // `continue` on a failed poll).
 async function currentDataStamp() {
   const keys = selectedPlantKeys();
   const stamps = await Promise.all(keys.map(async key => {
-    const data = await apiForPlant(key, '/sync-status');
+    const data = await fetchSyncStatus(key);
+    // Plus dataChangedAt: a colleague's correction, pin or dismissal writes
+    // no SyncRun row, so without it other open dashboards kept showing the
+    // old figures until the next hourly sync (apps/services/data_stamp.py).
     return Object.values(data.sync || {})
       .map(r => r.finishedAt || r.startedAt)
+      .concat([data.dataChangedAt])
       .filter(Boolean)
       .sort()
       .pop() || '';

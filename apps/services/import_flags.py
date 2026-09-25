@@ -53,15 +53,44 @@ def po_shipment_stage(items) -> str:
 
 # ── Qty discrepancy PO vs BOE (spec section 2) ──────────────────────────────
 
-def qty_discrepancy(item) -> tuple[bool, float | None]:
+def boe_totals(items) -> dict:
+    """{id(line): BOE quantity to judge that line's order against} - keyed
+    on object identity so plain test objects work too.
+
+    A SPLIT SHIPMENT is one order line the Imports CSV writes as several rows,
+    one per shipment - and it repeats the whole ordered quantity on every row
+    (Vapi 1000001528: three rows each "64,800 ordered", each clearing 21,600).
+    Judged row by row, each read 67% short of its order and, once received,
+    "Delivered" while two-thirds of the order was still at sea. Rows are one
+    split order line when they share the item_id and the ordered quantity,
+    there are at least two, and each cleared less than that quantity; their
+    BOE quantities are summed. Every other line judges on its own BOE qty."""
+    groups: dict = {}
+    for item in items:
+        groups.setdefault((item.item_id or "", item.qty_as_per_po), []).append(item)
+    totals = {}
+    for (_item_id, ordered), group in groups.items():
+        split = (
+            len(group) > 1 and ordered is not None
+            and all(i.qty_as_per_boe is not None and i.qty_as_per_boe < ordered for i in group)
+        )
+        for item in group:
+            totals[id(item)] = sum(i.qty_as_per_boe for i in group) if split else item.qty_as_per_boe
+    return totals
+
+
+def qty_discrepancy(item, boe_total=None) -> tuple[bool, float | None]:
     """Returns (is_discrepancy, pct). QTY (As Per BOE) missing is NOT a
-    discrepancy - it means "not yet cleared", not a mismatch."""
-    if item.qty_as_per_boe is None:
+    discrepancy - it means "not yet cleared", not a mismatch. `boe_total` is
+    boe_totals()'s figure for the line (a split shipment's summed BOE qty);
+    without it the line's own BOE qty is used."""
+    shipped = item.qty_as_per_boe if boe_total is None else boe_total
+    if shipped is None:
         return False, None
     if item.qty_as_per_po is None or item.qty_as_per_po == 0:
         return False, None
-    is_mismatch = item.qty_as_per_boe != item.qty_as_per_po
-    pct = float((item.qty_as_per_boe - item.qty_as_per_po) / item.qty_as_per_po * 100)
+    is_mismatch = shipped != item.qty_as_per_po
+    pct = float((shipped - item.qty_as_per_po) / item.qty_as_per_po * 100)
     return is_mismatch, pct
 
 
@@ -69,7 +98,8 @@ def po_has_qty_discrepancy(items) -> bool:
     """PO-level rollup: true if any item's BOE quantity disagrees with its
     ordered quantity - drives the Import KPI row's "Qty Discrepancies (BOE
     vs MIR)" style cards."""
-    return any(qty_discrepancy(i)[0] for i in items)
+    totals = boe_totals(items)
+    return any(qty_discrepancy(i, totals.get(id(i)))[0] for i in items)
 
 
 # ── MIR receipt (the same rule Domestic's flags.js uses) ────────────────────
@@ -91,13 +121,23 @@ def item_received(item) -> bool:
     return _live_match(item) is not None
 
 
-def item_fully_received(item) -> bool:
+def item_fully_received(item, boe_total=None) -> bool:
     """Arrived and not short. Mirrors flags.js's lineItemFullyReceived():
     an over-delivered line still counts as received, a short one does not,
     and a line whose direction could not be measured (qty_over_delivered
-    None) is not invented as short."""
+    None) is not invented as short.
+
+    And the ORDER is covered, not only what has cleared: the match compares
+    MIR against the BOE quantity, so a line that shipped 252,000 of 504,000
+    KG and received all 252,000 read "Delivered" and could never be Overdue
+    (1000001450, 2026-09-25). `boe_total` is boe_totals()'s figure; a line
+    whose BOE total is below its ordered quantity is still to come."""
     match = _live_match(item)
     if match is None:
+        return False
+    shipped = item.qty_as_per_boe if boe_total is None else boe_total
+    ordered = getattr(item, "qty_as_per_po", None)
+    if shipped is not None and ordered and shipped < ordered:
         return False
     qty_diff = getattr(match, "qty_diff_pct", None)
     return not (qty_diff is not None and qty_diff > 0 and getattr(match, "qty_over_delivered", None) is False)
@@ -106,7 +146,8 @@ def item_fully_received(item) -> bool:
 def material_inwarded(items) -> bool:
     """Every line fully received in MIR - the Import "Material Inwarded" KPI,
     same definition as Domestic's Received status."""
-    return bool(items) and all(item_fully_received(i) for i in items)
+    totals = boe_totals(items)
+    return bool(items) and all(item_fully_received(i, totals.get(id(i))) for i in items)
 
 
 # ── Delivery date status (spec section 2) ───────────────────────────────────
@@ -117,14 +158,14 @@ STATUS_ON_ORDER = "On Order"
 STATUS_DELIVERED = "Delivered"
 
 
-def delivery_date_status(item, today: datetime.date) -> str:
+def delivery_date_status(item, today: datetime.date, boe_total=None) -> str:
     """"Delivered" once the line is fully received in MIR; otherwise
     Unknown/Overdue/On Order from delivery_date. Customs clearance alone is
     not delivery: a BOE says the goods cleared the port, not that they
     reached the plant, and measured 2026-09-25 on Vapi 15 of 38 cleared
     import POs had no MIR receipt at all - they could never read Overdue
     while clearance counted as delivered."""
-    if item_fully_received(item):
+    if item_fully_received(item, boe_total):
         return STATUS_DELIVERED
     if item.delivery_date is None:
         return STATUS_UNKNOWN
@@ -136,7 +177,8 @@ def po_delivery_date_status(items, today: datetime.date) -> str:
     own item list: any item still Overdue makes the whole PO "Overdue" to
     chase, else any item Unknown makes it worth flagging, else On Order beats
     Delivered (a PO isn't done until every item is), else Delivered."""
-    statuses = {delivery_date_status(i, today) for i in items}
+    totals = boe_totals(items)
+    statuses = {delivery_date_status(i, today, totals.get(id(i))) for i in items}
     if STATUS_OVERDUE in statuses:
         return STATUS_OVERDUE
     if STATUS_UNKNOWN in statuses:
@@ -154,7 +196,8 @@ def partial_delivery(items) -> bool:
     Partial Delivered status. A BOE quantity below the ordered quantity is a
     partial SHIPMENT, not a partial delivery, and is already counted by the
     "Qty Mismatches (PO vs BOE)" card via qty_discrepancy()."""
-    return any(item_received(i) for i in items) and not all(item_fully_received(i) for i in items)
+    totals = boe_totals(items)
+    return any(item_received(i) for i in items) and not all(item_fully_received(i, totals.get(id(i))) for i in items)
 
 
 # ── Data quality flags F1-F7 (spec section 4) ───────────────────────────────
@@ -216,8 +259,21 @@ def po_flags(po_number: str, items) -> list[dict]:
     """All flags for a PO: every item's own flags, plus F3 (needs siblings
     under the same PO+BOE to compare completeness across)."""
     flags = []
-    for item in items:
-        flags.extend(item_flags(item))
+    # Each flag's dismissal key. "code:item_id" as before where the item_id
+    # names one line - so every dismissal already stored keeps applying - and
+    # "code:item_id#<position>" where the order repeats an item_id across
+    # shipment lines (12 Vapi orders do), since dismissing one line's flag
+    # used to dismiss it on all of them. Position is the line's index by pk,
+    # the same numbering as matching_core.line_item_positions().
+    ordered = sorted(items, key=lambda i: getattr(i, "id", 0) or 0)
+    id_counts: dict = {}
+    for item in ordered:
+        id_counts[item.item_id] = id_counts.get(item.item_id, 0) + 1
+    for n, item in enumerate(ordered):
+        for f in item_flags(item):
+            f["item_ref"] = str(n)
+            f["flag_key"] = f"{f['code']}:{item.item_id or ''}" + (f"#{n}" if id_counts[item.item_id] > 1 else "")
+            flags.append(f)
 
     by_boe: dict[str, list] = {}
     for item in items:
@@ -233,7 +289,7 @@ def po_flags(po_number: str, items) -> list[dict]:
         completeness = {_complete(i) for i in group}
         if len(completeness) > 1:
             flags.append({
-                "code": "F3", "item_id": None,
+                "code": "F3", "item_id": None, "item_ref": None, "flag_key": "F3:",
                 "message": f"PO {po_number}, BOE {boe_number}: some items have Tax Type/Exchange Rate/"
                            f"Total Inclusive Value filled and others don't, for the same BOE.",
                 "fields": ["Tax Type", "Exchange Rate", "Total Inclusive Value"],

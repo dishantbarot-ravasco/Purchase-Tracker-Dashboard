@@ -61,6 +61,9 @@ const NO_PO_BUCKET_HELP = {
 
 /** Opens the panel for one plant, on `bucket` (defaults to No PO number). */
 async function openNoPoPanel(plantKey, bucket) {
+  // The modal stale-response guard every opener that awaits a fetch needs
+  // (CLAUDE.md): a slower earlier open must not overwrite a newer modal.
+  const myModalRequestId = ++modalRequestId;
   const backdrop = document.getElementById('modalBackdrop');
   const body = document.getElementById('modalBody');
   backdrop.classList.add('open');
@@ -78,10 +81,12 @@ async function openNoPoPanel(plantKey, bucket) {
   try {
     data = await apiForPlant(plantKey, '/mir-without-po');
   } catch (e) {
+    if (myModalRequestId !== modalRequestId) return;
     body.innerHTML = '<div class="modal-head"><div><h2>' + title + '</h2></div><span class="close-btn">&times;</span></div>'
       + '<div class="field-block full-width">' + escapeHtml(e.message || 'Could not load this list right now.') + '</div>';
     return;
   }
+  if (myModalRequestId !== modalRequestId) return;
 
   NO_PO_CTX = {
     plantKey: plantKey,
@@ -169,7 +174,11 @@ function renderNoPoPanel() {
         + '<input type="search" id="noPoSearch" placeholder="Filter by vendor, material, PO or MIR number"'
         + ' aria-label="Filter this list" value="' + escapeHtml(ctx.query) + '">'
         + '<button id="noPoExportBtn">Download this list (CSV)</button>'
-        + '<span class="modal-meta">' + rows.length + ' shown &middot; ' + formatInr(active.value) + '</span>'
+        // The value of the rows SHOWN, beside their count - the bucket's
+        // total next to a filtered count read as the filtered rows' value.
+        + '<span class="modal-meta">' + rows.length + ' shown &middot; '
+          + formatInr(rows.reduce((sum, r) => sum + (r.value == null ? 0 : Number(r.value)), 0))
+          + (ctx.query ? ' (of ' + formatInr(active.value) + ' in this tab)' : '') + '</span>'
       + '</div>'
       + '<table class="items-table"><thead><tr>'
         + '<th>MIR No</th><th>MIR Date</th><th>Vendor</th><th>Material</th><th>Qty</th>'

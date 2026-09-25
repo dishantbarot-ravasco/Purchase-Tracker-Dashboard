@@ -51,6 +51,7 @@ urlpatterns = [
     path("auth/admin-overview", admin_overview_views.admin_overview, name="admin-overview"),
 
     path("purchase-orders", hrs_views.purchase_orders, name="hrs-purchase-orders"),
+    path("purchase-orders/summary", hrs_views.purchase_order_summary, name="hrs-purchase-order-summary"),
     path("purchase-orders/<str:po_number>/fields", hrs_views.correct_field, name="hrs-correct-field"),
     path("purchase-orders/<str:po_number>/mir-candidates", hrs_views.mir_candidates, name="hrs-mir-candidates"),
     path("purchase-orders/<str:po_number>/mir-match", hrs_views.set_mir_match, name="hrs-set-mir-match"),
@@ -92,6 +93,7 @@ urlpatterns = [
     # so every plant's URLs stay trivially cacheable/greppable/bookmarkable
     # on their own.
     path("achhad/purchase-orders", achhad_views.purchase_orders, name="achhad-purchase-orders"),
+    path("achhad/purchase-orders/summary", achhad_views.purchase_order_summary, name="achhad-purchase-order-summary"),
     path("achhad/purchase-orders/<str:po_number>/fields", achhad_views.correct_field, name="achhad-correct-field"),
     path("achhad/purchase-orders/<str:po_number>/mir-candidates", achhad_views.mir_candidates, name="achhad-mir-candidates"),
     path("achhad/purchase-orders/<str:po_number>/mir-match", achhad_views.set_mir_match, name="achhad-set-mir-match"),
@@ -108,6 +110,7 @@ urlpatterns = [
     path("achhad/matches/mir-stock/<int:match_id>/dismiss", achhad_views.dismiss_mir_stock_match, name="achhad-dismiss-mir-stock"),
     path("achhad/purchase-orders/<str:po_number>/flags/dismiss", achhad_views.dismiss_flag, name="achhad-dismiss-flag"),
     path("vapi/purchase-orders", vapi_views.purchase_orders, name="vapi-purchase-orders"),
+    path("vapi/purchase-orders/summary", vapi_views.purchase_order_summary, name="vapi-purchase-order-summary"),
     path("vapi/purchase-orders/<str:po_number>/fields", vapi_views.correct_field, name="vapi-correct-field"),
     path("vapi/purchase-orders/<str:po_number>/mir-candidates", vapi_views.mir_candidates, name="vapi-mir-candidates"),
     path("vapi/purchase-orders/<str:po_number>/mir-match", vapi_views.set_mir_match, name="vapi-set-mir-match"),

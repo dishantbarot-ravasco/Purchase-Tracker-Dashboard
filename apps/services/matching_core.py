@@ -143,6 +143,8 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from difflib import SequenceMatcher
 from functools import lru_cache
+
+from apps.services import data_stamp
 from typing import Callable, NamedTuple, Optional
 
 from django.db import transaction
@@ -1579,6 +1581,15 @@ def _boe_key(value) -> str:
     return text if len(text) >= 5 else ""
 
 
+def _unlike_named_units(uom_a, uom_b) -> bool:
+    """Both sides name a unit, at least one is not in normalize_uom()'s table,
+    and they are not the same word - so the quantities cannot be compared.
+    Shared by _uom_adjust() and received_against_line()."""
+    a_key = (uom_a or "").strip().upper().rstrip(".")
+    b_key = (uom_b or "").strip().upper().rstrip(".")
+    return bool(a_key and b_key and a_key != b_key)
+
+
 def _uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b):
     """Fix 2.C: converts both sides' qty/rate to a common base unit before
     scoring/diffing, so a PO in MT against a MIR in KG doesn't collapse a
@@ -1590,9 +1601,11 @@ def _uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b):
     Returns (qty_a, qty_b, rate_a, rate_b, uom_mismatch):
       - Both units recognized, same family (e.g. KG vs MT): values converted
         to that family's base unit.
-      - Either unit blank/unrecognized: values passed through unconverted -
-        normalize_uom()'s own docstring explains why guessing is worse than
-        not converting.
+      - Either unit blank, or both the same unrecognized word: values passed
+        through unconverted - normalize_uom()'s own docstring explains why
+        guessing is worse than not converting.
+      - Both named, one unrecognized, and different words: not comparable,
+        uom_mismatch=True, exactly as for two different families.
       - Both units recognized but different families (e.g. mass vs count):
         qty/rate returned as (None, None, None, None) so the caller scores/
         diffs them as "not comparable" rather than a nonsense percentage,
@@ -1600,6 +1613,13 @@ def _uom_adjust(qty_a, uom_a, qty_b, uom_b, rate_a, rate_b):
     family_a, factor_a = normalize_uom(uom_a)
     family_b, factor_b = normalize_uom(uom_b)
     if family_a is None or family_b is None:
+        # Both sides NAME a unit and they are not the same word: comparing the
+        # raw numbers would be comparing unlike things - 15 ROLLS against
+        # 1,889 KG read as a 9,999% qty mismatch on 29 HRS lines before ROLLS
+        # was mapped. Blank on either side is still passed through: Achhad's
+        # stock sheet leaves UOM blank on most lots.
+        if _unlike_named_units(uom_a, uom_b):
+            return None, None, None, None, True
         return qty_a, qty_b, rate_a, rate_b, False
     if family_a != family_b:
         return None, None, None, None, True
@@ -1634,7 +1654,7 @@ def received_against_line(config: _MatchConfig, po_uom: str, mir_rows: list) -> 
         if mir.qty is None:
             qty_po = None
         elif family_po is None or family_mir is None:
-            qty_po = Decimal(mir.qty)
+            qty_po = None if _unlike_named_units(po_uom, mir.uom) else Decimal(mir.qty)
         elif family_po != family_mir:
             qty_po = None
         else:
@@ -2065,8 +2085,9 @@ def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | 
     this MUST run before scoring/diffing against MIR, not be optional.
       - rate: net_price * exchange_rate. Falls back to bare net_price if
         exchange_rate is missing.
-      - value: net_value * exchange_rate, falling back to the bare
-        net_value when exchange_rate is missing. Pre-tax, like every other
+      - value: net_price * qty_as_per_boe * exchange_rate (what cleared),
+        else net_value * exchange_rate for an uncleared line, each falling
+        back to the bare figure when exchange_rate is missing. Pre-tax, like every other
         value comparison: MIR's value (net / taxable_value) excludes duty.
         total_inclusive_value is the landed figure WITH customs duty, and
         compared here it read every import short by roughly the duty rate -
@@ -2075,6 +2096,14 @@ def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | 
         has its own comparison, the final-value check (_import_matchable()
         passes it as total_inclusive_value)."""
     exchange_rate = import_line_item.exchange_rate
+    # No rate on a foreign-currency order: there is no INR figure, and the
+    # bare USD price set against MIR's INR one read as a 9,560% "rate
+    # mismatch" (1000001318, 2026-09-25). Not comparable instead. An INR
+    # order needs no rate, so its bare figures still stand.
+    po = getattr(import_line_item, "purchase_order", None)
+    currency = (getattr(po, "currency", "") or "").strip().upper()
+    if exchange_rate is None and currency and currency != "INR":
+        return None, None
     if import_line_item.net_price is None:
         rate_inr = None
     elif exchange_rate is not None:
@@ -2082,10 +2111,21 @@ def _import_rate_value_inr(import_line_item) -> tuple[Decimal | None, Decimal | 
     else:
         rate_inr = import_line_item.net_price
 
-    if import_line_item.net_value is not None and exchange_rate is not None:
-        value_inr = import_line_item.net_value * exchange_rate
+    # The value of what CLEARED - net price x BOE quantity - where both are
+    # known, since that is what one MIR receipt books. net_value is the
+    # whole order line, so a part or split shipment read a false gap the
+    # size of the unshipped part: 1000001560's ordered 5.04 cr against a
+    # 2.52 cr receipt, "Net Value Mismatch" on 25 of 42 import POs
+    # (2026-09-25). net_value stays the fallback for an uncleared line.
+    boe_qty = getattr(import_line_item, "qty_as_per_boe", None)
+    if import_line_item.net_price is not None and boe_qty is not None:
+        base_value = import_line_item.net_price * boe_qty
     else:
-        value_inr = import_line_item.net_value
+        base_value = import_line_item.net_value
+    if base_value is not None and exchange_rate is not None:
+        value_inr = base_value * exchange_rate
+    else:
+        value_inr = base_value
 
     return rate_inr, value_inr
 
@@ -2232,6 +2272,64 @@ def _exchange_rate_explains(config: _MatchConfig, import_line_item, mir_rows: li
     return implied.quantize(Decimal("0.0001")), bool(on_grid and differs and plausible)
 
 
+_FABRIC_SERIES = re.compile(r"\b(EEH|EE|NN|EP)\s*-?\s*(\d{2,4})", re.IGNORECASE)
+_FABRIC_WIDTH_CM = re.compile(r"(\d{2,3}(?:\.\d+)?)\s*CM\b", re.IGNORECASE)
+
+
+@lru_cache(maxsize=8192)
+def _fabric_spec(text: str) -> tuple:
+    """(series+grade, width in whole cm) of a conveyor-belt fabric
+    description, each None when absent: "NN-200 fabric roll, width 67cm" ->
+    ("NN200", 67); MIR's "EE250 142CM" -> ("EE250", 142).
+
+    _grade_codes() cannot read these - it takes "67cm" as the codes {"7c",
+    "2m"} - so on Vapi's multi-line fabric orders nothing stopped a PO-cited
+    receipt for one width being handed to a sibling line of another: an
+    NN-100 102 cm line of 50 KG held an NN250 163 cm receipt of 1,709 KG
+    (1000001462, measured 2026-09-25)."""
+    t = text or ""
+    series = _FABRIC_SERIES.search(t)
+    width = _FABRIC_WIDTH_CM.search(t)
+    return (
+        # int(): "EE-080" on the PO and "EE80" in MIR are one grade.
+        (series.group(1).upper() + str(int(series.group(2)))) if series else None,
+        round(float(width.group(1))) if width else None,
+    )
+
+
+def _fabric_spec_contradicts(a: tuple, b: tuple) -> bool:
+    """Both sides name a series+grade and they differ, or both name a width
+    more than 1 cm apart. Silence on either side is no evidence."""
+    if a[0] and b[0] and a[0] != b[0]:
+        return True
+    return bool(a[1] and b[1] and abs(a[1] - b[1]) > 1)
+
+
+def _receipts_match_lines_exactly(lines, rows) -> bool:
+    """Every line's BOE quantity is met, exactly, by a receipt of its own
+    (distinct receipts, units converted) - the evidence that lets a BOE
+    shared across different Bills of Lading be trusted after all. The copy
+    error it guards against (1000001560: the second shipment carrying the
+    first's BOE in the CSV) never has that; 1000001321 does - MIR23/07's two
+    rows cite its BOE with exactly its two lines' 14,680 and 1,320 KG, yet
+    the line pair sat unmatched because its lines sit on two Bills of
+    Lading (2026-09-25)."""
+    if len(rows) < len(lines):
+        return False
+    free = list(rows)
+    for line in lines:
+        hit = None
+        for row in free:
+            qa, qb, _ra, _rb, clash = _uom_adjust(line.qty_as_per_boe, line.uom, row.qty, row.uom, None, None)
+            if not clash and qa is not None and qb is not None and qa == qb:
+                hit = row
+                break
+        if hit is None:
+            return False
+        free.remove(hit)
+    return True
+
+
 def _pin_defers_to_boe(config: _MatchConfig, import_line_item, rows) -> bool:
     """Whether a manual pin on this import line names a receipt booked
     under the line's own Bill of Entry - every row of the pinned MIR
@@ -2299,9 +2397,9 @@ def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys,
     settled: dict = {}
     for boe, lines in lines_by_boe.items():
         bills = {(item.bill_of_lading_number or "").strip() for item in lines} - {""}
-        if len(bills) > 1:
-            continue
         rows = sorted(rows_by_boe.get(boe, []), key=lambda m: m.id)
+        if len(bills) > 1 and not _receipts_match_lines_exactly(lines, rows):
+            continue
         evidence: dict = {}  # (key, mir id) -> _Candidate, identified pairs only
         for item in lines:
             key = ("import", item.id)
@@ -3536,7 +3634,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     # _po_number_group_rows() and the PO-number settlement below.
     po_cited: dict[tuple[str, int], list] = {}
 
-    def collect(kind, item, matchable, po):
+    def collect(kind, item, matchable, po, multi_line=False):
         items_by_key[(kind, item.id)] = matchable
         candidates = _candidate_mir_entries(config, po.vendor_name, index=mir_index, po_number=po.po_number)
         pool, found = _identification_pool(
@@ -3544,6 +3642,18 @@ def run_full_match(config: _MatchConfig) -> dict:
             scorer=scorer, po_created_date=po.po_created_date, known_pos=known_pos,
             vendor_name=po.vendor_name,
         )
+        if multi_line:
+            # On an order with several lines every receipt citing it is
+            # PO-number-confirmed for EVERY line, so the PO number cannot
+            # say which line a receipt fills - and a fabric receipt whose
+            # series/grade or width disagrees with this line belongs to a
+            # sibling. See _fabric_spec_contradicts().
+            spec = _fabric_spec(item.description)
+            if spec != (None, None):
+                drop = {i for i, c in found.items() if _fabric_spec_contradicts(spec, _fabric_spec(c.mir.material_description))}
+                if drop:
+                    found = {i: c for i, c in found.items() if i not in drop}
+                    pool = [c for c in pool if c.id not in drop]
         for mir_id, candidate in found.items():
             candidates_by_key[(kind, item.id, mir_id)] = candidate
         group = _shipment_group(config, matchable, pool)
@@ -3565,13 +3675,15 @@ def run_full_match(config: _MatchConfig) -> dict:
         edges[key] = row_edges[key]
 
     for item in po_items:
-        collect("po", item, _po_matchable(item, item_counts[item.purchase_order_id] == 1), item.purchase_order)
+        collect("po", item, _po_matchable(item, item_counts[item.purchase_order_id] == 1), item.purchase_order,
+                multi_line=item_counts[item.purchase_order_id] > 1)
 
     for item in import_items:
         collect(
             "import", item,
             _import_matchable(config, item, import_item_counts[item.purchase_order_id] == 1),
             item.purchase_order,
+            multi_line=import_item_counts[item.purchase_order_id] > 1,
         )
 
     # A grouped edge stands for several MIR rows at once, which plain
@@ -4000,6 +4112,9 @@ def run_full_match(config: _MatchConfig) -> dict:
     stale_stock_match_ids = existing_stock_match_ids - kept_stock_match_ids
     if stale_stock_match_ids:
         config.mir_stock_match_model.objects.filter(pk__in=stale_stock_match_ids).delete()
+
+    # Tells every open dashboard its data moved - see apps/services/data_stamp.py.
+    data_stamp.touch(config.syncrun_plant)
 
     return {
         "po_line_items_matched": po_matched,

@@ -31,6 +31,12 @@ class ImportPOCorrection(models.Model):
         max_length=50, blank=True,
         help_text="Blank for a PO-level field correction; set for a line-item field correction.",
     )
+    # The line's position in its PO (matching_core.line_item_positions()),
+    # which is what actually addresses it: 12 Vapi orders repeat one item_id
+    # across their shipment lines, and a correction keyed on item_id alone
+    # wrote line 2's value onto line 1 (2026-09-25). Blank on PO-level rows
+    # and on rows written before the field existed.
+    item_ref = models.CharField(max_length=50, blank=True)
     field_name = models.CharField(max_length=100)
     old_value = models.TextField(blank=True)
     new_value = models.TextField(blank=True)

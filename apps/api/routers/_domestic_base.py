@@ -43,6 +43,7 @@ from apps.core.models import (
     MaterialCategoryReference,
     MaterialCorrection,
 )
+from apps.services import data_stamp
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
 # line_item_positions() is the matcher's OWN numbering - imported rather
@@ -59,7 +60,7 @@ from apps.services.no_po_vendors import no_po_vendor_summary, purchases_without_
 from apps.services.rm_untracked import rm_untracked_summary
 from apps.services.parsers.common import normalize_material
 from apps.services.consumption_periods import MaterialRates, consumption_rates, days_of_cover
-from apps.services.sync_trigger import is_sync_in_progress, trigger_plant_sync
+from apps.services.sync_trigger import is_sync_in_progress, sync_stalled, trigger_plant_sync
 from apps.services.validation import is_valid_email, is_valid_gstin
 
 # Identical across all three plants (confirmed byte-for-byte in the prior
@@ -705,6 +706,24 @@ def _lot_dict(cfg: _PlantConfig, lot, consumption_by_material=None, category_ref
 # `correct_field = make_correct_field(HRS_CONFIG)`), so urls.py needs no
 # changes.
 
+def make_purchase_order_summary(cfg: _PlantConfig):
+    """GET <prefix>/purchase-orders/summary - each active PO's vendor and
+    created date, nothing else: all Home's and Admin's four KPI cards need
+    (shared.js's loadKpis()). They used to download every plant's full PO
+    list for them, about 1.9 MB with line items and matches, to count rows."""
+    @api_view(["GET"])
+    def purchase_order_summary(request):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant's purchase orders."}, status=403)
+        rows = cfg.po_model.objects.filter(is_active=True).values_list("vendor_name", "po_created_date")
+        return Response({"purchaseOrders": [
+            {"vendorName": vendor or "", "createdDate": created.isoformat() if created else None}
+            for vendor, created in rows
+        ]})
+
+    return purchase_order_summary
+
+
 def make_purchase_orders(cfg: _PlantConfig):
     @api_view(["GET"])
     def purchase_orders(request):
@@ -816,6 +835,7 @@ def make_correct_field(cfg: _PlantConfig):
         warning = _field_warning(field_name, new_value)
         if warning:
             response["warning"] = warning
+        data_stamp.touch(cfg.syncrun_plant)
         return Response(response)
 
     return correct_field
@@ -929,6 +949,7 @@ def make_correct_material_field(cfg: _PlantConfig):
         if field_name in cfg.material_rematch_trigger_fields:
             cfg.run_full_match()
 
+        data_stamp.touch(cfg.syncrun_plant)
         return Response({"status": "ok", "field": field_name, "value": _serialize(new_value)})
 
     return correct_material_field
@@ -1297,6 +1318,9 @@ def make_sync_status(cfg: _PlantConfig):
 
         resp = Response({
             "sync": latest_by_source,
+            # A correction, pin or dismissal since the last sync - part of the
+            # freshness watcher's stamp (apps/services/data_stamp.py).
+            "dataChangedAt": data_stamp.read(cfg.syncrun_plant),
             "mirEntryCount": cfg.mir_model.objects.filter(is_active=True).count(),
             # No-PO vendors, 2026-09-17. The registry in parsers/common.py
             # drops these vendors' MIR rows from the PO<->MIR candidate pool
@@ -1352,6 +1376,8 @@ def make_sync_status(cfg: _PlantConfig):
             # `manage.py report_retired_pos`.
             "retiredPoCount": cfg.po_model.objects.filter(is_active=False).count(),
             "syncInProgress": is_sync_in_progress(cfg.key),
+            # Queued but no step started for minutes: the worker is down.
+            "syncStalled": sync_stalled(cfg.key, cfg.syncrun_plant),
             "lastSnapshotDate": last_snapshot_date.isoformat() if last_snapshot_date else None,
             "snapshotGapDays": snapshot_gap_days,
         })
@@ -1396,6 +1422,7 @@ def make_dismiss_po_mir_match(cfg: _PlantConfig):
         match = dismiss_match(cfg.po_mir_match_model, match_id, request.user, dismissed, reason)
         if not match:
             return Response({"error": "Match not found."}, status=404)
+        data_stamp.touch(cfg.syncrun_plant)
         return Response({
             "status": "ok",
             "matchId": match.id,
@@ -1417,6 +1444,7 @@ def make_dismiss_mir_stock_match(cfg: _PlantConfig):
         match = dismiss_match(cfg.mir_stock_match_model, match_id, request.user, dismissed, reason)
         if not match:
             return Response({"error": "Match not found."}, status=404)
+        data_stamp.touch(cfg.syncrun_plant)
         return Response({
             "status": "ok",
             "matchId": match.id,
@@ -1544,6 +1572,33 @@ def _item_refs_for_pos(cfg, po_ids):
     return {item_id: ref for item_id, (_po, ref, _desc) in line_item_positions(items).items()}
 
 
+_CANDIDATE_LIMIT = 80
+
+
+def _candidate_rows(mir_model, match_model, po, q):
+    """The MIR rows a picker lists for `po`: a search when `q` is given,
+    otherwise this order's own receipts FIRST - rows whose PO column names it
+    and every document its lines are matched to now - then the most recent
+    rows to fill the list. Shared with imports_views.mir_candidates().
+
+    The default used to be one query, "names this PO or has a date", newest
+    first, cut at 80 - and nearly every row has a date, so the order's own
+    receipts sank below the 80 newest: the current MIR was missing from the
+    default list on 162 of 190 HRS lines (2026-09-25)."""
+    rows = mir_model.objects.filter(is_active=True)
+    if q:
+        return list(rows.filter(
+            Q(mir_no__icontains=q) | Q(party_name__icontains=q) | Q(material_description__icontains=q)
+        ).order_by("-mir_date", "-id")[:_CANDIDATE_LIMIT])
+    held = set()
+    for m in match_model.objects.filter(po_line_item__purchase_order=po).select_related("mir_entry").prefetch_related("group_entries"):
+        held.update(r.mir_no for r in [m.mir_entry, *m.group_entries.all()] if r.mir_no)
+    own = list(rows.filter(Q(po_number_raw__icontains=po.po_number) | Q(mir_no__in=held)).order_by("-mir_date", "-id"))
+    seen = {r.id for r in own}
+    rest = [r for r in rows.exclude(id__in=seen).order_by("-mir_date", "-id")[:_CANDIDATE_LIMIT]]
+    return (own + rest)[:max(_CANDIDATE_LIMIT, len(own))]
+
+
 def make_mir_candidates(cfg: _PlantConfig):
     """GET .../purchase-orders/<po>/mir-candidates?q=<text>&itemRef=<n>
 
@@ -1562,17 +1617,7 @@ def make_mir_candidates(cfg: _PlantConfig):
             return Response({"error": "Purchase order not found."}, status=404)
 
         q = (request.query_params.get("q") or "").strip()
-        rows = cfg.mir_model.objects.filter(is_active=True)
-        if q:
-            rows = rows.filter(
-                Q(mir_no__icontains=q) | Q(party_name__icontains=q) | Q(material_description__icontains=q)
-            )
-        else:
-            # No search text: the rows that already mention this PO number,
-            # then recent ones. A blank picker listing the whole register in
-            # arbitrary order would be useless on a 1,489-row MIR file.
-            rows = rows.filter(Q(po_number_raw__icontains=po_number) | Q(mir_date__isnull=False))
-        rows = list(rows.order_by("-mir_date", "-id")[:80])
+        rows = _candidate_rows(cfg.mir_model, cfg.po_mir_match_model, po, q)
 
         claims = _claims_for_mir_numbers(cfg, {r.mir_no for r in rows if r.mir_no})
         # One entry per MIR NUMBER, not per row - a pin names the document
@@ -1615,7 +1660,7 @@ def make_set_mir_match(cfg: _PlantConfig):
         item_ref = str(request.data.get("itemRef") or "").strip()
         mir_no = (request.data.get("mirNo") or "").strip()
         reason = (request.data.get("reason") or "").strip()
-        clear = bool(request.data.get("clear"))
+        clear = _request_bool(request.data.get("clear"), False)
         # "Keep both": use the document without taking it from its current
         # holder - see ManualMirMatch.shared. Meaningless without a mirNo.
         shared = _request_bool(request.data.get("share"), False) and bool(mir_no)

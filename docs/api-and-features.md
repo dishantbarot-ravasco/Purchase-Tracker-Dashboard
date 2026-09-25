@@ -404,6 +404,15 @@ order (see above), so this suppression is now a second guard rather than the onl
 
 ### Inline "Edit Everywhere"
 
+**Import lines are addressed by position (2026-09-25).** The Import modal sends `itemId: "#<itemRef>"`;
+`_resolve_import_line()` resolves it by position (the same ref pins use) and records it on the
+correction (`ImportPOCorrection.item_ref`, migration `0062`), so revert hits the same line. A bare
+item_id is still accepted when it names exactly one line, and refused with a 400 when it names
+several: 12 Vapi orders repeat an item_id across shipment lines, and `.first()` wrote line 2's
+exchange rate onto line 1. `exchange_rate`, `boe_number`, `bill_of_lading_number` and
+`total_inclusive_value` are re-match triggers too - the matcher converts, pairs, gates and checks the
+landed rate with them.
+
 Every PO detail modal (Domestic and Import) and the Raw Material Analysis modal have per-field
 pencil-to-edit corrections. **This mutates the real row and writes an append-only audit row - it is not
 a resolve-at-read overrides table.** A spec described the latter, but Import's edit feature had already
@@ -497,7 +506,11 @@ pieces - `_mir_row_dict()`, `_claims_for_mir_numbers()`, `_held_mir_numbers()`, 
 imported by the imports router rather than copied; the views themselves are not factored together (one
 is a `_PlantConfig` factory producing three views, the other a single view for all three plants).
 
-**Endpoints.** `GET .../mir-candidates?q=` returns up to 80 active MIR rows, newest first, collapsed to
+**Endpoints.** `GET .../mir-candidates?q=` returns up to 80 active MIR rows (`_candidate_rows()`,
+shared by both routers). With no `q` the order's OWN receipts come first - rows whose PO column names
+it and every document its lines are matched to - then the newest rows fill the list; a plain "names
+this PO or has a date" cut at 80 left the current MIR out of the default list on 162 of 190 HRS lines.
+Results are collapsed to
 **one entry per MIR number** with `rowCount`, `sheetRows` (every Excel row of that document) and
 `claimedBy`. With no `q` it returns rows whose PO column mentions this PO plus recent ones; `q` filters
 MIR number, party or material. The Import picker also sends `itemRef`, so the endpoint can mark a
@@ -713,6 +726,10 @@ seconds, well under gunicorn's 30s timeout), so awaiting them in sequence made t
 download before starting the other. Their response is `{"status": "ok"}` (200), not 202.
 
 ### Licences: the import side was in the CSV all along (2026-09-22)
+
+**Citations are plant-scoped (2026-09-25).** The RoDTEP and Advance Licence ledgers are company-wide,
+but each citation names an import PO, its plant and its landed value, so `_license_citations()` keeps
+only the plants the caller may read (`user_can_access_plant()`).
 
 Both panels were built (2026-09-09) believing the import side of a licence was not knowable from any
 synced source. `RodtepScrollEntry`'s docstring still says *"Drive has no structured link between a script
@@ -1041,9 +1058,28 @@ notes. Only reviews of existing matches are ever scored, so this is not recall o
 and its three audit columns on any `*POMirMatch` / `*MirStockMatch`, returning the row or `None`.
 Clearing wipes the audit columns. Does no plant check itself; callers do.
 
+### Minor API rules from the 2026-09-25 audit
+
+- `GET <prefix>/purchase-orders/summary` (`make_purchase_order_summary()`) - each active PO's vendor
+  and created date only, for Home's and Admin's KPI cards; plant-scoped like the full list.
+- The pin endpoints read `clear` with `_request_bool()`, like every other body flag.
+- The import match payload carries `dismissedBy` (prefetched with the match).
+- The import flag-dismiss endpoint returns 404 for a PO that does not exist.
+- The RoDTEP and Advance Licence ledgers load the BOE-number set once (`_known_boe_numbers()`) and pass
+  it to `_boe_exists()`: per citation it was up to three one-row lookups (48 queries per Advance
+  Licence load, now 16).
+
+### apps/services/data_stamp.py
+
+`touch(plant)` / `read(plant)` - when a plant's data last changed outside a sync, in the default cache
+(the shared DatabaseCache). Touched by every correction, dismissal and pin endpoint and at the end of
+`run_full_match()`; served as `sync-status`'s `dataChangedAt`, which the freshness watcher folds into
+its stamp. Before it, a colleague's correction or pin wrote no SyncRun row and so reached no other open
+dashboard until the next hourly sync. Losing the key only means one missed change.
+
 ### apps/services/flag_dismiss.py
 
-`dismiss_po_flag(plant, po_number, flag_key, user, dismissed, reason)`: upserts the `FlagDismissal` row
+`dismiss_po_flag(plant, po_number, flag_key, user, dismissed, reason)`: touches `data_stamp`, then upserts the `FlagDismissal` row
 for that key with the same audit fields and clear-on-undo rule. `flag_key` is opaque here.
 
 ### apps/services/license_links.py

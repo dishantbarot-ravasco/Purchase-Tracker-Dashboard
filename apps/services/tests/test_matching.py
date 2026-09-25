@@ -557,15 +557,23 @@ class TestUomAdjust:
         assert mismatch is True
         assert (qty_a, qty_b, rate_a, rate_b) == (None, None, None, None)
 
-    def test_unrecognized_unit_passes_through_unconverted(self):
-        """An unrecognized unit on either side (blank, or a real-but-
-        ambiguous code like 'BQ2') passes both values through unconverted
-        rather than guessing a wrong conversion - see normalize_uom()'s own
-        docstring for why. ('TO' used to be this test's example; it was
-        resolved to tonnes by census on 2026-09-18.)"""
+    def test_unrecognized_unit_against_a_different_unit_is_not_comparable(self):
+        """A real-but-ambiguous code like 'BQ2' is never converted (see
+        normalize_uom()'s docstring), and set against a DIFFERENT named unit
+        it is not compared raw either: that is how 15 ROLLS against 1,889 KG
+        read as a 9,999% qty mismatch on 29 HRS lines before ROLLS was mapped
+        (2026-09-25). Not comparable, flagged as a unit clash."""
         qty_a, qty_b, rate_a, rate_b, mismatch = _uom_adjust(Decimal("100"), "BQ2", Decimal("100"), "KG", Decimal("5"), Decimal("5"))
-        assert mismatch is False
-        assert (qty_a, qty_b, rate_a, rate_b) == (Decimal("100"), Decimal("100"), Decimal("5"), Decimal("5"))
+        assert mismatch is True
+        assert (qty_a, qty_b, rate_a, rate_b) == (None, None, None, None)
+
+    def test_blank_or_same_unrecognized_unit_passes_through_unconverted(self):
+        """Blank on either side (Achhad's stock sheet leaves most UOMs blank),
+        or the same unrecognized word on both, still passes through raw."""
+        for uom_a, uom_b in (("", "KG"), ("BQ2", "bq2"), ("BAG", "BAG")):
+            qty_a, qty_b, _ra, _rb, mismatch = _uom_adjust(Decimal("100"), uom_a, Decimal("90"), uom_b, None, None)
+            assert mismatch is False
+            assert (qty_a, qty_b) == (Decimal("100"), Decimal("90"))
 
 
 class TestDiffsAndFlagValueEpsilon:

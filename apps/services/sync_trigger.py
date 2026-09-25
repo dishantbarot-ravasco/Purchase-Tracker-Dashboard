@@ -137,6 +137,46 @@ def is_sync_in_progress(plant_key: str) -> bool:
     return bool(cache.get(_lock_key(plant_key)))
 
 
+def _lock_value() -> str:
+    """What a plant lock holds: when it was taken, so sync_stalled() can tell
+    a sync that is running from one no worker ever picked up."""
+    from django.utils import timezone
+
+    return timezone.now().isoformat()
+
+
+# How long a queued sync may go without its first step starting before the
+# dashboard says the worker is not picking it up. A healthy qcluster starts a
+# queued task within seconds; the first step writes its SyncRun at start.
+_STALL_AFTER_SECONDS = 180
+
+
+def sync_stalled(plant_key: str, syncrun_plant: str) -> bool:
+    """True when this plant's sync has been queued for over
+    _STALL_AFTER_SECONDS and no step of it has started since - the
+    background worker is not running. Without this the dashboard read
+    "syncing..." for the lock's whole 15 minutes and then "still running",
+    neither of which was true (2026-09-25). A lock holding the old bare True
+    (taken before this existed) carries no time and is never called
+    stalled."""
+    import datetime
+
+    from django.utils import timezone
+
+    from apps.core.models import SyncRun
+
+    held = cache.get(_lock_key(plant_key))
+    if not isinstance(held, str):
+        return False
+    try:
+        queued_at = datetime.datetime.fromisoformat(held)
+    except ValueError:
+        return False
+    if (timezone.now() - queued_at).total_seconds() < _STALL_AFTER_SECONDS:
+        return False
+    return not SyncRun.objects.filter(plant=syncrun_plant, started_at__gte=queued_at).exists()
+
+
 # RoDTEP is company-wide, not per-plant (see RodtepScrollEntry's own
 # docstring) - one shared lock, not one per plant key.
 _RODTEP_LOCK_KEY = "sync_trigger_rodtep_in_progress"
@@ -326,29 +366,40 @@ def run_daily_sync_all_plants() -> None:
     added 2026-09-09), same company-wide/skip-not-queue shape as RoDTEP
     directly above, via _ADVANCE_LICENSE_LOCK_KEY.
     """
+    # ONE match per plant (2026-09-25). Each plant's Import PO CSV is synced
+    # FIRST, then its domestic pipeline, whose match_<plant> matches domestic
+    # and import lines together. Running the imports pipeline afterwards,
+    # with its own match_<plant>, repeated the whole plant's matching every
+    # hour - about 50 s of worker time for Vapi alone.
     for plant_key in _PLANT_COMMANDS:
-        if not cache.add(_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
-            log.info(
-                "run_daily_sync_all_plants: skipping %s - a manual refresh is already in progress",
-                plant_key,
-            )
-            continue
-        try:
-            _run_pipeline(plant_key)
-        except Exception:
-            log.exception("run_daily_sync_all_plants: pipeline failed for plant=%s", plant_key)
-
-    for plant_key in _IMPORT_PLANT_COMMANDS:
+        imports_synced = False
         if not cache.add(_imports_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
             log.info(
                 "run_daily_sync_all_plants: skipping %s imports - a manual refresh is already in progress",
                 plant_key,
             )
+        else:
+            try:
+                _run_imports_pipeline(plant_key, include_match=False)
+                imports_synced = True
+            except Exception:
+                log.exception("run_daily_sync_all_plants: imports pipeline failed for plant=%s", plant_key)
+
+        if not cache.add(_lock_key(plant_key), _lock_value(), timeout=_LOCK_TIMEOUT_SECONDS):
+            log.info(
+                "run_daily_sync_all_plants: skipping %s - a manual refresh is already in progress",
+                plant_key,
+            )
+            # The import CSV just changed and nothing here will match it -
+            # the manual refresh holding the lock may already be past its
+            # own match step.
+            if imports_synced:
+                _run_match_only(plant_key)
             continue
         try:
-            _run_imports_pipeline(plant_key)
+            _run_pipeline(plant_key)
         except Exception:
-            log.exception("run_daily_sync_all_plants: imports pipeline failed for plant=%s", plant_key)
+            log.exception("run_daily_sync_all_plants: pipeline failed for plant=%s", plant_key)
 
     # RoDTEP (added 2026-09-09) - company-wide, one shared lock, not looped
     # per plant like the two blocks above.
@@ -377,7 +428,7 @@ def trigger_plant_sync(plant_key: str) -> bool:
     started, False if one was already in progress for this plant (the
     caller should treat that as "already syncing", not an error - see the
     sync-trigger views' 409 handling)."""
-    if not cache.add(_lock_key(plant_key), True, timeout=_LOCK_TIMEOUT_SECONDS):
+    if not cache.add(_lock_key(plant_key), _lock_value(), timeout=_LOCK_TIMEOUT_SECONDS):
         return False
 
     if "pytest" in sys.modules:
@@ -393,11 +444,32 @@ def is_imports_sync_in_progress(plant_key: str) -> bool:
     return bool(cache.get(_imports_lock_key(plant_key)))
 
 
-def _run_imports_pipeline(plant_key: str) -> None:
+def _run_match_only(plant_key: str) -> None:
+    """match_<plant> on its own - the scheduled sync's fallback when the
+    plant's domestic pipeline (which carries the match) was skipped."""
     from apps.services.security_alerts import notify_admins_sync_failure
 
+    cmd_name = _IMPORT_PLANT_COMMANDS[plant_key][-1]
     try:
-        for cmd_name in _IMPORT_PLANT_COMMANDS[plant_key]:
+        call_command(cmd_name)
+    except SystemExit:
+        log.error("sync_trigger: %s exited with failure for plant=%s", cmd_name, plant_key)
+        notify_admins_sync_failure(plant_key, cmd_name)
+    except Exception as exc:
+        log.exception("sync_trigger: %s raised an unexpected error for plant=%s", cmd_name, plant_key)
+        notify_admins_sync_failure(plant_key, cmd_name, detail=str(exc))
+
+
+def _run_imports_pipeline(plant_key: str, include_match: bool = True) -> None:
+    """The plant's Import PO steps. `include_match=False` stops before
+    match_<plant>, for a caller that runs the plant's match itself."""
+    from apps.services.security_alerts import notify_admins_sync_failure
+
+    commands = _IMPORT_PLANT_COMMANDS[plant_key]
+    if not include_match:
+        commands = [c for c in commands if not c.startswith("match_")]
+    try:
+        for cmd_name in commands:
             try:
                 call_command(cmd_name)
             except SystemExit:

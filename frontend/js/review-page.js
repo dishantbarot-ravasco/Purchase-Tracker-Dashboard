@@ -525,7 +525,7 @@ function renderStats(report) {
 
   html += '<div class="stat-block"><h3>Who reviewed</h3><p class="stat-sub">Not a leaderboard - it answers "is this one person\'s judgement?", which changes how much the figures above are worth.</p><ul class="stat-list">' +
     report.reviewers.map(r => '<li><span>' + escapeHtml(r.reviewer) + '</span><b>' + r.count + '</b></li>').join('') +
-    '</ul>' + (report.lastReviewedAt ? '<p class="stat-sub">Last reviewed ' + escapeHtml(formatDateIN(report.lastReviewedAt.slice(0, 10))) + '.</p>' : '') + '</div>';
+    '</ul>' + (report.lastReviewedAt ? '<p class="stat-sub">Last reviewed ' + escapeHtml(formatDateIN(localDateOf(report.lastReviewedAt))) + '.</p>' : '') + '</div>';
 
   if (report.notes.length) {
     html += '<div class="stat-block"><h3>Reviewer notes</h3>' +
@@ -533,7 +533,7 @@ function renderStats(report) {
       '<ul class="stat-notes">' + report.notes.map(n =>
         '<li><div class="note-head"><span class="note-verdict ' + escapeHtml(n.verdict) + '">' + escapeHtml(VERDICT_LABELS[n.verdict] || n.verdict) + '</span>' +
         '<span class="note-where">' + escapeHtml(n.plantLabel) + ' · ' + escapeHtml(n.matchTypeLabel) + ' · #' + n.matchId + '</span>' +
-        '<span class="note-who">' + escapeHtml(n.reviewer) + ' · ' + escapeHtml(formatDateIN(n.reviewedAt.slice(0, 10))) + '</span></div>' +
+        '<span class="note-who">' + escapeHtml(n.reviewer) + ' · ' + escapeHtml(formatDateIN(localDateOf(n.reviewedAt))) + '</span></div>' +
         '<div class="note-body">' + escapeHtml(n.note) + '</div></li>').join('') +
       '</ul></div>';
   }

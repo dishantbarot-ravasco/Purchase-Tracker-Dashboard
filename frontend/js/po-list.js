@@ -4,6 +4,18 @@
  * "View all" table, wiring every click/filter handler to re-render itself.
  * Delegates to renderImportPoList() when purchaseType is 'import' (see that
  * function's own header comment for why it's separate, not a branch here). */
+// The Value column: incl. tax, else the PO's value before tax - the same
+// figure the month chart plots - marked as such, rather than "-".
+function poValueCellHtml(po) {
+  if (po.totalInclTax != null) return formatInr(po.totalInclTax);
+  if (po.totalValue != null) return formatInr(po.totalValue) + ' <span class="text-slate-soft fs-11" title="No tax-inclusive total on file">excl. tax</span>';
+  return '-';
+}
+
+function poHasCriticalCategory(po) {
+  return (po._categories || []).some(c => c.severity === 'critical');
+}
+
 function renderPoList(el) {
   // Import Purchases render through the exact same KPI-row -> chart-row ->
   // list -> drill-down-modal scaffold as Domestic (this function), just
@@ -74,7 +86,9 @@ function renderPoList(el) {
   ).forEach(sub => { subCategoryCounts[sub] = (subCategoryCounts[sub] || 0) + 1; }));
   const subCategoryBaseCount = inSelectedCategory.length; // "All Sub Categories (N)" option's count
   if (state.categoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => c.category === state.categoryFilter));
-  if (state.subCategoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => (c.subCategory || 'Uncategorized') === state.subCategoryFilter));
+  if (state.subCategoryFilter) // The sub-category must sit under the chosen category on the SAME entry,
+  // not merely somewhere on the PO.
+  filtered = filtered.filter(po => (po.materialCategories || []).some(c => (c.subCategory || 'Uncategorized') === state.subCategoryFilter && (!state.categoryFilter || c.category === state.categoryFilter)));
 
   const counts = { received: 0, partial: 0, pending: 0, overdue: 0, unknown: 0 };
   filtered.forEach(po => counts[po._status]++);
@@ -127,7 +141,11 @@ function renderPoList(el) {
   // count, filling in for what "Filter by Category" used to mean before
   // Category/Sub Category were repurposed for material data (2026-09-08) -
   // see that comment above for the full story.
-  const criticalCount = filtered.filter(po => po._qtyFlag || po._rateFlag).length;
+  // Any critical category, the same set the red row flag and the legend
+  // call critical - "PO Not Found in MIR" included. Counting qty/rate only
+  // left 14 / 8 / 17 red-flagged POs (HRS/Achhad/Vapi) this option could not
+  // find (2026-09-25).
+  const criticalCount = filtered.filter(poHasCriticalCategory).length;
   // Per-category breakdown across every PO in the current date range/plant
   // selection - same aggregation pattern as categoryCounts/subCategoryCounts
   // above, just keyed on flag category label instead of material category.
@@ -152,7 +170,7 @@ function renderPoList(el) {
   // urgent, not merely a scheduling note. Total is the only card with no
   // flag icon - it's a plain aggregate, not a status.
   const cardDef = [
-    { key: 'total', cls: '', label: "Total PO's Created", val: total, tip: 'All purchase orders in the selected date range and plant(s).' },
+    { key: 'total', cls: '', label: "Total PO's Created", val: total, tip: 'All purchase orders in the selected date range and plant(s), narrowed by the Category and Sub Category filters when either is set.' },
     { key: 'received', cls: 'received', label: 'Material Inwarded', val: counts.received, flag: KPI_FLAG_COLORS.received, tip: 'Every line item on this PO has fully arrived - matched to a MIR entry, and not short of the ordered quantity. An over-delivered line still counts as received (the material did arrive); a short-delivered one does not, and shows as Partial Delivered instead.' },
     { key: 'partial', cls: 'partial', label: STATUS_LABELS.partial, val: counts.partial, flag: KPI_FLAG_COLORS.partial, tip: 'Something has arrived against this PO but the order is not complete - either a line item has no MIR entry yet, or one arrived short of the ordered quantity.' },
     { key: 'qtydisc', cls: 'critical', label: 'Quantity Mismatches', val: qtyDiscCount, flag: KPI_FLAG_COLORS.critical, tip: 'Quantity mismatch in MIR: quantity on the PO differs from its matched MIR entry - zero tolerance, any nonzero difference flags. The two cards beside this one split the same set by direction; they can add up to less than this total, which means some of these rows have no recorded direction yet (their last matching run predates the over/under split - re-run matching for this plant).' },
@@ -162,7 +180,7 @@ function renderPoList(el) {
     { key: 'overdue', cls: 'overdue', label: 'Overdue', val: overdueCount, flag: KPI_FLAG_COLORS.critical, tip: 'Delivery date has passed and the order is still not fully received - including POs that are partly delivered. This overlaps the other status cards rather than excluding them, so the cards here add up to more than Total PO\u2019s Created.' },
     { key: 'pending', cls: 'pending', label: STATUS_LABELS.pending, val: counts.pending, flag: KPI_FLAG_COLORS.pending, tip: 'Nothing has arrived against this PO yet, and its delivery date has not passed.' },
     { key: 'unknown', cls: 'unknown', label: STATUS_LABELS.unknown, val: noDateCount, flag: KPI_FLAG_COLORS.unknown, tip: 'No delivery date on file for any line item, so this PO can never be called overdue or on order. Counted whether or not the material has arrived - a missing date is worth chasing either way. Overlaps the other cards rather than excluding them.' },
-    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on this PO - quantity/rate mismatch, PO not found in MIR, tax type/taxable value/final amount mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
+    { key: 'flags', cls: 'flags', label: 'Data Quality Flags', val: flagsCount, flag: KPI_FLAG_COLORS.quality, tip: 'Any flagged issue on this PO - quantity/rate mismatch, PO not found in MIR, vendor name, net value, taxable value, final amount or tax type mismatch, UOM mismatch, or a paperwork note from remarks. Use "Filter by Flags" below to narrow to one specific issue.' },
   ];
   const kpiHtml = cardDef.map(c => '<div class="kpi-card ' + c.cls + ' ' + (state.statusFilter === c.key ? 'active' : '') + '" data-kpi="' + c.key + '" tabindex="0" role="button" aria-pressed="' + (state.statusFilter === c.key) + '">' +
     (c.flag ? flagIconHtml(c.flag) : '') +
@@ -189,10 +207,13 @@ function renderPoList(el) {
   ].filter(s => s.val > 0);
 
   const monthTotals = {};
+  // POs the chart cannot place are counted and said under it, never dropped
+  // silently (HRS's legacy 1074-1082 carry no value at all).
+  let unplotted = 0;
   filtered.forEach(po => {
     const m = (po.createdDate || '').slice(0, 7);
     const v = po.totalInclTax != null ? po.totalInclTax : po.totalValue;
-    if (!m || v == null) return;
+    if (!m || v == null) { unplotted++; return; }
     monthTotals[m] = (monthTotals[m] || 0) + v;
   });
   const months = Object.keys(monthTotals).sort();
@@ -212,11 +233,11 @@ function renderPoList(el) {
   // behind it.
   const categoryOptionsHtml = Object.entries(categoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([cat, n]) => '<option value="' + escapeHtml(cat) + '"' + (state.categoryFilter === cat ? ' selected' : '') + '>' + escapeHtml(cat) + ' (' + n + ')</option>')
+    .map(([cat, n]) => '<option value="' + escapeHtml(cat) + '"' + (state.categoryFilter === cat ? ' selected' : '') + '>' + escapeHtml(categoryLabel(cat)) + ' (' + n + ')</option>')
     .join('');
   const subCategoryOptionsHtml = Object.entries(subCategoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([sub, n]) => '<option value="' + escapeHtml(sub) + '"' + (state.subCategoryFilter === sub ? ' selected' : '') + '>' + escapeHtml(sub) + ' (' + n + ')</option>')
+    .map(([sub, n]) => '<option value="' + escapeHtml(sub) + '"' + (state.subCategoryFilter === sub ? ' selected' : '') + '>' + escapeHtml(categoryLabel(sub)) + ' (' + n + ')</option>')
     .join('');
   // "Data Quality Flag" already meant "informational severity" (po._hasInfoFlag,
   // see computePoFlags()) before this page had any material-category
@@ -288,12 +309,13 @@ function renderPoList(el) {
             flagsOptionsHtml +
           '</select>' +
         '</div>' +
-        ((state.categoryFilter || state.subCategoryFilter || ['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter) || (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:'))) ? '<button id="clearCategoryFilter">Clear</button>' : '') +
+        ((state.categoryFilter || state.subCategoryFilter || ['qtydisc', 'qtyover', 'qtyunder', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter) || (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:'))) ? '<button id="clearCategoryFilter">Clear</button>' : '') +
       '</div>' : '') +
     ((statusChartData.length || months.length) ?
       '<div class="chart-row">' +
         '<div class="chart-panel"><h4>PO Value Trend by Month Created</h4>' +
           (months.length ? '<div class="chart-box"><canvas id="poTrendChart"></canvas></div>' : '<div class="no-data-note">No dated POs in range to plot.</div>') +
+          (unplotted ? '<div class="no-data-note">' + unplotted + ' PO' + (unplotted === 1 ? '' : 's') + ' not shown: no created date or no value on file.</div>' : '') +
         '</div>' +
         '<div class="chart-panel"><h4>Status Breakdown</h4>' +
           (statusChartData.length ? '<div class="chart-box"><canvas id="poStatusChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
@@ -335,7 +357,7 @@ function renderPoList(el) {
   const clearCategoryBtn = document.getElementById('clearCategoryFilter');
   if (clearCategoryBtn) clearCategoryBtn.onclick = () => {
     state.categoryFilter = null; state.subCategoryFilter = null;
-    if (['qtydisc', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter) || (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:'))) state.statusFilter = null;
+    if (['qtydisc', 'qtyover', 'qtyunder', 'ratedisc', 'critical', 'flags'].includes(state.statusFilter) || (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('cat:'))) state.statusFilter = null;
     state.tablePage = 1; renderPoList(el);
   };
 
@@ -517,7 +539,7 @@ function poListRegionHtml() {
   else if (state.statusFilter === 'qtyover') tableRecs = filtered.filter(po => po._qtyOverFlag);
   else if (state.statusFilter === 'qtyunder') tableRecs = filtered.filter(po => po._qtyUnderFlag);
   else if (state.statusFilter === 'ratedisc') tableRecs = filtered.filter(po => po._rateFlag);
-  else if (state.statusFilter === 'critical') tableRecs = filtered.filter(po => po._qtyFlag || po._rateFlag);
+  else if (state.statusFilter === 'critical') tableRecs = filtered.filter(poHasCriticalCategory);
   else if (state.statusFilter === 'flags') tableRecs = filtered.filter(po => po._categories.length > 0);
   // "Filter by Flags" per-category options (added 2026-09-08) are namespaced
   // 'cat:<label>' rather than the bare label, so they can never collide with
@@ -659,7 +681,7 @@ function poListRegionHtml() {
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po.createdDate)) + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po._deliveryDate)) + '</td>' +
-              '<td>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</td>' +
+              '<td>' + poValueCellHtml(po) + '</td>' +
               '<td><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po) + '</td>' +
               '<td>' + miniStepperHtml(po) + '</td>' +
               '<td><span class="row-link" data-po="' + key + '">View details</span></td></tr>';
@@ -674,7 +696,7 @@ function poListRegionHtml() {
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po.createdDate) || 'Not available') + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po._deliveryDate) || 'Not available') + '</div>' +
-            '<div>' + (po.totalInclTax != null ? formatInr(po.totalInclTax) : '-') + '</div>' +
+            '<div>' + poValueCellHtml(po) + '</div>' +
             '<div><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po) + '</div>' +
             '<div>' + miniStepperHtml(po) + '</div>' +
             '<div><span class="row-link" data-po="' + key + '">View details</span></div></div>';

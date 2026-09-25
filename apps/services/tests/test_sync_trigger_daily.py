@@ -89,3 +89,39 @@ class TestRunDailySyncAllPlants:
         sync_trigger.run_daily_sync_all_plants()
 
         assert called == []
+
+
+class TestOneMatchPerPlant:
+    """The scheduled sync used to run each plant's match twice an hour - once
+    closing the domestic pipeline, again closing the imports one. Now the
+    import CSV is synced first and the domestic pipeline's match covers it
+    (2026-09-25). Stubs call_command only, so the real pipeline functions and
+    their ordering are what is measured."""
+
+    def setup_method(self):
+        _clear_locks()
+        for plant_key in sync_trigger._PLANT_COMMANDS:
+            cache.delete(sync_trigger._imports_lock_key(plant_key))
+
+    teardown_method = setup_method
+
+    def _run(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(sync_trigger, "call_command", lambda name: calls.append(name))
+        monkeypatch.setattr(sync_trigger, "_run_rodtep_pipeline", lambda: None)
+        monkeypatch.setattr(sync_trigger, "_run_advance_license_pipeline", lambda: None)
+        sync_trigger.run_daily_sync_all_plants()
+        return calls
+
+    def test_each_plant_is_matched_once_after_its_import_csv(self, monkeypatch):
+        calls = self._run(monkeypatch)
+        for plant_key, match in (("hrs", "match_hrs"), ("achhad", "match_achhad"), ("vapi", "match_vapi")):
+            assert calls.count(match) == 1
+            imports_csv = sync_trigger._IMPORT_PLANT_COMMANDS[plant_key][0]
+            assert calls.index(imports_csv) < calls.index(match)
+
+    def test_a_skipped_domestic_pipeline_still_matches_the_new_imports(self, monkeypatch):
+        cache.add(sync_trigger._lock_key("vapi"), "held", timeout=60)
+        calls = self._run(monkeypatch)
+        assert "sync_vapi_po_csv" not in calls
+        assert calls.count("match_vapi") == 1

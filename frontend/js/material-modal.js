@@ -106,12 +106,21 @@ async function openMaterialModal(compositeKey) {
 
   const category = siblingLots.map(l => l.category).find(c => c) || '';
   const subCategory = siblingLots.map(l => l.subCategory).find(c => c) || '';
-  const qtyAllPlants = siblingLots.reduce((s, l) => s + (l.qty || 0), 0);
+  // Distinct plants, not lots: SBR 1502 has five lots at one plant and read
+  // "rolled up across 5 plant locations".
+  const plantCount = new Set(siblingLots.map(l => l._plantKey)).size;
+  // Stock per unit, never one sum across units: Rubber Process Oil 710 is
+  // KG at HRS and LTR at Vapi, and one bare total read 29,385.
+  const qtyByUom = new Map();
+  siblingLots.forEach(l => { const u = (l.uom || '').trim().toUpperCase() || 'unit not recorded'; qtyByUom.set(u, (qtyByUom.get(u) || 0) + (l.qty || 0)); });
+  const qtyAllPlantsText = Array.from(qtyByUom.entries()).map(([u, q]) => q.toLocaleString('en-IN', { maximumFractionDigits: 3 }) + ' ' + u).join(' + ') || '0';
   const valueAllPlants = siblingLots.reduce((s, l) => s + (l.value || 0), 0);
-  const openValue = openLinked.reduce((s, l) => s + (l.item.netPrice != null && l.item.qty != null ? l.item.netPrice * l.item.qty : 0), 0);
+  // What is still to come, as the list's Value in Transit counts it - a
+  // part-delivered line's received part is not "not yet delivered".
+  const openValue = openLinked.reduce((s, l) => s + openValueOfLine(l.item), 0);
 
   const atAGlanceHtml =
-    '<div class="line">In stock, all plants: ' + qtyAllPlants + '</div>' +
+    '<div class="line">In stock, all plants: ' + escapeHtml(qtyAllPlantsText) + '</div>' +
     '<div class="line">Total inventory value: ' + formatInr(valueAllPlants) + '</div>' +
     '<div class="line">Ordered, not yet delivered: ' + formatInr(openValue) + ' across ' + openLinked.length + ' open PO(s)</div>';
 
@@ -185,7 +194,7 @@ async function openMaterialModal(compositeKey) {
             '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
             '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>';
         }).join('') +
-        '<tr class="fw-700"><td>Total</td><td></td><td></td><td></td><td>' + qtyAllPlants + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
+        '<tr class="fw-700"><td>Total</td><td></td><td></td><td></td><td>' + escapeHtml(qtyAllPlantsText) + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
       '</tbody></table></div>'
     : '<div class="no-data-note">No stock found for this material at any plant.</div>';
 
@@ -232,16 +241,21 @@ async function openMaterialModal(compositeKey) {
     if (!materialCritPos.has(label)) materialCritPos.set(label, { severity, poSet: new Set() });
     materialCritPos.get(label).poSet.add(l.po.poNumber + ' (' + l.plantLabel + (l.po.isImport ? ', import' : '') + ')');
   };
+  // Same rules as the list's computeMaterialPoLinkage() (materials.js): a
+  // dismissed match raises nothing, and "PO Not Found" is not raised on an
+  // order that is simply not due yet. The modal used to apply neither, so it
+  // showed as CRITICAL what the row beside it deliberately did not.
   linked.forEach(l => {
-    if (l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) addMaterialFlag('Quantity Mismatch in MIR', 'critical', l);
+    const dismissed = l.item.dismissedByOverride;
+    if (!dismissed && l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) addMaterialFlag('Quantity Mismatch in MIR', 'critical', l);
     // Rate only, not value - see flags.js's computePoFlags() for why.
-    if (l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) addMaterialFlag('Rate Mismatch in MIR', 'critical', l);
-    if (!l.item.matched) addMaterialFlag('PO Not Found in MIR', 'critical', l);
-    if (l.item.taxTypeMismatch) addMaterialFlag('Tax Type Mismatch in MIR', 'info', l);
-    if (l.item.netValueMismatched) addMaterialFlag('Net Value Mismatch in MIR', 'info', l);
-    if (l.item.taxableValueMismatched) addMaterialFlag('Taxable Value Mismatch in MIR', 'info', l);
-    if (l.item.finalValueMismatched) addMaterialFlag('Final Amount Mismatch in MIR', 'info', l);
-    if (l.item.uomMismatch) addMaterialFlag('UOM Mismatch in MIR', 'info', l);
+    if (!dismissed && l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) addMaterialFlag('Rate Mismatch in MIR', 'critical', l);
+    if (!l.item.matched && l.po._status !== 'pending') addMaterialFlag('PO Not Found in MIR', 'critical', l);
+    if (!dismissed && l.item.taxTypeMismatch) addMaterialFlag('Tax Type Mismatch in MIR', 'info', l);
+    if (!dismissed && l.item.netValueMismatched) addMaterialFlag('Net Value Mismatch in MIR', 'info', l);
+    if (!dismissed && l.item.taxableValueMismatched) addMaterialFlag('Taxable Value Mismatch in MIR', 'info', l);
+    if (!dismissed && l.item.finalValueMismatched) addMaterialFlag('Final Amount Mismatch in MIR', 'info', l);
+    if (!dismissed && l.item.uomMismatch) addMaterialFlag('UOM Mismatch in MIR', 'info', l);
   });
   const materialCritFlagsHtml = Array.from(materialCritPos.entries()).map(([label, entry]) =>
     '<div class="field-block mb-8">' +
@@ -299,7 +313,7 @@ async function openMaterialModal(compositeKey) {
           '</div>' +
           (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
-          ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
+          ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? localDateOf(c.correctedAt) : null)) + '</div>' +
         '</div>'
       ).join('')
     : '';
@@ -314,7 +328,7 @@ async function openMaterialModal(compositeKey) {
       // Import orders are listed here too since 2026-09-24 (materials.js's
       // materialOrders()), tagged so they are never mistaken for domestic
       // ones, with the INR value the In Transit figure counts them at.
-      ? '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Plant</th><th>Qty</th><th>Value (INR)</th><th>Status</th></tr></thead><tbody>' +
+      ? '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Plant</th><th>Qty to come</th><th>Value to come (INR)</th><th>Status</th></tr></thead><tbody>' +
           // The PO number opens that order's own detail modal (Domestic or
           // Import), wired below by [data-open-po].
           openLinked.map(l => '<tr><td><span class="row-link" tabindex="0" role="button"' +
@@ -323,8 +337,9 @@ async function openMaterialModal(compositeKey) {
             ' title="Open this purchase order">' + escapeHtml(l.po.poNumber) + '</span>' +
             (l.po.isImport ? ' <span class="badge-import" title="' + escapeHtml(importPriceTitle(l.item)) + '">Import</span>' : '') +
             '</td><td>' + escapeHtml(l.po.vendorName || '-') + '</td><td>' + escapeHtml(l.plantLabel) +
-            '</td><td>' + (l.item.qty != null ? l.item.qty : '-') + ' ' + escapeHtml(l.item.uom || '') +
-            '</td><td>' + (l.item.netPrice != null && l.item.qty != null ? formatInr(l.item.netPrice * l.item.qty) : '-') +
+            '</td><td>' + (openQtyOfLine(l.item) != null ? openQtyOfLine(l.item) : '-') + ' ' + escapeHtml(l.item.uom || '') +
+            (openQtyOfLine(l.item) !== l.item.qty && l.item.qty != null ? ' <span class="text-slate-soft">of ' + l.item.qty + '</span>' : '') +
+            '</td><td>' + (l.item.netPrice != null && l.item.qty != null ? formatInr(openValueOfLine(l.item)) : '-') +
             '</td><td><span class="status-pill status-' + l.po._status + '">' + escapeHtml(STATUS_LABELS[l.po._status]) + '</span></td></tr>').join('') +
         '</tbody></table></div>'
       : '<div class="no-data-note">No open purchase orders currently linked to this material by automated matching.</div>');
@@ -341,7 +356,7 @@ async function openMaterialModal(compositeKey) {
 
   body.innerHTML =
     '<div class="modal-head"><div><h2>' + escapeHtml(anchor.description || anchor.materialCode) + '</h2>' +
-    '<div class="modal-meta">' + escapeHtml(category || 'Uncategorized') + ' &middot; rolled up across ' + siblingLots.length + ' plant location' + (siblingLots.length === 1 ? '' : 's') + '</div></div>' +
+    '<div class="modal-meta">' + escapeHtml(category || 'Uncategorized') + ' &middot; ' + siblingLots.length + ' stock lot' + (siblingLots.length === 1 ? '' : 's') + ' across ' + plantCount + ' plant' + (plantCount === 1 ? '' : 's') + '</div></div>' +
     '<span class="close-btn">&times;</span></div>' +
     matchingDisclaimerHtml(
       'Purchase Activity, Price Trend, Vendors and "Also known as" are matched automatically.',

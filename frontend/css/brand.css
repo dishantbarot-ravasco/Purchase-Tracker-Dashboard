@@ -300,6 +300,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   color: var(--gold-text); background: var(--gold-pale); border: 1px solid var(--gold-border);
   border-radius: var(--radius); padding: 3px 9px;
 }
+/* auth.js's showAuthUnavailable(): server down, not signed out. */
+.auth-unavailable { margin: 16px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-card); color: var(--text); }
+.auth-unavailable p { margin: 0 0 10px; font-size: 13.5px; }
 .search-result-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 /* Marks an Import Purchases hit; navy so it never reads as a second plant. */
 .search-result-import { color: var(--navy); background: var(--bg-section); border-color: var(--border); }

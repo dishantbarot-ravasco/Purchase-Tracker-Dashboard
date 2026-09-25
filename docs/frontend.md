@@ -50,6 +50,16 @@ why ESLint's `no-undef` is off (see [`.eslintrc.json`](#eslintrcjson)).
 
 #### The dashboard keeps itself fresh - `main.js`'s freshness watcher
 
+`fetchSyncStatus(key)` shares one sync-status request per plant among every caller within
+`SYNC_STATUS_SHARE_MS` (3 s) - on load the badges, the view tabs and `resumeSyncIfRunning()` each
+fetched it, three per plant. The sync-progress poll and the pre-sync baseline still read it directly;
+`clearDataCaches()` empties the share. `loadSyncStatus()` carries its own request id
+(`syncStatusRequestId`), so a fast plant-tab switch cannot land the previous plant's badges last.
+
+`currentDataStamp()` folds each plant's `sync-status` `dataChangedAt` (apps/services/data_stamp.py) in
+with its SyncRun times, so a colleague's correction, pin or dismissal reloads other open dashboards
+on the next tick instead of waiting for the hourly sync.
+
 `ensurePOsLoaded()` fills `PURCHASE_ORDERS_BY_PLANT` once and only refetches when the cache is
 cleared, and at one time the only two places that cleared it were the viewer's own "Refresh Data"
 click and the end of an admin-triggered sync's polling loop. **Every other way the database moves
@@ -388,6 +398,15 @@ would never fire). Replaces the old inline `onerror` attributes.
 
 ### frontend/js/auth.js
 
+`requireAuth()` sends the reader to `/login.html` only for a 401/403. A network failure or a 5xx
+(a deploy, a restart) shows `showAuthUnavailable()`'s notice with a Retry button instead - it used to
+bounce everyone to the login page on every blip, and they signed in again.
+
+`requireAuth()` calls `shared.js`'s `scopePlantKeysToUser()` once `CURRENT_USER` is known: it narrows
+`PLANT_KEYS` in place to the user's `plants` (empty = every plant). Every page builds its tabs and
+fetches from `PLANT_KEYS`, so a plant-scoped account used to request plants the server refuses - the
+dashboard read "Couldn't load" and Home/Search warned on every load.
+
 Session gate and shared nav chrome for every protected page. Exports `CURRENT_USER`, `authFetch`,
 `refreshSession`, `requireAuth`, `logout`, `renderUserBadge`, `renderNavTabs`, `userInitials`,
 `initThemeToggle`, `applyTheme`, `isEffectivelyDark`, `escapeHtmlAuth`. Depends on
@@ -651,22 +670,32 @@ works for item-level fields too (import `item_id` is real). `onImportFieldSaved(
 Raw Material Analysis. `currentMaterials()`, `ensureMaterialsLoaded(keys)` (GET `<prefix>/materials`
 into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and import orders).
 
-- **Linkage** (best effort, not ground truth): `materialLinksToItem(material, po, item)` - normalized
-  description equality, or token Jaccard >= `MATERIAL_LINK_THRESHOLD` (0.3) gated on vendor
-  containment when the material has a vendor. It runs once per (material x line item) pair - about
-  780,000 calls on All Plants - so per-string work is memoized in `_materialTokenCache` /
-  `_vendorNormCache` and the union is computed arithmetically. **The caches are cleared at the top of
-  every `computeMaterialPoLinkage()` and `orderOnlyMaterials()` pass**, because an edit between
-  renders can change a description or vendor. The code comment records 3,926 ms -> 136 ms (29x) with
-  identical links. **Anything added to this render path must not be per-pair.**
+- **Linkage** (best effort, not ground truth): **each PO line links to its BEST material**
+  (2026-09-25). `materialLinkScore()` is 2 for the same normalized name, else the token Jaccard
+  (>= `MATERIAL_LINK_THRESHOLD`, 0.3), -1 for none; it applies the vendor gate (`vendorGatePasses()`)
+  and a fabric-spec gate (`fabricSpec()` / `fabricSpecContradicts()`, ports of matching_core's: a
+  fabric of another width or grade is another material). `buildLineLinks(materials, plantKeys)` finds
+  each line's candidates through a token index, keeps only the top score (ties all link), and returns
+  `{byNorm, linkedItems}`; `lineLinksFor(slot, materials, plantKeys)` memoizes it on the identity of the
+  caches it reads, which `clearDataCaches()` replaces. It is built over the WHOLE plant scope
+  (`materialScope()`), never the filtered list, so a filter cannot move a line to another material.
+  Before, every line linked to every material it cleared 0.3 against: one Vapi fabric line linked to
+  238 materials, the Quantity Mismatch / Data Quality Flags cards read 291 / 337 materials off 337
+  open lines, and the pass was 1.3 million pair checks (~1.05 s of an ~1.15 s render). Measured in the
+  browser on real data: All Plants first render 333 ms, cached redraw about 100 ms; Vapi lines on 10+
+  materials 33 -> 1, Quantity Mismatches 229. `materialLinksToItem()` remains for `findMaterialLotsFor()`.
+  **Anything added to this render path must not be per-pair.**
 - `importPoAsMaterialOrder(po)` reshapes an import order into the domestic shape with INR prices
   (`importRateInr()`); `materialOrders(key)` returns domestic + import orders for a plant, memoized on
   the identity of `IMPORT_PO_CACHE` and the plant's domestic array so each order stays the same object
   between refreshes (callers stamp `_status`/`_categories` on it). `isOpenPoLine(po, item)` judges
   open-ness per line.
 - `aggregateMaterialsByName(lots)` - one row per normalized name; consumption rates are summed
-  **once per plant, not per lot** (the ledger is per material), days-left = summed qty / summed rate,
-  confidence = weakest band. `orderOnlyMaterials()` adds a row for open lines that link to no stock
+  **once per plant, not per lot** (the ledger is per material). **Days Left is each plant's own stock
+  over its own rate, and the row shows the tightest plant** - pooling let one plant's idle stock hide
+  another about to run out. When the lots name more than one unit (Rubber Process Oil 710: KG at HRS,
+  LTR at Vapi), `qtyLabel` shows each unit's total instead of the sum and Days Left is left blank.
+  Confidence = weakest band. `orderOnlyMaterials()` adds a row for open lines that link to no stock
   material (`orderOnly: true`, key `order::<normalized description>` via `materialModalKey()`).
 - `openQtyOfLine(item)` / `openValueOfLine(item)` - what is still to come on an open line: ordered
   qty less the server's `received.qty` (already in the line's unit; `importPoAsMaterialOrder()`
@@ -709,7 +738,11 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
 `openMaterialModal("<plant>::<lotId>" | "order::<normalized description>")` - guarded; for an
 order-only key, `resolveOrderOnlyAnchor()` builds the anchor from the open lines. Always rolls up
 across **all three plants**: sibling lots by exact normalized description, linked PO lines via
-`linkedPoItemsForMaterial()`. Tabs Overview (Category/Sub Category pencils on the anchor lot itself,
+`linkedPoItemsForMaterial()` (the same best-material index the list reads, with the anchor lot's own
+vendor gate on top). Its flags follow the list's rules - a dismissed match raises nothing and "PO Not
+Found" is not raised on an order not yet due - and "Ordered, not yet delivered" and the open-orders
+table count what is still to come (`openValueOfLine()` / `openQtyOfLine()`), not the full line. The
+header counts stock lots and distinct plants separately, and "In stock" is summed per unit. Tabs Overview (Category/Sub Category pencils on the anchor lot itself,
 Sub Category plain at Achhad, none for order-only), Stock by Plant (one row per lot with Vendor,
 Received, Location, per-row Category and Rate pencils targeting that row's own plant, used-up lots
 faded), Purchase Activity (open lines, import orders tagged with their INR conversion; each PO number is a
@@ -811,6 +844,8 @@ current.
 
 `home.html` bootstrap: `requireAuth()`, greeting from the user's first name, nav/user/theme, reveals
 `#adminCard` for admins, `await loadKpis()` (in `shared.js`), then hides the loading overlay.
+`loadKpis()` reads each plant's `purchase-orders/summary` (vendor and created date only, about 36 KB
+for all three) - it used to download every plant's full PO list, about 1.9 MB, for four counts.
 
 ### frontend/js/search-po-page.js
 
@@ -907,3 +942,29 @@ globals list that becomes a second source of truth. The notes live in a `/* */` 
 (ESLint's JSON config allows comments); **do not move them back into a `"//"` key**, which ESLint 8's
 schema rejects with exit code 2. Its comment still says "14 files"; there are 22. CI details:
 [testing-deployment.md](testing-deployment.md).
+
+### Minor fixes from the 2026-09-25 audit
+
+Small rules that hold across files, recorded once here:
+
+- **Stale responses.** The MIR picker's search (`mirCandidatesRequestId`), the no-PO panel
+  (`modalRequestId`) and the BL tracking view (`modalRequestId`) drop a response that a newer request
+  superseded, like every other modal opener.
+- **A save is not a reload.** `wireOverrideBox()` reports a failure of the reload after a successful
+  save as "Saved - refresh to see it", never "Could not save".
+- **Dates from timestamps** go through `shared.js`'s `localDateOf()`: slicing the date off a UTC ISO
+  string read a day early for anything done between 00:00 and 05:30 IST.
+- **Category options** show the fallback bucket 'Uncategorized' as "No category on file"
+  (`categoryLabel()`), so it no longer reads the same as the reference file's own
+  "Others / Uncategorized". Values are unchanged. The Sub Category filter requires the sub-category
+  to sit under the chosen category on the same entry.
+- **PO list Value column and chart.** `poValueCellHtml()` shows the value before tax, marked, when a PO
+  has no tax-inclusive total - the figure the month chart already plotted; POs the chart cannot place
+  are counted under it.
+- **Raw Material** labels match the cards ("Value in Transit", "Quantity to Come"), the header Status
+  select carries the "On an open order" and flag-chip filters, an order-only row's Days Left says it is
+  on order only, and the no-PO panel shows the value of the rows shown beside their count.
+- **Imports.** "Vendor Name Mismatch in MIR" is in `importCategoriesFor()` as well as the modal; the BL
+  tracking view has a close button and, opened from a PO, a "Back to the purchase order" link; unknown
+  RoDTEP scrips open their detail.
+- **Admin.** Deactivating a user asks first, like Delete and Revoke device.

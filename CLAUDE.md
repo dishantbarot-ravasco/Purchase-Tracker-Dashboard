@@ -210,7 +210,8 @@ Read the linked section before breaking any of these. Each is there because it w
   [deep links](docs/frontend.md#search-po-deep-links-into-the-dashboard-rather-than-)
 - Don't merge `brand.css` and `style.css`, and never define the same custom property in both.
   [CSS collisions](docs/frontend.md#css-custom-property-collisions)
-- Nothing per-pair goes in the Raw Material linkage loop (~780k calls per render).
+- Raw Material links each PO line to its best material through `lineLinksFor()`'s token index, built
+  over the unfiltered scope; never reintroduce a per-(material x line) loop (it was 1.3M checks).
   [materials.js](docs/frontend.md#frontendjsmaterialsjs)
 
 ### Consumption
@@ -286,6 +287,8 @@ Read the linked section before breaking any of these. Each is there because it w
 | Import USD rate compared raw against INR MIR → ~94x gap, 0 matches | [matching](docs/matching-engine.md#import-po--mir-convert-currency-first) |
 | Full-table SELECTs inside per-row loops → quadratic matching | [matching](docs/matching-engine.md#performance-the-engine-was-quadratic) |
 | `_assign_pairs()` never terminating on a positive-gain cycle (twice) | [matching](docs/matching-engine.md#_assign_pairs-needs-both-its-termination-guards) |
+| A multi-line fabric order's PO-cited receipt of one width handed to a sibling of another (`_grade_codes()` can't read "67cm") | [matching](docs/matching-engine.md#a-fabric-receipt-of-another-width-or-grade-belongs-to-a-sibling-line-2026-09-25) |
+| An import edit keyed on a repeated item_id landing on the first shipment line | [api](docs/api-and-features.md#inline-edit-everywhere) |
 | `legacy_po_matches()` running 844k times where it could never match | [matching](docs/matching-engine.md#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason) |
 | The contradiction gate re-scanning every known PO per line item (26.8M calls), pushing a Vapi pin's synchronous re-match past gunicorn's 30 s timeout - an HTML 502 after the pin had committed | [matching](docs/matching-engine.md#two-hot-paths-in-matching-are-cached-or-short-circuited-for-a-reason) |
 | Renaming a PO upstream forking it into two permanent rows; orphans reported only to stdout | [data-sync](docs/data-sync.md#purchase-orders-are-retired-not-deleted---and-until-2026-09-18-they-were-neither) |

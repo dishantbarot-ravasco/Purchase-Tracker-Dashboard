@@ -460,6 +460,19 @@ Import syncs write no `DataQualityFlag` rows (the domestic ones do).
 
 ### [apps/services/sync_trigger.py](../apps/services/sync_trigger.py)
 
+**The scheduled sync matches each plant once.** `run_daily_sync_all_plants()` syncs a plant's Import PO
+CSV first (`_run_imports_pipeline(plant, include_match=False)`), then its domestic pipeline, whose
+`match_<plant>` matches domestic and import lines together; before, the imports pipeline ran a second
+full match after it, about 50 s of worker time an hour for Vapi. When the domestic pipeline is skipped
+(a manual refresh holds its lock) and the import CSV was synced, `_run_match_only()` runs the match on
+its own. A manual refresh still triggers the two pipelines separately.
+
+A plant lock holds the ISO time it was taken (`_lock_value()`). `sync_stalled(plant_key,
+syncrun_plant)` is True when the lock is over `_STALL_AFTER_SECONDS` (180 s) old and no SyncRun of that
+plant has started since - the qcluster worker is not running. `sync-status` serves it as
+`syncStalled`; the dashboard shows "sync not starting" and stops waiting, instead of "syncing..." for
+the lock's 15 minutes and then "still running".
+
 Runs the per-plant pipelines, both for the schedule and for the `sync-trigger` endpoints behind
 "Refresh Data". Uses `call_command()` so the pipeline is exactly the management commands, nothing
 reimplemented.

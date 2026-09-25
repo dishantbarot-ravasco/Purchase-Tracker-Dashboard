@@ -83,18 +83,50 @@ async function authFetch(url, opts) {
  * /login.html, since there's nothing a protected page can usefully render
  * without a resolved user.
  */
+/** A full-page notice for a server that is down or restarting, with a
+ * Retry button - shown instead of redirecting to the login page, which is
+ * for a missing or expired session only. */
+function showAuthUnavailable(message) {
+  console.warn('requireAuth: ' + message);
+  const box = document.createElement('div');
+  box.className = 'auth-unavailable';
+  box.setAttribute('role', 'alert');
+  const p = document.createElement('p');
+  p.textContent = message + ' It may be restarting - try again in a moment. You are still signed in.';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn-primary';
+  btn.textContent = 'Retry';
+  btn.onclick = () => window.location.reload();
+  box.appendChild(p);
+  box.appendChild(btn);
+  document.body.prepend(box);
+}
+
 async function requireAuth() {
+  let res;
   try {
-    const res = await authFetch('/api/auth/me', { credentials: 'same-origin' });
+    res = await authFetch('/api/auth/me', { credentials: 'same-origin' });
+  } catch (e) {
+    // Network down or the server mid-deploy: that is not "signed out", and
+    // sending the reader to the login page made them sign in again after
+    // every blip. Say so and let them retry instead.
+    showAuthUnavailable('The dashboard could not reach the server.');
+    return null;
+  }
+  if (!res.ok && res.status !== 401 && res.status !== 403) {
+    showAuthUnavailable('The server is not responding right now (HTTP ' + res.status + ').');
+    return null;
+  }
+  try {
     if (!res.ok) throw new Error('not authenticated (HTTP ' + res.status + ')');
     CURRENT_USER = await res.json();
+    // shared.js, when the page loads it (login.html does not).
+    if (typeof scopePlantKeysToUser === 'function') scopePlantKeysToUser(CURRENT_USER);
     return CURRENT_USER;
   } catch (e) {
-    // Logged before redirecting - a plain 401 (no session) is expected and
-    // not worth alarming about, but this also catches genuine network
-    // failures, which look identical to the user (bounced to the login
-    // page) but are a different problem worth being able to tell apart in
-    // the console rather than silently redirecting either way.
+    // A 401/403 (no session, or the account was deactivated). Network
+    // failures and 5xx no longer reach here - see showAuthUnavailable().
     console.warn('requireAuth: not authenticated, redirecting to /login.html -', e.message);
     window.location.href = '/login.html';
     return null;

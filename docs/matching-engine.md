@@ -658,8 +658,12 @@ switching). Live counts: HRS 118 rows (₹4.23 cr), Achhad 212 (₹14.17 cr), Va
 `_uom_adjust()` runs before every qty/rate comparison - `_score_components()` and `_diffs_and_flag()`
 on PO↔MIR, `_rates_agree()` and the financial checks in `match_mir_entry_stock()` on MIR↔Stock. Same
 family (KG vs MT) converts to the family's base unit, rate inverted; an unrecognised unit on either
-side passes through unconverted (guessing is worse); two recognised but different families return
-`None`s and `uom_mismatch=True`. This was once missing on the MIR↔Stock side: MIR in MT against a lot
+side passes through unconverted when the other side is blank or the same word (guessing is worse);
+two recognised but different families return `None`s and `uom_mismatch=True`, and so do **two
+different unit words when either is unrecognised** (`_unlike_named_units()`, shared with
+`received_against_line()`): 15 ROLLS against 1,889 KG read as a 9,999% qty mismatch on 29 HRS lines
+before this (2026-09-25). ROLL/ROLLS are mapped to count by census (37 HRS fabric lines bought by the
+roll, received by weight); BAG, Bottle and the area codes stay deliberately unmapped. This was once missing on the MIR↔Stock side: MIR in MT against a lot
 in KG reported a ~1000x "rate mismatch" that was purely a unit artifact.
 
 Under a clash, qty/rate diffs are recorded as `None` and `uom_mismatch` is set - **not** a nonsense
@@ -695,6 +699,15 @@ discrepancy reports: `_SHIPMENT_RATE_TOLERANCE_PCT` (2%, rate groups), `stock_ra
 (2%, MIR↔Stock date+rate path). A pair admitted by either is still checked at zero tolerance.
 
 ### Import PO ↔ MIR: convert currency first
+
+**Value is what cleared, and a missing exchange rate is not INR (2026-09-25).**
+`_import_rate_value_inr()` values a cleared line at net price x BOE qty x exchange rate, not
+`net_value x rate` (the whole order line, which set a part shipment against a gap the size of its
+unshipped part - 1000001560's 5.04 cr against a 2.52 cr receipt). A foreign-currency line with no
+exchange rate returns `(None, None)` - not comparable - instead of its bare USD price, which read as a
+9,560% rate mismatch (1000001318); an INR order needs no rate. Measured on Vapi: no pairing moved.
+The remaining "Net Value Mismatch" rows are 2-11% gaps where qty and rate agree - MIR's value
+includes duty - under the zero tolerance.
 
 Import line items are priced in the PO's own currency (every real Vapi import PO today is USD); MIR's
 `rate`/`taxable_value`/`net` are always INR. The first version compared them raw and scored every
@@ -761,7 +774,10 @@ PO-number groups (a BOE names one shipment, a PO number a whole order), and writ
   skipped when any line of the BOE has no exchange rate, so one line's bare foreign price cannot spread.
 - **A BOE shared by lines with different Bills of Lading is not trusted** - separate shipments cannot
   clear on one BOE (1000001560's second shipment carries its first's BOE in the CSV, while its MIR
-  receipt cites another) - and is left to ordinary matching.
+  receipt cites another) - and is left to ordinary matching, **unless** there are at least as many
+  receipts as lines and every line's BOE qty is met exactly by a receipt of its own
+  (`_receipts_match_lines_exactly()`): 1000001321's two lines on two Bills of Lading, met by MIR23/07's
+  14,680 and 1,320 KG rows, sat unmatched until 2026-09-25.
 - **A manual pin on a line of the BOE, naming the receipt its BOE was booked under, is settled here**
   rather than by an exclusive claim (`pinned_to`; see
   [api-and-features.md](api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21)): the
@@ -940,6 +956,20 @@ calls is on a cubic-ish path.
 
 `names_a_held_po()` (reporting, no shape floor) still scans per call, which is why `sync-status`
 caches `mir_without_po`'s summary.
+
+### A fabric receipt of another width or grade belongs to a sibling line (2026-09-25)
+
+On an order with several lines, every receipt citing it is PO-number-confirmed for every line, so the
+PO number cannot say which line a receipt fills - and `_grade_codes()` cannot read fabric specs
+("67cm" comes out as the codes `7c`, `2m`). Vapi's multi-line fabric orders were paired by whatever
+the assignment settled on: 1000001462's NN-100 102 cm line (50 KG) held an NN250 163 cm receipt of
+1,709 KG. `collect()` now drops, on a multi-line order only, every candidate whose `_fabric_spec()`
+(series+grade such as `EE250`, leading zeros folded, and width in whole cm) contradicts the line's
+(`_fabric_spec_contradicts()`: both name a series and differ, or both name a width more than 1 cm
+apart). Measured on the local copy, rolled back against the gate switched off: Vapi 680 -> 561
+matched lines, 344 changed - 299 wrong-spec pairings removed or replaced, 169 lines gaining an
+agreeing one; the 10 "agreeing pairings lost" were each a receipt now held by another agreeing line
+competing for it. HRS and Achhad lost about 10 each. Single-line orders are untouched.
 
 ### The five core helpers live once, in `matching_core.py`
 
@@ -1230,6 +1260,16 @@ match and a test stand-in both read as "no receipt"):
 
 - `shipment_stage()` / `po_shipment_stage()` - Placed → Shipped (BL) → Cleared (BOE); the PO takes the
   least advanced.
+- `boe_totals(items)` -> `{id(line): BOE qty to judge its order against}`. A **split shipment** - rows
+  sharing item_id and ordered qty, at least two, each clearing less than it (the CSV repeats the whole
+  order qty on every shipment row) - is judged on its summed BOE qty. `qty_discrepancy()`,
+  `item_fully_received()` and `delivery_date_status()` take the line's total; the PO rollups compute
+  it. `item_fully_received()` also requires the order to be **covered**: a line whose BOE total is
+  below its ordered qty is still to come, so 1000001450 (252,000 of 504,000 KG cleared, all received)
+  reads Overdue, not Delivered.
+- `po_flags()` gives every flag a `flag_key` (and `item_ref`): `code:item_id`, plus `#<position>`
+  where the order repeats that item_id, so dismissing one shipment line's flag no longer dismisses it
+  on its siblings, and every stored dismissal keeps applying.
 - `qty_discrepancy()` / `po_has_qty_discrepancy()` - PO vs BOE; a missing BOE qty is not a discrepancy.
 - `item_received()` / `item_fully_received()` / `material_inwarded()` - the Domestic rules from
   `flags.js`'s `lineItemArrived()` / `lineItemFullyReceived()`: a dismissed match is no receipt, a

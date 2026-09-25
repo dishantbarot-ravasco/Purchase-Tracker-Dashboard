@@ -188,8 +188,10 @@ function wireRodtepTabs(body) {
 // schemes, so they are rendered once here rather than twice per panel.
 // `noun` is 'scrip' or 'licence' purely for the wording.
 function licenseGapsHtml(unknown, unclassified, noun) {
+  // On the RoDTEP panel an unknown scrip still opens its detail - the
+  // endpoint answers for a number the ledger lacks, from the import side.
   const unknownHtml = unknown.length ? unknown.map(u =>
-    '<tr>' +
+    (noun === 'scrip' ? '<tr class="row-link" tabindex="0" role="button" data-script="' + escapeHtml(u.licenseNumber) + '">' : '<tr>') +
       '<td>' + escapeHtml(u.licenseNumber) + '</td>' +
       '<td>' + escapeHtml((u.licenseNumbersRaw || []).join(', ')) + '</td>' +
       '<td>' + u.lineCount + '</td>' +

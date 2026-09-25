@@ -93,6 +93,9 @@ function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
   const live = i => i.mirMatch && !i.mirMatch.dismissedByOverride;
   // Not on an order that is not due yet - see importOrderNotDueYet().
   if (!importOrderNotDueYet(po) && items.some(i => !i.mirMatch)) cats.push({ label: 'PO Not Found in MIR', severity: 'critical' });
+  // Also raised by the modal (flags.js's importCriticalFlagsFor()); without
+  // it here the list's KPI and Filter by Flags missed it (1528, 1370).
+  if (items.some(i => live(i) && i.mirMatch.vendorMatched === false)) cats.push({ label: 'Vendor Name Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.taxTypeMismatch)) cats.push({ label: 'Tax Type Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.netValueMismatched)) cats.push({ label: 'Net Value Mismatch in MIR', severity: 'info' });
   if (items.some(i => live(i) && i.mirMatch.taxableValueMismatched)) cats.push({ label: 'Taxable Value Mismatch in MIR', severity: 'info' });
@@ -106,7 +109,7 @@ function importCategoriesFor(po, poQtyDiscMir, poRateDiscMir) {
   const liveCats = cats.filter(c => !poFlagDismissed(po, c.label));
   const seenCodes = new Set();
   (po.dataQualityFlags || []).forEach(f => {
-    if (seenCodes.has(f.code) || poFlagDismissed(po, f.code + ':' + (f.item_id || ''))) return;
+    if (seenCodes.has(f.code) || poFlagDismissed(po, f.flag_key || (f.code + ':' + (f.item_id || '')))) return;
     seenCodes.add(f.code);
     liveCats.push({ label: IMPORT_FLAG_LABELS[f.code] || (f.code + ': ' + f.message), severity: 'info', key: 'flags' });
   });
@@ -214,7 +217,9 @@ function renderImportPoList(el) {
   ).forEach(sub => { subCategoryCounts[sub] = (subCategoryCounts[sub] || 0) + 1; }));
   const subCategoryBaseCount = inSelectedCategory.length;
   if (state.importCategoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => c.category === state.importCategoryFilter));
-  if (state.importSubCategoryFilter) filtered = filtered.filter(po => (po.materialCategories || []).some(c => (c.subCategory || 'Uncategorized') === state.importSubCategoryFilter));
+  if (state.importSubCategoryFilter) // The sub-category must sit under the chosen category on the SAME entry,
+  // not merely somewhere on the PO.
+  filtered = filtered.filter(po => (po.materialCategories || []).some(c => (c.subCategory || 'Uncategorized') === state.importSubCategoryFilter && (!state.importCategoryFilter || c.category === state.importCategoryFilter)));
   const total = filtered.length;
 
   const counts = {
@@ -301,11 +306,11 @@ function renderImportPoList(el) {
 
   const categoryOptionsHtml = Object.entries(categoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([cat, n]) => '<option value="' + escapeHtml(cat) + '"' + (state.importCategoryFilter === cat ? ' selected' : '') + '>' + escapeHtml(cat) + ' (' + n + ')</option>')
+    .map(([cat, n]) => '<option value="' + escapeHtml(cat) + '"' + (state.importCategoryFilter === cat ? ' selected' : '') + '>' + escapeHtml(categoryLabel(cat)) + ' (' + n + ')</option>')
     .join('');
   const subCategoryOptionsHtml = Object.entries(subCategoryCounts)
     .sort((a, b) => b[1] - a[1])
-    .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.importSubCategoryFilter === label ? ' selected' : '') + '>' + escapeHtml(label) + ' (' + n + ')</option>')
+    .map(([label, n]) => '<option value="' + escapeHtml(label) + '"' + (state.importSubCategoryFilter === label ? ' selected' : '') + '>' + escapeHtml(categoryLabel(label)) + ' (' + n + ')</option>')
     .join('');
   const flagCategoryOptionsHtml = Object.keys(flagCategoryCounts).sort().map(function (label) {
     const value = 'cat:' + label;
@@ -789,6 +794,12 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const body = document.getElementById('modalBody');
   const apiBase = '/api/imports';
   const edit = (label, value, field, itemId, fieldType, options) => editableLine(plantKey, label, value, field, itemId, fieldType, options);
+  // A line is addressed by its position ("#<itemRef>"), never its item_id:
+  // 12 Vapi orders repeat one item_id across their shipment lines, and an
+  // edit keyed on it landed on the first of them (imports_views.py's
+  // _resolve_import_line()).
+  const lineAddr = it => '#' + it.itemRef;
+  const lineHeading = it => ' - Line ' + (Number(it.itemRef) + 1) + (it.itemId ? ' (Item ' + escapeHtml(it.itemId) + ')' : '');
 
   const currencyOptions = distinctFieldValues(IMPORT_PO_CACHE || [], p => p.currency);
   const taxTypeOptions = Array.from(new Set(
@@ -839,18 +850,18 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   const shipmentTabHtml = '<div class="mb-block-16">' + shipmentStepperHtml(po) + '</div>' +
     (po.items || []).map(it =>
       '<div class="field-grid">' +
-        '<div class="field-block"><h4>Shipment and Customs' + (it.itemId ? ' - Item ' + escapeHtml(it.itemId) : '') + '</h4>' +
-          edit('Bill of Lading No.', it.billOfLadingNumber, 'bill_of_lading_number', it.itemId) +
+        '<div class="field-block"><h4>Shipment and Customs' + lineHeading(it) + '</h4>' +
+          edit('Bill of Lading No.', it.billOfLadingNumber, 'bill_of_lading_number', lineAddr(it)) +
           (it.billOfLadingNumber ? '<div class="line"><span class="row-link" data-track-bl="' + escapeHtml(it.billOfLadingNumber) + '">Track this shipment</span></div>' : '') +
-          edit('Laden on Board date', it.ladenOnBoardDate, 'laden_on_board_date', it.itemId, 'date') +
-          edit('BOE (Bill of Entry) No.', it.boeNumber, 'boe_number', it.itemId) +
-          edit('Exchange Rate', it.exchangeRate, 'exchange_rate', it.itemId, 'number') +
-          edit('Tax Type', it.taxType, 'tax_type', it.itemId, 'select', taxTypeOptions) +
+          edit('Laden on Board date', it.ladenOnBoardDate, 'laden_on_board_date', lineAddr(it), 'date') +
+          edit('BOE (Bill of Entry) No.', it.boeNumber, 'boe_number', lineAddr(it)) +
+          edit('Exchange Rate', it.exchangeRate, 'exchange_rate', lineAddr(it), 'number') +
+          edit('Tax Type', it.taxType, 'tax_type', lineAddr(it), 'select', taxTypeOptions) +
           plainLine('Total Inclusive Value', it.totalInclusiveValue != null ? formatInr(it.totalInclusiveValue) : null) +
         '</div>' +
-        '<div class="field-block"><h4>Export Incentive / License Scheme' + (it.itemId ? ' - Item ' + escapeHtml(it.itemId) : '') + '</h4>' +
-          edit('License Type', it.licenseType, 'license_type', it.itemId) +
-          edit('License / Scrip Number(s)', it.licenseNumber, 'license_number', it.itemId) +
+        '<div class="field-block"><h4>Export Incentive / License Scheme' + lineHeading(it) + '</h4>' +
+          edit('License Type', it.licenseType, 'license_type', lineAddr(it)) +
+          edit('License / Scrip Number(s)', it.licenseNumber, 'license_number', lineAddr(it)) +
         '</div>' +
       '</div>'
     ).join('');
@@ -880,13 +891,15 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
           (canEditField(plantKey)
             ? '<span class="revert-link" data-field="' + escapeHtml(c.fieldName) + '"' +
               ' data-label="' + escapeHtml(c.fieldName) + '"' +
-              (c.itemId ? ' data-item="' + escapeHtml(c.itemId) + '"' : '') +
+              // Its position where the correction recorded one (item_id
+              // repeats across shipment lines on some orders), else the id.
+              (c.itemRef ? ' data-item="#' + escapeHtml(c.itemRef) + '"' : (c.itemId ? ' data-item="' + escapeHtml(c.itemId) + '"' : '')) +
               ' data-old-value="' + escapeHtml(c.oldValue || '') + '">revert</span>'
             : '') +
           '</div>' +
           (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
-          ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
+          ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? localDateOf(c.correctedAt) : null)) + '</div>' +
         '</div>'
       ).join('')
     : '';
@@ -936,7 +949,8 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   }, poNumber, () => onImportFieldSaved(plantKey, poNumber));
   wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
   applyDynamicStyles(body); // the reconciliation cards' progress bars
-  body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () => trackBlNumber(el2.dataset.trackBl));
+  body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () =>
+    trackBlNumber(el2.dataset.trackBl, () => openImportPoModal(plantKey + '::' + poNumber)));
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
 }
 

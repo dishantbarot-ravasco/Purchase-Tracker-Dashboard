@@ -18,6 +18,9 @@ from apps.core.models import FlagDismissal
 # ── Public API ───────────────────────────────────────────────────────────────
 
 def dismiss_po_flag(plant, po_number, flag_key, user, dismissed: bool, reason: str):
+    from apps.services import data_stamp
+
+    data_stamp.touch(plant)
     """Upserts the FlagDismissal row for (plant, po_number, flag_key).
     Returns the row. Clearing a dismissal (dismissed=False) also clears
     dismissed_by/dismissed_by_email/dismissed_reason/dismissed_at - same

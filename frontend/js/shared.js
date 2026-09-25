@@ -21,7 +21,40 @@ const PLANTS = {
   vapi: { label: 'RTP-Vapi', apiPrefix: '/api/vapi', hasVendorOnMaterials: true, syncCmdPoCsv: 'sync_vapi_po_csv', syncCmdStock: 'sync_vapi_stock' },
 };
 const PLANT_KEYS = Object.keys(PLANTS);
+
+/** Narrows PLANT_KEYS, in place, to the plants `user` may read - called by
+ * auth.js's requireAuth() before any page renders. An empty `plants` list
+ * means every plant (apps/api/permissions.py's user_can_access_plant()).
+ * Every page builds its tabs and fetches from PLANT_KEYS, so a scoped
+ * account opened on All Plants used to request plants the server refuses:
+ * the dashboard read "Couldn't load", and Home/Search warned on every load.
+ * In place, not reassigned: it is a const every script already holds. */
+function scopePlantKeysToUser(user) {
+  const allowed = (user && Array.isArray(user.plants)) ? user.plants : [];
+  if (!allowed.length) return;
+  const keep = PLANT_KEYS.filter(k => allowed.indexOf(k) !== -1);
+  if (!keep.length) return; // a list naming no real plant: leave it to the server's 403s
+  PLANT_KEYS.splice(0, PLANT_KEYS.length, ...keep);
+}
 const ALL_PLANTS_LABEL = 'All Plants';
+
+// A category filter option's text. 'Uncategorized' is the code's own
+// fallback for "no reference row for this material" and sat next to the
+// reference file's real "Others / Uncategorized" category, two buckets that
+// read the same; it is shown by what it means. Values are unchanged.
+// A server timestamp's calendar date as the viewer sees it (YYYY-MM-DD).
+// The timestamps are UTC, so slicing the date off the ISO string read a day
+// early for anything done between 00:00 and 05:30 IST.
+function localDateOf(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso).slice(0, 10);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function categoryLabel(key) {
+  return key === 'Uncategorized' ? 'No category on file' : key;
+}
 
 // A Stock lot's PATCH endpoint - see hrs_views.py/achhad_views.py/
 // vapi_views.py's correct_material_field. Used by openMaterialModal's
@@ -691,7 +724,9 @@ function localISODate(d) {
 async function loadKpis() {
   const results = await Promise.all(PLANT_KEYS.map(async key => {
     try {
-      const data = await apiForPlant(key, '/purchase-orders');
+      // The vendor/date summary, not the full list - see
+      // _domestic_base.make_purchase_order_summary().
+      const data = await apiForPlant(key, '/purchase-orders/summary');
       return data.purchaseOrders || [];
     } catch (e) {
       console.error('loadKpis: failed to load purchase orders for ' + key + ':', e);
@@ -948,7 +983,7 @@ function blTrackingResultHtml(blNumber, data) {
       blTrackingFieldHtml('BL Number', blNumber) +
       blTrackingFieldHtml('Status', statusLabel) +
       blTrackingFieldHtml('Shipping Line', meta.sealineName || meta.sealine) +
-      blTrackingFieldHtml('Last Updated', meta.updatedAt ? formatDateIN(meta.updatedAt.slice(0, 10)) : null) +
+      blTrackingFieldHtml('Last Updated', meta.updatedAt ? formatDateIN(localDateOf(meta.updatedAt)) : null) +
       blTrackingFieldHtml('Notes', warnings.length ? warnings.join(', ') : null) +
     '</div>' +
     locationsHtml + vesselsHtml +
@@ -958,18 +993,30 @@ function blTrackingResultHtml(blNumber, data) {
   );
 }
 
-async function trackBlNumber(blNumber) {
+/** `onBack`, when given (opened from a PO's own modal), adds a "Back to
+ * the PO" link: this view replaces that modal in the one shared shell, and
+ * there was no way back to it. It also has the close button, dialog
+ * semantics and stale-response guard every other modal has. */
+async function trackBlNumber(blNumber, onBack) {
+  const myModalRequestId = ++modalRequestId;
   const backdrop = document.getElementById('modalBackdrop');
   const body = document.getElementById('modalBody');
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
   body.innerHTML =
-    '<div class="modal-head"><div><h2>Track Shipment</h2><div class="modal-meta">' + escapeHtml(blNumber) + '</div></div></div>' +
+    '<div class="modal-head"><div><h2>Track Shipment</h2><div class="modal-meta">' + escapeHtml(blNumber) + '</div></div>' +
+    '<span class="close-btn">&times;</span></div>' +
+    (onBack ? '<div><span class="row-link" id="blTrackingBack" tabindex="0" role="button">&larr; Back to the purchase order</span></div>' : '') +
     '<div id="blTrackingBody" class="mt-16">Looking up live shipment status&hellip;</div>';
   backdrop.classList.add('open');
+  openModalA11y(backdrop);
+  const back = document.getElementById('blTrackingBack');
+  if (back) back.onclick = () => onBack();
   try {
     const data = await apiImports('/track-bl?bl=' + encodeURIComponent(blNumber));
+    if (myModalRequestId !== modalRequestId) return;
     document.getElementById('blTrackingBody').innerHTML = blTrackingResultHtml(blNumber, data);
   } catch (e) {
+    if (myModalRequestId !== modalRequestId) return;
     document.getElementById('blTrackingBody').innerHTML =
       '<div class="no-data-note">Could not track this shipment: ' + escapeHtml(e.message || 'unknown error') + '</div>';
   }
@@ -1462,7 +1509,16 @@ function wireOverrideBox(root) {
           'Remember to fix the source file too - the next sync overwrites this.';
       }
       announce('Correction saved for ' + savedLabel);
-      if (onSaved) await onSaved(savedField, savedItem);
+      // The save is done. A failure reloading the page after it is not a
+      // failed save, and used to be reported as "Could not save".
+      if (onSaved) {
+        try {
+          await onSaved(savedField, savedItem);
+        } catch (reloadError) {
+          console.error('Saved, but reloading after the save failed:', reloadError);
+          window.alert('Saved "' + savedLabel + '", but the page could not reload to show it. Refresh the page to see the change.');
+        }
+      }
     } catch (e) {
       statusEl.className = 'override-status err';
       statusEl.textContent = 'Could not save: ' + e.message;

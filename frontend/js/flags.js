@@ -371,7 +371,9 @@ function importCriticalFlagsFor(po) {
 // flag on this PO since import_flags.py always emits the same code for the
 // same underlying check on the same item.
 function importFlagHtml(f, po, plantKey) {
-  const flagKey = f.code + ':' + (f.item_id || '');
+  // The backend's own key (import_flags.po_flags()): it adds the line's
+  // position where an order repeats an item_id across shipment lines.
+  const flagKey = f.flag_key || (f.code + ':' + (f.item_id || ''));
   const fd = (po.flagDismissals || []).find(row => row.flagKey === flagKey);
   const dismissed = !!(fd && fd.dismissed);
   const dismissTag = dismissed

@@ -153,7 +153,7 @@ async function openPoModal(compositeKey) {
           '</div>' +
           (c.reason ? '<div class="mt-4 fs-12 italic text-slate">"' + escapeHtml(c.reason) + '"</div>' : '') +
           '<div class="mt-4 fs-11 text-slate-soft">' + escapeHtml(c.correctedBy || 'unknown') +
-          ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? c.correctedAt.slice(0, 10) : null)) + '</div>' +
+          ' &middot; ' + escapeHtml(formatDateIN(c.correctedAt ? localDateOf(c.correctedAt) : null)) + '</div>' +
         '</div>'
       ).join('')
     : '';
@@ -334,7 +334,7 @@ function chooseMirCandidate(mirNo, candidates) {
   text.textContent = mirLabel(mirNo) + ' is already matched to ' + claim + '.';
   box.appendChild(text);
   const options = [
-    { label: 'Keep both', cls: 'mir-choice-primary', hint: 'Both lines use this receipt, and each counts its share by ordered quantity.', run: () => applyMirMatch({ mirNo: mirNo, share: true }) },
+    { label: 'Keep both', cls: 'mir-choice-primary', hint: 'Both lines use this receipt. Where both count just this one receipt in the same unit, each counts its share by ordered quantity; otherwise each is compared against the whole receipt.', run: () => applyMirMatch({ mirNo: mirNo, share: true }) },
     { label: 'Move it here', cls: '', hint: 'Only this line uses it. The other line is re-matched automatically and may end up with no MIR.', run: () => applyMirMatch({ mirNo: mirNo }) },
     { label: 'Cancel', cls: '', hint: '', run: () => {} },
   ];
@@ -413,15 +413,23 @@ function closeMirPicker() {
   MIR_PICKER = null;
 }
 
+// Stale-response guard for the picker's search, same pattern as
+// modalRequestId: a slower earlier search, or the previous line's list after
+// a quick switch, must not overwrite the newer one.
+let mirCandidatesRequestId = 0;
+
 async function loadMirCandidates(q) {
   const list = document.getElementById('mirPickerList');
   if (!list || !MIR_PICKER) return;
+  const myRequestId = ++mirCandidatesRequestId;
+  const picker = MIR_PICKER;
   list.innerHTML = '<div class="empty-note-sm">Loading&hellip;</div>';
   try {
-    const data = await MIR_PICKER.api.candidates(q, MIR_PICKER.itemRef);
-    if (!MIR_PICKER) return;  // closed while the fetch was in flight
+    const data = await picker.api.candidates(q, picker.itemRef);
+    if (myRequestId !== mirCandidatesRequestId || MIR_PICKER !== picker) return;
     renderMirCandidates(data.candidates || []);
   } catch (e) {
+    if (myRequestId !== mirCandidatesRequestId) return;
     list.innerHTML = '<div class="empty-note-sm">Could not load MIR entries: ' + escapeHtml(e.message) + '</div>';
   }
 }
