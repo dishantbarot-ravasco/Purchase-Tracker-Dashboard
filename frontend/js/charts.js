@@ -59,6 +59,73 @@ function fillMonthRange(keys) {
   }
   return out;
 }
+// A two-ring status doughnut: `inner` is what has ARRIVED (received /
+// partial / nothing), `outer` is the DELIVERY DATE (overdue / on order /
+// date unknown / the rest). Each ring is a partition of the same POs, so
+// each status KPI card has exactly one slice carrying its own number - a
+// single ring could not, because "Overdue" and "Date Unknown" cut across
+// received/partial (a card read 142 while its slice read 7).
+//
+// Slices are {key, label, val, color}; a null key is not clickable. Chart.js
+// shares one labels array across datasets, so every slice gets an index in
+// the combined list and each ring carries zeros for the other ring's slices.
+function renderTwoRingDoughnut(canvas, { outer, inner, selectedKey, onPick, centerPlugin }) {
+  const slices = outer.concat(inner);
+  const ringData = (ring, offset) => slices.map((s, i) => (i >= offset && i < offset + ring.length ? s.val : 0));
+  const ringTotal = ring => ring.reduce((a, s) => a + s.val, 0);
+  const colors = slices.map(s => s.color);
+  return new Chart(canvas, {
+    type: 'doughnut',
+    data: {
+      labels: slices.map(s => s.label),
+      datasets: [
+        { data: ringData(outer, 0), backgroundColor: colors, borderWidth: 0, spacing: 2, borderRadius: 3, weight: 1,
+          offset: slices.map(s => (s.key && s.key === selectedKey ? 10 : 0)) },
+        { data: ringData(inner, outer.length), backgroundColor: colors, borderWidth: 0, spacing: 2, borderRadius: 3, weight: 1,
+          offset: slices.map(s => (s.key && s.key === selectedKey ? 10 : 0)) },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      cutout: '52%',
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        const s = slices[elements[0].index];
+        if (s.key) onPick(s.key);
+      },
+      onHover: (evt, elements) => {
+        evt.native.target.style.cursor = elements.length && slices[elements[0].index].key ? 'pointer' : 'default';
+      },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 10.5 },
+            generateLabels: () => slices.map((s, i) => ({
+              text: s.label + '  ' + s.val,
+              fillStyle: s.color, strokeStyle: s.color, index: i,
+              hidden: s.val === 0,
+            })).filter(l => !l.hidden),
+          },
+          onClick: (evt, item) => { const s = slices[item.index]; if (s.key) onPick(s.key); },
+        },
+        tooltip: {
+          backgroundColor: '#0f1b2d', padding: 10, cornerRadius: 8,
+          filter: c => c.parsed > 0,
+          callbacks: {
+            title: items => (items.length && items[0].datasetIndex === 0 ? 'Delivery date' : 'What has arrived'),
+            label: c => {
+              const t = ringTotal(c.datasetIndex === 0 ? outer : inner);
+              return ' ' + c.label + ': ' + c.parsed + (t ? ' (' + Math.round(c.parsed / t * 100) + '%)' : '');
+            },
+            afterLabel: c => (slices[c.dataIndex].key ? 'Click to filter the list below' : ''),
+          },
+        },
+      },
+    },
+    plugins: centerPlugin ? [centerPlugin] : [],
+  });
+}
 // Chart.js plugin (scoped per-chart via options.plugins array, not globally
 // registered) that draws the slice total in the doughnut's own cutout hole -
 // a "how many POs total" readout the legend/slices alone don't give at a

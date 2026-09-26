@@ -520,7 +520,10 @@ Chart.js lifecycle and the modal close path, shared by the dashboard's views. Ex
 `modalCharts`, `destroyPageCharts()`, `destroyModalCharts()`, `modalRequestId`, `MONTH_NAMES`,
 `formatMonthLabel()` (`YYYY-MM` -> "Mon YYYY"), `fillMonthRange(keys)` (every month from the
 earliest to the latest key, so a month with no orders is an empty slot rather than skipped),
-`centerTextPlugin` / `centerImportTextPlugin`
+`renderTwoRingDoughnut(canvas, {outer, inner, selectedKey, onPick, centerPlugin})` (both list views'
+status doughnut: two rings, each a partition of the same POs, slices `{key, label, val, color}`, a
+null key not clickable; each ring carries zeros for the other ring's slices because Chart.js shares
+one labels array), `centerTextPlugin` / `centerImportTextPlugin`
 (per-chart doughnut centre labels "TOTAL POs" / "IMPORT POs"), `closeModal()`, `trailingPriceAvg()`
 (calendar-day trailing average used by the material price chart), and the delegated `.close-btn`
 click listener. `closeModal()` guards its calls with `typeof` because `SELECTED_FIELD` and
@@ -579,14 +582,17 @@ builds 11 KPI cards (`total`, `received`, `partial`, `qtydisc`, `qtyover`, `qtyu
 `overdue`, `pending`, `unknown`, `flags`; `total` clears), the "Filter by Flags" select (fixed options
 plus one `cat:<label>` per category present), the month bar chart (click toggles
 `state.chartMonthFilter`) and status doughnut. **The bar chart is pre-tax order value (`totalValue`)
-per created month, stacked by the same `po._status` partition as the doughnut**, so it answers the
-status cards' question in rupees; it used to plot `totalInclTax` falling back to `totalValue`, which
-added GST-inclusive and exclusive figures into one bar and matched no card. POs with no date or value
-are counted in a note under it. The doughnut (click toggles `state.statusFilter`), then the list region. A note under
-the doughnut says why its Overdue / Date Unknown slices are smaller than those cards. **The doughnut is a partition of `po._status`, the Overdue and Date Unknown cards are
-overlays**, so those two slices count only POs where nothing has arrived, are labelled "... - nothing
-received", and set `status:overdue` / `status:unknown` (filtered on `po._status`, also offered in the
-header Status select). They used to share the cards' keys, so a slice reading 15 opened a list of 41. `PO_LIST_CTX` carries `{el, filtered, totalPages}`. `poListRegionHtml()` applies the status
+per created month, stacked received / partial / nothing received**, with the overdue share in the
+tooltip; it used to plot `totalInclTax` falling back to `totalValue`, which added GST-inclusive and
+exclusive figures into one bar and matched no card. POs with no date or value are counted in a note
+under it. **The doughnut has two rings (`statusRings`, drawn by `renderTwoRingDoughnut()`), and every
+status card has a slice with its own number and key:** inner = what has arrived (`received`,
+`partial`, `status:nothing`), outer = delivery date (`overdue` = `po._overdue`, `pending` = On Order,
+`unknown` = `po._noDeliveryDate`, and an unclickable "dated, not overdue" remainder). The outer groups
+are disjoint because overdue needs a passed date and Date Unknown has none. A single ring could only
+show the "nothing received" part of the Overdue and Date Unknown overlays: production read 142 on the
+Date Unknown card and 7 on its slice. A click toggles `state.statusFilter` then renders the list
+region. `status:nothing` is also in the header Status select. `PO_LIST_CTX` carries `{el, filtered, totalPages}`. `poListRegionHtml()` applies the status
 filter, month filter and `applyColFilters()`, sorts newest first, and renders a top-5 grid or a
 paginated (10/page) "View all" table with the header filter row; row links carry
 `data-po="<plant>::<poNumber>"` and open `openPoModal()`. Under the list,
@@ -659,18 +665,18 @@ PO-vs-BOE check; `importRowFlags()` (partial and on-order can both be true here)
 Partial Delivered, Overdue, On Order and Date Unknown read the server's receipt-based
 `materialInwarded` / `partialDelivery` / `deliveryDateStatus` (see `import_flags.py`), the same rules
 as Domestic. `renderImportPoList(el)` mirrors the domestic view with
-13 KPI cards including the shipment-stage trio, two charts on one receipt-based partition
-(`importReceiptStatus()`: inwarded / partial / nothing received and on order / overdue / date
-unknown), the RoDTEP Ledger / Advance License buttons, and `#importListRegion`
+13 KPI cards including the shipment-stage trio, the two charts below, the RoDTEP Ledger / Advance License buttons, and `#importListRegion`
 (`IMPORT_LIST_CTX`, `importListRegionHtml()`, `renderImportListRegion()`, `wireImportListRegion()`;
 every `[data-icf]` filter is table-only). **The bar chart is order value in INR before duty
 (`importPoInrValue()`: each line's `netValue x exchangeRate`, null if any line lacks either, counted
-in an "unplotted" note) per created month, stacked by that partition.** It used to plot the duty-paid
+in an "unplotted" note) per created month, stacked by `importReceiptStatus()` (inwarded / partial /
+nothing), with the overdue share in the tooltip.** It used to plot the duty-paid
 `totalInclusiveValue`, which only exists after customs clearance, so every open order counted as
-zero. **The doughnut is "Delivery Status (MIR)"**, replacing a shipment-stage doughnut (customs
-clearance is not delivery; on production 40 of 43 import POs sat in "Cleared"). Its "nothing
-received" slices set `recv:<status>`, filtered on `importReceiptStatus()`, because the Overdue / On
-Order / Date Unknown cards also count part-delivered POs. BL numbers render with a `data-track-bl` "Track" link.
+zero. **The doughnut is "Delivery Status (MIR)", two rings like Domestic's:** inner = what has
+arrived (`inwarded`, `partial`, `recv:nothing`), outer = the server's `deliveryDateStatus`, already
+one value per PO (`overdue`, `onorder`, `unknowndate`, and an unclickable Delivered remainder), so each
+slice equals its card. It replaced a shipment-stage doughnut (customs clearance is not delivery; on
+production 40 of 43 import POs sat in "Cleared"). BL numbers render with a `data-track-bl` "Track" link.
 
 `openImportPoModal("<plant>::<poNumber>")` is guarded, fetches the detail once via
 `ensureImportPoDetailLoaded()` (GET `/api/imports/purchase-orders/<plant>/<po>`, cached in

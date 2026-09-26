@@ -129,13 +129,13 @@ function poQtyDiscPo(po) {
 // shared modal with live shipment status via shared.js's trackBlNumber()
 // (see that function's own header comment for why the SAME #modalBackdrop
 // every other modal on this page uses is reused here, not a new component).
-// The one receipt-based slice an import PO sits in, for both charts and the
-// 'recv:' table filter - received in full, part-received, else nothing
-// received yet, split by the delivery-date status the cards use.
+// What has arrived for an import PO, for the doughnut's inner ring, the bar
+// stacks and the 'recv:' table filter: received in full, part-received, or
+// nothing yet. The delivery date is the outer ring (deliveryDateStatus).
 function importReceiptStatus(po) {
   if (po.materialInwarded) return 'inwarded';
   if (po.partialDelivery) return 'partial';
-  return { 'Overdue': 'overdue', 'Unknown': 'unknowndate' }[po.deliveryDateStatus] || 'onorder';
+  return 'nothing';
 }
 
 // A PO's order value in INR before duty: sum of each line's net value x its
@@ -313,24 +313,31 @@ function renderImportPoList(el) {
       '<div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>';
   }).join('');
 
-  // Both charts use one receipt-based PARTITION of the POs (every PO in
-  // exactly one slice), built from the same fields as the Material Inwarded /
-  // Partial / Overdue / On Order / Date Unknown cards. The cards for the last
-  // three also count part-delivered POs, so those slices say "nothing
-  // received" and filter with a 'recv:' key - same arrangement as Domestic's
-  // status doughnut. This replaced a shipment-stage doughnut: customs
-  // clearance is not delivery, and on production 40 of 43 import POs sat in
-  // its "Cleared" slice.
+  // Two rings, each a partition of `filtered` (charts.js's
+  // renderTwoRingDoughnut()), so every status card has a slice carrying its
+  // own number and key: inner = what has arrived (Material Inwarded /
+  // Partial Delivered / nothing yet), outer = the server's
+  // deliveryDateStatus, which is already one value per PO (Overdue / On
+  // Order / Unknown / Delivered). One ring could only show the "nothing
+  // received" part of Overdue and Date Unknown, which cut across partial.
+  // This replaced a shipment-stage doughnut: customs clearance is not
+  // delivery, and on production 40 of 43 import POs sat in its "Cleared"
+  // slice.
   const receiptSeries = [
     { key: 'inwarded', status: 'inwarded', label: 'Material Inwarded', color: '#16a34a' },
     { key: 'partial', status: 'partial', label: 'Partial Delivered', color: '#2563eb' },
-    { key: 'recv:onorder', status: 'onorder', label: 'On Order - nothing received', color: '#d97706' },
-    { key: 'recv:overdue', status: 'overdue', label: 'Overdue - nothing received', color: '#dc2626' },
-    { key: 'recv:unknowndate', status: 'unknowndate', label: 'Date Unknown - nothing received', color: '#64748b' },
+    { key: 'recv:nothing', status: 'nothing', label: 'Nothing received yet', color: '#f59e0b' },
   ];
-  const stageChartData = receiptSeries
-    .map(sr => ({ key: sr.key, label: sr.label, color: sr.color, val: filtered.filter(po => importReceiptStatus(po) === sr.status).length }))
-    .filter(sr => sr.val > 0);
+  const statusRings = {
+    inner: receiptSeries.map(sr => ({ key: sr.key, label: sr.label, color: sr.color, val: filtered.filter(po => importReceiptStatus(po) === sr.status).length })),
+    outer: [
+      { key: 'overdue', label: 'Overdue', val: counts.overdue, color: '#dc2626' },
+      { key: 'onorder', label: 'Pending Deliveries / On Order', val: counts.onOrder, color: '#d97706' },
+      { key: 'unknowndate', label: 'Delivery Date Unknown', val: counts.unknownDate, color: '#64748b' },
+      { key: null, label: 'Delivered', val: total - counts.overdue - counts.onOrder - counts.unknownDate, color: '#cbd5e1' },
+    ],
+  };
+  const stageChartData = total ? [total] : [];
 
   // Order value per created month in INR BEFORE duty (net value x exchange
   // rate, per line) - the basis the matcher compares imports on. The
@@ -345,6 +352,7 @@ function renderImportPoList(el) {
     const row = monthStatus[m] || (monthStatus[m] = {});
     const st = importReceiptStatus(po);
     row[st] = (row[st] || 0) + v;
+    if (po.deliveryDateStatus === 'Overdue') row.overdueValue = (row.overdueValue || 0) + v;
   });
   const months = fillMonthRange(Object.keys(monthStatus));
 
@@ -431,6 +439,7 @@ function renderImportPoList(el) {
         '</div>' +
         '<div class="chart-panel"><h4>Delivery Status (MIR)</h4>' +
           (stageChartData.length ? '<div class="chart-box"><canvas id="importStageChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
+          (stageChartData.length ? '<div class="no-data-note">Inner ring: what has arrived. Outer ring: delivery date. Each slice matches its card above.</div>' : '') +
         '</div>' +
       '</div>' : '') +
     // Its own container so a header-filter keystroke can replace just
@@ -511,7 +520,11 @@ function renderImportPoList(el) {
               filter: c => c.parsed.y > 0,
               callbacks: {
                 label: c => c.dataset.label + ': ' + formatInr(c.parsed.y),
-                footer: items => 'Total: ' + formatInr(items.reduce((a, c) => a + c.parsed.y, 0)) + '\nClick to filter the list below',
+                footer: items => {
+                  const od = items.length ? (monthStatus[months[items[0].dataIndex]] || {}).overdueValue : 0;
+                  return 'Total: ' + formatInr(items.reduce((a, c) => a + c.parsed.y, 0))
+                    + (od ? '\nOf which overdue: ' + formatInr(od) : '') + '\nClick to filter the list below';
+                },
               },
             },
           },
@@ -529,58 +542,16 @@ function renderImportPoList(el) {
   }
   if (stageChartData.length) {
     try {
-      const ctx = document.getElementById('importStageChart');
-      pageCharts.push(new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-          labels: stageChartData.map(s => s.label),
-          datasets: [{
-            data: stageChartData.map(s => s.val),
-            backgroundColor: stageChartData.map(s => s.color),
-            borderWidth: 0, spacing: 3, borderRadius: 4, hoverOffset: 8,
-            offset: stageChartData.map(s => state.importStatusFilter === s.key ? 14 : 0),
-          }],
+      pageCharts.push(renderTwoRingDoughnut(document.getElementById('importStageChart'), {
+        outer: statusRings.outer,
+        inner: statusRings.inner,
+        selectedKey: state.importStatusFilter,
+        centerPlugin: centerImportTextPlugin,
+        onPick: key => {
+          state.importStatusFilter = state.importStatusFilter === key ? null : key;
+          state.importTablePage = 1;
+          renderImportPoList(el);
         },
-        options: {
-          maintainAspectRatio: false, cutout: '70%',
-          onClick: (evt, elements) => {
-            if (!elements.length) return;
-            const key = stageChartData[elements[0].index].key;
-            state.importStatusFilter = state.importStatusFilter === key ? null : key;
-            state.importTablePage = 1;
-            renderImportPoList(el);
-          },
-          onHover: (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
-          plugins: {
-            legend: {
-              position: 'bottom',
-              labels: {
-                boxWidth: 9, boxHeight: 9, padding: 12, font: { size: 10.5 },
-                generateLabels: chart => {
-                  const vals = chart.data.datasets[0].data;
-                  const totalV = vals.reduce((a, b) => a + b, 0);
-                  return chart.data.labels.map((label, i) => ({
-                    text: label + '  ' + vals[i] + ' (' + (totalV ? Math.round(vals[i] / totalV * 100) : 0) + '%)',
-                    fillStyle: chart.data.datasets[0].backgroundColor[i],
-                    strokeStyle: chart.data.datasets[0].backgroundColor[i],
-                    index: i,
-                  }));
-                },
-              },
-            },
-            tooltip: {
-              backgroundColor: '#0f1b2d', padding: 10, cornerRadius: 8,
-              callbacks: {
-                label: c => {
-                  const totalV = c.dataset.data.reduce((a, b) => a + b, 0);
-                  return ' ' + c.label + ': ' + c.parsed + (totalV ? ' (' + Math.round(c.parsed / totalV * 100) + '%)' : '');
-                },
-                afterLabel: () => 'Click to filter the list below',
-              },
-            },
-          },
-        },
-        plugins: [centerImportTextPlugin],
       }));
     } catch (e) {
       console.error('Import stage chart failed to render:', e);

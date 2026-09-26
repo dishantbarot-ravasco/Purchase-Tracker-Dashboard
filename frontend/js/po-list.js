@@ -191,24 +191,36 @@ function renderPoList(el) {
   // Status <select> (see the "View all" table below) - one status value,
   // three ways to set it, never out of sync with each other.
   //
-  // The doughnut is a PARTITION of po._status (its slices add up to Total),
-  // while the Overdue and Date Unknown cards are overlays that also count
-  // partly-delivered POs. So those two slices are not the cards: they count
-  // only the POs where nothing has arrived yet, and they filter with a
-  // 'status:' key (po._status itself, see poListRegionHtml()) rather than the
-  // card's key. Until 2026-09-25 they shared the card's key, so a slice
-  // reading 15 opened a list of 41.
-  const statusChartData = [
-    { key: 'received', label: STATUS_LABELS.received, val: counts.received, color: '#16a34a' },
-    { key: 'partial', label: STATUS_LABELS.partial, val: counts.partial, color: '#2563eb' },
-    { key: 'pending', label: STATUS_LABELS.pending, val: counts.pending, color: '#d97706' },
-    { key: 'status:overdue', label: STATUS_LABELS.overdue + ' - nothing received', val: counts.overdue, color: '#dc2626' },
-    { key: 'status:unknown', label: STATUS_LABELS.unknown + ' - nothing received', val: counts.unknown, color: '#64748b' },
-  ].filter(s => s.val > 0);
+  // Two rings, each a partition of `filtered` (see charts.js's
+  // renderTwoRingDoughnut()). Overdue and Date Unknown are overlays across
+  // received/partial, so one ring could only show their "nothing received"
+  // part - on production the Date Unknown card read 142 while its slice read
+  // 7. Split by question instead, every status card has a slice with its own
+  // number and its own key: inner = what has arrived, outer = delivery date.
+  // The outer ring's groups are disjoint by construction (overdue needs a
+  // passed date, Date Unknown has none, On Order is dated and not due); a PO
+  // with no line items is both On Order and undated, and is shown undated.
+  const nothingReceived = filtered.filter(po => po._status !== 'received' && po._status !== 'partial').length;
+  const pendingDated = filtered.filter(po => po._status === 'pending' && !po._noDeliveryDate).length;
+  const statusRings = {
+    inner: [
+      { key: 'received', label: STATUS_LABELS.received, val: counts.received, color: '#16a34a' },
+      { key: 'partial', label: STATUS_LABELS.partial, val: counts.partial, color: '#2563eb' },
+      { key: 'status:nothing', label: 'Nothing received yet', val: nothingReceived, color: '#f59e0b' },
+    ],
+    outer: [
+      { key: 'overdue', label: STATUS_LABELS.overdue, val: overdueCount, color: '#dc2626' },
+      { key: 'pending', label: STATUS_LABELS.pending, val: pendingDated, color: '#d97706' },
+      { key: 'unknown', label: STATUS_LABELS.unknown, val: noDateCount, color: '#64748b' },
+      { key: null, label: 'Dated, not overdue, some or all received', val: total - overdueCount - pendingDated - noDateCount, color: '#cbd5e1' },
+    ],
+  };
+  const statusChartData = total ? [total] : [];
 
-  // Order value per created month, stacked by the same po._status partition
-  // the doughnut and the status cards use, so the bars answer the cards'
-  // question ("how much of what we ordered has arrived?") in rupees. Pre-tax
+  // Order value per created month, stacked by the doughnut's inner ring
+  // (received / partial / nothing received), so the bars answer the same
+  // question as the Material Inwarded and Partial cards in rupees; the
+  // tooltip adds how much of the month is overdue. Pre-tax
   // totalValue only: mixing in the tax-inclusive total where present added
   // GST-inclusive and GST-exclusive figures into one bar, and every value
   // comparison in this app is pre-tax.
@@ -221,7 +233,9 @@ function renderPoList(el) {
     const v = po.totalValue;
     if (!m || v == null) { unplotted++; return; }
     const row = monthStatus[m] || (monthStatus[m] = {});
-    row[po._status] = (row[po._status] || 0) + v;
+    const k = (po._status === 'received' || po._status === 'partial') ? po._status : 'nothing';
+    row[k] = (row[k] || 0) + v;
+    if (po._overdue) row.overdueValue = (row.overdueValue || 0) + v;
   });
   const months = fillMonthRange(Object.keys(monthStatus));
 
@@ -234,7 +248,7 @@ function renderPoList(el) {
   // to mean) moved into "Filter by Flags" as "Critical Issues"/"Data
   // Quality Flag" alongside the existing qty/rate mismatch shortcuts. Flags
   // is a coarse KPI-style shortcut sharing state.statusFilter with the KPI
-  // cards above (see statusChartData's `key` comment - one source of truth,
+  // cards above (see statusRings' comment - one source of truth,
   // never disagreeing). Only options actually present in the current date
   // range are listed, so a dropdown never shows an option with nothing
   // behind it.
@@ -326,7 +340,7 @@ function renderPoList(el) {
         '</div>' +
         '<div class="chart-panel"><h4>Status Breakdown</h4>' +
           (statusChartData.length ? '<div class="chart-box"><canvas id="poStatusChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
-          ((overdueCount > counts.overdue || noDateCount > counts.unknown) ? '<div class="no-data-note">The Overdue and Date Unknown slices count only POs with nothing received; their cards above also count part-delivered POs.</div>' : '') +
+          (statusChartData.length ? '<div class="no-data-note">Inner ring: what has arrived. Outer ring: delivery date. Each slice matches its card above.</div>' : '') +
         '</div>' +
       '</div>' : '') +
     // Its own container so a PO Number/Vendor keystroke can replace just
@@ -384,9 +398,7 @@ function renderPoList(el) {
       const trendSeries = [
         { key: 'received', label: STATUS_LABELS.received, color: '#16a34a' },
         { key: 'partial', label: STATUS_LABELS.partial, color: '#2563eb' },
-        { key: 'pending', label: STATUS_LABELS.pending, color: '#d97706' },
-        { key: 'overdue', label: STATUS_LABELS.overdue + ' - nothing received', color: '#dc2626' },
-        { key: 'unknown', label: STATUS_LABELS.unknown + ' - nothing received', color: '#64748b' },
+        { key: 'nothing', label: 'Nothing received yet', color: '#f59e0b' },
       ].filter(sr => months.some(m => (monthStatus[m] || {})[sr.key]));
       // Clicking a bar sets state.chartMonthFilter to that month - see the
       // "table-only filter" comment on state.chartMonthFilter. Clicking the
@@ -427,7 +439,11 @@ function renderPoList(el) {
               filter: c => c.parsed.y > 0,
               callbacks: {
                 label: c => c.dataset.label + ': ' + formatInr(c.parsed.y),
-                footer: items => 'Total: ' + formatInr(items.reduce((a, c) => a + c.parsed.y, 0)) + '\nClick to filter the list below',
+                footer: items => {
+                  const od = items.length ? (monthStatus[months[items[0].dataIndex]] || {}).overdueValue : 0;
+                  return 'Total: ' + formatInr(items.reduce((a, c) => a + c.parsed.y, 0))
+                    + (od ? '\nOf which overdue: ' + formatInr(od) : '') + '\nClick to filter the list below';
+                },
               },
             },
           },
@@ -450,74 +466,18 @@ function renderPoList(el) {
   }
   if (statusChartData.length) {
     try {
-      const ctx = document.getElementById('poStatusChart');
-      // Clicking a slice sets statusFilter to that status - the exact same
-      // state field (and toggle-off-on-repeat behavior) a KPI card click
-      // already uses, so the corresponding KPI card lights up (.active
-      // outline) as the same signal a click on that card would give. The
-      // selected slice also pops out persistently (not just on hover) via a
-      // per-index `offset`, so the selection is visible even after the
-      // mouse moves away.
-      pageCharts.push(new Chart(ctx, {
-        type: 'doughnut',
-        data: {
-          labels: statusChartData.map(s => s.label),
-          datasets: [{
-            data: statusChartData.map(s => s.val),
-            backgroundColor: statusChartData.map(s => s.color),
-            borderWidth: 0,
-            spacing: 3,
-            borderRadius: 4,
-            hoverOffset: 8,
-            offset: statusChartData.map(s => state.statusFilter === s.key ? 14 : 0),
-          }],
+      // A slice click sets the same state.statusFilter a KPI card click
+      // does, with the same toggle-off-on-repeat, so the card lights up too.
+      pageCharts.push(renderTwoRingDoughnut(document.getElementById('poStatusChart'), {
+        outer: statusRings.outer,
+        inner: statusRings.inner,
+        selectedKey: state.statusFilter,
+        centerPlugin: centerTextPlugin,
+        onPick: key => {
+          state.statusFilter = state.statusFilter === key ? null : key;
+          state.tablePage = 1;
+          renderPoList(el);
         },
-        options: {
-          maintainAspectRatio: false,
-          cutout: '70%',
-          onClick: (evt, elements) => {
-            if (!elements.length) return;
-            const key = statusChartData[elements[0].index].key;
-            state.statusFilter = state.statusFilter === key ? null : key;
-            state.tablePage = 1;
-            renderPoList(el);
-          },
-          onHover: (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
-          plugins: {
-            legend: {
-              position: 'bottom',
-              labels: {
-                boxWidth: 9,
-                boxHeight: 9,
-                padding: 12,
-                font: { size: 10.5 },
-                generateLabels: chart => {
-                  const vals = chart.data.datasets[0].data;
-                  const total = vals.reduce((a, b) => a + b, 0);
-                  return chart.data.labels.map((label, i) => ({
-                    text: label + '  ' + vals[i] + ' (' + (total ? Math.round(vals[i] / total * 100) : 0) + '%)',
-                    fillStyle: chart.data.datasets[0].backgroundColor[i],
-                    strokeStyle: chart.data.datasets[0].backgroundColor[i],
-                    index: i,
-                  }));
-                },
-              },
-            },
-            tooltip: {
-              backgroundColor: '#0f1b2d',
-              padding: 10,
-              cornerRadius: 8,
-              callbacks: {
-                label: c => {
-                  const total = c.dataset.data.reduce((a, b) => a + b, 0);
-                  return ' ' + c.label + ': ' + c.parsed + (total ? ' (' + Math.round(c.parsed / total * 100) + '%)' : '');
-                },
-                afterLabel: () => 'Click to filter the list below',
-              },
-            },
-          },
-        },
-        plugins: [centerTextPlugin],
       }));
     } catch (e) {
       console.error('PO status chart failed to render:', e);
@@ -561,8 +521,9 @@ function poListRegionHtml() {
     const wantedLabel = state.statusFilter.slice(4);
     tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
   }
-  // A status-doughnut slice for a bucket whose card is an overlay - see
-  // statusChartData's comment. Matches the slice's own count exactly.
+  // The doughnut's "Nothing received yet" slice - see statusRings.
+  else if (state.statusFilter === 'status:nothing') tableRecs = filtered.filter(po => po._status !== 'received' && po._status !== 'partial');
+  // A raw po._status value, e.g. from an old link or the header select.
   else if (typeof state.statusFilter === 'string' && state.statusFilter.startsWith('status:')) {
     const wantedStatus = state.statusFilter.slice(7);
     tableRecs = filtered.filter(po => po._status === wantedStatus);
@@ -598,7 +559,7 @@ function poListRegionHtml() {
   // for PO Number/Vendor, date-range for Created On (bound directly to the
   // same state.from/state.to the top filter-row uses, not a duplicate
   // field) and Delivery Date, and a <select> each for Status (bound to
-  // state.statusFilter - see statusChartData's `key` comment) and Progress.
+  // state.statusFilter - see statusRings' comment) and Progress.
   // No Value column filter here - min/max value narrowing was removed
   // (project owner, 2026-09-04) to keep this header row to "as per their
   // data" text/date/select controls only. Details has no data of its own
@@ -613,11 +574,11 @@ function poListRegionHtml() {
   // triggered this render - the list would narrow correctly while the box
   // the reader is typing into went blank under the cursor. (Found exactly
   // that way while verifying this split.)
-  // Plus the doughnut's two 'status:' slices (see statusChartData), so the
-  // select still shows what is selected after a slice click.
-  const statusOptionsHtml = Object.keys(STATUS_LABELS).concat(['status:overdue', 'status:unknown']).map(k =>
+  // Plus the doughnut's "Nothing received yet" slice (see statusRings), so
+  // the select still shows what is selected after a slice click.
+  const statusOptionsHtml = Object.keys(STATUS_LABELS).concat(['status:nothing']).map(k =>
     '<option value="' + k + '"' + (state.statusFilter === k ? ' selected' : '') + '>' +
-      escapeHtml(k.startsWith('status:') ? STATUS_LABELS[k.slice(7)] + ' - nothing received' : STATUS_LABELS[k]) + '</option>'
+      escapeHtml(k === 'status:nothing' ? 'Nothing received yet' : STATUS_LABELS[k]) + '</option>'
   ).join('');
   const filterCells = [
     '<input type="text" class="col-filter-input" data-cf="poNumber" placeholder="Search..." value="' + escapeHtml(state.colFilters.poNumber) + '">',
