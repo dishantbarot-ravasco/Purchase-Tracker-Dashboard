@@ -168,7 +168,9 @@ Read the linked section before breaking any of these. Each is there because it w
 - Import figures convert to INR first and compare `qty_as_per_boe`.
   [import currency](docs/matching-engine.md#import-po--mir-convert-currency-first)
 - Zero-tolerance `FLAG_DIFF_PCT` stays identical in the three plant modules and `flags.js`'s
-  `FLAG_PCT`. [flag thresholds](docs/matching-engine.md#flag-thresholds)
+  `FLAG_PCT`. The one exception is `qty_tolerance.py`: steam coal, HM plastic and HDPE may come in up
+  to 10% OVER (qty and value, never under, never rate); client-side qty checks must use
+  `isQtyMismatch()`. [flag thresholds](docs/matching-engine.md#flag-thresholds)
 
 ### API and features
 - Every new endpoint needs both a role gate and a plant-scoping call;

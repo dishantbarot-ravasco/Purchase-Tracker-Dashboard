@@ -44,13 +44,20 @@ function reconMoney(v, decimals) {
 
 // A difference cell: the signed real amount, its percentage of the ordered
 // figure, and a class saying which way it went. `kind` picks the words -
-// quantity and value go short/over, rate goes lower/higher.
-function reconDiffHtml(ordered, received, kind, fmt, eps) {
+// quantity and value go short/over, rate goes lower/higher. `tolerated`
+// marks an over-receipt the matcher accepted inside the weighbridge
+// allowance (flags.js's BULK_QTY_TOLERANCE_PCT): the real amount still
+// shows, in the matched colour.
+function reconDiffHtml(ordered, received, kind, fmt, eps, tolerated) {
   if (ordered == null || received == null) return '<td class="recon-diff">-</td>';
   const diff = received - ordered;
   if (Math.abs(diff) < eps) return '<td class="recon-diff diff-ok"><span class="recon-diff-val">matches</span></td>';
   const pct = ordered ? Math.abs(diff) / Math.abs(ordered) * 100 : null;
   const under = diff < 0;
+  if (tolerated && !under) {
+    return '<td class="recon-diff diff-ok"><span class="recon-diff-val">+' + fmt(diff) + '</span>' +
+      '<span class="recon-diff-note">' + (pct != null ? pct.toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '% ' : '') + 'over, within tolerance</span></td>';
+  }
   const word = kind === 'rate' ? (under ? 'lower' : 'higher') : (under ? 'short' : 'over');
   const cls = kind === 'rate' ? 'diff-rate' : (under ? 'diff-short' : 'diff-over');
   return '<td class="recon-diff ' + cls + '"><span class="recon-diff-val">' + (under ? '−' : '+') + fmt(Math.abs(diff)) + '</span>' +
@@ -64,6 +71,8 @@ function reconStatus(line) {
   if (!r || !r.comparable || r.qty == null || !line.ordered.qty) return { cls: 'recon-units', text: 'Received - units differ' };
   const pct = r.qty / line.ordered.qty * 100;
   if (Math.abs(r.qty - line.ordered.qty) < RECON_QTY_EPS) return { cls: 'recon-full', text: 'Fully received', pct: 100 };
+  // Over, but inside the weighbridge allowance: matched, and says by how much.
+  if (line.qtyWithinTolerance && pct > 100) return { cls: 'recon-full', text: 'Qty matched · +' + (pct - 100).toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '% within tolerance', pct };
   if (pct < 100) return { cls: 'recon-part', text: 'Partly received · ' + pct.toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '%', pct };
   return { cls: 'recon-over', text: 'Over-received · ' + pct.toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '%', pct };
 }
@@ -144,7 +153,7 @@ function reconLineHtml(line, plantKey) {
   const rows =
     '<tr><th scope="row">Quantity</th><td class="num">' + reconQty(o.qty) + qtyUnit + '</td>' +
       '<td class="num">' + (r ? (rQty != null ? reconQty(rQty) + qtyUnit : '<span class="recon-muted">see receipts</span>') : '<span class="recon-muted">0</span>') + '</td>' +
-      (r ? reconDiffHtml(o.qty, rQty, 'qty', v => reconQty(v) + ' ' + (line.uom || ''), RECON_QTY_EPS) : '<td class="recon-diff diff-short"><span class="recon-diff-val">' + reconQty(o.qty) + ' ' + escapeHtml(line.uom || '') + '</span><span class="recon-diff-note">pending</span></td>') + '</tr>' +
+      (r ? reconDiffHtml(o.qty, rQty, 'qty', v => reconQty(v) + ' ' + (line.uom || ''), RECON_QTY_EPS, line.qtyWithinTolerance) : '<td class="recon-diff diff-short"><span class="recon-diff-val">' + reconQty(o.qty) + ' ' + escapeHtml(line.uom || '') + '</span><span class="recon-diff-note">pending</span></td>') + '</tr>' +
     '<tr><th scope="row">Rate' + (line.rateNote ? ' <span class="recon-muted">' + escapeHtml(line.rateNote) + '</span>' : '') + '</th><td class="num">' + reconMoney(o.rate) + '</td>' +
       '<td class="num">' + (r ? reconMoney(r.rate) : '-') + '</td>' +
       (r ? reconDiffHtml(o.rate, r.rate, 'rate', v => reconMoney(v), RECON_RATE_EPS) : '<td class="recon-diff">-</td>') + '</tr>' +
@@ -158,7 +167,7 @@ function reconLineHtml(line, plantKey) {
       : '') +
     '<tr><th scope="row">Value' + (line.valueNote ? ' <span class="recon-muted">' + escapeHtml(line.valueNote) + '</span>' : '') + '</th><td class="num">' + reconMoney(o.value) + '</td>' +
       '<td class="num">' + (r ? reconMoney(r.value) : '-') + '</td>' +
-      (r ? reconDiffHtml(o.value, r.value, 'value', v => reconMoney(v), RECON_VALUE_EPS) : '<td class="recon-diff">-</td>') + '</tr>';
+      (r ? reconDiffHtml(o.value, r.value, 'value', v => reconMoney(v), RECON_VALUE_EPS, line.valueWithinTolerance) : '<td class="recon-diff">-</td>') + '</tr>';
   const chips = (line.chips || []).filter(c => c.value).map(c =>
     '<span class="recon-chip"><span class="recon-chip-k">' + escapeHtml(c.label) + '</span> ' + escapeHtml(c.value) + '</span>').join('');
   const barPct = st.pct != null ? Math.min(100, st.pct) : (line.matched ? 100 : 0);
@@ -218,10 +227,16 @@ function reconItemsHtml(lines, plantKey, currencyLabel) {
 
 // Whether the backend flagged anything on a match - the same four conditions
 // matchStatusHtml() used to decide whether a dismiss link belongs there.
-function reconAnyFlag(qtyDiffPct, rateDiffPct, uomMismatch, isFlagged) {
-  const qty = qtyDiffPct != null && qtyDiffPct > FLAG_PCT;
-  const rate = rateDiffPct != null && rateDiffPct > FLAG_PCT;
-  return qty || rate || !!uomMismatch || !!isFlagged;
+// `m` carries qtyDiffPct / qtyWithinTolerance / rateDiffPct / uomMismatch.
+function reconAnyFlag(m, isFlagged) {
+  const rate = m.rateDiffPct != null && m.rateDiffPct > FLAG_PCT;
+  return isQtyMismatch(m) || rate || !!m.uomMismatch || !!isFlagged;
+}
+
+// The weighbridge-tolerance fields both adapters hand the renderer.
+function reconToleranceFields(m) {
+  const qtyWithinTolerance = !!m.qtyWithinTolerance;
+  return { qtyWithinTolerance, valueWithinTolerance: qtyWithinTolerance && !m.netValueMismatched };
 }
 
 // A line counting only part of one MIR receipt. BOE settlement splits a
@@ -243,11 +258,12 @@ function domesticReconLine(it, index, po, plantKey) {
     index, description: it.description, uom: it.uom,
     chips: [{ label: 'Delivery', value: it.deliveryDate ? formatDateIN(it.deliveryDate) : '' }],
     ordered: { qty: it.qty, rate: it.netPrice, value: it.netValue != null ? it.netValue : (it.qty != null && it.netPrice != null ? it.qty * it.netPrice : null) },
-    notes: [receiptShareNote(it.receiptShare, it.matchTier)].filter(Boolean),
+    notes: [qtyToleranceNote(it), receiptShareNote(it.receiptShare, it.matchTier)].filter(Boolean),
+    ...reconToleranceFields(it),
     received: it.received, mirs: it.matchedMirs, matched: !!it.matched,
     tier: it.matchTier, score: it.matchScore, pinned: !!it.manuallyPinned, itemRef: it.itemRef,
     currentMirNo: it.matchedMirNo, uomMismatch: !!it.uomMismatch,
-    flagged: reconAnyFlag(it.qtyDiffPct, it.rateDiffPct, it.uomMismatch, it.matchFlagged),
+    flagged: reconAnyFlag(it, it.matchFlagged),
     dismissed: !!it.dismissedByOverride, dismissedBy: it.dismissedBy, dismissedReason: it.dismissedReason,
     matchId: it.matchId, matchType: 'po-mir', dismissPlantAttr: '',
     footerHtml: materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in RM Stock</span>',
@@ -301,7 +317,9 @@ function importReconLine(it, index, po, plantKey) {
     // Not for a shared receipt: that is compared at the BOE's blended landed
     // rate, which this line's own figure is not - the note below says so.
     landed: m.landedRateInr != null && m.receiptShare == null ? { ordered: m.landedRateInr, received: m.receivedFinalRate } : null,
+    ...reconToleranceFields(m),
     notes: [
+      qtyToleranceNote(m),
       noFx ? 'This line has no exchange rate in the Imports CSV, so its ' + (po.currency || 'PO currency') + ' price cannot be compared with MIR in INR. Fill in the exchange rate to compare it.' : '',
       receiptShareNote(m.receiptShare, m.tier),
       m.exchangeRateMismatched && m.mirExchangeRate != null
@@ -314,7 +332,7 @@ function importReconLine(it, index, po, plantKey) {
     tier: m.tier, score: m.matchScore, pinned: !!it.manuallyPinned, itemRef: it.itemRef,
     currentMirNo: (m.matchedMirs && m.matchedMirs[0] && m.matchedMirs[0].mirNo) || '',
     uomMismatch: !!m.uomMismatch,
-    flagged: reconAnyFlag(m.qtyDiffPct, m.rateDiffPct, m.uomMismatch, m.isFlagged),
+    flagged: reconAnyFlag(m, m.isFlagged),
     dismissed: !!m.dismissedByOverride, dismissedBy: m.dismissedBy, dismissedReason: m.dismissedReason,
     matchId: m.matchId, matchType: 'import-po-mir', dismissPlantAttr: ' data-plant="' + escapeHtml(plantKey) + '"',
     footerHtml: materialAnalysisLinkHtml(it.description, po.vendorName, plantKey) || '<span class="text-slate-soft">Not tracked in RM Stock</span>',

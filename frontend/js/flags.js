@@ -373,7 +373,7 @@ function importCriticalFlagsFor(po) {
   // underlying dismissed-match handling).
   const live = i => i.mirMatch && !i.mirMatch.dismissedByOverride;
   if (po.qtyDiscrepancy) cats.push({ label: 'Qty Mismatch (PO vs BOE)', severity: 'critical' });
-  if (items.some(i => live(i) && i.mirMatch.qtyDiffPct > 0)) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
+  if (items.some(i => live(i) && isQtyMismatch(i.mirMatch))) cats.push({ label: 'Qty Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
   if (items.some(i => live(i) && i.mirMatch.rateDiffPct > 0)) cats.push({ label: 'Rate Mismatch in MIR (BOE vs MIR)', severity: 'critical' });
   // 2026-09-08 (extended to Imports, same day as Domestic's own version) -
   // see computePoFlags()'s own comment for what these 6 fields are and why
@@ -625,7 +625,7 @@ function computePoFlags(po) {
   // the email could disagree on the same underlying data for no reason
   // other than this inconsistency. `!it.matched` (no match row exists at
   // all) is unaffected - there's nothing to dismiss when there's no match.
-  po._qtyFlag = items.some(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT && !it.dismissedByOverride);
+  po._qtyFlag = items.some(it => isQtyMismatch(it) && !it.dismissedByOverride);
   // Rate mismatch only - NOT value. Value = qty x rate, so a qty mismatch
   // alone already drags value along with it; counting that as a second,
   // independent "rate/value" problem double-counted the same underlying
@@ -641,7 +641,7 @@ function computePoFlags(po) {
   // meaningful when _qtyFlag/_rateFlag is actually true - a PO with no flag
   // may still have a small nonzero diff sitting under FLAG_PCT's zero-
   // tolerance threshold that rounds to 0.00% and shouldn't drive any tint.
-  const allDiffs = items.filter(it => !it.dismissedByOverride).flatMap(it => [it.qtyDiffPct, it.rateDiffPct, it.valueDiffPct]).filter(v => v != null);
+  const allDiffs = items.filter(it => !it.dismissedByOverride).flatMap(tintDiffs).filter(v => v != null);
   po._maxDiffPct = allDiffs.length ? Math.max(...allDiffs) : 0;
   // Over vs under delivery (2026-09-18, project owner). The qty flag splits
   // by DIRECTION, not by size: tolerance stays zero, so every difference
@@ -654,9 +654,9 @@ function computePoFlags(po) {
   // `=== true` / `=== false` deliberately, never truthiness: qtyOverDelivered
   // is null when no quantity comparison was possible at all (UOM mismatch, or
   // a missing qty), and a null must not be counted as "under".
-  const qtyOverItems = items.filter(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT
+  const qtyOverItems = items.filter(it => isQtyMismatch(it)
     && !it.dismissedByOverride && it.qtyOverDelivered === true);
-  const qtyUnderItems = items.filter(it => it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT
+  const qtyUnderItems = items.filter(it => isQtyMismatch(it)
     && !it.dismissedByOverride && it.qtyOverDelivered === false);
   // Hung on the PO alongside _qtyFlag/_rateFlag so the KPI row and the
   // "Filter by Flags" dropdown can count the two directions separately

@@ -447,6 +447,7 @@ function importPoAsMaterialOrder(po) {
         dismissedByOverride: !!m.dismissedByOverride,
         qtyDiffPct: m.qtyDiffPct != null ? m.qtyDiffPct : null,
         qtyOverDelivered: m.qtyOverDelivered != null ? m.qtyOverDelivered : null,
+        qtyWithinTolerance: !!m.qtyWithinTolerance,
         rateDiffPct: m.rateDiffPct != null ? m.rateDiffPct : null,
         valueDiffPct: m.valueDiffPct != null ? m.valueDiffPct : null,
         vendorMatched: it.mirMatch ? m.vendorMatched : undefined,
@@ -729,7 +730,7 @@ function computeMaterialPoLinkage(materials, plantKeys, scope) {
       // `!l.item.matched` is unaffected - there's nothing to dismiss when
       // there's no match at all.
       const dismissed = l.item.dismissedByOverride;
-      if (!dismissed && l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) catMap.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
+      if (!dismissed && isQtyMismatch(l.item)) catMap.set('Quantity Mismatch in MIR', { label: 'Quantity Mismatch in MIR', severity: 'critical' });
       // Rate only, not value - see flags.js's computePoFlags() for why
       // (value = qty x rate, so a qty mismatch alone would otherwise
       // double-count as a second, unrelated-looking rate/value problem).
@@ -757,7 +758,7 @@ function computeMaterialPoLinkage(materials, plantKeys, scope) {
     const categories = Array.from(catMap.values());
     // Same reasoning as computePoFlags()'s own _maxDiffPct (see flags.js) -
     // drives rowTintClass()'s severity-scaled row background.
-    const allDiffs = links.flatMap(l => [l.item.qtyDiffPct, l.item.rateDiffPct, l.item.valueDiffPct]).filter(v => v != null);
+    const allDiffs = links.flatMap(l => tintDiffs(l.item)).filter(v => v != null);
     return {
       material: m,
       links,
@@ -930,7 +931,7 @@ function renderMaterialsView() {
 
   // Quantity mismatches split by direction, for that card's tooltip - the
   // same over/short split Purchase Orders shows as two cards of its own.
-  const qtyDirOf = (l, over) => l.links.some(x => !x.item.dismissedByOverride && x.item.qtyDiffPct != null && x.item.qtyDiffPct > FLAG_PCT && x.item.qtyOverDelivered === over);
+  const qtyDirOf = (l, over) => l.links.some(x => !x.item.dismissedByOverride && isQtyMismatch(x.item) && x.item.qtyOverDelivered === over);
   const qtyOverCount = qtyDiscMats.filter(l => qtyDirOf(l, true)).length;
   const qtyShortCount = qtyDiscMats.filter(l => qtyDirOf(l, false)).length;
   const n = v => v.toLocaleString('en-IN');

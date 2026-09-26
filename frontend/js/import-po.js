@@ -197,7 +197,7 @@ function renderImportPoList(el) {
   // itself (poFlagDismissed()) - same reasoning as flags.js's
   // computePoFlags().
   const poQtyDiscMir = p => !poFlagDismissed(p, 'Qty Mismatch in MIR (BOE vs MIR)') &&
-    (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.qtyDiffPct > 0);
+    (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && isQtyMismatch(i.mirMatch));
   const poRateDiscMir = p => !poFlagDismissed(p, 'Rate Mismatch in MIR (BOE vs MIR)') &&
     (p.items || []).some(i => i.mirMatch && !i.mirMatch.dismissedByOverride && i.mirMatch.rateDiffPct > 0);
   filtered.forEach(po => {
@@ -210,7 +210,7 @@ function renderImportPoList(el) {
     // "Qty/Rate Discrepancies (BOE vs MIR)" KPI cards already count.
     po._qtyFlag = poQtyDiscPo(po) || poQtyDiscMir(po);
     po._rateFlag = poRateDiscMir(po);
-    const itemDiffs = (po.items || []).flatMap(i => i.mirMatch ? [i.mirMatch.qtyDiffPct, i.mirMatch.rateDiffPct, i.mirMatch.valueDiffPct] : []).filter(v => v != null);
+    const itemDiffs = (po.items || []).flatMap(i => i.mirMatch ? tintDiffs(i.mirMatch) : []).filter(v => v != null);
     po._maxDiffPct = itemDiffs.length ? Math.max(...itemDiffs) : 0;
   });
 
@@ -326,7 +326,7 @@ function renderImportPoList(el) {
   const receiptSeries = [
     { key: 'inwarded', status: 'inwarded', label: 'Material Inwarded', color: '#16a34a' },
     { key: 'partial', status: 'partial', label: 'Partial Delivered', color: '#2563eb' },
-    { key: 'recv:nothing', status: 'nothing', label: 'Nothing received yet', color: '#f59e0b' },
+    { key: 'recv:nothing', status: 'nothing', label: 'Nothing received yet', color: '#8b5cf6' },
   ];
   const statusRings = {
     inner: receiptSeries.map(sr => ({ key: sr.key, label: sr.label, color: sr.color, val: filtered.filter(po => importReceiptStatus(po) === sr.status).length })),

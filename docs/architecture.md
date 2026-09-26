@@ -382,7 +382,8 @@ HRS's ten models, the reference versions of each family.
   primary `mir_entry`, and M2M `group_entries` holding every MIR row a multi-receipt match counted
   (empty for a one-row match; rebuilt each run). Carries `tier` (`po_number` / `material` /
   legacy `weighted`), `match_score`, the diff percentages, `qty_over_delivered` (tri-state
-  direction), identification booleans (`material_matched`, `po_number_matched`, `vendor_matched`
+  direction), `qty_within_tolerance` (migration `0064`; over the PO quantity but inside the
+  weighbridge allowance, on all six PO↔MIR match models), identification booleans (`material_matched`, `po_number_matched`, `vendor_matched`
   defaulting True, `manually_pinned` which is re-derived every run), the financial-check booleans
   (`qty_mismatched`, `rate_mismatched`, `data_mismatch`, `tax_type_mismatch`,
   `net_value_mismatched`, `taxable_value_mismatched`, `final_value_mismatched`, `uom_mismatch`),

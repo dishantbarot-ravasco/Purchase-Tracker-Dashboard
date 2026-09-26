@@ -521,7 +521,12 @@ chart:** font, ink and tooltip style are set once on `Chart.defaults`; `refreshC
 `CHART_INK` / `CHART_GRID` / `CHART_STRONG` / `CHART_MUTED` from the stylesheet tokens and runs inside
 `destroyPageCharts()`, so dark mode applies on the next render (the doughnut centre text used to be a
 fixed dark navy, invisible in dark mode). **Legends are HTML, never the Chart.js canvas legend**,
-which cannot wrap and clipped or overlapped long labels ("Delivery Date Unknow..."):
+which cannot wrap and clipped or overlapped long labels ("Delivery Date Unknow..."). **Tooltips are
+HTML too:** `htmlChartTooltip()` is the `external` handler for every chart (canvas tooltip disabled
+on `Chart.defaults`); the canvas-painted one came out soft on a 125% display, was cut off at the
+canvas edge, and had the doughnut's centre label printed over it. Text goes in by `textContent`,
+the colour dot and position by `el.style` (CSP-safe). The centre-label plugins draw in
+`afterDatasetsDraw`, beneath any tooltip. Legends:
 `chartLegendHtml(groups, selectedKey)` renders wrapping chips (a chip with a key is a button that
 filters like its KPI card, wired by `wireChartLegend(root, onPick)`), `twoRingLegendHtml(rings,
 selectedKey)` groups them by ring with count and share (`sharePct()` prints "<1%", not "0%", for a
@@ -547,6 +552,15 @@ Status, flag and badge logic shared by every list and modal. Feature semantics a
 
 - `FLAG_PCT = 0` - zero tolerance with strict `>`; mirrors the matchers' `FLAG_DIFF_PCT` by hand
   ([matching-engine.md](matching-engine.md)). `KPI_FLAG_COLORS`, `flagIconHtml(hex, cls)`.
+- **Weighbridge tolerance:** `BULK_QTY_TOLERANCE_PCT = 10` mirrors `qty_tolerance.py` for wording
+  only; the backend decides which lines qualify and sends `qtyWithinTolerance`. Every client-side
+  qty check (KPI cards, over/short split, import BOE-vs-MIR, Raw Material cards and modal, the
+  reconciliation dismiss link) goes through `isQtyMismatch(it)`, never `qtyDiffPct > FLAG_PCT`
+  directly, or a tolerated line would flag again in the browser. `tintDiffs(it)` gives the diffs
+  that may tint a row (a tolerated qty diff, and its value diff unless `netValueMismatched`, are left
+  out). `qtyToleranceNote(it)` is the "Qty matched: received 7% over ... within the 10% weighbridge
+  tolerance" sentence the reconciliation cards show.
+  ([flag thresholds](matching-engine.md#flag-thresholds))
 - **Row flags:** `ROW_FLAG_BUCKETS` and `rowFlagsHtml({partial, onOrder, categories})` - at most four
   icons (partial beats on-order, then one red "Mismatch", then one purple "Data quality"), category
   names in a `data-tooltip` CSS tooltip. "PO Not Found in MIR" is dropped from red only when the row
@@ -633,7 +647,12 @@ share on tier `boe_number`, otherwise a "Keep both" manual match's share; Domest
 too), and for an exchange-rate difference both rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
 each line at its own ordered value) + one `reconLineHtml()` per line. `reconControlsHtml()` carries the
 confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag, dismiss/reinstate link
-(only when `reconAnyFlag()`) and the `.mir-change-link` with `data-item-ref`/`data-current-mir`.
+(only when `reconAnyFlag(m, isFlagged)`, whose qty half is `isQtyMismatch()`) and the
+`.mir-change-link` with `data-item-ref`/`data-current-mir`. A line with `qtyWithinTolerance`
+(`reconToleranceFields()`) gets the green `recon-full` status "Qty matched · +7% within tolerance",
+counts as fully received in the summary, shows its qty (and, unless the value still flagged, value)
+difference in the matched colour as "over, within tolerance" (`reconDiffHtml(..., tolerated)`), and
+carries `qtyToleranceNote()` in its notes.
 `reconMoney()` is exact rupees; epsilons `RECON_QTY_EPS`, `RECON_RATE_EPS`, `RECON_VALUE_EPS` (Rs 1,
 the matcher's value epsilon). Progress bars use `data-width-pct`, so callers run
 `applyDynamicStyles()`. Must load after `flags.js` and before `po-modal.js`/`import-po.js`.

@@ -206,7 +206,7 @@ function renderPoList(el) {
     inner: [
       { key: 'received', label: STATUS_LABELS.received, val: counts.received, color: '#16a34a' },
       { key: 'partial', label: STATUS_LABELS.partial, val: counts.partial, color: '#2563eb' },
-      { key: 'status:nothing', label: 'Nothing received yet', val: nothingReceived, color: '#f59e0b' },
+      { key: 'status:nothing', label: 'Nothing received yet', val: nothingReceived, color: '#8b5cf6' },
     ],
     outer: [
       { key: 'overdue', label: STATUS_LABELS.overdue, val: overdueCount, color: '#dc2626' },
@@ -241,7 +241,7 @@ function renderPoList(el) {
   const trendSeries = [
     { key: 'received', label: STATUS_LABELS.received, color: '#16a34a' },
     { key: 'partial', label: STATUS_LABELS.partial, color: '#2563eb' },
-    { key: 'nothing', label: 'Nothing received yet', color: '#f59e0b' },
+    { key: 'nothing', label: 'Nothing received yet', color: '#8b5cf6' },
   ].map(sr => Object.assign(sr, { total: months.reduce((a, m) => a + ((monthStatus[m] || {})[sr.key] || 0), 0) }))
     .filter(sr => sr.total > 0);
   const trendTotal = trendSeries.reduce((a, sr) => a + sr.total, 0);

@@ -273,7 +273,8 @@ rate produce a hard error (`qty_mismatched` / `rate_mismatched`; `is_flagged` me
 rate mismatched"). Everything else - unit family clash, net value, taxable value, final value, GST
 type (`_tax_type_mismatch()`: IGST vs CGST+SGST) - folds into `data_mismatch`, with the three value
 checks also stored individually (`net_value_mismatched` etc.). `qty_over_delivered` is three-state
-(True / False / None when no qty comparison was possible). `severity` buckets the largest diff at
+(True / False / None when no qty comparison was possible). `qty_within_tolerance` marks a weighed
+material accepted up to 10% over - see [flag thresholds](#flag-thresholds). `severity` buckets the largest diff at
 5%/20% (`rounding`/`minor`/`material`), matching `flags.js`'s `rowTintClass()`; a unit clash is
 always `material`. Every `*_diff_pct` is clamped to `9999.99` (`_MAX_DIFF_PCT`) because the columns
 are `max_digits=6`.
@@ -689,6 +690,32 @@ used to fall through to the green `matched` badge. See [frontend.md](frontend.md
 tolerance**, a deliberate policy choice (the project owner asked for none, down to 1 kg in 1000 kg).
 Comparisons use strict `>`, so an exact match never flags. (`5.00` was used earlier; picked, not
 measured, and superseded.)
+
+**One exception: material bought by weight, over only (2026-09-26).** Steam coal, HM plastic and
+HDPE arrive by the truckload and are weighed at the weighbridge, so the project owner allows them up
+to `BULK_QTY_OVER_TOLERANCE_PCT` (10%) over the PO quantity: 100 ordered and 110 received reads as
+Qty matched. `qty_tolerance.py` recognises the material from the PO line description - on purpose
+not an exact string ("there can be human error in the loop"), so it works on normalised tokens with
+a typo allowance on the longer words. It applies at all three plants, domestic and import. In
+`_diffs_and_flag()`:
+
+- `qty_within_tolerance` is True when the line is one of these materials, `qty_over_delivered` is
+  True and `qty_diff_pct <= 10`. Then `qty_mismatched` is False, and `qty_diff_pct` /
+  `qty_over_delivered` keep the real figures so the dashboard can say "+7%".
+- The net, taxable and final value checks accept the same over-only allowance on that line
+  (`value_within_over_tolerance()`): the extra tonnes bill proportionally more at the PO rate. A
+  value past 10% over (plus the Rs 1 epsilon), or under the ordered value, still flags.
+- Under-delivery gets no allowance, and neither does rate. Past 10% flags exactly as before (Achhad
+  PO 1100000833, 121.1 of 100 tonnes, is still Over-Delivered).
+- `severity` ignores a tolerated qty diff, and the value diff it carried unless the value still
+  flagged (`_severity_diffs()`), so the row is not tinted.
+
+The frontend mirrors the figure as `BULK_QTY_TOLERANCE_PCT` in `flags.js`, and every client-side qty
+check goes through `isQtyMismatch()`, which honours `qtyWithinTolerance`. Three live look-alikes are
+deliberately not matched, each with a test: Vapi's "RUBBOND HM-65" (HM is a melamine resin there),
+"SULPHUR POWDER, HDPE Bags" (HDPE is the packaging) and "LD Plastic Bag". Add a material to
+`BULK_WEIGHT_MATERIALS` only with a test for its real spellings and for any near-miss on the live
+PO sheets.
 
 If this policy changes, change it in one place per side: `FLAG_PCT` in `flags.js` (KPI cards, row
 flags, line-item badges, Raw Material Analysis cards via `computeMaterialPoLinkage()`) and
@@ -1129,15 +1156,19 @@ below); trust the code.
 
 **Financial check**
 
-- `_diffs_and_flag(config, item, mir, *, group=None, ...overrides)` - returns the 16-tuple (qty/rate/
+- `_diffs_and_flag(config, item, mir, *, group=None, ...overrides)` - returns the 17-tuple (qty/rate/
   value diffs, is_flagged, uom_mismatch, severity, qty/rate mismatched, data_mismatch,
-  tax_type_mismatch, taxable/final diffs, three value-mismatch booleans, qty_over_delivered). A group
+  tax_type_mismatch, taxable/final diffs, three value-mismatch booleans, qty_over_delivered,
+  qty_within_tolerance). The weighbridge allowance (`qty_tolerance.py`) is applied here, on the
+  group's summed qty when there is one. A group
   supplies qty/rate/value and summed taxable/final; a `uom_clash` group reports a unit mismatch. (Its
   docstring's closing paragraph still says taxable/final always compare against the single row;
   since 2026-09-24 a group's sums are used.)
 - `_tax_type_mismatch(tax_type, mir)` - IGST vs CGST+SGST structure; reads `igst` or Vapi's
   `igst_amt`; never a mismatch when either side has nothing.
 - `_severity(uom_mismatch, *diffs)` - rounding / minor / material / None.
+- `_severity_diffs(qty_within_tolerance, qty_diff, rate_diff, value_diff, value_flagged)` - the diffs
+  `_severity()` grades: drops a tolerated qty diff, and its value diff unless the value still flagged.
 - `_vendor_matched_field(config, vendor_matched)` - `{"vendor_matched": ...}` only under 2-of-3.
 
 **Shipment groups**
@@ -1229,6 +1260,20 @@ never keyed. `OccurrenceCounter.key_for()` numbers duplicates in sheet order wit
 key is why `normalize_material()` must not change: its output is persisted. It is **not** the
 consumption key (see [consumption.md](consumption.md)). Rationale:
 [architecture.md](architecture.md#stable-lot-identity).
+
+### apps/services/qty_tolerance.py
+
+The weighbridge over-delivery allowance; no Django imports. `BULK_QTY_OVER_TOLERANCE_PCT` (10).
+`BULK_WEIGHT_MATERIALS` - (label, recogniser) for steam coal, HM plastic, HDPE, each over
+`_tokens()` (lower-case, dots removed so "H.D.P.E." is one word, digits split from letters).
+`_is_coal()` - "coal"/"coals", or "steam" then a near-"coal"; `_is_hm_plastic()` - HM (or "H M")
+then a near-"plastic", never a bare HM; `_is_hdpe()` - "hdpe"/"hpde" as one word or spaced across up
+to four, or "high density polyethylene", unless the next word is bag/packing/liner.
+`_similar()` is `SequenceMatcher` >= 0.8, used only on words of five letters or more.
+`bulk_weight_material(description)` (lru-cached) returns the label or None;
+`over_delivery_tolerance_pct(description)` returns 10 or None;
+`value_within_over_tolerance(ordered, received, pct, epsilon)` - received at or above ordered and no
+more than pct over it plus epsilon. Called only from `matching_core._diffs_and_flag()`.
 
 ### apps/services/no_po_vendors.py
 

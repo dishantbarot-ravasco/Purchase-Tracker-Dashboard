@@ -76,7 +76,61 @@ if (typeof Chart !== 'undefined') {
     backgroundColor: '#1A2535', padding: 10, cornerRadius: 8, boxPadding: 4, usePointStyle: true,
     titleFont: { size: 12, weight: '700' }, bodyFont: { size: 12 }, footerFont: { size: 11, weight: '400' },
     footerColor: '#cbd5e1',
+    // HTML tooltip, not the canvas one - see htmlChartTooltip().
+    enabled: false,
+    external: context => htmlChartTooltip(context),
   });
+}
+
+// Every chart's tooltip, drawn as a DOM element over the canvas instead of
+// painted into it. The canvas tooltip was painted into the chart's bitmap,
+// so on a scaled display (125% here) its text came out soft, it was cut off
+// at the canvas edge, and anything drawn after it (the doughnut's centre
+// label) printed on top of it. A DOM tooltip is crisp at any zoom, can sit
+// outside the chart area, and is always on top. Text goes in through
+// textContent; the colour dot and position are set through el.style, which
+// CSP allows (only style="" attributes in markup are blocked).
+function htmlChartTooltip(context) {
+  const { chart, tooltip } = context;
+  const host = chart.canvas.parentNode;
+  if (!host) return;
+  if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
+  let el = host.querySelector(':scope > .chart-tooltip');
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'chart-tooltip';
+    el.setAttribute('aria-hidden', 'true');
+    host.appendChild(el);
+  }
+  if (!tooltip || tooltip.opacity === 0 || !(tooltip.body || []).some(b => b.lines.length)) {
+    el.classList.remove('show');
+    return;
+  }
+  el.replaceChildren();
+  const line = (cls, text) => { const d = document.createElement('div'); d.className = cls; d.textContent = text; return d; };
+  (tooltip.title || []).filter(Boolean).forEach(t => el.appendChild(line('chart-tooltip-title', t)));
+  const showDots = tooltip.options.displayColors !== false;
+  (tooltip.body || []).forEach((b, i) => b.lines.forEach(text => {
+    const row = line('chart-tooltip-row', '');
+    if (showDots && tooltip.labelColors[i]) {
+      const dot = document.createElement('span');
+      dot.className = 'chart-tooltip-dot';
+      dot.style.background = tooltip.labelColors[i].backgroundColor;
+      row.appendChild(dot);
+    }
+    row.appendChild(document.createTextNode(String(text).trim()));
+    el.appendChild(row);
+  }));
+  (tooltip.body || []).forEach(b => (b.after || []).filter(Boolean).forEach(t => el.appendChild(line('chart-tooltip-foot', t))));
+  (tooltip.afterBody || []).concat(tooltip.footer || []).filter(Boolean).forEach(t => el.appendChild(line('chart-tooltip-foot', t)));
+  el.classList.add('show');
+  // Centred over the hovered point, above it when there is room, kept
+  // inside the chart's own width so it never runs off the panel.
+  const w = el.offsetWidth, h = el.offsetHeight;
+  const x = Math.max(0, Math.min(tooltip.caretX - w / 2, host.clientWidth - w));
+  const y = tooltip.caretY - h - 12 >= -8 ? tooltip.caretY - h - 12 : tooltip.caretY + 14;
+  el.style.left = Math.round(x) + 'px';
+  el.style.top = Math.round(y) + 'px';
 }
 
 // 'YYYY-MM' -> "Jan '26" - short enough that nine or twelve months fit on
@@ -99,16 +153,18 @@ function chartHeadHtml(title, sub, asideLabel, asideValue) {
 // HTML legend: groups of {title?, items: [{key, label, color, valText}]}.
 // An item with a key is a button that filters like its KPI card
 // (wireChartLegend()); one without is plain text. Items wrap, so a long
-// label never clips.
-function chartLegendHtml(groups, selectedKey) {
-  return '<div class="chart-legend">' + groups.map(g =>
+// label never clips. `rows` lays each item out as a table row (label left,
+// count and share in aligned columns right) instead of a chip.
+function chartLegendHtml(groups, selectedKey, rows) {
+  return '<div class="chart-legend' + (rows ? ' chart-legend-rows' : '') + '">' + groups.map(g =>
     '<div class="chart-legend-group">' +
       (g.title ? '<div class="chart-legend-title">' + escapeHtml(g.title) + '</div>' : '') +
       '<div class="chart-legend-items">' + g.items.map(it => {
         const active = it.key && it.key === selectedKey;
         const inner = '<span class="legend-dot" data-dot-color="' + escapeHtml(it.color) + '"></span>' +
           '<span class="legend-label">' + escapeHtml(it.label) + '</span>' +
-          (it.valText != null ? '<span class="legend-val">' + escapeHtml(it.valText) + '</span>' : '');
+          (it.valText != null ? '<span class="legend-val">' + escapeHtml(it.valText) + '</span>' : '') +
+          (it.pctText != null ? '<span class="legend-pct">' + escapeHtml(it.pctText) + '</span>' : '');
         return it.key
           ? '<button type="button" class="legend-chip legend-chip-btn' + (active ? ' active' : '') + '" data-legend-key="' + escapeHtml(it.key) + '" aria-pressed="' + !!active + '">' + inner + '</button>'
           : '<span class="legend-chip">' + inner + '</span>';
@@ -134,10 +190,10 @@ function twoRingLegendHtml(rings, selectedKey) {
     const total = ring.reduce((a, s) => a + s.val, 0);
     return { title, items: ring.filter(s => s.val > 0).map(s => ({
       key: s.key, label: s.label, color: s.color,
-      valText: s.val + (total ? '  ' + sharePct(s.val, total) : ''),
+      valText: String(s.val), pctText: total ? sharePct(s.val, total) : null,
     })) };
   };
-  return chartLegendHtml([group('What has arrived (inner ring)', rings.inner), group('Delivery date (outer ring)', rings.outer)], selectedKey);
+  return chartLegendHtml([group('What has arrived (inner ring)', rings.inner), group('Delivery date (outer ring)', rings.outer)], selectedKey, true);
 }
 
 // Every 'YYYY-MM' from the earliest to the latest key given, in order, so a
@@ -216,10 +272,12 @@ function renderTwoRingDoughnut(canvas, { outer, inner, selectedKey, onPick, cent
 // registered) that draws the slice total in the doughnut's own cutout hole -
 // a "how many POs total" readout the legend/slices alone don't give at a
 // glance. Self-contained: reads whatever dataset the chart it's attached to
-// actually has, no dependency on the module-level `state`.
+// actually has, no dependency on the module-level `state`. Drawn in
+// afterDatasetsDraw, not afterDraw: afterDraw runs after the tooltip, so the
+// centre text used to print on top of it and garble it.
 const centerTextPlugin = {
   id: 'poStatusCenterText',
-  afterDraw(chart) {
+  afterDatasetsDraw(chart) {
     const area = chart.chartArea;
     if (!area) return;
     const data = chart.data.datasets[0].data;
@@ -272,7 +330,7 @@ document.addEventListener('click', (e) => {
 // POs" center label, everything else identical.
 const centerImportTextPlugin = {
   id: 'importStageCenterText',
-  afterDraw(chart) {
+  afterDatasetsDraw(chart) {
     const area = chart.chartArea;
     if (!area) return;
     const data = chart.data.datasets[0].data;

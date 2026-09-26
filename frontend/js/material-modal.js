@@ -247,7 +247,7 @@ async function openMaterialModal(compositeKey) {
   // showed as CRITICAL what the row beside it deliberately did not.
   linked.forEach(l => {
     const dismissed = l.item.dismissedByOverride;
-    if (!dismissed && l.item.qtyDiffPct != null && l.item.qtyDiffPct > FLAG_PCT) addMaterialFlag('Quantity Mismatch in MIR', 'critical', l);
+    if (!dismissed && isQtyMismatch(l.item)) addMaterialFlag('Quantity Mismatch in MIR', 'critical', l);
     // Rate only, not value - see flags.js's computePoFlags() for why.
     if (!dismissed && l.item.rateDiffPct != null && l.item.rateDiffPct > FLAG_PCT) addMaterialFlag('Rate Mismatch in MIR', 'critical', l);
     if (!l.item.matched && l.po._status !== 'pending') addMaterialFlag('PO Not Found in MIR', 'critical', l);
