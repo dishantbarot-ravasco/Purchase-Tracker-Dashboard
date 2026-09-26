@@ -70,6 +70,14 @@ function reconStatus(line) {
   const r = line.received;
   if (!r || !r.comparable || r.qty == null || !line.ordered.qty) return { cls: 'recon-units', text: 'Received - units differ' };
   const pct = r.qty / line.ordered.qty * 100;
+  // Madura fabric: a roll count that differs decides, whatever the weight.
+  if (line.rolls && line.rolls.received != null && line.rolls.received !== line.rolls.ordered) {
+    const rp = line.rolls.received / line.rolls.ordered * 100;
+    const of = line.rolls.received + ' of ' + rollsText(line.rolls.ordered);
+    return line.rolls.received < line.rolls.ordered
+      ? { cls: 'recon-part', text: 'Partly received · ' + of, pct: rp }
+      : { cls: 'recon-over', text: 'Over-received · ' + of, pct: rp };
+  }
   if (Math.abs(r.qty - line.ordered.qty) < RECON_QTY_EPS) return { cls: 'recon-full', text: 'Fully received', pct: 100 };
   // Over, but inside the weighbridge allowance: matched, and says by how much.
   if (line.qtyWithinTolerance && pct > 100) return { cls: 'recon-full', text: 'Qty matched · +' + (pct - 100).toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '% within tolerance', pct };
@@ -157,6 +165,11 @@ function reconLineHtml(line, plantKey) {
     '<tr><th scope="row">Rate' + (line.rateNote ? ' <span class="recon-muted">' + escapeHtml(line.rateNote) + '</span>' : '') + '</th><td class="num">' + reconMoney(o.rate) + '</td>' +
       '<td class="num">' + (r ? reconMoney(r.rate) : '-') + '</td>' +
       (r ? reconDiffHtml(o.rate, r.rate, 'rate', v => reconMoney(v), RECON_RATE_EPS) : '<td class="recon-diff">-</td>') + '</tr>' +
+    (line.rolls ?
+      '<tr><th scope="row">Rolls</th><td class="num">' + line.rolls.ordered + '</td>' +
+        '<td class="num">' + (r ? (line.rolls.received != null ? line.rolls.received : '<span class="recon-muted">not stated in MIR</span>') : '<span class="recon-muted">0</span>') + '</td>' +
+        (r && line.rolls.received != null ? reconDiffHtml(line.rolls.ordered, line.rolls.received, 'qty', v => rollsText(v), 0.5) : '<td class="recon-diff">-</td>') + '</tr>'
+      : '') +
     (line.landed ?
       '<tr><th scope="row">Landed rate <span class="recon-muted">(duty + IGST, per ' + escapeHtml(line.uom || 'unit') + ')</span></th><td class="num">' + reconMoney(line.landed.ordered) + '</td>' +
         '<td class="num">' + (r ? reconMoney(line.landed.received) : '-') + '</td>' +
@@ -233,19 +246,33 @@ function reconAnyFlag(m, isFlagged) {
   return isQtyMismatch(m) || rate || !!m.uomMismatch || !!isFlagged;
 }
 
-// The weighbridge-tolerance fields both adapters hand the renderer.
+// The weight-tolerance and roll-count fields both adapters hand the
+// renderer. `rolls` only for a line whose PO states a count (Madura fabric).
 function reconToleranceFields(m) {
   const qtyWithinTolerance = !!m.qtyWithinTolerance;
-  return { qtyWithinTolerance, valueWithinTolerance: qtyWithinTolerance && !m.netValueMismatched };
+  return {
+    qtyWithinTolerance, valueWithinTolerance: qtyWithinTolerance && !m.netValueMismatched,
+    rolls: m.rollsOrdered != null ? { ordered: m.rollsOrdered, received: m.rollsReceived } : null,
+  };
 }
 
 // A line counting only part of one MIR receipt. BOE settlement splits a
 // receipt across its Bill of Entry's lines (tier 'boe_number'); a "Keep
 // both" manual match splits one across whichever lines hold it. Both by
 // ordered quantity.
-function receiptShareNote(share, tier) {
+// A pooled line (`poolRefs`, matching_core._pool_duplicate_lines()) is one
+// of the order's identical lines - same material, rate and unit - which
+// share every receipt booked against them: by ordered quantity once the
+// order has arrived in full, filling the lines in order while it is partly
+// delivered.
+function receiptShareNote(share, tier, poolRefs) {
   if (share == null) return '';
   const pct = (share * 100).toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '%';
+  if (poolRefs) {
+    return 'Lines ' + poolRefs + ' of this order are the same material at the same rate, so their MIR receipts are ' +
+      'counted together and shared between them - by ordered quantity once the order has fully arrived, filling ' +
+      'the lines in order while it is partly delivered. This line counts ' + pct + ' of those receipts.';
+  }
   return tier === 'boe_number'
     ? 'One MIR receipt covers several lines of this Bill of Entry; this line counts ' + pct +
       ' of it (its share of the BOE quantity), and the rate is checked at the blended rate of the BOE.'
@@ -258,7 +285,7 @@ function domesticReconLine(it, index, po, plantKey) {
     index, description: it.description, uom: it.uom,
     chips: [{ label: 'Delivery', value: it.deliveryDate ? formatDateIN(it.deliveryDate) : '' }],
     ordered: { qty: it.qty, rate: it.netPrice, value: it.netValue != null ? it.netValue : (it.qty != null && it.netPrice != null ? it.qty * it.netPrice : null) },
-    notes: [qtyToleranceNote(it), receiptShareNote(it.receiptShare, it.matchTier)].filter(Boolean),
+    notes: [qtyToleranceNote(it), receiptShareNote(it.receiptShare, it.matchTier, it.poolLineRefs)].filter(Boolean),
     ...reconToleranceFields(it),
     received: it.received, mirs: it.matchedMirs, matched: !!it.matched,
     tier: it.matchTier, score: it.matchScore, pinned: !!it.manuallyPinned, itemRef: it.itemRef,
@@ -321,7 +348,7 @@ function importReconLine(it, index, po, plantKey) {
     notes: [
       qtyToleranceNote(m),
       noFx ? 'This line has no exchange rate in the Imports CSV, so its ' + (po.currency || 'PO currency') + ' price cannot be compared with MIR in INR. Fill in the exchange rate to compare it.' : '',
-      receiptShareNote(m.receiptShare, m.tier),
+      receiptShareNote(m.receiptShare, m.tier, m.poolLineRefs),
       m.exchangeRateMismatched && m.mirExchangeRate != null
         ? 'Exchange rate differs: MIR works at ' + m.mirExchangeRate.toFixed(2) + ', the Imports CSV records ' +
           it.exchangeRate + '. The price agrees at the rate MIR uses - correct the exchange rate on the CSV.'

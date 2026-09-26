@@ -448,6 +448,8 @@ function importPoAsMaterialOrder(po) {
         qtyDiffPct: m.qtyDiffPct != null ? m.qtyDiffPct : null,
         qtyOverDelivered: m.qtyOverDelivered != null ? m.qtyOverDelivered : null,
         qtyWithinTolerance: !!m.qtyWithinTolerance,
+        rollsOrdered: m.rollsOrdered != null ? m.rollsOrdered : null,
+        rollsReceived: m.rollsReceived != null ? m.rollsReceived : null,
         rateDiffPct: m.rateDiffPct != null ? m.rateDiffPct : null,
         valueDiffPct: m.valueDiffPct != null ? m.valueDiffPct : null,
         vendorMatched: it.mirMatch ? m.vendorMatched : undefined,

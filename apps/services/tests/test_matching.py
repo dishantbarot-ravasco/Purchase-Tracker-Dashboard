@@ -29,6 +29,7 @@ from apps.services.matching_core import (
     _Matchable,
     _MaterialScorer,
     _VENDOR_SIMILARITY_THRESHOLD,
+    _aggregate_rows,
     _assign_pairs,
     _closeness,
     _date_verdict,
@@ -613,7 +614,7 @@ class TestDiffsAndFlagValueEpsilon:
          qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
          taxable_value_diff, final_value_diff,
          net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-         _qty_over_delivered, _qty_within_tolerance) = _diffs_and_flag(config, item, mir)
+         _qty_over_delivered, _qty_within_tolerance, _rolls) = _diffs_and_flag(config, item, mir)
         assert is_flagged is False
         assert data_mismatch is True
         # Added 2026-09-08: net_value_mismatched is the specific signal that
@@ -637,7 +638,7 @@ class TestDiffsAndFlagValueEpsilon:
         )
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-         _qty_over_delivered, _qty_within_tolerance) = _diffs_and_flag(config, item, mir)
+         _qty_over_delivered, _qty_within_tolerance, _rolls) = _diffs_and_flag(config, item, mir)
         assert taxable_value_mismatched is True
         assert net_value_mismatched is False
         assert final_value_mismatched is False
@@ -654,7 +655,7 @@ class TestDiffsAndFlagValueEpsilon:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.invoice_final_value = Decimal("5850.00")
         (*_rest, net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-         _qty_over_delivered, _qty_within_tolerance) = _diffs_and_flag(config, item, mir)
+         _qty_over_delivered, _qty_within_tolerance, _rolls) = _diffs_and_flag(config, item, mir)
         assert final_value_mismatched is True
         assert net_value_mismatched is False
         assert taxable_value_mismatched is False
@@ -875,7 +876,7 @@ class TestTaxTypeMismatch:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
         (*_rest, tax_type_mismatch, _taxable, _final,
-         _net_mm, _taxable_mm, _final_mm, _qty_over, _within) = _diffs_and_flag(config, item, mir)
+         _net_mm, _taxable_mm, _final_mm, _qty_over, _within, _rolls) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is False
 
     def test_igst_po_with_cgst_sgst_mir_is_a_mismatch(self):
@@ -884,7 +885,7 @@ class TestTaxTypeMismatch:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
         (*_rest, tax_type_mismatch, _taxable, _final,
-         _net_mm, _taxable_mm, _final_mm, _qty_over, _within) = _diffs_and_flag(config, item, mir)
+         _net_mm, _taxable_mm, _final_mm, _qty_over, _within, _rolls) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is True
 
     def test_cgst_sgst_po_with_igst_mir_is_a_mismatch(self):
@@ -893,7 +894,7 @@ class TestTaxTypeMismatch:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("900"), Decimal("0"), Decimal("0")
         (*_rest, tax_type_mismatch, _taxable, _final,
-         _net_mm, _taxable_mm, _final_mm, _qty_over, _within) = _diffs_and_flag(config, item, mir)
+         _net_mm, _taxable_mm, _final_mm, _qty_over, _within, _rolls) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is True
 
     def test_blank_tax_type_is_never_a_mismatch(self):
@@ -902,7 +903,7 @@ class TestTaxTypeMismatch:
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir.igst, mir.cgst_amt, mir.sgst_amt = Decimal("0"), Decimal("450"), Decimal("450")
         (*_rest, tax_type_mismatch, _taxable, _final,
-         _net_mm, _taxable_mm, _final_mm, _qty_over, _within) = _diffs_and_flag(config, item, mir)
+         _net_mm, _taxable_mm, _final_mm, _qty_over, _within, _rolls) = _diffs_and_flag(config, item, mir)
         assert tax_type_mismatch is False
 
 
@@ -1294,7 +1295,7 @@ class TestQtyOverDelivered:
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("121"), "KG", Decimal("50"), Decimal("6050.00"))
-        *_rest, qty_over, _within = _diffs_and_flag(config, item, mir)
+        *_rest, qty_over, _within, _rolls = _diffs_and_flag(config, item, mir)
         assert qty_over is True
         # the flag itself is untouched - direction is recorded, not traded for
         assert _rest[6] is True  # qty_mismatched
@@ -1303,7 +1304,7 @@ class TestQtyOverDelivered:
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("29"), "KG", Decimal("50"), Decimal("1450.00"))
-        *_rest, qty_over, _within = _diffs_and_flag(config, item, mir)
+        *_rest, qty_over, _within, _rolls = _diffs_and_flag(config, item, mir)
         assert qty_over is False
         assert _rest[6] is True  # qty_mismatched
 
@@ -1315,7 +1316,7 @@ class TestQtyOverDelivered:
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
-        *_rest, qty_over, _within = _diffs_and_flag(config, item, mir)
+        *_rest, qty_over, _within, _rolls = _diffs_and_flag(config, item, mir)
         assert qty_over is False
         assert _rest[6] is False  # qty_mismatched - nothing wrong here
 
@@ -1326,14 +1327,14 @@ class TestQtyOverDelivered:
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", Decimal("100"), "NOS", Decimal("50"), Decimal("5000.00"))
-        *_rest, qty_over, _within = _diffs_and_flag(config, item, mir)
+        *_rest, qty_over, _within, _rolls = _diffs_and_flag(config, item, mir)
         assert qty_over is None
 
     def test_direction_is_none_when_a_quantity_is_missing(self):
         config = _test_config()
         item = _Matchable("Zinc Oxide", Decimal("100"), "KG", Decimal("50"), Decimal("5000.00"))
         mir = _FakeMir("Zinc Oxide", None, "KG", Decimal("50"), Decimal("5000.00"))
-        *_rest, qty_over, _within = _diffs_and_flag(config, item, mir)
+        *_rest, qty_over, _within, _rolls = _diffs_and_flag(config, item, mir)
         assert qty_over is None
 
     def test_direction_uses_the_shipment_group_total_not_the_primary_row(self):
@@ -1347,7 +1348,7 @@ class TestQtyOverDelivered:
         config = _test_config()
         item = _Matchable("Lamor Label", Decimal("33500"), "M", Decimal("100"), Decimal("3350000.00"))
         primary = _FakeMir("Lamor Label", Decimal("2227"), "MTRS", Decimal("100"), Decimal("222700.00"))
-        *_rest, qty_over, _within = _diffs_and_flag(config, item, primary, qty_override=Decimal("19236"))
+        *_rest, qty_over, _within, _rolls = _diffs_and_flag(config, item, primary, qty_override=Decimal("19236"))
         assert qty_over is False
 
     def test_a_group_that_overshoots_reports_over(self):
@@ -1357,7 +1358,7 @@ class TestQtyOverDelivered:
         config = _test_config()
         item = _Matchable("Steam Coal", Decimal("100"), "TO", Decimal("11300"), Decimal("1130000.00"))
         primary = _FakeMir("Imported Coal", Decimal("28.51"), "MT.", Decimal("11300"), Decimal("322163.00"))
-        *_rest, qty_over, _within = _diffs_and_flag(config, item, primary, qty_override=Decimal("121100"))
+        *_rest, qty_over, _within, _rolls = _diffs_and_flag(config, item, primary, qty_override=Decimal("121100"))
         assert qty_over is True
 
 
@@ -1380,7 +1381,7 @@ class TestBulkWeightOverTolerance:
          qty_mismatched, rate_mismatched, data_mismatch, _tax,
          _taxable_diff, _final_diff,
          net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-         qty_over, within) = _diffs_and_flag(config, item, mir)
+         qty_over, within, _rolls) = _diffs_and_flag(config, item, mir)
         return dict(qty_diff=qty_diff, is_flagged=is_flagged, severity=severity, qty_mismatched=qty_mismatched,
                     rate_mismatched=rate_mismatched, data_mismatch=data_mismatch,
                     net=net_value_mismatched, taxable=taxable_value_mismatched, final=final_value_mismatched,
@@ -1444,9 +1445,93 @@ class TestBulkWeightOverTolerance:
         config = _test_config()
         item = _Matchable("Steam Coal", Decimal("100"), "TO", Decimal("11300"), Decimal("1130000.00"))
         primary = _FakeMir("Imported Coal", Decimal("28.51"), "TO", Decimal("11300"), Decimal("322163.00"))
-        *_rest, qty_over, within = _diffs_and_flag(config, item, primary, qty_override=Decimal("104200"))
+        *_rest, qty_over, within, _rolls = _diffs_and_flag(config, item, primary, qty_override=Decimal("104200"))
         assert (qty_over, within) == (True, True)
         assert _rest[6] is False  # qty_mismatched
+
+
+class TestMaduraFabric:
+    """Madura fabric at every plant (project owner, 2026-09-26): the PO weight
+    is theoretical, so it gets the +10% over-only weight allowance by
+    vendor, and when both sides state a roll count, the count decides."""
+
+    MADURA = "MADURA INDL TEXTILES LTD"
+    PO_DESC = "EE-350 fabric roll, width 142cm, GSM 1170, length 514m, 6 rolls, total weight 5123.76"
+
+    def _run(self, mir_desc, received_kg, *, vendor=MADURA, po_desc=PO_DESC, group_rows=None, party=""):
+        config = _test_config()
+        item = _Matchable(po_desc, Decimal("5123.76"), "KG", Decimal("190"), Decimal("973514.40"), vendor_name=vendor)
+        group = None
+        if not group_rows:
+            mir = _FakeMir(mir_desc, received_kg, "KGS", Decimal("190"), received_kg * Decimal("190"))
+            mir.party_name = party
+        else:
+            rows = [_FakeMir(d, q, "KGS", Decimal("190"), q * Decimal("190")) for d, q in group_rows]
+            group = _aggregate_rows(config, item, rows, by_po_number=True)
+            mir = rows[0]
+        out = _diffs_and_flag(config, item, mir, group=group)
+        return dict(qty_mismatched=out[6], net=out[12], over=out[15], within=out[16], rolls=out[17])
+
+    def test_weight_up_to_ten_percent_over_is_matched_without_rolls_on_mir(self):
+        r = self._run("EE350 142CM", Decimal("5500"))  # 7.3% over, MIR states no rolls
+        assert (r["within"], r["qty_mismatched"], r["net"]) == (True, False, False)
+        assert r["rolls"] == (6, None)
+
+    def test_all_rolls_and_weight_inside_the_allowance_is_matched(self):
+        r = self._run("EE350 142CM - 6 Rolls", Decimal("5400"))
+        assert (r["within"], r["qty_mismatched"], r["rolls"]) == (True, False, (6, 6))
+
+    def test_a_roll_short_is_a_mismatch_even_at_the_ordered_weight(self):
+        r = self._run("EE350 142CM - 5 Rolls", Decimal("5123.76"))
+        assert r["qty_mismatched"] is True
+        assert r["within"] is False
+        assert r["over"] is False
+        assert r["rolls"] == (6, 5)
+
+    def test_a_roll_over_is_over_delivered(self):
+        r = self._run("EE350 142CM - 7 Rolls", Decimal("5300"))
+        assert (r["qty_mismatched"], r["over"], r["within"]) == (True, True, False)
+
+    def test_rolls_are_summed_across_the_receipts(self):
+        r = self._run(None, None, group_rows=[("EE350 142CM - 2 Rolls", Decimal("1760")),
+                                              ("EE350 142CM - 4 Rolls", Decimal("3530"))])
+        assert r["rolls"] == (6, 6)
+        assert (r["within"], r["qty_mismatched"]) == (True, False)
+
+    def test_a_receipt_without_rolls_leaves_the_count_unknown(self):
+        """A partial count would read as a shortfall, so the weight rule decides."""
+        r = self._run(None, None, group_rows=[("EE350 142CM - 2 Rolls", Decimal("1760")),
+                                              ("EE350 142CM", Decimal("3530"))])
+        assert r["rolls"] == (6, None)
+        assert r["within"] is True
+
+    def test_weight_past_ten_percent_still_flags_even_with_every_roll(self):
+        r = self._run("EE350 142CM - 6 Rolls", Decimal("5700"))  # 11.2% over
+        assert (r["within"], r["qty_mismatched"]) == (False, True)
+
+    def test_under_weight_gets_no_allowance(self):
+        r = self._run("EE350 142CM - 6 Rolls", Decimal("5000"))
+        assert (r["within"], r["qty_mismatched"], r["over"]) == (False, True, False)
+
+    def test_a_po_with_no_vendor_takes_madura_from_the_mir_party(self):
+        """HRS 1074-1082 have no vendor on the PO sheet; MIR names Madura."""
+        r = self._run("EE350 142CM - 5 Rolls", Decimal("5123.76"), vendor="", party="Madura Industrial Textile")
+        assert r["rolls"] == (6, 5)
+        assert r["qty_mismatched"] is True
+        r = self._run("EE350 142CM", Decimal("5500"), vendor="", party="Madura Industrial Textile")
+        assert (r["within"], r["qty_mismatched"]) == (True, False)
+
+    def test_a_po_vendor_is_never_overridden_by_the_mir_party(self):
+        r = self._run("EE350 142CM", Decimal("5500"), vendor="SRF Ltd", party="Madura Industrial Textile")
+        assert (r["within"], r["qty_mismatched"], r["rolls"]) == (False, True, (None, None))
+
+    def test_a_blank_vendor_with_another_party_gets_nothing(self):
+        r = self._run("EE350 142CM", Decimal("5500"), vendor="", party="SRF Ltd")
+        assert (r["within"], r["qty_mismatched"]) == (False, True)
+
+    def test_another_fabric_vendor_keeps_zero_tolerance_and_no_roll_check(self):
+        r = self._run("EE350 142CM - 5 Rolls", Decimal("5500"), vendor="SRF Ltd")
+        assert (r["within"], r["qty_mismatched"], r["rolls"]) == (False, True, (None, None))
 
 
 class TestAssignPairsTerminates:

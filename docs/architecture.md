@@ -383,7 +383,9 @@ HRS's ten models, the reference versions of each family.
   (empty for a one-row match; rebuilt each run). Carries `tier` (`po_number` / `material` /
   legacy `weighted`), `match_score`, the diff percentages, `qty_over_delivered` (tri-state
   direction), `qty_within_tolerance` (migration `0064`; over the PO quantity but inside the
-  weighbridge allowance, on all six PO↔MIR match models), identification booleans (`material_matched`, `po_number_matched`, `vendor_matched`
+  weighbridge allowance, on all six PO↔MIR match models), `rolls_ordered` / `rolls_received`
+  (migration `0065`; Madura roll counts, null when not stated), `pool_line_refs` (migration `0066`;
+  the order's identical lines this one is pooled with, "1, 3, 4", or blank), identification booleans (`material_matched`, `po_number_matched`, `vendor_matched`
   defaulting True, `manually_pinned` which is re-derived every run), the financial-check booleans
   (`qty_mismatched`, `rate_mismatched`, `data_mismatch`, `tax_type_mismatch`,
   `net_value_mismatched`, `taxable_value_mismatched`, `final_value_mismatched`, `uom_mismatch`),

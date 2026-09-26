@@ -148,7 +148,10 @@ Read the linked section before breaking any of these. Each is there because it w
   [PO ↔ MIR](docs/matching-engine.md#po--mir),
   [import rate](docs/matching-engine.md#import-po--mir-convert-currency-first)
 - Receipts citing exactly one known PO all belong to it; every counted row is saved in
-  `group_entries`, and readers must read it.
+  `group_entries`, and readers must read it. Identical lines of one order (same material, rate,
+  unit) are pooled last by `_pool_duplicate_lines()`: shared by quantity once arrived in full, filled
+  in line order while partly delivered - never shared by quantity when partial.
+  [pooling](docs/matching-engine.md#identical-lines-of-one-order-are-pooled-2026-09-26)
   [one PO, many receipts](docs/matching-engine.md#one-po-many-receipts---the-po-number-is-the-join-key-2026-09-24)
 - The no-PO and RM-untracked registries suppress the match, never the row; don't merge the lists.
   `NOT_STOCKED_MATERIALS` is per plant - follow the admission tests before adding an entry.
@@ -168,9 +171,9 @@ Read the linked section before breaking any of these. Each is there because it w
 - Import figures convert to INR first and compare `qty_as_per_boe`.
   [import currency](docs/matching-engine.md#import-po--mir-convert-currency-first)
 - Zero-tolerance `FLAG_DIFF_PCT` stays identical in the three plant modules and `flags.js`'s
-  `FLAG_PCT`. The one exception is `qty_tolerance.py`: steam coal, HM plastic and HDPE may come in up
-  to 10% OVER (qty and value, never under, never rate); client-side qty checks must use
-  `isQtyMismatch()`. [flag thresholds](docs/matching-engine.md#flag-thresholds)
+  `FLAG_PCT`. The one exception is `qty_tolerance.py`: steam coal, HM plastic, HDPE and Madura fabric
+  may come in up to 10% OVER (qty and value, never under, never rate); Madura's roll count, when both
+  sides state it, overrides the weight. Client-side qty checks must use `isQtyMismatch()`. [flag thresholds](docs/matching-engine.md#flag-thresholds)
 
 ### API and features
 - Every new endpoint needs both a role gate and a plant-scoping call;

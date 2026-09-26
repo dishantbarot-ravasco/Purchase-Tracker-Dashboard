@@ -165,7 +165,12 @@ from apps.services.parsers.common import (
     normalize_vendor_for_matching,
     tokenize,
 )
-from apps.services.qty_tolerance import over_delivery_tolerance_pct, value_within_over_tolerance
+from apps.services.qty_tolerance import (
+    is_madura_vendor,
+    over_delivery_tolerance_pct,
+    rolls_in,
+    value_within_over_tolerance,
+)
 
 TIER_PO_NUMBER = "po_number"
 # TIER_MATERIAL replaces the old TIER_WEIGHTED label (2026-09-07 redesign -
@@ -1549,6 +1554,10 @@ class _Matchable(NamedTuple):
     # total_inclusive_value, which only the extended-fields plants set and
     # which drives the final-value data-mismatch check instead.
     landed_value: Decimal | None = None
+    # The PO's vendor, for the per-vendor quantity rules in qty_tolerance.py
+    # (Madura fabric's +10% and roll count). Not used for identification -
+    # _identification_pool() is handed the vendor separately.
+    vendor_name: str = ""
 
 
 # How far a landed (duty + IGST) rate may sit from MIR's final rate and still
@@ -1968,6 +1977,17 @@ class _ShipmentGroup(NamedTuple):
     # True for a group built from the rows whose own PO column names this
     # order (_po_number_group_rows()), False for a rate-similarity group.
     by_po_number: bool = False
+    # Rolls stated across the members' descriptions (qty_tolerance.rolls_in),
+    # summed; None when any member states none - a partial count would read
+    # as a shortfall. None on a shared receipt's share (_scaled_group()): a
+    # roll cannot be split.
+    rolls: int | None = None
+    # A pool of identical lines on one order (_pool_duplicate_lines()): every
+    # member compares its share of the pool's receipts, and its roll check is
+    # the POOL's - `rolls` then holds the pool's received count and
+    # `pool_rolls_ordered` the pool's ordered one (None when a line states none).
+    pooled: bool = False
+    pool_rolls_ordered: int | None = None
 
 
 def _aggregate_rows(config: _MatchConfig, item: _Matchable, rows: list, *, by_po_number: bool) -> _ShipmentGroup:
@@ -1998,7 +2018,9 @@ def _aggregate_rows(config: _MatchConfig, item: _Matchable, rows: list, *, by_po
         return total
 
     total_value = _sum(config.mir_value)
+    member_rolls = [rolls_in(getattr(mir, "material_description", "") or "") for mir in rows]
     return _ShipmentGroup(
+        rolls=None if any(r is None for r in member_rolls) else sum(member_rolls),
         entries=list(rows),
         qty=total_qty,
         rate=(total_value / total_qty) if (total_value is not None and total_qty and not uom_clash) else None,
@@ -2497,6 +2519,7 @@ def _scaled_group(group, share):
         value=_share_of(group.value, share, _MONEY_PLACES),
         taxable=_share_of(group.taxable, share, _MONEY_PLACES),
         final=_share_of(group.final, share, _MONEY_PLACES),
+        rolls=None,
     )
 
 
@@ -2533,6 +2556,117 @@ def _split_shared_rows(config, assigned, items_by_key, shared_pin_keys, receipt_
             m, score, coverage, _g = assigned[k]
             assigned[k] = (m, score, coverage, group)
             receipt_share[k] = share.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+
+def _pool_identity(item: _Matchable) -> tuple:
+    """What makes two lines of one order interchangeable: the same material
+    at the same rate in the same unit. A conveyor fabric is its series+grade
+    and width (_fabric_spec()), so "EE-350 ... 142cm ... 514m, 14 rolls" and
+    "EE-350 ... 142cm ... 257m, 1 roll" are one fabric; anything else is its
+    normalised description, exactly."""
+    series, width = _fabric_spec(item.description)
+    material = ("fabric", series, width) if series and width else ("text", normalize_material(item.description))
+    rate = Decimal(item.rate).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    return material, rate, normalize_uom(item.uom)
+
+
+def _pool_duplicate_lines(config, assigned, items_by_key, po_of_key, candidates_by_key, skip_keys,
+                          receipt_share, pool_members):
+    """Pools the identical lines of one order (2026-09-26, project owner).
+
+    Madura lists one fabric at one rate on several lines of a PO - Vapi
+    1000001368 has EE-350 142 cm on lines of 14, 6, 8 and 6 rolls - and MIR
+    books the deliveries against the order, not against a line. Every line
+    is then equally entitled to every receipt, so the assignment's split of
+    them is a guess, and each line read wildly off (85%, 31%, 10%, 31%)
+    while the order as a whole could be exact.
+
+    Runs after every other stage has assigned rows. The receipts any line
+    of a pool won are pooled, then shared back out through the share
+    mechanism BOE settlement uses (_scaled_group(), receipt_share):
+
+      - The order arrived in full or over (by weight, or by roll count when
+        every line and receipt states one): each member counts its
+        ordered-quantity share, so every line reads the pool's own
+        difference and the weight allowance applies to the order as a whole.
+        Rolls are checked for the pool: a roll cannot be split.
+      - It has partly arrived: the receipts fill the lines in PO line order.
+        The first lines read in full, one reads partly received, and the rest
+        are left unmatched - "not received yet", not short. Sharing a partial
+        delivery by quantity instead (measured on Render, 2026-09-26) spread
+        the shortfall over every line and raised Vapi's flagged Madura lines
+        from 97 to 108.
+
+    Left out, so an instruction or a stronger settlement is never undone: a
+    pinned, BOE-settled or "Keep both" line, and any line already counting
+    a share. A line joins only if it identified at least one of the pooled
+    receipts itself; one that never could stays as it was. A pool whose
+    receipts' units do not convert is left alone.
+
+    Mutates `assigned`, `receipt_share` and `pool_members` (key -> the
+    pool's member keys, in line order) in place."""
+    pools: dict = {}
+    for key, item in items_by_key.items():
+        if key in skip_keys or key in receipt_share or item.qty is None or item.qty <= 0 or item.rate is None:
+            continue
+        pools.setdefault((key[0], po_of_key[key], _pool_identity(item)), []).append(key)
+    for pool_key in sorted(pools, key=str):
+        keys = sorted(pools[pool_key], key=lambda k: k[1])
+        if len(keys) < 2:
+            continue
+        rows: dict = {}
+        for key in keys:
+            held = assigned.get(key)
+            if held is not None:
+                for row in (held[3].entries if held[3] is not None else [held[0]]):
+                    rows[row.id] = row
+        if not rows:
+            continue
+        members = [k for k in keys if any((k[0], k[1], row_id) in candidates_by_key for row_id in rows)]
+        if len(members) < 2:
+            continue
+        ordered_rows = sorted(rows.values(), key=lambda m: m.id)
+        pooled = _aggregate_rows(config, items_by_key[members[0]], ordered_rows, by_po_number=True)
+        if pooled.uom_clash or not pooled.qty:
+            continue
+        # Each line's ordered quantity in the pool's base unit (_uom_adjust()
+        # of a line against itself converts it the way the receipts were).
+        base_qty = {k: _uom_adjust(items_by_key[k].qty, items_by_key[k].uom, items_by_key[k].qty,
+                                   items_by_key[k].uom, None, None)[0] for k in members}
+        total = sum(base_qty.values(), Decimal("0"))
+        line_rolls = {k: rolls_in(items_by_key[k].description) for k in members}
+        pool_rolls_ordered = None if any(r is None for r in line_rolls.values()) else sum(line_rolls.values())
+        rolls_known = pool_rolls_ordered is not None and pooled.rolls is not None
+        complete = (pooled.rolls >= pool_rolls_ordered) if rolls_known else (pooled.qty >= total)
+        if complete:
+            allocation = {k: (base_qty[k] / total, pooled.rolls, pool_rolls_ordered) for k in members}
+        else:
+            allocation = {}
+            qty_left, rolls_left = pooled.qty, (pooled.rolls if rolls_known else None)
+            for k in members:
+                take = min(base_qty[k], qty_left)
+                qty_left -= take
+                rolls_take = None
+                if rolls_left is not None:
+                    rolls_take = min(line_rolls[k], rolls_left)
+                    rolls_left -= rolls_take
+                if take > 0:
+                    allocation[k] = (take / pooled.qty, rolls_take, line_rolls[k] if rolls_known else None)
+        for key in members:
+            if key not in allocation:
+                assigned.pop(key, None)
+                continue
+            share, rolls_got, rolls_wanted = allocation[key]
+            best = max(
+                (candidates_by_key[(key[0], key[1], row.id)] for row in ordered_rows
+                 if (key[0], key[1], row.id) in candidates_by_key),
+                key=lambda c: (_pair_weight(c), -c.mir.id),
+            )
+            group = _scaled_group(pooled, share)._replace(
+                rolls=rolls_got, pooled=True, pool_rolls_ordered=rolls_wanted)
+            assigned[key] = (best.mir, best.score, best.coverage, group)
+            receipt_share[key] = share.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+            pool_members[key] = members
 
 
 def _blended_matchables(items_by_key, keys, qtys, total) -> dict:
@@ -2575,7 +2709,7 @@ def _diffs_and_flag(
     uom_mismatch, severity, qty_mismatched, rate_mismatched, data_mismatch,
     tax_type_mismatch, taxable_value_diff_pct, final_value_diff_pct,
     net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-    qty_over_delivered, qty_within_tolerance).
+    qty_over_delivered, qty_within_tolerance, (rolls_ordered, rolls_received)).
 
     OVER vs UNDER (2026-09-18, project owner). qty_diff_pct is an ABSOLUTE
     percentage and always was, so "received 20% more than ordered" and
@@ -2603,6 +2737,14 @@ def _diffs_and_flag(
     tonnes bill proportionally more at the same rate. Under-delivery, and
     anything past the allowance, flags exactly as it does for every other
     material. Rate keeps zero tolerance throughout.
+
+    Madura fabric (any line whose PO vendor is Madura) gets the same
+    allowance on weight, which is theoretical on the PO. It is also counted
+    in rolls: when the PO line and every counted MIR row state a roll count
+    (qty_tolerance.rolls_in), a differing count is a qty mismatch however
+    close the weight is, and its direction sets qty_over_delivered. The
+    last element returns (rolls_ordered, rolls_received), either None when
+    not stated, both None for any other vendor.
 
     The last three (added 2026-09-08, Data Quality Flags clarity pass) were
     already being computed here the whole time as value_flagged/
@@ -2683,13 +2825,32 @@ def _diffs_and_flag(
         None if (qty_diff is None or qty_a is None or qty_received is None)
         else qty_received > qty_a
     )
-    # Weighed-by-the-truckload material only (qty_tolerance.py): over, and
-    # by no more than the allowance. The diff and direction stay as they are.
-    over_tolerance = over_delivery_tolerance_pct(item.description)
+    # Weighed-by-the-truckload material and Madura fabric (qty_tolerance.py):
+    # over, and by no more than the allowance. The diff and direction stay.
+    # A PO with no vendor name falls back to the MIR row's party: HRS's
+    # fabric orders 1074-1082 carry none on the PO sheet, and every one of
+    # their receipts is Madura's (checked 2026-09-26).
+    vendor = item.vendor_name or getattr(mir, "party_name", "") or ""
+    over_tolerance = over_delivery_tolerance_pct(item.description, vendor)
     qty_within_tolerance = (
         over_tolerance is not None and qty_over_delivered is True
         and qty_diff is not None and qty_diff <= over_tolerance
     )
+    # Madura fabric is counted in rolls, stated at the end of both sides'
+    # descriptions. When both state it, the count decides: every roll
+    # received reads as matched within the weight allowance above, and a
+    # roll short or over is a qty mismatch whatever the weight says.
+    rolls_ordered = rolls_received = None
+    if is_madura_vendor(vendor):
+        if group is not None and group.pooled:
+            rolls_ordered, rolls_received = group.pool_rolls_ordered, group.rolls
+        else:
+            rolls_ordered = rolls_in(item.description)
+            rolls_received = group.rolls if group is not None else rolls_in(getattr(mir, "material_description", "") or "")
+    rolls_differ = rolls_ordered is not None and rolls_received is not None and rolls_ordered != rolls_received
+    if rolls_differ:
+        qty_within_tolerance = False
+        qty_over_delivered = rolls_received > rolls_ordered
 
     def _value_flagged(a, b):
         if a is None or b is None or abs(a - b) <= config.value_flag_epsilon:
@@ -2724,7 +2885,7 @@ def _diffs_and_flag(
         elif rate_diff is None or landed_diff < rate_diff:
             rate_diff = landed_diff
 
-    qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct and not qty_within_tolerance
+    qty_mismatched = rolls_differ or (qty_diff is not None and qty_diff > config.flag_diff_pct and not qty_within_tolerance)
     rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
     is_flagged = qty_mismatched or rate_mismatched
     data_mismatch = uom_mismatch or value_flagged or taxable_value_flagged or final_value_flagged or tax_type_flagged
@@ -2734,7 +2895,7 @@ def _diffs_and_flag(
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_flagged,
         taxable_value_diff, final_value_diff,
         value_flagged, taxable_value_flagged, final_value_flagged,
-        qty_over_delivered, qty_within_tolerance,
+        qty_over_delivered, qty_within_tolerance, (rolls_ordered, rolls_received),
     )
 
 
@@ -2783,6 +2944,7 @@ def _po_matchable(po_line_item, is_single_item_po: bool) -> _Matchable:
         tax_type=po.tax_type or None,
         total_value=po.total_value if is_single_item_po else None,
         total_inclusive_value=po.total_inclusive_value if is_single_item_po else None,
+        vendor_name=getattr(po, "vendor_name", "") or "",
     )
 
 
@@ -2818,6 +2980,7 @@ def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po:
         return _Matchable(
             import_line_item.description, import_line_item.qty_as_per_boe, import_line_item.uom, rate_inr, value_inr,
             landed_value=landed_value,
+            vendor_name=getattr(po, "vendor_name", "") or "",
         )
     total_value_inr = (
         _import_total_value_inr(po.total_value, import_line_item.exchange_rate) if is_single_item_po else None
@@ -2828,6 +2991,7 @@ def _import_matchable(config: _MatchConfig, import_line_item, is_single_item_po:
         total_value=total_value_inr,
         total_inclusive_value=import_line_item.total_inclusive_value,
         landed_value=landed_value,
+        vendor_name=getattr(po, "vendor_name", "") or "",
     )
 
 
@@ -2953,7 +3117,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-        qty_over_delivered, qty_within_tolerance,
+        qty_over_delivered, qty_within_tolerance, (rolls_ordered, rolls_received),
     ) = _diffs_and_flag(config, item, best_entry, group=group)
     match = _save_po_mir_match(
         config.po_mir_match_model, po_line_item, _LOOK_UP,
@@ -2964,6 +3128,8 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             qty_diff_pct=qty_diff,
             qty_over_delivered=qty_over_delivered,
             qty_within_tolerance=qty_within_tolerance,
+            rolls_ordered=rolls_ordered,
+            rolls_received=rolls_received,
             rate_diff_pct=rate_diff,
             value_diff_pct=value_diff,
             is_flagged=is_flagged,
@@ -3034,7 +3200,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-        qty_over_delivered, qty_within_tolerance,
+        qty_over_delivered, qty_within_tolerance, (rolls_ordered, rolls_received),
     ) = _diffs_and_flag(config, item, best_entry, group=group)
     defaults = dict(
         mir_entry=best_entry,
@@ -3043,6 +3209,8 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         qty_diff_pct=qty_diff,
         qty_over_delivered=qty_over_delivered,
         qty_within_tolerance=qty_within_tolerance,
+        rolls_ordered=rolls_ordered,
+        rolls_received=rolls_received,
         rate_diff_pct=rate_diff,
         value_diff_pct=value_diff,
         is_flagged=is_flagged,
@@ -3053,6 +3221,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         # plant at once, so they run in run_full_match() only; this
         # single-line path clears what a previous full run may have left.
         receipt_share=None,
+        pool_line_refs="",
         mir_exchange_rate=None,
         exchange_rate_mismatched=False,
     )
@@ -3985,6 +4154,26 @@ def run_full_match(config: _MatchConfig) -> dict:
     receipt_share: dict[tuple[str, int], Decimal] = dict(boe_share)
     _split_shared_rows(config, assigned, items_by_key, shared_pin_keys, receipt_share)
 
+    # IDENTICAL LINES OF ONE ORDER POOL THEIR RECEIPTS (2026-09-26) - last, so
+    # every stage above has placed its rows first. See _pool_duplicate_lines().
+    pool_members: dict = {}
+    _pool_duplicate_lines(
+        config, assigned, items_by_key,
+        {key: item.purchase_order_id for key, item in items_by_kind_id.items()},
+        candidates_by_key, pinned_keys | boe_keys | shared_pin_keys, receipt_share, pool_members,
+    )
+    positions = {
+        "po": line_item_positions(po_items),
+        "import": line_item_positions(import_items),
+    }
+
+    def pool_line_refs(key):
+        """The pool's line numbers as the modal shows them (1-based), or ""."""
+        members = pool_members.get(key)
+        if not members:
+            return ""
+        return ", ".join(str(int(positions[k[0]][k[1]][1]) + 1) for k in members)
+
     # Matches belonging to a RETIRED order have to be cleared explicitly
     # (2026-09-18). Every other stale match is deleted by the per-item loops
     # below, which only visit items still in `po_items`/`import_items` - and
@@ -4022,7 +4211,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-            qty_over_delivered, qty_within_tolerance,
+            qty_over_delivered, qty_within_tolerance, (rolls_ordered, rolls_received),
         ) = _diffs_and_flag(config, matchable, mir, group=group)
         match = _save_po_mir_match(
             config.po_mir_match_model, item, previous_mir["po"].get(item.id),
@@ -4033,11 +4222,14 @@ def run_full_match(config: _MatchConfig) -> dict:
                 # clear the badge on the next run. See ManualMirMatch.
                 manually_pinned=("po", item.id) in pinned_keys,
                 receipt_share=receipt_share.get(("po", item.id)),
+                pool_line_refs=pool_line_refs(("po", item.id)),
                 tier=tier,
                 match_score=score.quantize(Decimal("0.0001")),
                 qty_diff_pct=qty_diff,
                 qty_over_delivered=qty_over_delivered,
                 qty_within_tolerance=qty_within_tolerance,
+                rolls_ordered=rolls_ordered,
+                rolls_received=rolls_received,
                 rate_diff_pct=rate_diff,
                 value_diff_pct=value_diff,
                 is_flagged=is_flagged,
@@ -4083,7 +4275,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-            qty_over_delivered, qty_within_tolerance,
+            qty_over_delivered, qty_within_tolerance, (rolls_ordered, rolls_received),
         ) = _diffs_and_flag(config, matchable, mir, group=group)
         # An exchange-rate difference is not a price difference - see
         # _exchange_rate_explains(). Only a cleared line has the landed figure
@@ -4105,6 +4297,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             # clear the badge. Same as the domestic loop above.
             manually_pinned=key in pinned_keys,
             receipt_share=receipt_share.get(key),
+            pool_line_refs=pool_line_refs(key),
             mir_exchange_rate=mir_fx,
             exchange_rate_mismatched=fx_mismatched,
             tier=tier,
@@ -4112,6 +4305,8 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_diff_pct=qty_diff,
             qty_over_delivered=qty_over_delivered,
             qty_within_tolerance=qty_within_tolerance,
+            rolls_ordered=rolls_ordered,
+            rolls_received=rolls_received,
             rate_diff_pct=rate_diff,
             value_diff_pct=value_diff,
             is_flagged=is_flagged,

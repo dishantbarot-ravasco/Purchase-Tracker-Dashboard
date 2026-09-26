@@ -556,7 +556,8 @@ Status, flag and badge logic shared by every list and modal. Feature semantics a
   only; the backend decides which lines qualify and sends `qtyWithinTolerance`. Every client-side
   qty check (KPI cards, over/short split, import BOE-vs-MIR, Raw Material cards and modal, the
   reconciliation dismiss link) goes through `isQtyMismatch(it)`, never `qtyDiffPct > FLAG_PCT`
-  directly, or a tolerated line would flag again in the browser. `tintDiffs(it)` gives the diffs
+  directly, or a tolerated line would flag again in the browser. It is also true when Madura's roll
+  counts differ (`rollsDiffer(it)`, from `rollsOrdered` / `rollsReceived`), even at an exact weight. `tintDiffs(it)` gives the diffs
   that may tint a row (a tolerated qty diff, and its value diff unless `netValueMismatched`, are left
   out). `qtyToleranceNote(it)` is the "Qty matched: received 7% over ... within the 10% weighbridge
   tolerance" sentence the reconciliation cards show.
@@ -642,9 +643,9 @@ for value, and on a cleared line a `landed` pair from `landedRateInr` / `receive
 "Landed rate (duty + IGST)" row with the matcher's 0.01% allowance, `RECON_LANDED_RATE_REL_EPS`, so a
 duty-only gap reads "matches" there while the pre-duty row above still shows it). The landed row is
 left out for a shared receipt (`receiptShare`), which is compared at the BOE's blended rate; the card
-shows `notes` instead - the line's share of the receipt (`receiptShareNote(share, tier)`: a BOE
-share on tier `boe_number`, otherwise a "Keep both" manual match's share; Domestic lines carry it
-too), and for an exchange-rate difference both rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
+shows `notes` instead - the line's share of the receipt (`receiptShareNote(share, tier, poolRefs)`:
+a pooled line's share of its order's identical lines when `poolLineRefs` is set, a BOE share on tier
+`boe_number`, otherwise a "Keep both" manual match's share; Domestic lines carry it too), and for an exchange-rate difference both rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
 each line at its own ordered value) + one `reconLineHtml()` per line. `reconControlsHtml()` carries the
 confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag, dismiss/reinstate link
 (only when `reconAnyFlag(m, isFlagged)`, whose qty half is `isQtyMismatch()`) and the
@@ -652,7 +653,9 @@ confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag, dismis
 (`reconToleranceFields()`) gets the green `recon-full` status "Qty matched · +7% within tolerance",
 counts as fully received in the summary, shows its qty (and, unless the value still flagged, value)
 difference in the matched colour as "over, within tolerance" (`reconDiffHtml(..., tolerated)`), and
-carries `qtyToleranceNote()` in its notes.
+carries `qtyToleranceNote()` in its notes. A line whose PO states rolls gets a Rolls row ("not
+stated in MIR" when the receipts give none), and a differing count sets the status to "Partly
+received · 5 of 6 rolls" or "Over-received · 7 of 6 rolls" whatever the weight.
 `reconMoney()` is exact rupees; epsilons `RECON_QTY_EPS`, `RECON_RATE_EPS`, `RECON_VALUE_EPS` (Rs 1,
 the matcher's value epsilon). Progress bars use `data-width-pct`, so callers run
 `applyDynamicStyles()`. Must load after `flags.js` and before `po-modal.js`/`import-po.js`.

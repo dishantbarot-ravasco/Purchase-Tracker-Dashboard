@@ -400,6 +400,11 @@ def _line_item_dict(item, item_ref=""):
         # Over, but inside the weighbridge allowance for material bought by the
         # truckload - the frontend shows Qty matched plus a tolerance note.
         "qtyWithinTolerance": bool(match and getattr(match, "qty_within_tolerance", False)),
+        # Madura fabric roll counts (null when not stated) - the card shows them.
+        "rollsOrdered": getattr(match, "rolls_ordered", None) if match else None,
+        "rollsReceived": getattr(match, "rolls_received", None) if match else None,
+        # Identical lines of the order this one is pooled with ("1, 3, 4"), or "".
+        "poolLineRefs": (getattr(match, "pool_line_refs", "") if match else "") or "",
         "rateDiffPct": float(match.rate_diff_pct) if match and match.rate_diff_pct is not None else None,
         "valueDiffPct": float(match.value_diff_pct) if match and match.value_diff_pct is not None else None,
         # Match Accuracy Programme fixes 2.C/3.F - see matching_core.py.

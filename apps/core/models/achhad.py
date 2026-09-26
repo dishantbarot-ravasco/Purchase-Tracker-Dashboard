@@ -375,6 +375,17 @@ class RTPAchhadPOMirMatch(models.Model):
     # 2026-09-26) - counted as matched, shown with a tolerance note. See
     # apps/services/qty_tolerance.py.
     qty_within_tolerance = models.BooleanField(default=False)
+    # Madura fabric's roll counts, read from the end of the PO line's and the
+    # counted MIR rows' descriptions (qty_tolerance.rolls_in). NULL when a
+    # side states none, and for every other vendor. See
+    # matching_core._diffs_and_flag().
+    rolls_ordered = models.PositiveIntegerField(null=True, blank=True)
+    rolls_received = models.PositiveIntegerField(null=True, blank=True)
+    # The order's identical lines this line was pooled with, as the modal numbers
+    # them ("1, 3, 4"), or blank. A pooled line compares its ordered-quantity
+    # share (receipt_share) of the pool's receipts. See
+    # matching_core._pool_duplicate_lines().
+    pool_line_refs = models.CharField(max_length=255, blank=True, default="")
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full
@@ -660,6 +671,17 @@ class RTPAchhadImportPOMirMatch(models.Model):
     # 2026-09-26) - counted as matched, shown with a tolerance note. See
     # apps/services/qty_tolerance.py.
     qty_within_tolerance = models.BooleanField(default=False)
+    # Madura fabric's roll counts, read from the end of the PO line's and the
+    # counted MIR rows' descriptions (qty_tolerance.rolls_in). NULL when a
+    # side states none, and for every other vendor. See
+    # matching_core._diffs_and_flag().
+    rolls_ordered = models.PositiveIntegerField(null=True, blank=True)
+    rolls_received = models.PositiveIntegerField(null=True, blank=True)
+    # The order's identical lines this line was pooled with, as the modal numbers
+    # them ("1, 3, 4"), or blank. A pooled line compares its ordered-quantity
+    # share (receipt_share) of the pool's receipts. See
+    # matching_core._pool_duplicate_lines().
+    pool_line_refs = models.CharField(max_length=255, blank=True, default="")
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full

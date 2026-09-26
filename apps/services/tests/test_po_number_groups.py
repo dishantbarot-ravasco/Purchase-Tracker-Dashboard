@@ -123,7 +123,11 @@ class TestLinesOfOneOrderShareItsReceipts:
     def test_duplicate_lines_each_keep_a_receipt(self):
         """An order listing one material on two lines, one receipt each. The
         first version sent both receipts to whichever line's wording scored
-        higher and left the other line empty (2 Achhad, 2 Vapi lines)."""
+        higher and left the other line empty (2 Achhad, 2 Vapi lines).
+
+        The two lines are identical (same material, rate and unit), so they
+        are pooled (2026-09-26, _pool_duplicate_lines()): each counts half
+        of both receipts, and each reads exactly matched."""
         po = _po("3000009500")
         line_1 = _item(po, qty=Decimal("1050"), item_id="1")
         line_2 = _item(po, qty=Decimal("1050"), item_id="2")
@@ -132,9 +136,12 @@ class TestLinesOfOneOrderShareItsReceipts:
 
         run_full_match()
 
-        assert len(_saved_mir_nos(_match_for(line_1))) == 1
-        assert len(_saved_mir_nos(_match_for(line_2))) == 1
-        assert set(_saved_mir_nos(_match_for(line_1)) + _saved_mir_nos(_match_for(line_2))) == {"R-1", "R-2"}
+        for line in (line_1, line_2):
+            match = _match_for(line)
+            assert _saved_mir_nos(match) == ["R-1", "R-2"]
+            assert match.receipt_share == Decimal("0.500000")
+            assert match.qty_diff_pct == Decimal("0.00")
+            assert match.qty_mismatched is False
 
     def test_extra_receipts_go_to_the_line_whose_material_they_are(self):
         po = _po("3000009600")

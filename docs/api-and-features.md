@@ -881,7 +881,8 @@ expressed only as config values, never as branches inside this module.
 - **`_line_item_dict(item, item_ref)`**: the per-line payload (`itemRef`, match ids / tier / score,
   diff percentages, `qtyOverDelivered` tri-state, `qtyWithinTolerance` (weighed material accepted up
   to 10% over - [flag thresholds](matching-engine.md#flag-thresholds); the import payload carries it
-  too), split mismatch booleans, `severity`, `matchedMirNo`,
+  too), `rollsOrdered` / `rollsReceived` (Madura roll counts, null when not stated), `poolLineRefs`
+  (identical lines it is pooled with, "" when none; both payloads), split mismatch booleans, `severity`, `matchedMirNo`,
   `matchedMirs`, `received`, `stockMatched`, dismissal fields). `vendorMatched` defaults to true where the
   column does not exist. `_categorized_line_item_dict()` adds the line's canonical category.
 - **`_po_dict()`**: the PO payload; line items numbered in pk order (the matcher's numbering). Takes

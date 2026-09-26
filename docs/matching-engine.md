@@ -367,6 +367,34 @@ Difference** table and every matched receipt; the rendering details are in
 **Still open:** fabric ordered in ROLLS against MIR in Kgs is compared raw (PO 1077: "9999.99%"),
 because `normalize_uom()` does not treat ROLLS vs KG as a known family clash.
 
+### Identical lines of one order are pooled (2026-09-26)
+
+Madura lists one fabric at one rate on several lines of a PO (Vapi 1000001368: EE-350 142 cm on lines
+of 14, 6, 8 and 6 rolls), and MIR books deliveries against the order, not a line. Every line is equally
+entitled to every receipt, so the assignment's split was a guess and each line read wildly off (85%,
+31%, 10%, 31%) while the order as a whole could be exact.
+
+`_pool_duplicate_lines()` runs in `run_full_match()` after every other stage (pins, BOE settlement,
+PO-number groups, rate groups, the optimal assignment, "Keep both" splits). Lines of one order with the
+same `_pool_identity()` - fabric series+grade and width (`_fabric_spec()`), otherwise the normalised
+description exactly; plus the same rate and unit - pool the receipts any of them won:
+
+- **Arrived in full or over** (by weight, or by roll count when every line and receipt states one):
+  each line counts its ordered-quantity share (`receipt_share`, the BOE mechanism), so every line
+  reads the order's own difference and the weight allowance applies to the order. Rolls are checked
+  for the pool.
+- **Partly arrived:** the receipts fill the lines in PO line order - the first lines full, one partly
+  received, the rest unmatched ("not received yet", not short). Sharing a partial delivery by quantity
+  was built first and measured worse (Vapi's flagged Madura lines 97 -> 108): it spread the shortfall
+  over every line.
+
+GSM is deliberately not part of the fabric identity: no fabric pool at any plant has lines of
+differing GSM (checked 2026-09-26), since GSM follows the grade. Never pooled: a pinned, BOE-settled or "Keep both" line, a line already counting a share, a line that
+identified none of the pooled receipts, and a pool whose receipts' units do not convert. The pool's
+line numbers are stored as `pool_line_refs` ("1, 3, 4"). Only the full run pools - the single-line
+`match_po_mir_line_item()` does not, and the next full run restores the pool. Measured on Render by
+simulation over the stored assignment: 75 Vapi pools, Madura mismatches 72 -> 43, matched 88 -> 113.
+
 ### MIR ↔ Stock
 
 Gates differently per plant, reflecting the real schema difference: HRS and Vapi gate on
@@ -709,6 +737,25 @@ a typo allowance on the longer words. It applies at all three plants, domestic a
   PO 1100000833, 121.1 of 100 tonnes, is still Over-Delivered).
 - `severity` ignores a tolerated qty diff, and the value diff it carried unless the value still
   flagged (`_severity_diffs()`), so the row is not tinted.
+
+**Madura fabric gets the same +10%, by vendor, plus a roll count (2026-09-26).** Its PO weight is
+theoretical (GSM x width x length) while MIR records the scale, so before this 401 of Vapi's 402
+matched Madura lines flagged at zero tolerance. Any line whose PO vendor is Madura
+(`is_madura_vendor()`, loose on spelling: "MADURA INDL TEXTILES LTD", "Madura Technical Fabrics",
+never "Madurai") gets the over-only weight allowance at every plant. A PO with **no** vendor name
+falls back to the matched MIR row's party ("Madura Industrial Textile" on HRS's MIR): HRS's fabric
+orders 1074-1082, 37 lines, carry no vendor on the PO sheet and every receipt is Madura's. A PO
+vendor that is set is never overridden by the MIR party. Fabric is also counted in rolls,
+written at the END of the description on both sheets (a separate MIR column is not possible):
+"..., 6 rolls, total weight 5123.76" on the PO, "EE350 142CM - 6 Rolls" on MIR. `rolls_in()` reads
+the last stated count. When the PO line and **every** counted MIR row state one, the summed count
+decides: a roll short or over is a qty mismatch whatever the weight says, and sets
+`qty_over_delivered` by the roll direction. If any receipt states no count, the weight rule alone
+decides - a partial count would read as a shortfall. A shared receipt's share (`_scaled_group()`)
+has no roll count, since a roll cannot be split. Rolls never identify which receipt belongs to which
+line. The counts are stored as `rolls_ordered` / `rolls_received` (migration `0065`). Measured on
+Render at ship time, before any MIR row stated rolls: 241 Madura lines move to Qty matched (HRS 9,
+Achhad 9, Vapi 223); Vapi keeps 43 over by more than 10% and 135 short.
 
 The frontend mirrors the figure as `BULK_QTY_TOLERANCE_PCT` in `flags.js`, and every client-side qty
 check goes through `isQtyMismatch()`, which honours `qtyWithinTolerance`. Three live look-alikes are
@@ -1159,8 +1206,12 @@ below); trust the code.
 - `_diffs_and_flag(config, item, mir, *, group=None, ...overrides)` - returns the 17-tuple (qty/rate/
   value diffs, is_flagged, uom_mismatch, severity, qty/rate mismatched, data_mismatch,
   tax_type_mismatch, taxable/final diffs, three value-mismatch booleans, qty_over_delivered,
-  qty_within_tolerance). The weighbridge allowance (`qty_tolerance.py`) is applied here, on the
-  group's summed qty when there is one. A group
+  qty_within_tolerance, (rolls_ordered, rolls_received)). The weight allowance and Madura's roll
+  check (`qty_tolerance.py`) are applied here, on the group's summed qty and rolls when there is one.
+  `_Matchable.vendor_name` carries the PO vendor for them (set by `_po_matchable()` /
+  `_import_matchable()`); `_ShipmentGroup.rolls` is the members' summed count, None when any member
+  states none or on a share. A pooled group (`pooled=True`) takes its roll pair from the pool
+  allocation instead (`rolls`, `pool_rolls_ordered`). A group
   supplies qty/rate/value and summed taxable/final; a `uom_clash` group reports a unit mismatch. (Its
   docstring's closing paragraph still says taxable/final always compare against the single row;
   since 2026-09-24 a group's sums are used.)
@@ -1261,6 +1312,17 @@ key is why `normalize_material()` must not change: its output is persisted. It i
 consumption key (see [consumption.md](consumption.md)). Rationale:
 [architecture.md](architecture.md#stable-lot-identity).
 
+**Pooling identical lines**
+
+- `_pool_identity(item)` - (material, rate to 4 places, normalised unit); material is
+  ("fabric", series+grade, width) when `_fabric_spec()` reads both, else ("text",
+  `normalize_material(description)`).
+- `_pool_duplicate_lines(config, assigned, items_by_key, po_of_key, candidates_by_key, skip_keys,
+  receipt_share, pool_members)` - see [identical lines](#identical-lines-of-one-order-are-pooled-2026-09-26).
+  Rewrites `assigned` with scaled pooled groups (or drops a line the partial delivery did not reach),
+  and fills `receipt_share` and `pool_members`; `run_full_match()` turns the latter into
+  `pool_line_refs`.
+
 ### apps/services/qty_tolerance.py
 
 The weighbridge over-delivery allowance; no Django imports. `BULK_QTY_OVER_TOLERANCE_PCT` (10).
@@ -1273,7 +1335,12 @@ to four, or "high density polyethylene", unless the next word is bag/packing/lin
 `bulk_weight_material(description)` (lru-cached) returns the label or None;
 `over_delivery_tolerance_pct(description)` returns 10 or None;
 `value_within_over_tolerance(ordered, received, pct, epsilon)` - received at or above ordered and no
-more than pct over it plus epsilon. Called only from `matching_core._diffs_and_flag()`.
+more than pct over it plus epsilon. `is_madura_vendor(name)` (lru-cached) - a token within
+`_similar()` of "madura", "madurai" excluded. `rolls_in(description)` (lru-cached) - the last roll
+count stated, before the roll word ("6 Rolls", "6rolls", "6 nos rolls", "6 Rls") or after it
+("Rolls: 6"), never a decimal or a measurement ("roll 142 cm"). `over_delivery_tolerance_pct(description,
+vendor_name="")` returns 10 for a bulk-weight material or a Madura vendor. Called from
+`matching_core._diffs_and_flag()` and `_aggregate_rows()`.
 
 ### apps/services/no_po_vendors.py
 

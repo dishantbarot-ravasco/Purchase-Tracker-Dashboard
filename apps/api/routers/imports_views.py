@@ -200,6 +200,11 @@ def _mir_match_dict(item):
         "qtyOverDelivered": getattr(match, "qty_over_delivered", None),
         # See _domestic_base._line_item_dict()'s qtyWithinTolerance.
         "qtyWithinTolerance": bool(getattr(match, "qty_within_tolerance", False)),
+        # Madura fabric roll counts (null when not stated) - the card shows them.
+        "rollsOrdered": getattr(match, "rolls_ordered", None),
+        "rollsReceived": getattr(match, "rolls_received", None),
+        # Identical lines of the order this one is pooled with ("1, 3, 4"), or "".
+        "poolLineRefs": getattr(match, "pool_line_refs", "") or "",
         "rateDiffPct": _f(match.rate_diff_pct),
         "valueDiffPct": _f(match.value_diff_pct),
         "isFlagged": match.is_flagged,

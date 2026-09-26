@@ -15,18 +15,30 @@
 // flags - only a real, nonzero difference does.
 const FLAG_PCT = 0;
 
-// The one exception to FLAG_PCT (2026-09-26): steam coal, HM plastic and
-// HDPE arrive by the truckload and may come in up to this much OVER the PO
-// quantity and still count as matched. The backend decides which lines
+// The one exception to FLAG_PCT (2026-09-26): steam coal, HM plastic, HDPE
+// and Madura fabric are weighed on arrival and may come in up to this much
+// OVER the PO quantity and still count as matched. The backend decides which lines
 // qualify (apps/services/qty_tolerance.py, whose BULK_QTY_OVER_TOLERANCE_PCT
 // this mirrors for the note's wording) and sends qtyWithinTolerance.
 const BULK_QTY_TOLERANCE_PCT = 10;
 
 // Whether a line's quantity is a mismatch - every qty check goes through
 // this so a within-tolerance line never raises one anywhere. `it` is any
-// object carrying qtyDiffPct / qtyWithinTolerance (a line item or mirMatch).
+// object carrying qtyDiffPct / qtyWithinTolerance / rollsOrdered /
+// rollsReceived (a line item or mirMatch). A Madura roll count that differs
+// is a mismatch even when the weight is exact.
 function isQtyMismatch(it) {
+  if (rollsDiffer(it)) return true;
   return it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT && !it.qtyWithinTolerance;
+}
+
+function rollsDiffer(it) {
+  return it.rollsOrdered != null && it.rollsReceived != null && it.rollsOrdered !== it.rollsReceived;
+}
+
+// "6 rolls" / "1 roll".
+function rollsText(n) {
+  return n + (n === 1 ? ' roll' : ' rolls');
 }
 
 // The largest diff that should tint a row. A quantity inside the weighbridge
@@ -37,12 +49,14 @@ function tintDiffs(it) {
   return [it.rateDiffPct, it.netValueMismatched ? it.valueDiffPct : null];
 }
 
-// "Received 7% over the PO quantity - within the 10% weighbridge tolerance".
+// "Qty matched: all 6 rolls received, 7% over the PO weight, within the 10%
+// weight tolerance". Empty when the line is not inside the allowance.
 function qtyToleranceNote(it) {
   if (!it || !it.qtyWithinTolerance) return '';
   const pct = it.qtyDiffPct != null ? it.qtyDiffPct.toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '% ' : '';
-  return 'Qty matched: received ' + pct + 'over the PO quantity, within the ' + BULK_QTY_TOLERANCE_PCT +
-    '% weighbridge tolerance for material bought by the truckload.';
+  const rolls = it.rollsOrdered != null && it.rollsReceived === it.rollsOrdered ? 'all ' + rollsText(it.rollsOrdered) + (it.poolLineRefs ? ' of the pooled lines' : '') + ' received and ' : 'received ';
+  return 'Qty matched: ' + rolls + pct + 'over the PO quantity, within the ' + BULK_QTY_TOLERANCE_PCT +
+    '% weight tolerance for material weighed on arrival.';
 }
 
 // Colored flag icon for the KPI row - a small monochrome SVG (Material

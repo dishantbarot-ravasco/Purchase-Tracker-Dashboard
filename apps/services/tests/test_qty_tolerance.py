@@ -9,7 +9,9 @@ import pytest
 from apps.services.qty_tolerance import (
     BULK_QTY_OVER_TOLERANCE_PCT,
     bulk_weight_material,
+    is_madura_vendor,
     over_delivery_tolerance_pct,
+    rolls_in,
     value_within_over_tolerance,
 )
 
@@ -84,3 +86,54 @@ class TestValueWithinOverTolerance:
 
     def test_a_missing_side_is_not_accepted(self):
         assert not value_within_over_tolerance(None, Decimal("1000"), Decimal("10"), self.EPS)
+
+
+# ── Madura fabric: vendor-keyed allowance and roll counts ──
+
+
+@pytest.mark.parametrize("vendor", [
+    # every spelling on the three plants' PO and MIR sheets
+    "Madura Industrial Textiles Ltd",
+    "Madura Industrial Textiles Ltd.",
+    "Madura Industrial Textile Ltd.",
+    "Madura Industrial Textile",  # HRS MIR on Drive
+    "MADURA INDL TEXTILES LTD",
+    "Madura Technical Textiles Ltd",
+    "MADURA TECHNICAL FABRICS LTD.",
+    "Madhura Industrial Textiles",
+])
+def test_madura_vendor_recognised(vendor):
+    assert is_madura_vendor(vendor)
+    assert over_delivery_tolerance_pct("EE350 142CM", vendor) == BULK_QTY_OVER_TOLERANCE_PCT
+
+
+@pytest.mark.parametrize("vendor", ["SRF Ltd", "Urja Products Private Limited", "Madurai Rubbers", "Mahavir", ""])
+def test_other_vendors_are_not_madura(vendor):
+    assert not is_madura_vendor(vendor)
+    assert over_delivery_tolerance_pct("EE350 142CM", vendor) is None
+
+
+@pytest.mark.parametrize("description, rolls", [
+    # PO sheet: "roll" names the product first, the count comes last
+    ("EE-200 fabric roll, width 102cm, GSM 720, length 510m, 4 rolls, total weight 1498.176", 4),
+    ("EE-160 fabric roll, width 223cm, GSM 570, length 464m, 1 roll, total weight 589.79", 1),
+    ("PP 250 fabric roll, width 107cm, length 660m, 2 rolls", 2),
+    # MIR, as Achhad already writes it and as the plant will add it
+    ("Rubberised Textile Fabrics  EEH-160,125Cm,1020 Mtrs - 3 Rolls", 3),
+    ("EE350 142CM - 6 Rolls", 6),
+    ("EE350 142CM 6rolls", 6),
+    ("EE350 142CM Rolls: 6", 6),
+    ("EE350 142CM Rolls - 6", 6),
+    ("EE350 142CM 6 Rls", 6),
+    ("EE350 142CM 6 nos rolls", 6),
+    ("EE350 142CM 12 Roles", 12),
+    # nothing stated, or not a count
+    ("EE350 142CM", None),
+    ("EE-200 fabric roll, width 102cm", None),
+    ("EE350 142CM roll 142 cm", None),
+    ("EE200 102CM 1.5 rolls", None),
+    ("Roller chain 12 m", None),
+    ("", None),
+])
+def test_rolls_in(description, rolls):
+    assert rolls_in(description) == rolls

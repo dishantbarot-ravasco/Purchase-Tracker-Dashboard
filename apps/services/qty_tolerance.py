@@ -27,6 +27,17 @@ matched, and each has a test:
     something else, so HDPE followed by bag/bags/packing does not count.
   - "LD Plastic Bag", "CP PLASTICIZER" - plastic without the HM prefix.
 
+Madura fabric (2026-09-26) gets the same +10% by VENDOR, at all three
+plants: its PO weight is theoretical (GSM x width x length) while MIR records
+what the scale said, so an exact weight is impossible. Fabric is counted in
+rolls, and the roll count is written at the END of the description on both
+sheets - "..., 6 rolls, total weight 5123.76" on the PO, "EE350 142CM - 6
+Rolls" on MIR (project owner: a new MIR column is not possible).
+rolls_in() reads it, loosely again ("6 Rolls", "6rolls", "Rolls: 6", "6
+Rls", "1 roll"). When both sides state rolls, the count is the real check -
+see matching_core._diffs_and_flag(); the roll count never identifies which
+receipt belongs to which line.
+
 Kept free of Django imports, like parsers/common.py, so a migration or a
 plain script can import it.
 """
@@ -136,10 +147,43 @@ def bulk_weight_material(description: str) -> str | None:
     return None
 
 
-def over_delivery_tolerance_pct(description: str) -> Decimal | None:
-    """The over-delivery allowance for this PO line's material, or None when
-    it gets none (every material not weighed by the truckload)."""
-    return BULK_QTY_OVER_TOLERANCE_PCT if bulk_weight_material(description) else None
+@lru_cache(maxsize=1024)
+def is_madura_vendor(vendor_name: str) -> bool:
+    """Madura, however the plant typed it: "Madura Industrial Textiles Ltd",
+    "MADURA INDL TEXTILES LTD", "Madura Technical Fabrics", "Madhura ..."."""
+    # "Madurai" is a city, and a vendor named after it is not Madura.
+    return any(len(tok) >= 5 and tok != "madurai" and _similar(tok, "madura") for tok in _tokens(vendor_name))
+
+
+# A roll word: roll, rolls, rol, rols, rll, rlls, rls, roles, rool(s). The
+# count comes before it ("6 Rolls", "6rolls") or after it ("Rolls: 6"), but
+# never a measurement ("roll 142 cm" is a width).
+_ROLL_WORD = r"(?:r(?:o{1,2}l{1,2}e?|l{1,2})s?)"
+_ROLLS_BEFORE = re.compile(r"(?<![\d.])(\d{1,4})\s*(?:nos?\.?\s*)?" + _ROLL_WORD + r"\b", re.IGNORECASE)
+_ROLLS_AFTER = re.compile(
+    r"\b" + _ROLL_WORD + r"\s*[-:=]?\s*(\d{1,4})\b(?![.\d])(?!\s*(?:cm|mm|m|mtrs?|meters?|kgs?)\b)", re.IGNORECASE)
+
+
+@lru_cache(maxsize=8192)
+def rolls_in(description: str) -> int | None:
+    """The roll count stated in a description, or None. The LAST mention
+    wins, because the count is written at the end ("EE-200 fabric roll,
+    width 102cm, ..., 4 rolls, total weight ..." names "roll" once as the
+    product and once with the count)."""
+    text = description or ""
+    found = [(m.start(), int(m.group(1))) for m in _ROLLS_BEFORE.finditer(text)]
+    found += [(m.start(), int(m.group(1))) for m in _ROLLS_AFTER.finditer(text)]
+    if not found:
+        return None
+    return max(found)[1]
+
+
+def over_delivery_tolerance_pct(description: str, vendor_name: str = "") -> Decimal | None:
+    """The over-delivery allowance for this PO line, or None when it gets
+    none: a material weighed by the truckload, or anything from Madura."""
+    if bulk_weight_material(description) or is_madura_vendor(vendor_name):
+        return BULK_QTY_OVER_TOLERANCE_PCT
+    return None
 
 
 def value_within_over_tolerance(ordered, received, tolerance_pct: Decimal, epsilon: Decimal) -> bool:

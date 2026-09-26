@@ -177,8 +177,11 @@ class TestPinToNoMir:
 
     def test_a_forced_unmatched_line_releases_its_row_to_another_line(self):
         po = _po()
+        # Different rates, so the two lines are not one pool of identical
+        # lines (which would share the row - _pool_duplicate_lines()); this
+        # test is about a pin releasing a row, not about pooling.
         first = _item(po, description="SBR 1502", item_id="1")
-        second = _item(po, description="SBR 1502", item_id="2")
+        second = _item(po, description="SBR 1502", item_id="2", net_price=Decimal("101.00"))
         only_row = _mir("MIR-ONE", "10", po_number_raw=po.po_number)
         run_full_match()
         holder = first if _match_for(first) else second
