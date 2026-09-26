@@ -946,11 +946,42 @@ function materialStepperHtml(m) {
 // Status <select> reads/writes state.statusFilter directly (see
 // statusChartData's `key` comment) so there's only ever one source of
 // truth for "which status is selected", not two that could disagree.
+// Material search (Domestic and Import lists alike): an order matches when
+// ANY of its line items' descriptions contains the text, case-insensitive -
+// the same contains rule as PO Number/Vendor. Whitespace runs are collapsed
+// on both sides so "HM  Plastic" in a cell still matches "hm plastic".
+const normMaterialText = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+function poHasMaterial(po, text) {
+  const want = normMaterialText(text);
+  if (!want) return true;
+  return (po.items || []).some(it => normMaterialText(it.description).includes(want));
+}
+
+// The Material column cell on both PO lists: the first line's description,
+// or - while a Material search is active - the first line that matched it,
+// so the reader sees why the order is listed. "+N more" counts the order's
+// other distinct descriptions, all of which are in the tooltip.
+function poMaterialCellHtml(po, searchText, emptyText) {
+  const want = normMaterialText(searchText);
+  const descs = [];
+  (po.items || []).forEach(it => {
+    const d = String(it.description || '').trim();
+    if (d && descs.indexOf(d) === -1) descs.push(d);
+  });
+  if (!descs.length) return escapeHtml(emptyText);
+  const hit = want ? descs.find(d => normMaterialText(d).includes(want)) : null;
+  const first = hit || descs[0];
+  const more = descs.length - 1;
+  return '<span title="' + escapeHtml(descs.join('\n')) + '">' + escapeHtml(first) + '</span>' +
+    (more ? ' <span class="text-muted fs-11">+' + more + ' more</span>' : '');
+}
+
 function applyColFilters(recs) {
   const f = state.colFilters;
   return recs.filter(po => {
     if (f.poNumber && !(po.poNumber || '').toLowerCase().includes(f.poNumber.toLowerCase())) return false;
     if (f.vendor && !(po.vendorName || '').toLowerCase().includes(f.vendor.toLowerCase())) return false;
+    if (f.material && !poHasMaterial(po, f.material)) return false;
     if (f.deliveryFrom && (!po._deliveryDate || po._deliveryDate < f.deliveryFrom)) return false;
     if (f.deliveryTo && (!po._deliveryDate || po._deliveryDate > f.deliveryTo)) return false;
     if (f.progress === 'inwarded' && !(po.items || []).some(it => it.matched)) return false;

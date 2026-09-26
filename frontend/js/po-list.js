@@ -555,13 +555,13 @@ function poListRegionHtml() {
 
   const showingAll = state.showAllPOs;
   const totalForList = tableRecs.length;
-  // "View all" is paginated 10/page instead of dumping every matching row
-  // at once (project owner, 2026-09-04) - the compact top-5 view is
+  // "View all" is paginated (LIST_PAGE_SIZE, 50/page - project owner) instead
+  // of dumping every matching row at once - the compact top-5 view is
   // unaffected, it's always just the first 5 of tableRecs, a preview, not
   // a paginated browse. state.tablePage is clamped here (not just where
   // it's set) so a filter change that shrinks the result set below the
   // previously-viewed page can never stick on a blank page.
-  const PAGE_SIZE = 10;
+  const PAGE_SIZE = LIST_PAGE_SIZE;
   const totalPages = Math.max(1, Math.ceil(totalForList / PAGE_SIZE));
   const tablePage = Math.min(Math.max(1, state.tablePage), totalPages);
   const listRecs = showingAll ? tableRecs.slice((tablePage - 1) * PAGE_SIZE, tablePage * PAGE_SIZE) : tableRecs.slice(0, 5);
@@ -570,7 +570,7 @@ function poListRegionHtml() {
   ctx.totalPages = totalPages;
 
   // Per-column header filter content - "as per their data": text (contains)
-  // for PO Number/Vendor, date-range for Created On (bound directly to the
+  // for PO Number/Vendor/Material, date-range for Created On (bound directly to the
   // same state.from/state.to the top filter-row uses, not a duplicate
   // field) and Delivery Date, and a <select> each for Status (bound to
   // state.statusFilter - see statusRings' comment) and Progress.
@@ -597,9 +597,10 @@ function poListRegionHtml() {
   const filterCells = [
     '<input type="text" class="col-filter-input" data-cf="poNumber" placeholder="Search..." value="' + escapeHtml(state.colFilters.poNumber) + '">',
     '<input type="text" class="col-filter-input" data-cf="vendor" placeholder="Search..." value="' + escapeHtml(state.colFilters.vendor) + '">',
+    '<input type="text" class="col-filter-input" data-cf="material" placeholder="Search..." value="' + escapeHtml(state.colFilters.material) + '">',
     '<div class="col-filter-range"><input type="date" data-cf="createdFrom" value="' + (state.from || '') + '"><input type="date" data-cf="createdTo" value="' + (state.to || '') + '"></div>',
     '<div class="col-filter-range"><input type="date" data-cf="deliveryFrom" value="' + (state.colFilters.deliveryFrom || '') + '"><input type="date" data-cf="deliveryTo" value="' + (state.colFilters.deliveryTo || '') + '"></div>',
-    '', // Value (incl. tax) - no header filter (min/max removed); keeps this array 1:1 with the 8 table columns
+    '', // Value (incl. tax) - no header filter (min/max removed); keeps this array 1:1 with the 9 table columns
     '<select class="col-filter-input" data-cf="status"><option value="">All</option>' + statusOptionsHtml + '</select>',
     '<select class="col-filter-input" data-cf="progress"><option value="">All</option><option value="inwarded"' + (state.colFilters.progress === 'inwarded' ? ' selected' : '') + '>Inwarded</option><option value="not"' + (state.colFilters.progress === 'not' ? ' selected' : '') + '>Not Inwarded</option></select>',
     '',
@@ -620,6 +621,7 @@ function poListRegionHtml() {
     (state.subCategoryFilter ? 1 : 0) +
     (cf.poNumber ? 1 : 0) +
     (cf.vendor ? 1 : 0) +
+    (cf.material ? 1 : 0) +
     (cf.deliveryFrom || cf.deliveryTo ? 1 : 0) +
     (cf.progress ? 1 : 0);
 
@@ -643,8 +645,8 @@ function poListRegionHtml() {
       });
       if (showingAll) {
         const colFilterRow = '<tr class="col-filter-row">' + filterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
-        // 10 rows/page instead of dumping the whole filtered result set at
-        // once (project owner, 2026-09-04) - direct page-number buttons up
+        // LIST_PAGE_SIZE rows/page instead of dumping the whole filtered
+        // result set at once - direct page-number buttons up
         // to 10 pages (comfortably covers real data sizes today); beyond
         // that, falls back to a plain "Page X of Y" indicator rather than
         // rendering 11+ buttons in a row.
@@ -661,11 +663,12 @@ function poListRegionHtml() {
               jumpToPageHtml('po', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
             return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
+              '<td>' + poMaterialCellHtml(po, state.colFilters.material, '-') + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po.createdDate)) + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po._deliveryDate)) + '</td>' +
               '<td>' + poValueCellHtml(po) + '</td>' +
@@ -674,13 +677,14 @@ function poListRegionHtml() {
               '<td><span class="row-link" data-po="' + key + '">View details</span></td></tr>';
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="top5List">' + listRecs.map(po => {
           const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
           return '<div class="top5-row' + rowTintClass(po) + '">' +
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
+            '<div>' + poMaterialCellHtml(po, state.colFilters.material, 'Not available') + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po.createdDate) || 'Not available') + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po._deliveryDate) || 'Not available') + '</div>' +
             '<div>' + poValueCellHtml(po) + '</div>' +
@@ -693,19 +697,22 @@ function poListRegionHtml() {
 }
 
 // ── Import orders found by a Domestic search ──────────────────────────────
-// Project owner, 2026-09-25: searching the Domestic list by PO number or
-// vendor for an order that is in fact an import should still find it, and
-// clicking it should go to Import Purchases. The Domestic rows are left
+// Project owner, 2026-09-25: searching the Domestic list by PO number,
+// vendor or material for an order that is in fact an import should still
+// find it, and clicking it should go to Import Purchases. The Domestic rows are left
 // exactly as they are; the import hits are listed under them, by the same
-// two header filters (contains, case-insensitive - applyColFilters()'s
-// rule), for the plants currently selected. The import cache is fetched on
-// the first such search and the region re-renders once it lands.
+// PO Number / Vendor / Material filters (contains, case-insensitive -
+// applyColFilters()'s rule), for the plants currently selected. The import
+// cache is fetched on the first such search and the region re-renders once
+// it lands. Import Purchases does the mirror image with domesticCrossHits()
+// in import-po.js.
 let IMPORT_CROSS_LOAD = null;
 
 function importCrossHits() {
   const po = (state.colFilters.poNumber || '').toLowerCase();
   const vendor = (state.colFilters.vendor || '').toLowerCase();
-  if (!po && !vendor) return [];
+  const material = state.colFilters.material || '';
+  if (!po && !vendor && !material.trim()) return [];
   if (!IMPORT_PO_CACHE) {
     if (!IMPORT_CROSS_LOAD) {
       IMPORT_CROSS_LOAD = ensureImportPOsLoaded()
@@ -721,7 +728,9 @@ function importCrossHits() {
   return IMPORT_PO_CACHE.filter(p =>
     keys.indexOf(p.plant) !== -1 &&
     (!po || (p.poNumber || '').toLowerCase().includes(po)) &&
-    (!vendor || (p.vendorName || '').toLowerCase().includes(vendor)));
+    (!vendor || (p.vendorName || '').toLowerCase().includes(vendor)) &&
+    poHasMaterial(p, material))
+    .sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
 }
 
 function importCrossHitsHtml() {
@@ -783,7 +792,7 @@ function wirePoListRegion() {
   if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
     state.statusFilter = null; state.chartMonthFilter = null; state.from = null; state.to = null;
     state.categoryFilter = null; state.subCategoryFilter = null; state.tablePage = 1;
-    state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
+    state.colFilters = { poNumber: '', vendor: '', material: '', deliveryFrom: null, deliveryTo: null, progress: '' };
     renderPoList(el);
   };
 

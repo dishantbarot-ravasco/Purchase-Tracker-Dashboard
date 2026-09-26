@@ -164,7 +164,8 @@ function applyImportColFilters(recs) {
   return recs.filter(po => {
     if (f.poNumber && !(po.poNumber || '').toLowerCase().includes(f.poNumber.toLowerCase())) return false;
     if (f.vendor && !(po.vendorName || '').toLowerCase().includes(f.vendor.toLowerCase())) return false;
-    if (f.country && !(po.countryOfOrigin || '').toLowerCase().includes(f.country.toLowerCase())) return false;
+    if (f.material && !poHasMaterial(po, f.material)) return false;
+    if (f.country &&!(po.countryOfOrigin || '').toLowerCase().includes(f.country.toLowerCase())) return false;
     if (f.stage && po.shipmentStage !== f.stage) return false;
     return true;
   });
@@ -605,6 +606,7 @@ function importListRegionHtml() {
   const filterCells = [
     '<input type="text" class="col-filter-input" data-icf="poNumber" placeholder="Search..." value="' + escapeHtml(cf.poNumber) + '">',
     '<input type="text" class="col-filter-input" data-icf="vendor" placeholder="Search..." value="' + escapeHtml(cf.vendor) + '">',
+    '<input type="text" class="col-filter-input" data-icf="material" placeholder="Search..." value="' + escapeHtml(cf.material) + '">',
     '<input type="text" class="col-filter-input" data-icf="country" placeholder="Search..." value="' + escapeHtml(cf.country) + '">',
     '',
     '',
@@ -642,7 +644,7 @@ function importListRegionHtml() {
 
   const showingAll = state.importShowAllPOs;
   const totalForList = tableRecs.length;
-  const PAGE_SIZE = 10;
+  const PAGE_SIZE = LIST_PAGE_SIZE;
   const totalPages = Math.max(1, Math.ceil(totalForList / PAGE_SIZE));
   const tablePage = Math.min(Math.max(1, state.importTablePage), totalPages);
   const listRecs = showingAll ? tableRecs.slice((tablePage - 1) * PAGE_SIZE, tablePage * PAGE_SIZE) : tableRecs.slice(0, 5);
@@ -656,7 +658,7 @@ function importListRegionHtml() {
     (state.importStatusFilter ? 1 : 0) +
     (state.importFrom || state.importTo ? 1 : 0) +
     (state.importCategoryFilter ? 1 : 0) + (state.importSubCategoryFilter ? 1 : 0) +
-    (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
+    (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.material ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
 
   return '<div class="list-toggle-row"><div class="section-title m-0">Import Purchase Orders (Latest first)</div>' +
       (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
@@ -681,11 +683,12 @@ function importListRegionHtml() {
               jumpToPageHtml('import', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(po.plant + '::' + po.poNumber);
             return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
+              '<td>' + poMaterialCellHtml(po, cf.material, '-') + '</td>' +
               '<td>' + escapeHtml(po.countryOfOrigin || '-') + '</td>' +
               '<td>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-') + '</td>' +
               '<td>' + blNumberCellHtml(po, '-') + '</td>' +
@@ -693,20 +696,80 @@ function importListRegionHtml() {
               '<td><span class="row-link" data-impo="' + key + '">View details</span></td></tr>';
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
           const key = escapeHtml(po.plant + '::' + po.poNumber);
           return '<div class="top5-row' + rowTintClass(po) + '">' +
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
+            '<div>' + poMaterialCellHtml(po, cf.material, 'Not available') + '</div>' +
             '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
             '<div>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : 'Not available') + '</div>' +
             '<div>' + blNumberCellHtml(po, 'Not available') + '</div>' +
             '<div><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</div>' +
             '<div><span class="row-link" data-impo="' + key + '">View details</span></div></div>';
         }).join('') + '</div>';
-    })();
+    })() +
+    domesticCrossHitsHtml();
+}
+
+// ── Domestic orders found by an Import search ────────────────────────────
+// The mirror of po-list.js's importCrossHits() (project owner, 2026-09-26:
+// a search should find the order whichever tab it is typed on). The PO
+// Number / Vendor / Material boxes, same contains rule; the Import rows are
+// left exactly as they are and the domestic hits are listed under them. The
+// selected plants' domestic caches are fetched on the first such search
+// (DOMESTIC_CROSS_LOAD, one in flight) and the region re-renders when they
+// land; a failed fetch just means no panel.
+let DOMESTIC_CROSS_LOAD = null;
+
+function domesticCrossHits() {
+  const cf = state.importColFilters;
+  const po = (cf.poNumber || '').toLowerCase();
+  const vendor = (cf.vendor || '').toLowerCase();
+  if (!po && !vendor && !(cf.material || '').trim()) return [];
+  const keys = selectedPlantKeys();
+  if (keys.some(k => !PURCHASE_ORDERS_BY_PLANT[k])) {
+    if (!DOMESTIC_CROSS_LOAD) {
+      DOMESTIC_CROSS_LOAD = ensurePOsLoaded(keys)
+        .then(() => { if (state.view === 'po' && state.purchaseType === 'import') renderImportListRegion(); })
+        .catch(e => console.error('Domestic cross-search: failed to load purchase orders:', e))
+        .finally(() => { DOMESTIC_CROSS_LOAD = null; });
+    }
+    return [];
+  }
+  const hits = [];
+  keys.forEach(key => (PURCHASE_ORDERS_BY_PLANT[key] || []).forEach(p => {
+    if (po && !(p.poNumber || '').toLowerCase().includes(po)) return;
+    if (vendor && !(p.vendorName || '').toLowerCase().includes(vendor)) return;
+    if (!poHasMaterial(p, cf.material)) return;
+    hits.push({ po: p, plant: key });
+  }));
+  return hits.sort((a, b) => (b.po.createdDate || '').localeCompare(a.po.createdDate || ''));
+}
+
+function domesticCrossHitsHtml() {
+  const hits = domesticCrossHits();
+  if (!hits.length) return '';
+  const shown = hits.slice(0, 10);
+  return '<div class="cross-kind-hits">' +
+    '<div class="cross-kind-title">Also in Domestic Purchases (' + hits.length + ')</div>' +
+    shown.map(h =>
+      '<div class="cross-kind-row">' +
+        '<span class="row-link" tabindex="0" role="button" data-domestic-po="' + escapeHtml(h.plant + '::' + h.po.poNumber) + '">' + escapeHtml(h.po.poNumber) + '</span>' +
+        '<span>' + escapeHtml(h.po.vendorName || '-') + '</span>' +
+        '<span class="text-muted">' + escapeHtml(PLANTS[h.plant].label) + ' &middot; ' + escapeHtml(formatDateIN(h.po.createdDate) || '-') + '</span>' +
+      '</div>'
+    ).join('') +
+    (hits.length > shown.length ? '<div class="text-muted fs-12-5">and ' + (hits.length - shown.length) + ' more - open Domestic Purchases to see them all.</div>' : '') +
+  '</div>';
+}
+
+/** Moves to Domestic Purchases filtered to that order, and opens it. */
+async function openDomesticPoFromImport(compositeKey) {
+  const poNumber = compositeKey.slice(compositeKey.indexOf('::') + 2);
+  if (await switchPurchaseType('domestic', { domesticPoNumber: poNumber })) await openPoModal(compositeKey);
 }
 
 /** Re-renders the list region alone, in place. Falls back to a full
@@ -728,6 +791,7 @@ function wireImportListRegion() {
   const toggleBtn = document.getElementById('importToggleAllBtn');
   if (toggleBtn) toggleBtn.onclick = () => { state.importShowAllPOs = !state.importShowAllPOs; state.importTablePage = 1; renderImportListRegion(); };
   region.querySelectorAll('[data-impo]').forEach(el2 => el2.onclick = () => openImportPoModal(el2.dataset.impo));
+  region.querySelectorAll('[data-domestic-po]').forEach(el2 => el2.onclick = () => openDomesticPoFromImport(el2.dataset.domesticPo));
   region.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = (e) => { e.stopPropagation(); trackBlNumber(el2.dataset.trackBl); });
 
   const prevPageBtn = document.getElementById('importPrevPageBtn');
@@ -743,7 +807,7 @@ function wireImportListRegion() {
   if (clearListFiltersBtn) clearListFiltersBtn.onclick = () => {
     state.importStatusFilter = null; state.importChartMonthFilter = null; state.importFrom = null; state.importTo = null;
     state.importCategoryFilter = null; state.importSubCategoryFilter = null; state.importTablePage = 1;
-    state.importColFilters = { poNumber: '', vendor: '', country: '', stage: '' };
+    state.importColFilters = { poNumber: '', vendor: '', material: '', country: '', stage: '' };
     renderImportPoList(el);
   };
 

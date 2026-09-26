@@ -460,7 +460,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .view-all-btn { padding:7px 15px; border-radius:8px; border:1px solid var(--navy); background:var(--card); color:var(--navy); font-size:12px; font-weight:700; cursor:pointer; }
 .view-all-btn:hover { background:var(--gold-accent-soft); }
 
-/* "View all" table pagination - 10 rows/page (main.js's PAGE_SIZE). */
+/* "View all" table pagination - shared.js's LIST_PAGE_SIZE rows/page. */
 .pagination-row { display:flex; align-items:center; justify-content:center; gap:6px; flex-wrap:wrap; padding:14px 0 4px; }
 .page-btn { padding:6px 12px; border-radius:7px; border:1px solid var(--border-strong); background:var(--card); color:var(--slate); font-size:12px; font-weight:600; cursor:pointer; }
 .page-btn:hover:not(:disabled) { background:var(--gold-accent-soft); border-color:var(--gold-accent); }

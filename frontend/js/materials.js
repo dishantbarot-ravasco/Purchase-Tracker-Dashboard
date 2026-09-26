@@ -1152,7 +1152,7 @@ function materialsListRegionHtml() {
     || (openValueOf(b) - openValueOf(a)));
 
   const showingAll = state.showAllMaterials;
-  const PAGE_SIZE = 10;
+  const PAGE_SIZE = LIST_PAGE_SIZE;
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const matTablePage = Math.min(Math.max(1, state.matTablePage), totalPages);
   const listRecs = showingAll ? sorted.slice((matTablePage - 1) * PAGE_SIZE, matTablePage * PAGE_SIZE) : sorted.slice(0, 5);

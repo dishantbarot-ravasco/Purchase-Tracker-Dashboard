@@ -159,7 +159,7 @@ let state = {
   // reuses statusFilter above rather than a separate field, so the KPI
   // cards/pie chart/header dropdown can never disagree about which status
   // is selected.
-  colFilters: { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' },
+  colFilters: { poNumber: '', vendor: '', material: '', deliveryFrom: null, deliveryTo: null, progress: '' },
   // Data Quality Flags filter, split into 3 dropdowns mirroring the
   // Materials view's Category/Sub Category/Flags bar (see matCategoryFilter
   // etc. below) - categoryFilter is the flag *severity* ('critical' or
@@ -171,7 +171,7 @@ let state = {
   // `filtered` itself, so the KPI counts and both charts reflect the
   // selection, not just the table. Rendered above the chart row.
   categoryFilter: null, subCategoryFilter: null, flagsFilter: null,
-  // "View all" table pagination - 1-indexed, 10 rows/page. Reset to 1 by
+  // "View all" table pagination - 1-indexed, LIST_PAGE_SIZE rows/page. Reset to 1 by
   // every handler that can change which rows match (see renderPoList()).
   tablePage: 1,
   // matCategoryFilter/matSubCategoryFilter are "global" filters, same as PO's
@@ -213,14 +213,14 @@ let state = {
   // ratedisc/flags, the same KPI-card keys), not a separate field.
   importCategoryFilter: null, importSubCategoryFilter: null,
   importChartMonthFilter: null, importShowAllPOs: false, importTablePage: 1,
-  importColFilters: { poNumber: '', vendor: '', country: '', stage: '' },
+  importColFilters: { poNumber: '', vendor: '', material: '', country: '', stage: '' },
 };
 
 function resetImportFilters() {
   state.importFrom = null; state.importTo = null; state.importStatusFilter = null;
   state.importCategoryFilter = null; state.importSubCategoryFilter = null;
   state.importChartMonthFilter = null; state.importShowAllPOs = false; state.importTablePage = 1;
-  state.importColFilters = { poNumber: '', vendor: '', country: '', stage: '' };
+  state.importColFilters = { poNumber: '', vendor: '', material: '', country: '', stage: '' };
 }
 
 function isAllPlants() { return state.plant === 'all'; }
@@ -235,7 +235,7 @@ function plantKeyFor(item) { return item._plantKey || state.plant; }
 function resetFilters() {
   state.statusFilter = null; state.from = null; state.to = null; state.showAllPOs = false;
   state.chartMonthFilter = null; state.categoryFilter = null; state.subCategoryFilter = null; state.flagsFilter = null; state.tablePage = 1;
-  state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
+  state.colFilters = { poNumber: '', vendor: '', material: '', deliveryFrom: null, deliveryTo: null, progress: '' };
   state.matCategoryFilter = null; state.matSubCategoryFilter = null; state.matStatusFilter = null;
   state.showAllMaterials = false; state.matTablePage = 1;
   state.matColFilters = { material: '', progress: '' };
@@ -922,9 +922,10 @@ async function switchPurchaseType(ptype, opts) {
   state.purchaseType = ptype;
   state.statusFilter = null; state.showAllPOs = false; state.chartMonthFilter = null;
   state.categoryFilter = null; state.subCategoryFilter = null; state.flagsFilter = null; state.tablePage = 1;
-  state.colFilters = { poNumber: '', vendor: '', deliveryFrom: null, deliveryTo: null, progress: '' };
+  state.colFilters = { poNumber: '', vendor: '', material: '', deliveryFrom: null, deliveryTo: null, progress: '' };
   resetImportFilters();
   if (opts.importPoNumber) state.importColFilters.poNumber = opts.importPoNumber;
+  if (opts.domesticPoNumber) state.colFilters.poNumber = opts.domesticPoNumber;
   renderPurchaseTypeTabs();
   const content = document.getElementById('content');
   if (!content) return false;

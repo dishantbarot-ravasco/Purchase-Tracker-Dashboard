@@ -473,7 +473,8 @@ few module-level variables for the correction box and modal a11y.
   Never `toISOString().slice(0, 10)`: that is the UTC date, and local midnight in IST is the
   previous day in UTC, so "today" was yesterday (This Week dropped today's POs, and on the 1st This
   Month counted the old month).
-- **Lists:** `LIST_FILTER_DEBOUNCE_MS`, `debounceRender(fn, ms)` (factory), `jumpToPageHtml()` /
+- **Lists:** `LIST_PAGE_SIZE` (50, the page size of every "View all" table: Domestic, Import, Raw
+  Material), `LIST_FILTER_DEBOUNCE_MS`, `debounceRender(fn, ms)` (factory), `jumpToPageHtml()` /
   `wireJumpToPage()` (invalid page numbers are ignored, not clamped), `revealFilteredList(regionId)`
   (announces the list heading; scrolls only if the region's top is off-screen; jumps instead of
   gliding under reduced motion).
@@ -596,7 +597,10 @@ Status, flag and badge logic shared by every list and modal. Feature semantics a
   reinstate (see [Other traps](#other-traps)).
 - `rowTintClass(rec)` (mild/moderate/severe at 5% and 20%, only when qty or rate is flagged; reads
   both `_qtyFlag` and material `qtyFlag` shapes), `rowTintLegendHtml()`, `miniStepperHtml(po)`,
-  `materialStepperHtml(m)`, `applyColFilters(recs)` (Domestic table-only filters), `FILTER_ATTRS` and
+  `materialStepperHtml(m)`, `poHasMaterial(po, text)` (Material search on both PO lists: any line
+  `description` contains the text, case-insensitive, whitespace collapsed), `poMaterialCellHtml()`,
+  `applyColFilters(recs)`
+  (Domestic table-only filters), `FILTER_ATTRS` and
   `preserveFocus(container, renderFn)`.
 
 ### frontend/js/po-list.js
@@ -620,9 +624,9 @@ show the "nothing received" part of the Overdue and Date Unknown overlays: produ
 Date Unknown card and 7 on its slice. A click toggles `state.statusFilter` then renders the list
 region. `status:nothing` is also in the header Status select. `PO_LIST_CTX` carries `{el, filtered, totalPages}`. `poListRegionHtml()` applies the status
 filter, month filter and `applyColFilters()`, sorts newest first, and renders a top-5 grid or a
-paginated (10/page) "View all" table with the header filter row; row links carry
+paginated (`LIST_PAGE_SIZE`, 50/page) "View all" table with the header filter row; row links carry
 `data-po="<plant>::<poNumber>"` and open `openPoModal()`. Under the list,
-`importCrossHitsHtml()` adds **"Also in Import Purchases (N)"** when the PO Number or Vendor header
+`importCrossHitsHtml()` adds **"Also in Import Purchases (N)"** when the PO Number, Vendor or Material
 filter matches an import order at the selected plants (same contains rule as `applyColFilters()`, up
 to 10 shown): project owner, 2026-09-25 - searching Domestic for what turns out to be an import order
 should still find it. The Domestic rows are untouched. `importCrossHits()` starts the import fetch on
@@ -631,6 +635,15 @@ failed fetch just means no hint. A hit's `data-import-po` link runs `openImportP
 `switchPurchaseType('import', {importPoNumber})`, then `openImportPoModal()`. `wirePoListRegion()` wires pagination,
 jump-to-page, the "N filters active - Clear" chip (full render) and the `[data-cf]` header filters
 (`createdFrom`/`createdTo`/`status` full render, the rest debounced region render).
+
+**Material column and search** (project owner, 2026-09-26). Both PO lists have a Material column
+after Vendor (`poMaterialCellHtml()`: the first line's description, or the first line matching the
+search, plus "+N more" with every description in the tooltip) and a text filter under it
+(`colFilters.material` here, `importColFilters.material` on Import). It is a plain filter exactly
+like PO Number / Vendor: an order matches when any line's `description` contains the text
+(`poHasMaterial()`), whatever its status, and it feeds the "Also in Import Purchases" panel the same
+way. Import Purchases has the mirror panel (`domesticCrossHits()`), so a search finds the order
+whichever tab it is typed on.
 
 ### frontend/js/po-reconcile.js
 
@@ -700,7 +713,15 @@ Partial Delivered, Overdue, On Order and Date Unknown read the server's receipt-
 as Domestic. `renderImportPoList(el)` mirrors the domestic view with
 13 KPI cards including the shipment-stage trio, the two charts below, the RoDTEP Ledger / Advance License buttons, and `#importListRegion`
 (`IMPORT_LIST_CTX`, `importListRegionHtml()`, `renderImportListRegion()`, `wireImportListRegion()`;
-every `[data-icf]` filter is table-only). **The bar chart is order value in INR before duty
+every `[data-icf]` filter is table-only; "View all" pages at `LIST_PAGE_SIZE`, 50/page). The Material
+column and its search work as on Domestic (see po-list.js). Under the table,
+`domesticCrossHitsHtml()` adds **"Also in Domestic Purchases (N)"** when the PO Number, Vendor or
+Material filter matches a domestic order at the selected plants (same contains rule, up to 10 shown,
+newest first) - the mirror of Domestic's import panel. The selected plants' domestic caches are
+fetched on the first such search (`DOMESTIC_CROSS_LOAD`, one in flight) and the region re-renders when
+they land. A hit's `data-domestic-po` link runs
+`openDomesticPoFromImport()`: `switchPurchaseType('domestic', {domesticPoNumber})`, then
+`openPoModal()`. **The bar chart is order value in INR before duty
 (`importPoInrValue()`: each line's `netValue x exchangeRate`, null if any line lacks either, counted
 in an "unplotted" note) per created month, stacked by `importReceiptStatus()` (inwarded / partial /
 nothing), with the overdue share in the tooltip.** It used to plot the duty-paid
@@ -868,7 +889,7 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   (`.sub-tab`, Purchase Orders only), whose clicks go through **`switchPurchaseType(ptype, opts)`**:
   resets every list filter, loads whichever side is missing (Import on first visit; Domestic too
   when the page opened on an Import deep link), renders, and returns `false` on a failed load or if
-  the reader switched again meanwhile. `opts.importPoNumber` pre-fills the Import PO Number filter. The three levels use three
+  the reader switched again meanwhile. `opts.importPoNumber` pre-fills the Import PO Number filter, `opts.domesticPoNumber` the Domestic one. The three levels use three
   different components on purpose ([api-and-features.md](api-and-features.md)).
 - `loadSyncStatus()` - GET `<prefix>/sync-status`. All Plants: one badge per plant plus syncing and
   snapshot-gap badges. Single plant: "PO Updated" / "MIR" / "RM" / "Matching" badges (display labels
