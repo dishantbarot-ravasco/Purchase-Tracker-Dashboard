@@ -129,6 +129,30 @@ function poQtyDiscPo(po) {
 // shared modal with live shipment status via shared.js's trackBlNumber()
 // (see that function's own header comment for why the SAME #modalBackdrop
 // every other modal on this page uses is reused here, not a new component).
+// The one receipt-based slice an import PO sits in, for both charts and the
+// 'recv:' table filter - received in full, part-received, else nothing
+// received yet, split by the delivery-date status the cards use.
+function importReceiptStatus(po) {
+  if (po.materialInwarded) return 'inwarded';
+  if (po.partialDelivery) return 'partial';
+  return { 'Overdue': 'overdue', 'Unknown': 'unknowndate' }[po.deliveryDateStatus] || 'onorder';
+}
+
+// A PO's order value in INR before duty: sum of each line's net value x its
+// exchange rate, the basis matching compares imports on. null when any line
+// lacks either figure, so the chart counts the PO as unplotted rather than
+// plotting a part-total.
+function importPoInrValue(po) {
+  const items = po.items || [];
+  if (!items.length) return null;
+  let total = 0;
+  for (const i of items) {
+    if (i.netValue == null || !i.exchangeRate) return null;
+    total += i.netValue * i.exchangeRate;
+  }
+  return total;
+}
+
 function blNumberCellHtml(po, emptyText) {
   if (!po.billOfLadingNumber) return emptyText;
   return escapeHtml(po.billOfLadingNumber) +
@@ -289,19 +313,40 @@ function renderImportPoList(el) {
       '<div class="label">' + escapeHtml(c.label) + (c.tip ? infoTooltipHtml(c.tip) : '') + '</div></div>';
   }).join('');
 
-  const stageChartData = [
-    { key: 'placed', label: IMPORT_STAGE_LABELS['Placed'], val: counts.placed, color: '#d97706' },
-    { key: 'shipped', label: IMPORT_STAGE_LABELS['Shipped (BL)'], val: counts.shipped, color: '#2563eb' },
-    { key: 'cleared', label: IMPORT_STAGE_LABELS['Cleared (BOE)'], val: counts.cleared, color: '#16a34a' },
-  ].filter(s => s.val > 0);
+  // Both charts use one receipt-based PARTITION of the POs (every PO in
+  // exactly one slice), built from the same fields as the Material Inwarded /
+  // Partial / Overdue / On Order / Date Unknown cards. The cards for the last
+  // three also count part-delivered POs, so those slices say "nothing
+  // received" and filter with a 'recv:' key - same arrangement as Domestic's
+  // status doughnut. This replaced a shipment-stage doughnut: customs
+  // clearance is not delivery, and on production 40 of 43 import POs sat in
+  // its "Cleared" slice.
+  const receiptSeries = [
+    { key: 'inwarded', status: 'inwarded', label: 'Material Inwarded', color: '#16a34a' },
+    { key: 'partial', status: 'partial', label: 'Partial Delivered', color: '#2563eb' },
+    { key: 'recv:onorder', status: 'onorder', label: 'On Order - nothing received', color: '#d97706' },
+    { key: 'recv:overdue', status: 'overdue', label: 'Overdue - nothing received', color: '#dc2626' },
+    { key: 'recv:unknowndate', status: 'unknowndate', label: 'Date Unknown - nothing received', color: '#64748b' },
+  ];
+  const stageChartData = receiptSeries
+    .map(sr => ({ key: sr.key, label: sr.label, color: sr.color, val: filtered.filter(po => importReceiptStatus(po) === sr.status).length }))
+    .filter(sr => sr.val > 0);
 
-  const monthTotals = {};
+  // Order value per created month in INR BEFORE duty (net value x exchange
+  // rate, per line) - the basis the matcher compares imports on. The
+  // duty-paid "Total Inclusive Value" this used to plot only exists once a
+  // shipment clears customs, so every open order counted as zero.
+  const monthStatus = {};
+  let unplotted = 0;
   filtered.forEach(po => {
     const m = (po.createdDate || '').slice(0, 7);
-    if (!m) return;
-    monthTotals[m] = (monthTotals[m] || 0) + (po.totalInclusiveValue || 0);
+    const v = importPoInrValue(po);
+    if (!m || v == null) { unplotted++; return; }
+    const row = monthStatus[m] || (monthStatus[m] = {});
+    const st = importReceiptStatus(po);
+    row[st] = (row[st] || 0) + v;
   });
-  const months = Object.keys(monthTotals).sort();
+  const months = fillMonthRange(Object.keys(monthStatus));
 
 
   const categoryOptionsHtml = Object.entries(categoryCounts)
@@ -380,10 +425,11 @@ function renderImportPoList(el) {
       '</div>' : '') +
     ((stageChartData.length || months.length) ?
       '<div class="chart-row">' +
-        '<div class="chart-panel"><h4>Import Value Trend by Month Created</h4>' +
+        '<div class="chart-panel"><h4>Import Order Value by Month Created (INR, before duty), by Status</h4>' +
           (months.length ? '<div class="chart-box"><canvas id="importTrendChart"></canvas></div>' : '<div class="no-data-note">No dated POs in range to plot.</div>') +
+          (unplotted ? '<div class="no-data-note">' + unplotted + ' PO' + (unplotted === 1 ? '' : 's') + ' not shown: no created date, net value or exchange rate on file.</div>' : '') +
         '</div>' +
-        '<div class="chart-panel"><h4>Shipment Stage Breakdown</h4>' +
+        '<div class="chart-panel"><h4>Delivery Status (MIR)</h4>' +
           (stageChartData.length ? '<div class="chart-box"><canvas id="importStageChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
         '</div>' +
       '</div>' : '') +
@@ -434,22 +480,21 @@ function renderImportPoList(el) {
   if (months.length) {
     try {
       const ctx = document.getElementById('importTrendChart');
-      const gradient = ctx.getContext('2d').createLinearGradient(0, 0, 0, 220);
-      gradient.addColorStop(0, 'rgba(29,138,150,0.9)');
-      gradient.addColorStop(1, 'rgba(29,138,150,0.25)');
+      const trendSeries = receiptSeries.filter(sr => months.some(m => (monthStatus[m] || {})[sr.status]));
       pageCharts.push(new Chart(ctx, {
         type: 'bar',
         data: {
           labels: months.map(formatMonthLabel),
-          datasets: [{
-            data: months.map(m => monthTotals[m]),
-            backgroundColor: months.map(m => m === state.importChartMonthFilter ? '#0f1b2d' : gradient),
-            hoverBackgroundColor: '#1d8a96',
-            borderRadius: 6, borderSkipped: false, maxBarThickness: 46,
-          }],
+          datasets: trendSeries.map(sr => ({
+            label: sr.label,
+            data: months.map(m => (monthStatus[m] || {})[sr.status] || 0),
+            backgroundColor: months.map(m => (state.importChartMonthFilter && m !== state.importChartMonthFilter) ? sr.color + '55' : sr.color),
+            maxBarThickness: 46,
+          })),
         },
         options: {
           maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
           onClick: (evt, elements) => {
             if (!elements.length) return;
             const clickedMonth = months[elements[0].index];
@@ -459,16 +504,20 @@ function renderImportPoList(el) {
           },
           onHover: (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
           plugins: {
-            legend: { display: false },
+            legend: { position: 'bottom', labels: { boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 10.5 } } },
             tooltip: {
               backgroundColor: '#0f1b2d', padding: 10, cornerRadius: 8,
-              titleFont: { size: 12, weight: '700' }, bodyFont: { size: 12 }, displayColors: false,
-              callbacks: { label: c => formatInr(c.parsed.y), afterLabel: () => 'Click to filter the list below' },
+              titleFont: { size: 12, weight: '700' }, bodyFont: { size: 12 },
+              filter: c => c.parsed.y > 0,
+              callbacks: {
+                label: c => c.dataset.label + ': ' + formatInr(c.parsed.y),
+                footer: items => 'Total: ' + formatInr(items.reduce((a, c) => a + c.parsed.y, 0)) + '\nClick to filter the list below',
+              },
             },
           },
           scales: {
-            x: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#475569' } },
-            y: { grid: { color: '#eef1f5' }, border: { display: false }, ticks: { font: { size: 11 }, color: '#475569', callback: v => formatInr(v) } },
+            x: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 }, color: '#475569' } },
+            y: { stacked: true, grid: { color: '#eef1f5' }, border: { display: false }, ticks: { font: { size: 11 }, color: '#475569', callback: v => formatInr(v) } },
           },
         },
       }));
@@ -594,6 +643,7 @@ function importListRegionHtml() {
     const wantedLabel = sf.slice(4);
     tableRecs = filtered.filter(po => po._categories.some(c => c.label === wantedLabel));
   }
+  else if (typeof sf === 'string' && sf.startsWith('recv:')) tableRecs = filtered.filter(p => importReceiptStatus(p) === sf.slice(5));
   else if (sf === 'placed') tableRecs = filtered.filter(p => p.shipmentStage === 'Placed');
   else if (sf === 'shipped') tableRecs = filtered.filter(p => p.shipmentStage === 'Shipped (BL)');
   else if (sf === 'cleared') tableRecs = filtered.filter(p => p.shipmentStage === 'Cleared (BOE)');

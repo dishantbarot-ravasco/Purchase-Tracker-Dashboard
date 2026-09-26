@@ -1,6 +1,6 @@
 """
 Integration tests for GET /api/[<plant>/]mir-without-po (2026-09-21) - the
-drill-down behind the "purchased without a PO" / "waiting on a PO" badges.
+drill-down behind the three per-bucket no-PO badges.
 
 The service-level bucket rules are covered in
 apps/services/tests/test_mir_without_po.py. What can only break here is the

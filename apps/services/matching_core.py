@@ -2010,7 +2010,7 @@ def _aggregate_rows(config: _MatchConfig, item: _Matchable, rows: list, *, by_po
 
 
 @lru_cache(maxsize=8192)
-def _cited_po_numbers(po_number_raw: str, known_pos: frozenset) -> frozenset:
+def _cited_po_numbers(po_number_raw: str, known_pos: frozenset, shape_floor: bool = True) -> frozenset:
     """The distinct purchase orders we hold that a MIR row's PO column names.
 
     Counted on the annotation-stripped form: known_po_numbers() carries both
@@ -2019,9 +2019,18 @@ def _cited_po_numbers(po_number_raw: str, known_pos: frozenset) -> frozenset:
     means a Vapi-style multi-order cell ("1000001552-1000001630") - a delivery
     split across several orders, which one row cannot represent against all
     of them, so it stays out of PO-number groups (see
-    _po_number_group_rows())."""
+    _po_number_group_rows()).
+
+    `shape_floor=False` drops is_usable_po_reference()'s 8-digit floor, for
+    PO-number groups only: HRS's legacy series is 1-4 digits ('1074.0'), so
+    with the floor every extra receipt citing one of those orders was left
+    out of its group - 67 HRS receipts in "PO on file, not yet matched" on
+    production (2026-09-26), 48 of them on PO 1074 and 1081 alone. The floor
+    stays for the contradiction gate and the candidate index, where a short
+    number colliding across financial years could veto or admit the wrong
+    row; a group member still has to pass 2-of-3 identification."""
     raw = (po_number_raw or "").strip()
-    if not raw or not is_usable_po_reference(raw):
+    if not raw or (shape_floor and not is_usable_po_reference(raw)):
         return frozenset()
     return frozenset(clean_po_number(k) or k for k in known_pos if _po_number_matches(k, raw))
 
@@ -2040,7 +2049,7 @@ def _po_number_group_rows(found: dict, known_pos: frozenset) -> list:
     another supplier's order for another material still cannot attach."""
     return [
         c for c in found.values()
-        if c.po_number_matched and len(_cited_po_numbers(c.mir.po_number_raw, known_pos)) == 1
+        if c.po_number_matched and len(_cited_po_numbers(c.mir.po_number_raw, known_pos, shape_floor=False)) == 1
     ]
 
 

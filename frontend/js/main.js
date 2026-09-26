@@ -1054,7 +1054,7 @@ async function loadSyncStatus() {
         // handler in this app is wired from JS (see CLAUDE.md's CSP note).
         noPoBadge = ' <span class="badge stale badge-clickable" role="button" tabindex="0"'
           + ' data-nopo-bucket="no_po" title="' + escapeHtml(title) + '">'
-          + pwp.total + ' purchased without a PO</span>';
+          + pwp.total + ' received with no PO number</span>';
       }
       // "Waiting on a PO", 2026-09-21 - the other half of the same question.
       // purchasesWithoutPo above counts receipts that name NO order; these
@@ -1069,19 +1069,19 @@ async function loadSyncStatus() {
       const waitingBuckets = (mwp && mwp.buckets) || {};
       const unknownPo = (waitingBuckets.po_unknown || {}).rowCount || 0;
       const unmatchedPo = (waitingBuckets.po_known_unmatched || {}).rowCount || 0;
-      let waitingBadge = '';
-      if (unknownPo + unmatchedPo > 0) {
-        const wTitle = 'Receipts that DO name a purchase order and still are not reconciled.' + '\n'
-          + unknownPo + ' name an order we do not hold - the PO master has not got it yet.' + '\n'
-          + unmatchedPo + ' name one we do hold, not yet linked to a line item.' + '\n\n'
-          + 'Click to see the rows.';
-        // Opens on whichever bucket is larger - the one a reader most likely
-        // came to look at; the panel's own tabs reach the other.
-        waitingBadge = ' <span class="badge stale badge-clickable" role="button" tabindex="0"'
-          + ' data-nopo-bucket="' + (unknownPo >= unmatchedPo ? 'po_unknown' : 'po_known_unmatched') + '"'
-          + ' title="' + escapeHtml(wTitle) + '">'
-          + (unknownPo + unmatchedPo) + ' waiting on a PO</span>';
-      }
+      // One badge per bucket, not a combined "waiting on a PO" count: the
+      // two have different owners (upstream PO master vs the matcher), and a
+      // combined figure next to the no-PO badge read as the same group
+      // counted twice.
+      const bucketBadge = (bucket, n, label, title) => n > 0
+        ? ' <span class="badge stale badge-clickable" role="button" tabindex="0"'
+          + ' data-nopo-bucket="' + bucket + '" title="' + escapeHtml(title + '\n\nClick to see the rows.') + '">'
+          + n + ' ' + label + '</span>'
+        : '';
+      const waitingBadge = bucketBadge('po_unknown', unknownPo, 'cite a PO not on file',
+          'Receipts naming a purchase order the PO master does not have yet. Fix upstream, in the PO master.')
+        + bucketBadge('po_known_unmatched', unmatchedPo, 'cite a PO on file, unmatched',
+          'Receipts naming a purchase order we hold, not yet linked to any of its line items. Needs a pin or a matcher fix.');
       // "RM doesn't track these", 2026-09-21 (project owner) - the Raw
       // Material Analysis counterpart of the badge right above, and the same
       // idea: a number on screen for rows this view is NOT expected to

@@ -21,8 +21,10 @@ from decimal import Decimal
 
 import pytest
 
-from apps.core.models import HRSPOMirMatch
+from apps.core.models import HRSMIREntry, HRSPOMirMatch
+from apps.services.matching import MATCH_CONFIG as hrs_match_config
 from apps.services.matching import run_full_match
+from apps.services.matching_core import _cited_po_numbers
 from apps.services.mir_without_po import PO_KNOWN_UNMATCHED, mir_without_po_rows
 from apps.services.tests.test_manual_mir_match import _item, _mir, _po
 
@@ -221,3 +223,33 @@ class TestPoModalPayload:
         assert item["matchedMirs"][1]["value"] == 150000.0
         assert item["received"] == {"qty": 2500.0, "rate": 100.0, "value": 250000.0, "comparable": True}
         assert item["netValue"] == 300000.0
+
+
+@pytest.mark.django_db
+class TestShortLegacyPoNumbers:
+    """HRS's legacy series is 1-4 digits, read from MIR as '1074.0'. The
+    8-digit shape floor kept every extra receipt citing one out of its
+    PO-number group: on production (2026-09-26) PO 1074's 18 lines held one
+    receipt each and 29 more Madura receipts sat in "PO on file, not yet
+    matched"."""
+
+    def test_every_receipt_citing_a_short_po_is_saved(self):
+        po = _po("1074", vendor_name="")
+        item = _item(po, description="NN 250 fabric roll, width 107cm", qty=Decimal("3000"))
+        _item(po, description="NN 200 fabric roll, width 153cm", qty=Decimal("1000"), item_id="2")
+        # Rates far enough apart that no rate-similarity group forms: only
+        # the PO number can hold these together.
+        for n, rate in enumerate((Decimal("100"), Decimal("140"), Decimal("190"))):
+            _mir(f"L-{n}", f"l{n}", party_name="Madura Industrial Textiles Ltd", po_number_raw="1074.0",
+                 material_description="NN 250/107 CM", qty=Decimal("1000"), rate=rate)
+
+        run_full_match()
+
+        assert _saved_mir_nos(_match_for(item)) == ["L-0", "L-1", "L-2"]
+        assert not [r for r in mir_without_po_rows(HRSMIREntry, hrs_match_config)
+                    if r["bucket"] == PO_KNOWN_UNMATCHED]
+
+    def test_the_contradiction_gate_keeps_its_floor(self):
+        known = frozenset({"1074"})
+        assert _cited_po_numbers("1074.0", known) == frozenset()
+        assert _cited_po_numbers("1074.0", known, shape_floor=False) == frozenset({"1074"})

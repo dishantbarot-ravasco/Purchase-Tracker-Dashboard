@@ -44,6 +44,21 @@ function formatMonthLabel(m) {
   const idx = parseInt(parts[1], 10) - 1;
   return (MONTH_NAMES[idx] || parts[1]) + ' ' + parts[0];
 }
+// Every 'YYYY-MM' from the earliest to the latest key given, in order, so a
+// month with no orders shows as an empty slot on the axis instead of being
+// skipped (which made two bars a quarter apart look consecutive).
+function fillMonthRange(keys) {
+  if (!keys.length) return [];
+  const sorted = keys.slice().sort();
+  const out = [];
+  let [y, m] = sorted[0].split('-').map(Number);
+  const [ey, em] = sorted[sorted.length - 1].split('-').map(Number);
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(y + '-' + String(m).padStart(2, '0'));
+    if (++m > 12) { m = 1; y++; }
+  }
+  return out;
+}
 // Chart.js plugin (scoped per-chart via options.plugins array, not globally
 // registered) that draws the slice total in the doughnut's own cutout hole -
 // a "how many POs total" readout the legend/slices alone don't give at a

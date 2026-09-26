@@ -300,6 +300,13 @@ based on PO numbers only."*
   `_assign_pairs()` first, then every extra receipt to the line it matches best (material matched,
   then material score, then pair weight, then line id). The first version skipped step one and left
   one line of each duplicate-line order empty (2 Achhad, 2 Vapi).
+- **Short legacy PO numbers form groups too.** `_po_number_group_rows()` calls
+  `_cited_po_numbers(..., shape_floor=False)`, dropping the 8-digit floor of
+  `is_usable_po_reference()`. With it, HRS's 1-4 digit series ('1074.0') never counted as naming
+  exactly one order, so each line of PO 1074/1081 held one receipt and the rest sat in "PO on file,
+  not yet matched" (67 HRS receipts on production, 2026-09-26). Measured on the local copy, rolled
+  back: HRS 67 -> 5 in that bucket, receipts linked 309 -> 371, lines matched 180 -> 180; Achhad and
+  Vapi unchanged. The floor stays everywhere else (contradiction gate, candidate index).
 - **Vapi's hyphen cells (a row naming several orders) stay on the old per-row path** - one row
   cannot be held against all of them.
 - **Every counted row is saved** in `*POMirMatch.group_entries` (M2M, migration `0059`, all six PO
@@ -1139,7 +1146,7 @@ below); trust the code.
   uom_clash, by_po_number.
 - `_aggregate_rows(config, item, rows, *, by_po_number)` - sums in the line's unit; a non-convertible
   member stays in and sets `uom_clash`.
-- `_cited_po_numbers(raw, known_pos)` (cached) - distinct cleaned known orders a row names.
+- `_cited_po_numbers(raw, known_pos, shape_floor=True)` (cached) - distinct cleaned known orders a row names. `shape_floor=False` (PO-number groups only) admits short legacy numbers.
 - `_po_number_group_rows(found, known_pos)` - PO-confirmed candidates citing exactly one order.
 - `_shipment_group(config, item, pool)` - the rate group (2% tolerance, 150% cap) or None.
 - `_pick_match(...)` - single-item path: cited rows first (on a multi-line PO only those whose

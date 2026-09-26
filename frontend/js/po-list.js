@@ -206,17 +206,24 @@ function renderPoList(el) {
     { key: 'status:unknown', label: STATUS_LABELS.unknown + ' - nothing received', val: counts.unknown, color: '#64748b' },
   ].filter(s => s.val > 0);
 
-  const monthTotals = {};
+  // Order value per created month, stacked by the same po._status partition
+  // the doughnut and the status cards use, so the bars answer the cards'
+  // question ("how much of what we ordered has arrived?") in rupees. Pre-tax
+  // totalValue only: mixing in the tax-inclusive total where present added
+  // GST-inclusive and GST-exclusive figures into one bar, and every value
+  // comparison in this app is pre-tax.
+  const monthStatus = {};
   // POs the chart cannot place are counted and said under it, never dropped
   // silently (HRS's legacy 1074-1082 carry no value at all).
   let unplotted = 0;
   filtered.forEach(po => {
     const m = (po.createdDate || '').slice(0, 7);
-    const v = po.totalInclTax != null ? po.totalInclTax : po.totalValue;
+    const v = po.totalValue;
     if (!m || v == null) { unplotted++; return; }
-    monthTotals[m] = (monthTotals[m] || 0) + v;
+    const row = monthStatus[m] || (monthStatus[m] = {});
+    row[po._status] = (row[po._status] || 0) + v;
   });
-  const months = Object.keys(monthTotals).sort();
+  const months = fillMonthRange(Object.keys(monthStatus));
 
   // Category/Sub Category/Flags dropdowns, rendered just above the chart row
   // (see el.innerHTML below) - same 3-dropdown pattern as Raw Material
@@ -313,12 +320,13 @@ function renderPoList(el) {
       '</div>' : '') +
     ((statusChartData.length || months.length) ?
       '<div class="chart-row">' +
-        '<div class="chart-panel"><h4>PO Value Trend by Month Created</h4>' +
+        '<div class="chart-panel"><h4>Order Value by Month Created (pre-tax), by Status</h4>' +
           (months.length ? '<div class="chart-box"><canvas id="poTrendChart"></canvas></div>' : '<div class="no-data-note">No dated POs in range to plot.</div>') +
           (unplotted ? '<div class="no-data-note">' + unplotted + ' PO' + (unplotted === 1 ? '' : 's') + ' not shown: no created date or no value on file.</div>' : '') +
         '</div>' +
         '<div class="chart-panel"><h4>Status Breakdown</h4>' +
           (statusChartData.length ? '<div class="chart-box"><canvas id="poStatusChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
+          ((overdueCount > counts.overdue || noDateCount > counts.unknown) ? '<div class="no-data-note">The Overdue and Date Unknown slices count only POs with nothing received; their cards above also count part-delivered POs.</div>' : '') +
         '</div>' +
       '</div>' : '') +
     // Its own container so a PO Number/Vendor keystroke can replace just
@@ -373,27 +381,29 @@ function renderPoList(el) {
   if (months.length) {
     try {
       const ctx = document.getElementById('poTrendChart');
-      const gradient = ctx.getContext('2d').createLinearGradient(0, 0, 0, 220);
-      gradient.addColorStop(0, 'rgba(37,99,235,0.9)');
-      gradient.addColorStop(1, 'rgba(37,99,235,0.25)');
+      const trendSeries = [
+        { key: 'received', label: STATUS_LABELS.received, color: '#16a34a' },
+        { key: 'partial', label: STATUS_LABELS.partial, color: '#2563eb' },
+        { key: 'pending', label: STATUS_LABELS.pending, color: '#d97706' },
+        { key: 'overdue', label: STATUS_LABELS.overdue + ' - nothing received', color: '#dc2626' },
+        { key: 'unknown', label: STATUS_LABELS.unknown + ' - nothing received', color: '#64748b' },
+      ].filter(sr => months.some(m => (monthStatus[m] || {})[sr.key]));
       // Clicking a bar sets state.chartMonthFilter to that month - see the
       // "table-only filter" comment on state.chartMonthFilter. Clicking the
       // already-selected bar again clears it (same toggle pattern as a KPI
       // card). The selected bar is drawn solid navy so it's visually clear
       // which month the list below is currently narrowed to - other bars
-      // keep the gradient.
+      // keep their status colour.
       pageCharts.push(new Chart(ctx, {
         type: 'bar',
         data: {
           labels: months.map(formatMonthLabel),
-          datasets: [{
-            data: months.map(m => monthTotals[m]),
-            backgroundColor: months.map(m => m === state.chartMonthFilter ? '#0f1b2d' : gradient),
-            hoverBackgroundColor: '#2563eb',
-            borderRadius: 6,
-            borderSkipped: false,
+          datasets: trendSeries.map(sr => ({
+            label: sr.label,
+            data: months.map(m => (monthStatus[m] || {})[sr.key] || 0),
+            backgroundColor: months.map(m => (state.chartMonthFilter && m !== state.chartMonthFilter) ? sr.color + '55' : sr.color),
             maxBarThickness: 46,
-          }],
+          })),
         },
         options: {
           maintainAspectRatio: false,
@@ -404,25 +414,27 @@ function renderPoList(el) {
             state.tablePage = 1;
             renderPoList(el);
           },
+          interaction: { mode: 'index', intersect: false },
           onHover: (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
           plugins: {
-            legend: { display: false },
+            legend: { position: 'bottom', labels: { boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 10.5 } } },
             tooltip: {
               backgroundColor: '#0f1b2d',
               padding: 10,
               cornerRadius: 8,
               titleFont: { size: 12, weight: '700' },
               bodyFont: { size: 12 },
-              displayColors: false,
+              filter: c => c.parsed.y > 0,
               callbacks: {
-                label: c => formatInr(c.parsed.y),
-                afterLabel: () => 'Click to filter the list below',
+                label: c => c.dataset.label + ': ' + formatInr(c.parsed.y),
+                footer: items => 'Total: ' + formatInr(items.reduce((a, c) => a + c.parsed.y, 0)) + '\nClick to filter the list below',
               },
             },
           },
           scales: {
-            x: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#475569' } },
+            x: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 }, color: '#475569' } },
             y: {
+              stacked: true,
               grid: { color: '#eef1f5' },
               border: { display: false },
               ticks: { font: { size: 11 }, color: '#475569', callback: v => formatInr(v) },
