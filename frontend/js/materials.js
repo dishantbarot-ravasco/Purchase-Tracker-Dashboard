@@ -1394,8 +1394,14 @@ function renderMaterialsChart(materials) {
     return '<span class="crumb ' + (isLast ? 'active' : '') + '"' + (isLast ? '' : ' data-crumb-level="' + c.level + '"') + '>' + escapeHtml(c.label) + '</span>';
   }).join('<span class="crumb-sep">&rsaquo;</span>');
 
+  const levelTitle = state.matChartLevel === 'category' ? 'Inventory Value by Category'
+    : state.matChartLevel === 'subcategory' ? 'Inventory Value by Sub Category' : 'Inventory Value by Material';
+  const levelSub = state.matChartLevel === 'material'
+    ? 'Stock value of each material in this sub category. Click a bar to open the material.'
+    : 'Stock value on hand, largest first. Click a bar to drill down.';
+  const levelTotal = bars.reduce((sum, b) => sum + (b.value || 0), 0) + restValue;
   if (!bars.length) {
-    return '<div class="chart-panel mb-20"><h4>Inventory Value by Category</h4>' +
+    return '<div class="chart-panel mb-20">' + chartHeadHtml(levelTitle, levelSub) +
       '<div class="chart-breadcrumb">' + crumbHtml + '</div>' +
       '<div class="no-data-note">No materials in this ' + (state.matChartLevel === 'category' ? 'view' : state.matChartLevel) + ' to chart.</div></div>';
   }
@@ -1403,10 +1409,10 @@ function renderMaterialsChart(materials) {
   // .chart-box every other page's charts use. Chart.js's maxBarThickness
   // (below) caps how thick a bar gets when there is room to spare.
   const chartHeight = Math.min(300, Math.max(220, bars.length * 22));
-  return '<div class="chart-panel mb-20"><h4>Inventory Value by Category' + (state.matChartLevel !== 'category' ? ' &rsaquo; Subcategory' : '') + (state.matChartLevel === 'material' ? ' &rsaquo; Material' : '') + '</h4>' +
+  return '<div class="chart-panel mb-20">' + chartHeadHtml(levelTitle, levelSub, 'Total in view', formatInr(levelTotal)) +
     '<div class="chart-breadcrumb">' + crumbHtml + '</div>' +
     '<div class="chart-box" data-height-px="' + chartHeight + '"><canvas id="matDrillChart"></canvas></div>' +
-    '<div class="no-data-note mt-8">' + escapeHtml([restNote, state.matChartLevel !== 'material' ? 'Click a bar to drill down.' : ''].filter(Boolean).join(' ')) + '</div>' +
+    (restNote ? '<div class="chart-foot"><span class="no-data-note">' + escapeHtml(restNote) + '</span></div>' : '') +
   '</div>';
 }
 function wireMaterialsChart(materials) {
@@ -1438,11 +1444,13 @@ function wireMaterialsChart(materials) {
         maintainAspectRatio: false,
         plugins: {
           legend: { display: false },
-          tooltip: { backgroundColor: '#0f1b2d', padding: 10, cornerRadius: 8, displayColors: false, callbacks: { label: c => formatInr(c.parsed.x) } },
+          tooltip: { displayColors: false, callbacks: { label: c => formatInr(c.parsed.x) } },
         },
         scales: {
-          x: { grid: { color: '#eef1f5' }, border: { display: false }, ticks: { font: { size: 11 }, color: '#475569', callback: v => formatInr(v) } },
-          y: { grid: { display: false }, ticks: { font: { size: 11 }, color: '#475569' } },
+          x: { grid: { color: CHART_GRID }, border: { display: false }, ticks: { maxTicksLimit: 6, callback: v => formatInr(v) } },
+          // Long material names are cut to fit, never allowed to squeeze the
+          // bars; the tooltip carries the full name.
+          y: { grid: { display: false }, border: { color: CHART_GRID }, ticks: { callback: function (v) { const t = this.getLabelForValue(v) || ''; return t.length > 28 ? t.slice(0, 27) + '...' : t; } } },
         },
         onClick: (evt, elements) => {
           if (!elements.length) return;

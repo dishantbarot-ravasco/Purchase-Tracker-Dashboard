@@ -355,6 +355,10 @@ function renderImportPoList(el) {
     if (po.deliveryDateStatus === 'Overdue') row.overdueValue = (row.overdueValue || 0) + v;
   });
   const months = fillMonthRange(Object.keys(monthStatus));
+  const trendSeries = receiptSeries
+    .map(sr => Object.assign({}, sr, { total: months.reduce((a, m) => a + ((monthStatus[m] || {})[sr.status] || 0), 0) }))
+    .filter(sr => sr.total > 0);
+  const trendTotal = trendSeries.reduce((a, sr) => a + sr.total, 0);
 
 
   const categoryOptionsHtml = Object.entries(categoryCounts)
@@ -433,13 +437,21 @@ function renderImportPoList(el) {
       '</div>' : '') +
     ((stageChartData.length || months.length) ?
       '<div class="chart-row">' +
-        '<div class="chart-panel"><h4>Import Order Value by Month Created (INR, before duty), by Status</h4>' +
-          (months.length ? '<div class="chart-box"><canvas id="importTrendChart"></canvas></div>' : '<div class="no-data-note">No dated POs in range to plot.</div>') +
-          (unplotted ? '<div class="no-data-note">' + unplotted + ' PO' + (unplotted === 1 ? '' : 's') + ' not shown: no created date, net value or exchange rate on file.</div>' : '') +
+        '<div class="chart-panel" id="importTrendPanel">' +
+          chartHeadHtml('Import Order Value by Month', 'Value in rupees before customs duty (net value x exchange rate) of the POs created each month, split by how much has arrived in MIR. Click a month to list its POs.',
+            'Total in view', months.length ? formatInr(trendTotal) : null) +
+          (months.length ? '<div class="chart-box"><canvas id="importTrendChart"></canvas></div>' +
+            chartLegendHtml([{ items: trendSeries.map(sr => ({ key: null, label: sr.label, color: sr.color, valText: formatInr(sr.total) })) }])
+            : '<div class="no-data-note">No dated POs in range to plot.</div>') +
+          '<div class="chart-foot">' +
+            (state.importChartMonthFilter ? '<span class="chart-filter-chip">List shows ' + escapeHtml(formatMonthLabel(state.importChartMonthFilter)) + ' only <button type="button" id="importMonthClear" aria-label="Show all months">&times;</button></span>' : '') +
+            (unplotted ? '<span class="no-data-note">' + unplotted + ' PO' + (unplotted === 1 ? '' : 's') + ' not shown: no created date, net value or exchange rate on file.</span>' : '') +
+          '</div>' +
         '</div>' +
-        '<div class="chart-panel"><h4>Delivery Status (MIR)</h4>' +
-          (stageChartData.length ? '<div class="chart-box"><canvas id="importStageChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
-          (stageChartData.length ? '<div class="no-data-note">Inner ring: what has arrived. Outer ring: delivery date. Each slice matches its card above.</div>' : '') +
+        '<div class="chart-panel" id="importStatusPanel">' +
+          chartHeadHtml('Delivery Status (MIR)', 'Receipt in MIR, not customs clearance. Each slice matches its card above; click a slice or a label to filter the list.') +
+          (stageChartData.length ? '<div class="doughnut-layout"><div class="chart-box chart-box-doughnut"><canvas id="importStageChart"></canvas></div>' + twoRingLegendHtml(statusRings, state.importStatusFilter) + '</div>'
+            : '<div class="no-data-note">No POs in range.</div>') +
         '</div>' +
       '</div>' : '') +
     // Its own container so a header-filter keystroke can replace just
@@ -485,20 +497,32 @@ function renderImportPoList(el) {
     state.importTablePage = 1; renderImportPoList(el);
   };
 
+  const pickImportStatus = key => {
+    state.importStatusFilter = state.importStatusFilter === key ? null : key;
+    state.importTablePage = 1;
+    renderImportPoList(el);
+  };
+  wireChartLegend(document.getElementById('importStatusPanel'), pickImportStatus);
+  applyDynamicStyles(document.getElementById('importTrendPanel') || el);
+  const importMonthClear = document.getElementById('importMonthClear');
+  if (importMonthClear) importMonthClear.onclick = () => { state.importChartMonthFilter = null; state.importTablePage = 1; renderImportPoList(el); };
+
   destroyPageCharts();
   if (months.length) {
     try {
       const ctx = document.getElementById('importTrendChart');
-      const trendSeries = receiptSeries.filter(sr => months.some(m => (monthStatus[m] || {})[sr.status]));
       pageCharts.push(new Chart(ctx, {
         type: 'bar',
         data: {
-          labels: months.map(formatMonthLabel),
-          datasets: trendSeries.map(sr => ({
+          labels: months.map(shortMonthLabel),
+          datasets: trendSeries.map((sr, i) => ({
             label: sr.label,
             data: months.map(m => (monthStatus[m] || {})[sr.status] || 0),
-            backgroundColor: months.map(m => (state.importChartMonthFilter && m !== state.importChartMonthFilter) ? sr.color + '55' : sr.color),
-            maxBarThickness: 46,
+            backgroundColor: months.map(m => (state.importChartMonthFilter && m !== state.importChartMonthFilter) ? sr.color + '40' : sr.color),
+            borderRadius: i === trendSeries.length - 1 ? { topLeft: 4, topRight: 4 } : 0,
+            borderSkipped: false,
+            maxBarThickness: 42,
+            categoryPercentage: 0.7,
           })),
         },
         options: {
@@ -513,12 +537,10 @@ function renderImportPoList(el) {
           },
           onHover: (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
           plugins: {
-            legend: { position: 'bottom', labels: { boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 10.5 } } },
             tooltip: {
-              backgroundColor: '#0f1b2d', padding: 10, cornerRadius: 8,
-              titleFont: { size: 12, weight: '700' }, bodyFont: { size: 12 },
               filter: c => c.parsed.y > 0,
               callbacks: {
+                title: items => (items.length ? formatMonthLabel(months[items[0].dataIndex]) : ''),
                 label: c => c.dataset.label + ': ' + formatInr(c.parsed.y),
                 footer: items => {
                   const od = items.length ? (monthStatus[months[items[0].dataIndex]] || {}).overdueValue : 0;
@@ -529,8 +551,8 @@ function renderImportPoList(el) {
             },
           },
           scales: {
-            x: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 }, color: '#475569' } },
-            y: { stacked: true, grid: { color: '#eef1f5' }, border: { display: false }, ticks: { font: { size: 11 }, color: '#475569', callback: v => formatInr(v) } },
+            x: { stacked: true, grid: { display: false }, border: { color: CHART_GRID }, ticks: { maxRotation: 0, autoSkipPadding: 8 } },
+            y: { stacked: true, grid: { color: CHART_GRID }, border: { display: false }, ticks: { maxTicksLimit: 6, callback: v => formatInr(v) } },
           },
         },
       }));
@@ -547,11 +569,7 @@ function renderImportPoList(el) {
         inner: statusRings.inner,
         selectedKey: state.importStatusFilter,
         centerPlugin: centerImportTextPlugin,
-        onPick: key => {
-          state.importStatusFilter = state.importStatusFilter === key ? null : key;
-          state.importTablePage = 1;
-          renderImportPoList(el);
-        },
+        onPick: pickImportStatus,
       }));
     } catch (e) {
       console.error('Import stage chart failed to render:', e);

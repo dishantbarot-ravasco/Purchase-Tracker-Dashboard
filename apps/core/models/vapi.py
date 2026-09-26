@@ -384,6 +384,11 @@ class RTPVapiPOMirMatch(models.Model):
     # and still zero - this records the direction of a mismatch, it does not
     # decide whether one exists. See matching_core._diffs_and_flag().
     qty_over_delivered = models.BooleanField(null=True, blank=True)
+    # Over the ordered quantity but inside the weighbridge allowance for
+    # material bought by the truckload (steam coal, HM plastic, HDPE,
+    # 2026-09-26) - counted as matched, shown with a tolerance note. See
+    # apps/services/qty_tolerance.py.
+    qty_within_tolerance = models.BooleanField(default=False)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full
@@ -684,6 +689,11 @@ class RTPVapiImportPOMirMatch(models.Model):
     # and still zero - this records the direction of a mismatch, it does not
     # decide whether one exists. See matching_core._diffs_and_flag().
     qty_over_delivered = models.BooleanField(null=True, blank=True)
+    # Over the ordered quantity but inside the weighbridge allowance for
+    # material bought by the truckload (steam coal, HM plastic, HDPE,
+    # 2026-09-26) - counted as matched, shown with a tolerance note. See
+    # apps/services/qty_tolerance.py.
+    qty_within_tolerance = models.BooleanField(default=False)
     rate_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     value_diff_pct = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True)
     # See HRSPOMirMatch's identically-named fields for the full

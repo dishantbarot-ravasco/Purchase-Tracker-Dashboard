@@ -397,6 +397,9 @@ def _line_item_dict(item, item_ref=""):
         # through rather than coercing to a boolean - the frontend needs to
         # tell "under-delivered" from "we could not tell".
         "qtyOverDelivered": getattr(match, "qty_over_delivered", None) if match else None,
+        # Over, but inside the weighbridge allowance for material bought by the
+        # truckload - the frontend shows Qty matched plus a tolerance note.
+        "qtyWithinTolerance": bool(match and getattr(match, "qty_within_tolerance", False)),
         "rateDiffPct": float(match.rate_diff_pct) if match and match.rate_diff_pct is not None else None,
         "valueDiffPct": float(match.value_diff_pct) if match and match.value_diff_pct is not None else None,
         # Match Accuracy Programme fixes 2.C/3.F - see matching_core.py.

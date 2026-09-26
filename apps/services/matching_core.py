@@ -165,6 +165,7 @@ from apps.services.parsers.common import (
     normalize_vendor_for_matching,
     tokenize,
 )
+from apps.services.qty_tolerance import over_delivery_tolerance_pct, value_within_over_tolerance
 
 TIER_PO_NUMBER = "po_number"
 # TIER_MATERIAL replaces the old TIER_WEIGHTED label (2026-09-07 redesign -
@@ -2574,7 +2575,7 @@ def _diffs_and_flag(
     uom_mismatch, severity, qty_mismatched, rate_mismatched, data_mismatch,
     tax_type_mismatch, taxable_value_diff_pct, final_value_diff_pct,
     net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-    qty_over_delivered).
+    qty_over_delivered, qty_within_tolerance).
 
     OVER vs UNDER (2026-09-18, project owner). qty_diff_pct is an ABSOLUTE
     percentage and always was, so "received 20% more than ordered" and
@@ -2591,11 +2592,17 @@ def _diffs_and_flag(
     (a UOM mismatch, or a missing quantity on either side) - three states,
     because "we could not tell" is not the same answer as "not over".
 
-    TOLERANCE IS UNCHANGED AND STILL ZERO (project owner, 2026-09-18:
-    "keep the tolerance to 0"): this field only records the DIRECTION of a
-    difference that config.flag_diff_pct has already decided is a mismatch.
-    It deliberately does not soften, re-band, or suppress anything - both
-    directions still flag exactly as they did.
+    Quantity tolerance is zero (project owner, 2026-09-18: "keep the
+    tolerance to 0") with ONE exception: material weighed by the truckload
+    (steam coal, HM plastic, HDPE - see qty_tolerance.py, 2026-09-26) may
+    come in up to BULK_QTY_OVER_TOLERANCE_PCT over the ordered quantity and
+    still count as matched. qty_within_tolerance is True exactly then:
+    qty_mismatched is False, qty_diff_pct and qty_over_delivered still carry
+    the real figure (so a reader can show "+7%"), and the Net / Taxable /
+    Final value checks accept the same over-only allowance, since the extra
+    tonnes bill proportionally more at the same rate. Under-delivery, and
+    anything past the allowance, flags exactly as it does for every other
+    material. Rate keeps zero tolerance throughout.
 
     The last three (added 2026-09-08, Data Quality Flags clarity pass) were
     already being computed here the whole time as value_flagged/
@@ -2676,9 +2683,19 @@ def _diffs_and_flag(
         None if (qty_diff is None or qty_a is None or qty_received is None)
         else qty_received > qty_a
     )
+    # Weighed-by-the-truckload material only (qty_tolerance.py): over, and
+    # by no more than the allowance. The diff and direction stay as they are.
+    over_tolerance = over_delivery_tolerance_pct(item.description)
+    qty_within_tolerance = (
+        over_tolerance is not None and qty_over_delivered is True
+        and qty_diff is not None and qty_diff <= over_tolerance
+    )
 
     def _value_flagged(a, b):
-        return a is not None and b is not None and abs(a - b) > config.value_flag_epsilon
+        if a is None or b is None or abs(a - b) <= config.value_flag_epsilon:
+            return False
+        # The same weighbridge excess, billed at the PO rate.
+        return not (qty_within_tolerance and value_within_over_tolerance(a, b, over_tolerance, config.value_flag_epsilon))
 
     mir_value = value_override if value_override is not None else config.mir_value(mir)
     value_diff = _diff_pct(item.value, mir_value)
@@ -2707,18 +2724,28 @@ def _diffs_and_flag(
         elif rate_diff is None or landed_diff < rate_diff:
             rate_diff = landed_diff
 
-    qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct
+    qty_mismatched = qty_diff is not None and qty_diff > config.flag_diff_pct and not qty_within_tolerance
     rate_mismatched = rate_diff is not None and rate_diff > config.flag_diff_pct
     is_flagged = qty_mismatched or rate_mismatched
     data_mismatch = uom_mismatch or value_flagged or taxable_value_flagged or final_value_flagged or tax_type_flagged
-    severity = _severity(uom_mismatch, qty_diff, rate_diff, value_diff)
+    severity = _severity(uom_mismatch, *_severity_diffs(qty_within_tolerance, qty_diff, rate_diff, value_diff, value_flagged))
     return (
         qty_diff, rate_diff, value_diff, is_flagged, uom_mismatch, severity,
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_flagged,
         taxable_value_diff, final_value_diff,
         value_flagged, taxable_value_flagged, final_value_flagged,
-        qty_over_delivered,
+        qty_over_delivered, qty_within_tolerance,
     )
+
+
+def _severity_diffs(qty_within_tolerance, qty_diff, rate_diff, value_diff, value_flagged):
+    """The (qty, rate, value) diffs _severity() should grade. A quantity
+    accepted inside the weighbridge allowance is not a discrepancy, and
+    neither is the net value it dragged along with it, so neither may tint
+    the row; a value still flagged past the allowance keeps counting."""
+    if not qty_within_tolerance:
+        return qty_diff, rate_diff, value_diff
+    return None, rate_diff, (value_diff if value_flagged else None)
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -2926,7 +2953,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-        qty_over_delivered,
+        qty_over_delivered, qty_within_tolerance,
     ) = _diffs_and_flag(config, item, best_entry, group=group)
     match = _save_po_mir_match(
         config.po_mir_match_model, po_line_item, _LOOK_UP,
@@ -2936,6 +2963,7 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             match_score=best_score.quantize(Decimal("0.0001")),
             qty_diff_pct=qty_diff,
             qty_over_delivered=qty_over_delivered,
+            qty_within_tolerance=qty_within_tolerance,
             rate_diff_pct=rate_diff,
             value_diff_pct=value_diff,
             is_flagged=is_flagged,
@@ -3006,7 +3034,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
         taxable_value_diff, final_value_diff,
         net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-        qty_over_delivered,
+        qty_over_delivered, qty_within_tolerance,
     ) = _diffs_and_flag(config, item, best_entry, group=group)
     defaults = dict(
         mir_entry=best_entry,
@@ -3014,6 +3042,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         match_score=best_score.quantize(Decimal("0.0001")),
         qty_diff_pct=qty_diff,
         qty_over_delivered=qty_over_delivered,
+        qty_within_tolerance=qty_within_tolerance,
         rate_diff_pct=rate_diff,
         value_diff_pct=value_diff,
         is_flagged=is_flagged,
@@ -3993,7 +4022,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-            qty_over_delivered,
+            qty_over_delivered, qty_within_tolerance,
         ) = _diffs_and_flag(config, matchable, mir, group=group)
         match = _save_po_mir_match(
             config.po_mir_match_model, item, previous_mir["po"].get(item.id),
@@ -4008,6 +4037,7 @@ def run_full_match(config: _MatchConfig) -> dict:
                 match_score=score.quantize(Decimal("0.0001")),
                 qty_diff_pct=qty_diff,
                 qty_over_delivered=qty_over_delivered,
+                qty_within_tolerance=qty_within_tolerance,
                 rate_diff_pct=rate_diff,
                 value_diff_pct=value_diff,
                 is_flagged=is_flagged,
@@ -4053,7 +4083,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             qty_mismatched, rate_mismatched, data_mismatch, tax_type_mismatch,
             taxable_value_diff, final_value_diff,
             net_value_mismatched, taxable_value_mismatched, final_value_mismatched,
-            qty_over_delivered,
+            qty_over_delivered, qty_within_tolerance,
         ) = _diffs_and_flag(config, matchable, mir, group=group)
         # An exchange-rate difference is not a price difference - see
         # _exchange_rate_explains(). Only a cleared line has the landed figure
@@ -4066,7 +4096,8 @@ def run_full_match(config: _MatchConfig) -> dict:
             if fx_mismatched:
                 rate_diff, rate_mismatched = Decimal("0"), False
                 is_flagged = qty_mismatched
-                severity = _severity(uom_mismatch, qty_diff, rate_diff, value_diff)
+                severity = _severity(uom_mismatch, *_severity_diffs(
+                    qty_within_tolerance, qty_diff, rate_diff, value_diff, net_value_mismatched))
         defaults = dict(
             mir_entry=mir,
             # Derived from whether a pin currently applies, NOT preserved
@@ -4080,6 +4111,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             match_score=score.quantize(Decimal("0.0001")),
             qty_diff_pct=qty_diff,
             qty_over_delivered=qty_over_delivered,
+            qty_within_tolerance=qty_within_tolerance,
             rate_diff_pct=rate_diff,
             value_diff_pct=value_diff,
             is_flagged=is_flagged,

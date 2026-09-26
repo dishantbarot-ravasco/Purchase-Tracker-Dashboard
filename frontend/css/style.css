@@ -226,16 +226,31 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 }
 
 .filter-row { display:flex; align-items:center; gap:10px; margin-bottom:18px; flex-wrap:wrap; background:var(--card); border:1px solid var(--border); border-radius:10px; padding:11px 15px; box-shadow:var(--dash-shadow); }
-.filter-row label { font-size:12px; color:var(--slate-soft); font-weight:600; }
-.filter-row input[type=date], .filter-row input[type=text] { padding:6px 9px; border:1px solid var(--border-strong); border-radius:7px; font-size:12.5px; }
-.filter-row button { padding:6px 13px; border-radius:7px; border:1px solid var(--border-strong); background:var(--card); cursor:pointer; font-size:12px; font-weight:600; color:var(--slate); }
+.filter-row label { font-size:10.5px; color:var(--slate-soft); font-weight:700; text-transform:uppercase; letter-spacing:0.05em; white-space:nowrap; }
+/* One height for every control in a filter bar (date, text, select, button),
+   so a row of mixed controls lines up on one baseline. */
+.filter-row input[type=date], .filter-row input[type=text], .filter-row select { height:32px; padding:0 10px; border:1px solid var(--border-strong); border-radius:7px; font:inherit; font-size:12.5px; color:var(--slate); background-color:var(--card); }
+.filter-row select { padding-right:6px; cursor:pointer; }
+.filter-row input:hover, .filter-row select:hover { border-color:var(--slate-soft); }
+.filter-row input:focus-visible, .filter-row select:focus-visible { outline:2px solid var(--gold-accent); outline-offset:1px; border-color:var(--gold-accent); }
+.filter-row button { height:32px; padding:0 14px; border-radius:7px; border:1px solid var(--border-strong); background:var(--card); cursor:pointer; font-size:12px; font-weight:600; color:var(--slate); }
+.filter-row button:hover { border-color:var(--slate-soft); background:var(--gray-soft); }
 .filter-row button.primary { background:var(--navy-solid); color:var(--on-accent); border-color:var(--navy-solid); }
+.filter-row button.primary:hover { background:var(--navy-hover); border-color:var(--navy-hover); }
 /* Keeps a label glued to its own input/select when a .filter-row wraps onto
    a second line on a narrow viewport - without this, flex-wrap can wrap
    between a label and its control (e.g. "Filter by Sub Category" landing on
    one line, the <select> itself on the next), which reads as broken rather
    than just reflowed. */
 .filter-row .filter-group { display:inline-flex; align-items:center; gap:8px; }
+/* Phone width: each group takes its own line, label above its controls,
+   controls sharing the width - otherwise the no-wrap labels were cut off. */
+@media (max-width: 560px) {
+  .filter-row .filter-group { flex-wrap:wrap; width:100%; gap:5px 8px; }
+  .filter-row .filter-group label { width:100%; }
+  .filter-row .filter-group select, .filter-row .filter-group input { flex:1 1 0; min-width:0; }
+  .filter-row .filter-group .sep-gray { flex:none; }
+}
 
 /* ── ENTRANCE ANIMATION ─────────────────────────────────────────────────
    Same fade-up-in keyframe/reasoning as brand.css's own block (kept as a
@@ -365,10 +380,48 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 /* ── Charts ──────────────────────────────────────────────────────────── */
 .chart-row { display:grid; grid-template-columns: minmax(320px, 1.4fr) minmax(280px, 1fr); gap:16px; margin-bottom:20px; }
 @media (max-width: 900px) { .chart-row { grid-template-columns: 1fr; } }
-.chart-panel { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px 14px; box-shadow:var(--dash-shadow); }
+.chart-panel { background:var(--card); border:1px solid var(--border); border-radius:13px; padding:18px 20px 16px; box-shadow:var(--dash-shadow); display:flex; flex-direction:column; }
 .chart-panel h4 { margin:0 0 4px; font-size:12.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--slate-soft); font-weight:700; display:flex; align-items:center; gap:7px; }
-.chart-panel h4::before { content:''; width:4px; height:14px; border-radius:2px; background:var(--gold-accent); display:inline-block; }
+.chart-panel h4::before { content:''; width:4px; height:14px; border-radius:2px; background:var(--gold-accent); display:inline-block; flex:none; }
 .chart-box { position:relative; height:250px; margin-top:14px; }
+.chart-box-doughnut { height:230px; }
+/* Rings above their legend in a narrow panel, beside it in a wide one - a
+   container query on the panel, not the viewport, because the doughnut panel
+   is the narrow column of a two-column row. */
+.chart-row .chart-panel { container-type:inline-size; }
+.doughnut-layout { display:grid; grid-template-columns:1fr; align-items:center; column-gap:22px; }
+@container (min-width: 540px) {
+  .doughnut-layout { grid-template-columns:minmax(210px, 240px) 1fr; }
+  .doughnut-layout .chart-legend { margin-top:14px; }
+}
+/* A bar chart grows to its panel's height, so it never leaves a blank band
+   under itself when the panel beside it (the doughnut, with its two-group
+   legend) is taller. */
+.chart-panel > .chart-box:not(.chart-box-doughnut) { flex:1 1 auto; min-height:250px; }
+/* Header: title + one-line subtitle on the left, a headline figure right. */
+.chart-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding-bottom:12px; border-bottom:1px solid var(--border-soft); }
+.chart-head h4 { margin:0; }
+.chart-sub { font-size:12px; color:var(--gray); margin-top:5px; line-height:1.45; padding-left:11px; }
+.chart-aside { text-align:right; flex:none; }
+.chart-aside-val { font-size:17px; font-weight:700; color:var(--navy); font-variant-numeric:tabular-nums; line-height:1.2; }
+.chart-aside-label { font-size:10.5px; color:var(--gray); text-transform:uppercase; letter-spacing:0.05em; font-weight:600; margin-top:2px; }
+/* HTML legends (charts.js's chartLegendHtml()) - chips that wrap, so a long
+   label never clips or overlaps the way Chart.js's canvas legend did. */
+.chart-legend { display:flex; flex-direction:column; gap:10px; margin-top:14px; }
+.chart-legend-title { font-size:10.5px; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; color:var(--gray); margin-bottom:6px; }
+.chart-legend-items { display:flex; flex-wrap:wrap; gap:6px; }
+.legend-chip { display:inline-flex; align-items:center; gap:7px; padding:4px 10px 4px 8px; border:1px solid var(--border); border-radius:999px; background:var(--card); font:inherit; font-size:12px; color:var(--slate); line-height:1.3; }
+.legend-chip-btn { cursor:pointer; transition:border-color .15s, background .15s; }
+.legend-chip-btn:hover { border-color:var(--border-strong); background:var(--gray-soft); }
+.legend-chip-btn.active { border-color:var(--navy); background:var(--gray-soft); box-shadow:inset 0 0 0 1px var(--navy); }
+.legend-chip-btn:focus-visible { outline:2px solid var(--gold-accent); outline-offset:2px; }
+.legend-dot { width:9px; height:9px; border-radius:50%; flex:none; }
+.legend-val { font-weight:700; color:var(--navy); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.chart-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:auto; padding-top:10px; }
+.chart-foot:empty { display:none; }
+.chart-filter-chip { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:var(--navy); background:var(--gold-accent-soft); border:1px solid var(--gold-accent-border); border-radius:999px; padding:3px 4px 3px 10px; }
+.chart-filter-chip button { border:0; background:transparent; cursor:pointer; font-size:15px; line-height:1; color:var(--slate-soft); padding:0 5px; border-radius:50%; }
+.chart-filter-chip button:hover { color:var(--navy); background:var(--card); }
 .no-data-note { color:var(--gray); font-size:12px; font-style:italic; }
 
 /* Drill-down chart breadcrumb (Inventory Value by Category -> Subcategory ->

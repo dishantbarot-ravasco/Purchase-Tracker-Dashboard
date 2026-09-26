@@ -19,7 +19,7 @@
 // found and fixed 2026-09-04 - don't merge these back into one array.
 let pageCharts = [];
 let modalCharts = [];
-function destroyPageCharts() { pageCharts.forEach(c => { try { c.destroy(); } catch (e) { console.warn('Chart.destroy() failed:', e); } }); pageCharts = []; }
+function destroyPageCharts() { refreshChartTheme(); pageCharts.forEach(c => { try { c.destroy(); } catch (e) { console.warn('Chart.destroy() failed:', e); } }); pageCharts = []; }
 function destroyModalCharts() { modalCharts.forEach(c => { try { c.destroy(); } catch (e) { console.warn('Chart.destroy() failed:', e); } }); modalCharts = []; }
 
 // Bumped by every openPoModal()/openImportPoModal()/openMaterialModal()/
@@ -44,6 +44,102 @@ function formatMonthLabel(m) {
   const idx = parseInt(parts[1], 10) - 1;
   return (MONTH_NAMES[idx] || parts[1]) + ' ' + parts[0];
 }
+// ── One look for every page chart ───────────────────────────────────────
+// Set once on Chart.defaults, so the four page charts share one font, ink
+// colour and tooltip style instead of each carrying its own copy. Legends
+// are HTML (chartLegendHtml() below), never Chart.js's canvas legend: the
+// canvas legend cannot wrap long labels, so on a narrow panel it clipped or
+// overlapped them ("Delivery Date Unknow...").
+let CHART_INK = '#475569';
+let CHART_GRID = '#eef1f5';
+let CHART_STRONG = '#1A2535';
+let CHART_MUTED = '#94a3b8';
+// Reads the chart colours from the stylesheet's tokens, so a chart drawn in
+// dark mode uses dark-mode ink and grid lines. Called by destroyPageCharts(),
+// which every page view runs right before drawing its charts - so a theme
+// toggle is picked up on the next render.
+function refreshChartTheme() {
+  const css = getComputedStyle(document.documentElement);
+  const read = (name, fallback) => (css.getPropertyValue(name) || '').trim() || fallback;
+  CHART_INK = read('--slate-soft', '#475569');
+  CHART_GRID = read('--border-soft', '#eef1f5');
+  CHART_STRONG = read('--navy', '#1A2535');
+  CHART_MUTED = read('--gray', '#94a3b8');
+  if (typeof Chart !== 'undefined') Chart.defaults.color = CHART_INK;
+}
+if (typeof Chart !== 'undefined') {
+  Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+  Chart.defaults.font.size = 11.5;
+  Chart.defaults.color = CHART_INK;
+  Chart.defaults.plugins.legend.display = false;
+  Object.assign(Chart.defaults.plugins.tooltip, {
+    backgroundColor: '#1A2535', padding: 10, cornerRadius: 8, boxPadding: 4, usePointStyle: true,
+    titleFont: { size: 12, weight: '700' }, bodyFont: { size: 12 }, footerFont: { size: 11, weight: '400' },
+    footerColor: '#cbd5e1',
+  });
+}
+
+// 'YYYY-MM' -> "Jan '26" - short enough that nine or twelve months fit on
+// the axis without tilting.
+function shortMonthLabel(m) {
+  const parts = m.split('-');
+  return (MONTH_NAMES[parseInt(parts[1], 10) - 1] || parts[1]) + " '" + parts[0].slice(2);
+}
+
+// A chart panel's header: title, a one-line plain-English subtitle saying
+// what the chart measures, and an optional figure on the right.
+function chartHeadHtml(title, sub, asideLabel, asideValue) {
+  return '<div class="chart-head"><div class="chart-head-text"><h4>' + escapeHtml(title) + '</h4>' +
+    (sub ? '<div class="chart-sub">' + escapeHtml(sub) + '</div>' : '') + '</div>' +
+    (asideValue != null ? '<div class="chart-aside"><div class="chart-aside-val">' + escapeHtml(asideValue) + '</div>' +
+      '<div class="chart-aside-label">' + escapeHtml(asideLabel || '') + '</div></div>' : '') +
+    '</div>';
+}
+
+// HTML legend: groups of {title?, items: [{key, label, color, valText}]}.
+// An item with a key is a button that filters like its KPI card
+// (wireChartLegend()); one without is plain text. Items wrap, so a long
+// label never clips.
+function chartLegendHtml(groups, selectedKey) {
+  return '<div class="chart-legend">' + groups.map(g =>
+    '<div class="chart-legend-group">' +
+      (g.title ? '<div class="chart-legend-title">' + escapeHtml(g.title) + '</div>' : '') +
+      '<div class="chart-legend-items">' + g.items.map(it => {
+        const active = it.key && it.key === selectedKey;
+        const inner = '<span class="legend-dot" data-dot-color="' + escapeHtml(it.color) + '"></span>' +
+          '<span class="legend-label">' + escapeHtml(it.label) + '</span>' +
+          (it.valText != null ? '<span class="legend-val">' + escapeHtml(it.valText) + '</span>' : '');
+        return it.key
+          ? '<button type="button" class="legend-chip legend-chip-btn' + (active ? ' active' : '') + '" data-legend-key="' + escapeHtml(it.key) + '" aria-pressed="' + !!active + '">' + inner + '</button>'
+          : '<span class="legend-chip">' + inner + '</span>';
+      }).join('') + '</div>' +
+    '</div>').join('') + '</div>';
+}
+function wireChartLegend(root, onPick) {
+  if (!root) return;
+  applyDynamicStyles(root);
+  root.querySelectorAll('[data-legend-key]').forEach(b => { b.onclick = () => onPick(b.dataset.legendKey); });
+}
+
+// '12%', or '<1%' for a small non-zero share, which '0%' would misstate.
+function sharePct(n, total) {
+  const pct = n / total * 100;
+  return (n > 0 && pct < 1) ? '<1%' : Math.round(pct) + '%';
+}
+
+// The legend for renderTwoRingDoughnut(): one group per ring, each slice's
+// count and share of all POs.
+function twoRingLegendHtml(rings, selectedKey) {
+  const group = (title, ring) => {
+    const total = ring.reduce((a, s) => a + s.val, 0);
+    return { title, items: ring.filter(s => s.val > 0).map(s => ({
+      key: s.key, label: s.label, color: s.color,
+      valText: s.val + (total ? '  ' + sharePct(s.val, total) : ''),
+    })) };
+  };
+  return chartLegendHtml([group('What has arrived (inner ring)', rings.inner), group('Delivery date (outer ring)', rings.outer)], selectedKey);
+}
+
 // Every 'YYYY-MM' from the earliest to the latest key given, in order, so a
 // month with no orders shows as an empty slot on the axis instead of being
 // skipped (which made two bars a quarter apart look consecutive).
@@ -74,20 +170,22 @@ function renderTwoRingDoughnut(canvas, { outer, inner, selectedKey, onPick, cent
   const ringData = (ring, offset) => slices.map((s, i) => (i >= offset && i < offset + ring.length ? s.val : 0));
   const ringTotal = ring => ring.reduce((a, s) => a + s.val, 0);
   const colors = slices.map(s => s.color);
+  // Segment separators in the card colour, so they read as gaps in dark mode too.
+  const ringGap = (getComputedStyle(document.documentElement).getPropertyValue('--card') || '').trim() || '#ffffff';
   return new Chart(canvas, {
     type: 'doughnut',
     data: {
       labels: slices.map(s => s.label),
       datasets: [
-        { data: ringData(outer, 0), backgroundColor: colors, borderWidth: 0, spacing: 2, borderRadius: 3, weight: 1,
+        { data: ringData(outer, 0), backgroundColor: colors, borderWidth: 2, borderColor: ringGap, borderRadius: 2, weight: 1,
           offset: slices.map(s => (s.key && s.key === selectedKey ? 10 : 0)) },
-        { data: ringData(inner, outer.length), backgroundColor: colors, borderWidth: 0, spacing: 2, borderRadius: 3, weight: 1,
+        { data: ringData(inner, outer.length), backgroundColor: colors, borderWidth: 2, borderColor: ringGap, borderRadius: 2, weight: 1,
           offset: slices.map(s => (s.key && s.key === selectedKey ? 10 : 0)) },
       ],
     },
     options: {
       maintainAspectRatio: false,
-      cutout: '52%',
+      cutout: '56%',
       onClick: (evt, elements) => {
         if (!elements.length) return;
         const s = slices[elements[0].index];
@@ -96,27 +194,15 @@ function renderTwoRingDoughnut(canvas, { outer, inner, selectedKey, onPick, cent
       onHover: (evt, elements) => {
         evt.native.target.style.cursor = elements.length && slices[elements[0].index].key ? 'pointer' : 'default';
       },
+      // The legend is HTML beside the canvas - twoRingLegendHtml().
       plugins: {
-        legend: {
-          position: 'bottom',
-          labels: {
-            boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 10.5 },
-            generateLabels: () => slices.map((s, i) => ({
-              text: s.label + '  ' + s.val,
-              fillStyle: s.color, strokeStyle: s.color, index: i,
-              hidden: s.val === 0,
-            })).filter(l => !l.hidden),
-          },
-          onClick: (evt, item) => { const s = slices[item.index]; if (s.key) onPick(s.key); },
-        },
         tooltip: {
-          backgroundColor: '#0f1b2d', padding: 10, cornerRadius: 8,
           filter: c => c.parsed > 0,
           callbacks: {
             title: items => (items.length && items[0].datasetIndex === 0 ? 'Delivery date' : 'What has arrived'),
             label: c => {
               const t = ringTotal(c.datasetIndex === 0 ? outer : inner);
-              return ' ' + c.label + ': ' + c.parsed + (t ? ' (' + Math.round(c.parsed / t * 100) + '%)' : '');
+              return ' ' + c.label + ': ' + c.parsed + (t ? ' (' + sharePct(c.parsed, t) + ')' : '');
             },
             afterLabel: c => (slices[c.dataIndex].key ? 'Click to filter the list below' : ''),
           },
@@ -145,10 +231,10 @@ const centerTextPlugin = {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = "700 22px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-    ctx.fillStyle = '#0f1b2d';
+    ctx.fillStyle = CHART_STRONG;
     ctx.fillText(String(total), cx, cy - 9);
     ctx.font = "700 9.5px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-    ctx.fillStyle = '#94a3b8';
+    ctx.fillStyle = CHART_MUTED;
     ctx.fillText('TOTAL POs', cx, cy + 11);
     ctx.restore();
   },
@@ -197,10 +283,10 @@ const centerImportTextPlugin = {
     ctx.save();
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.font = "700 22px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-    ctx.fillStyle = '#0f1b2d';
+    ctx.fillStyle = CHART_STRONG;
     ctx.fillText(String(totalV), cx, cy - 9);
     ctx.font = "700 9.5px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
-    ctx.fillStyle = '#94a3b8';
+    ctx.fillStyle = CHART_MUTED;
     ctx.fillText('IMPORT POs', cx, cy + 11);
     ctx.restore();
   },

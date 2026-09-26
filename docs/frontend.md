@@ -516,7 +516,18 @@ few module-level variables for the correction box and modal a11y.
 
 ### frontend/js/charts.js
 
-Chart.js lifecycle and the modal close path, shared by the dashboard's views. Exports `pageCharts`,
+Chart.js lifecycle, the shared chart look, and the modal close path. **One look for every page
+chart:** font, ink and tooltip style are set once on `Chart.defaults`; `refreshChartTheme()` re-reads
+`CHART_INK` / `CHART_GRID` / `CHART_STRONG` / `CHART_MUTED` from the stylesheet tokens and runs inside
+`destroyPageCharts()`, so dark mode applies on the next render (the doughnut centre text used to be a
+fixed dark navy, invisible in dark mode). **Legends are HTML, never the Chart.js canvas legend**,
+which cannot wrap and clipped or overlapped long labels ("Delivery Date Unknow..."):
+`chartLegendHtml(groups, selectedKey)` renders wrapping chips (a chip with a key is a button that
+filters like its KPI card, wired by `wireChartLegend(root, onPick)`), `twoRingLegendHtml(rings,
+selectedKey)` groups them by ring with count and share (`sharePct()` prints "<1%", not "0%", for a
+small non-zero share). `chartHeadHtml(title, sub, asideLabel, asideValue)` is every panel's header
+(title, one-line subtitle, headline figure) and `shortMonthLabel()` ("Jan '26") keeps month axes
+untilted. Also exports `pageCharts`,
 `modalCharts`, `destroyPageCharts()`, `destroyModalCharts()`, `modalRequestId`, `MONTH_NAMES`,
 `formatMonthLabel()` (`YYYY-MM` -> "Mon YYYY"), `fillMonthRange(keys)` (every month from the
 earliest to the latest key, so a month with no orders is an empty slot rather than skipped),
@@ -946,7 +957,10 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   `title`), tables (sticky headers inside `.table-wrap`, which is a two-axis scroll container, so a CSS
   tooltip inside it is clipped), status pills and badges, legend, disclaimer, modal shell, correction
   box, MIR picker and its "already matched" choice (`.mir-choice*`), reconciliation cards, steppers, the Domestic list's "Also in Import Purchases"
-  box (`.cross-kind-*`), dark mode.
+  box (`.cross-kind-*`), chart panels (`.chart-head`, `.chart-legend` / `.legend-chip`, `.chart-foot`
+  and its month `.chart-filter-chip`; `.doughnut-layout` puts the rings beside their legend through a
+  container query on the panel at 540px, and a bar chart's `.chart-box` grows to its panel's height),
+  filter bars (one 32px control height, uppercase labels, stacking per group under 560px), dark mode.
 - **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,
   `login-page.css`) - extracted from inline `<style>` blocks for CSP; they use `brand.css` tokens
   (several review/admin rules carry literal fallbacks, e.g. `var(--green, #16a34a)`, because the

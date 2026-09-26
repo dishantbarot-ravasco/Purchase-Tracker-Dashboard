@@ -212,7 +212,7 @@ function renderPoList(el) {
       { key: 'overdue', label: STATUS_LABELS.overdue, val: overdueCount, color: '#dc2626' },
       { key: 'pending', label: STATUS_LABELS.pending, val: pendingDated, color: '#d97706' },
       { key: 'unknown', label: STATUS_LABELS.unknown, val: noDateCount, color: '#64748b' },
-      { key: null, label: 'Dated, not overdue, some or all received', val: total - overdueCount - pendingDated - noDateCount, color: '#cbd5e1' },
+      { key: null, label: 'Not overdue, some or all received', val: total - overdueCount - pendingDated - noDateCount, color: '#cbd5e1' },
     ],
   };
   const statusChartData = total ? [total] : [];
@@ -238,6 +238,13 @@ function renderPoList(el) {
     if (po._overdue) row.overdueValue = (row.overdueValue || 0) + v;
   });
   const months = fillMonthRange(Object.keys(monthStatus));
+  const trendSeries = [
+    { key: 'received', label: STATUS_LABELS.received, color: '#16a34a' },
+    { key: 'partial', label: STATUS_LABELS.partial, color: '#2563eb' },
+    { key: 'nothing', label: 'Nothing received yet', color: '#f59e0b' },
+  ].map(sr => Object.assign(sr, { total: months.reduce((a, m) => a + ((monthStatus[m] || {})[sr.key] || 0), 0) }))
+    .filter(sr => sr.total > 0);
+  const trendTotal = trendSeries.reduce((a, sr) => a + sr.total, 0);
 
   // Category/Sub Category/Flags dropdowns, rendered just above the chart row
   // (see el.innerHTML below) - same 3-dropdown pattern as Raw Material
@@ -334,13 +341,21 @@ function renderPoList(el) {
       '</div>' : '') +
     ((statusChartData.length || months.length) ?
       '<div class="chart-row">' +
-        '<div class="chart-panel"><h4>Order Value by Month Created (pre-tax), by Status</h4>' +
-          (months.length ? '<div class="chart-box"><canvas id="poTrendChart"></canvas></div>' : '<div class="no-data-note">No dated POs in range to plot.</div>') +
-          (unplotted ? '<div class="no-data-note">' + unplotted + ' PO' + (unplotted === 1 ? '' : 's') + ' not shown: no created date or no value on file.</div>' : '') +
+        '<div class="chart-panel" id="poTrendPanel">' +
+          chartHeadHtml('Order Value by Month', 'Pre-tax value of the POs created each month, split by how much has arrived. Click a month to list its POs.',
+            'Total in view', months.length ? formatInr(trendTotal) : null) +
+          (months.length ? '<div class="chart-box"><canvas id="poTrendChart"></canvas></div>' +
+            chartLegendHtml([{ items: trendSeries.map(sr => ({ key: null, label: sr.label, color: sr.color, valText: formatInr(sr.total) })) }])
+            : '<div class="no-data-note">No dated POs in range to plot.</div>') +
+          '<div class="chart-foot">' +
+            (state.chartMonthFilter ? '<span class="chart-filter-chip">List shows ' + escapeHtml(formatMonthLabel(state.chartMonthFilter)) + ' only <button type="button" id="poMonthClear" aria-label="Show all months">&times;</button></span>' : '') +
+            (unplotted ? '<span class="no-data-note">' + unplotted + ' PO' + (unplotted === 1 ? '' : 's') + ' not shown: no created date or no value on file.</span>' : '') +
+          '</div>' +
         '</div>' +
-        '<div class="chart-panel"><h4>Status Breakdown</h4>' +
-          (statusChartData.length ? '<div class="chart-box"><canvas id="poStatusChart"></canvas></div>' : '<div class="no-data-note">No POs in range.</div>') +
-          (statusChartData.length ? '<div class="no-data-note">Inner ring: what has arrived. Outer ring: delivery date. Each slice matches its card above.</div>' : '') +
+        '<div class="chart-panel" id="poStatusPanel">' +
+          chartHeadHtml('Status Breakdown', 'Each slice matches its card above. Click a slice or a label to filter the list.') +
+          (statusChartData.length ? '<div class="doughnut-layout"><div class="chart-box chart-box-doughnut"><canvas id="poStatusChart"></canvas></div>' + twoRingLegendHtml(statusRings, state.statusFilter) + '</div>'
+            : '<div class="no-data-note">No POs in range.</div>') +
         '</div>' +
       '</div>' : '') +
     // Its own container so a PO Number/Vendor keystroke can replace just
@@ -383,6 +398,16 @@ function renderPoList(el) {
     state.tablePage = 1; renderPoList(el);
   };
 
+  const pickStatus = key => {
+    state.statusFilter = state.statusFilter === key ? null : key;
+    state.tablePage = 1;
+    renderPoList(el);
+  };
+  wireChartLegend(document.getElementById('poStatusPanel'), pickStatus);
+  applyDynamicStyles(document.getElementById('poTrendPanel') || el);
+  const monthClear = document.getElementById('poMonthClear');
+  if (monthClear) monthClear.onclick = () => { state.chartMonthFilter = null; state.tablePage = 1; renderPoList(el); };
+
   destroyPageCharts();
   // Charts are a secondary view on top of the KPIs/table already rendered
   // above - if Chart.js failed to load (e.g. its CDN script is unreachable
@@ -395,11 +420,6 @@ function renderPoList(el) {
   if (months.length) {
     try {
       const ctx = document.getElementById('poTrendChart');
-      const trendSeries = [
-        { key: 'received', label: STATUS_LABELS.received, color: '#16a34a' },
-        { key: 'partial', label: STATUS_LABELS.partial, color: '#2563eb' },
-        { key: 'nothing', label: 'Nothing received yet', color: '#f59e0b' },
-      ].filter(sr => months.some(m => (monthStatus[m] || {})[sr.key]));
       // Clicking a bar sets state.chartMonthFilter to that month - see the
       // "table-only filter" comment on state.chartMonthFilter. Clicking the
       // already-selected bar again clears it (same toggle pattern as a KPI
@@ -409,12 +429,15 @@ function renderPoList(el) {
       pageCharts.push(new Chart(ctx, {
         type: 'bar',
         data: {
-          labels: months.map(formatMonthLabel),
-          datasets: trendSeries.map(sr => ({
+          labels: months.map(shortMonthLabel),
+          datasets: trendSeries.map((sr, i) => ({
             label: sr.label,
             data: months.map(m => (monthStatus[m] || {})[sr.key] || 0),
-            backgroundColor: months.map(m => (state.chartMonthFilter && m !== state.chartMonthFilter) ? sr.color + '55' : sr.color),
-            maxBarThickness: 46,
+            backgroundColor: months.map(m => (state.chartMonthFilter && m !== state.chartMonthFilter) ? sr.color + '40' : sr.color),
+            borderRadius: i === trendSeries.length - 1 ? { topLeft: 4, topRight: 4 } : 0,
+            borderSkipped: false,
+            maxBarThickness: 42,
+            categoryPercentage: 0.7,
           })),
         },
         options: {
@@ -429,15 +452,10 @@ function renderPoList(el) {
           interaction: { mode: 'index', intersect: false },
           onHover: (evt, elements) => { evt.native.target.style.cursor = elements.length ? 'pointer' : 'default'; },
           plugins: {
-            legend: { position: 'bottom', labels: { boxWidth: 9, boxHeight: 9, padding: 10, font: { size: 10.5 } } },
             tooltip: {
-              backgroundColor: '#0f1b2d',
-              padding: 10,
-              cornerRadius: 8,
-              titleFont: { size: 12, weight: '700' },
-              bodyFont: { size: 12 },
               filter: c => c.parsed.y > 0,
               callbacks: {
+                title: items => (items.length ? formatMonthLabel(months[items[0].dataIndex]) : ''),
                 label: c => c.dataset.label + ': ' + formatInr(c.parsed.y),
                 footer: items => {
                   const od = items.length ? (monthStatus[months[items[0].dataIndex]] || {}).overdueValue : 0;
@@ -448,12 +466,12 @@ function renderPoList(el) {
             },
           },
           scales: {
-            x: { stacked: true, grid: { display: false }, ticks: { font: { size: 11 }, color: '#475569' } },
+            x: { stacked: true, grid: { display: false }, border: { color: CHART_GRID }, ticks: { maxRotation: 0, autoSkipPadding: 8 } },
             y: {
               stacked: true,
-              grid: { color: '#eef1f5' },
+              grid: { color: CHART_GRID },
               border: { display: false },
-              ticks: { font: { size: 11 }, color: '#475569', callback: v => formatInr(v) },
+              ticks: { maxTicksLimit: 6, callback: v => formatInr(v) },
             },
           },
         },
@@ -473,11 +491,7 @@ function renderPoList(el) {
         inner: statusRings.inner,
         selectedKey: state.statusFilter,
         centerPlugin: centerTextPlugin,
-        onPick: key => {
-          state.statusFilter = state.statusFilter === key ? null : key;
-          state.tablePage = 1;
-          renderPoList(el);
-        },
+        onPick: pickStatus,
       }));
     } catch (e) {
       console.error('PO status chart failed to render:', e);

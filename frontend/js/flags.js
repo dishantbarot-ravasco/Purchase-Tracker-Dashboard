@@ -15,6 +15,36 @@
 // flags - only a real, nonzero difference does.
 const FLAG_PCT = 0;
 
+// The one exception to FLAG_PCT (2026-09-26): steam coal, HM plastic and
+// HDPE arrive by the truckload and may come in up to this much OVER the PO
+// quantity and still count as matched. The backend decides which lines
+// qualify (apps/services/qty_tolerance.py, whose BULK_QTY_OVER_TOLERANCE_PCT
+// this mirrors for the note's wording) and sends qtyWithinTolerance.
+const BULK_QTY_TOLERANCE_PCT = 10;
+
+// Whether a line's quantity is a mismatch - every qty check goes through
+// this so a within-tolerance line never raises one anywhere. `it` is any
+// object carrying qtyDiffPct / qtyWithinTolerance (a line item or mirMatch).
+function isQtyMismatch(it) {
+  return it.qtyDiffPct != null && it.qtyDiffPct > FLAG_PCT && !it.qtyWithinTolerance;
+}
+
+// The largest diff that should tint a row. A quantity inside the weighbridge
+// allowance is not a discrepancy, and neither is the value it moved unless
+// the value check still flagged it.
+function tintDiffs(it) {
+  if (!it.qtyWithinTolerance) return [it.qtyDiffPct, it.rateDiffPct, it.valueDiffPct];
+  return [it.rateDiffPct, it.netValueMismatched ? it.valueDiffPct : null];
+}
+
+// "Received 7% over the PO quantity - within the 10% weighbridge tolerance".
+function qtyToleranceNote(it) {
+  if (!it || !it.qtyWithinTolerance) return '';
+  const pct = it.qtyDiffPct != null ? it.qtyDiffPct.toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '% ' : '';
+  return 'Qty matched: received ' + pct + 'over the PO quantity, within the ' + BULK_QTY_TOLERANCE_PCT +
+    '% weighbridge tolerance for material bought by the truckload.';
+}
+
 // Colored flag icon for the KPI row - a small monochrome SVG (Material
 // Design's "flag" glyph) recolored via `fill` so every KPI card carries a
 // color-coded symbol instead of plain text. Per the project owner's

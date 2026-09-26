@@ -198,6 +198,8 @@ def _mir_match_dict(item):
         # through rather than coercing to a boolean - the frontend needs to
         # tell "under-delivered" from "we could not tell".
         "qtyOverDelivered": getattr(match, "qty_over_delivered", None),
+        # See _domestic_base._line_item_dict()'s qtyWithinTolerance.
+        "qtyWithinTolerance": bool(getattr(match, "qty_within_tolerance", False)),
         "rateDiffPct": _f(match.rate_diff_pct),
         "valueDiffPct": _f(match.value_diff_pct),
         "isFlagged": match.is_flagged,
