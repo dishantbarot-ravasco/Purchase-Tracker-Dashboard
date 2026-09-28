@@ -738,8 +738,14 @@ function pipelineCellHtml(entry) {
 // sub-category under it in the muted line.
 function categoryCellHtml(m) {
   if (!m.category || m.category === 'Uncategorized') return '<span class="mat-cell-none">' + escapeHtml(categoryLabel('Uncategorized')) + '</span>';
-  return '<div class="mat-cell-main mat-cell-text">' + escapeHtml(categoryLabel(m.category)) + '</div>' +
-    (m.subCategory ? '<div class="mat-cell-sub">' + escapeHtml(categoryLabel(m.subCategory)) + '</div>' : '');
+  return '<div class="mat-cell-main mat-cell-text">' + escapeHtml(categoryLabel(m.category)) + '</div>';
+}
+
+// Sub Category, its own column (2026-09-28, project owner: "make category
+// and sub category two different columns").
+function subCategoryCellHtml(m) {
+  if (!m.subCategory || m.subCategory === 'Uncategorized') return '<span class="mat-cell-none">None on file</span>';
+  return '<div class="mat-cell-main mat-cell-text">' + escapeHtml(categoryLabel(m.subCategory)) + '</div>';
 }
 
 // Inventory Value: the stock sheet's own Value column, with the latest rate
@@ -1324,8 +1330,8 @@ function materialsListRegionHtml() {
   // Built HERE, not handed over in MAT_LIST_CTX - see that object's own
   // comment for the blank-search-box bug a snapshot causes.
   // Header filter row inside the table, same pattern as PO's filterCells -
-  // text search for Material, the Category and Sub Category selects stacked
-  // in the one Category column, and a <select> each for Status and Progress.
+  // text search for Material, a <select> each for Category, Sub Category,
+  // Status and Progress.
   // One entry per column (MAT_LIST_COLUMNS below): Stock, Inventory Value, Days
   // Left, Pending Delivery, Open PO Pipeline and Details have no header-row
   // control of their own, so they still need an empty placeholder entry, or
@@ -1338,10 +1344,8 @@ function materialsListRegionHtml() {
   const matSubCatColOptionsHtml = ctx.subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(categoryLabel(c)) + ' (' + n + ')</option>').join('');
   const matFilterCells = [
     '<input type="text" class="col-filter-input" data-mcf="material" placeholder="Search..." value="' + escapeHtml(state.matColFilters.material) + '">',
-    '<div class="col-filter-stack">' +
-      '<select class="col-filter-input" data-mcf="category"><option value="">All categories</option>' + matCatColOptionsHtml + '</select>' +
-      '<select class="col-filter-input" data-mcf="subCategory"><option value="">All sub-categories</option>' + matSubCatColOptionsHtml + '</select>' +
-    '</div>',
+    '<select class="col-filter-input" data-mcf="category"><option value="">All categories</option>' + matCatColOptionsHtml + '</select>',
+    '<select class="col-filter-input" data-mcf="subCategory"><option value="">All sub-categories</option>' + matSubCatColOptionsHtml + '</select>',
     '', // Stock
     '', // Inventory Value
     '', // Days Left
@@ -1365,16 +1369,17 @@ function materialsListRegionHtml() {
     '',
   ];
   const colFilterRow = '<tr class="col-filter-row">' + matFilterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
-  // The ten columns, in order; `tip` becomes the header cell's title and
+  // The eleven columns, in order; `tip` becomes the header cell's title and
   // `sort` the material-sort.js key a header click sorts by (its label is a
-  // button, list-sort.js's headerHtml() via MAT_SORT). Sub Category and Latest Rate share a column
-  // with Category and Inventory Value, so they sort from the Sort by select
-  // rather than a header. Both the "View all" table and the top-5 grid read
+  // button, list-sort.js's headerHtml() via MAT_SORT). Latest Rate shares a
+  // column with Inventory Value, so it sorts from the Sort by select rather
+  // than a header. Both the "View all" table and the top-5 grid read
   // this one list, so the two can never disagree about what a column is.
   const plantScope = isAllPlants() ? ' Summed across all plants.' : '';
   const MAT_LIST_COLUMNS = [
     { label: 'Material', sort: 'material' },
-    { label: 'Category', sort: 'category', tip: 'Category, with the sub-category under it.' },
+    { label: 'Category', sort: 'category' },
+    { label: 'Sub Category', sort: 'subCategory' },
     { label: 'Stock', sort: 'stock', tip: 'Quantity on hand on the stock sheet.' + (isAllPlants() ? ' Split by plant when more than one plant holds it.' : '') },
     { label: 'Inventory Value', sort: 'value', tip: 'The stock sheet\'s own Value column, with the latest rate under it.' + plantScope },
     { label: 'Days Left', sort: 'daysLeft', tip: 'Estimated days of cover at the recent consumption rate. The dot is how much history it rests on.' },
@@ -1385,7 +1390,7 @@ function materialsListRegionHtml() {
     { label: 'Details' },
   ];
   const headerCell = (c, tag) => '<' + tag + (c.tip ? ' title="' + escapeHtml(c.tip) + '"' : '') + '>' + MAT_SORT.headerHtml(c.label, c.sort || null) + '</' + tag + '>';
-  // One row's ten cells, as inner HTML, shared by both layouts below.
+  // One row's eleven cells, as inner HTML, shared by both layouts below.
   const rowCells = m => {
     const key = escapeHtml(materialModalKey(m));
     const entry = linkageByKey.get(normalizeMaterial(m.description));
@@ -1396,6 +1401,7 @@ function materialsListRegionHtml() {
       cells: [
         '<span class="row-link mat-name" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m),
         categoryCellHtml(m),
+        subCategoryCellHtml(m),
         stockCellHtml(m),
         stockValueCellHtml(m),
         daysLeftCellHtml(m),

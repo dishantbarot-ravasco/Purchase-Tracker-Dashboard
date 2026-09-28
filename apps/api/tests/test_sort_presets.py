@@ -13,8 +13,10 @@ What is pinned here:
     rather than forking a second preset of the same name;
   - the per-view cap holds;
   - presets are kept per view (Raw Material, its modal's two tables,
-    Purchase Orders, Import Purchases);
-  - each list's sortable columns and the server's allowed keys agree.
+    Purchase Orders, Import Purchases, the PO modals' lines and receipts);
+  - a level's picked values and "show only these" round-trip, only on a
+    column that offers them, and are checked like everything else;
+  - each list's sortable (and pickable) columns and the server's agree.
 """
 
 import re
@@ -140,9 +142,12 @@ class TestSaveOver:
     ("import-sort.js", "IMPORT_SORT_COLUMNS", SortPreset.View.IMPORT_PURCHASES),
     ("material-sort.js", "MAT_LOTS_SORT_COLUMNS", SortPreset.View.MATERIAL_LOTS),
     ("material-sort.js", "MAT_OPEN_PO_SORT_COLUMNS", SortPreset.View.MATERIAL_OPEN_POS),
+    ("po-reconcile.js", "PO_LINES_SORT_COLUMNS", SortPreset.View.PO_LINES),
+    ("po-reconcile.js", "PO_RECEIPTS_SORT_COLUMNS", SortPreset.View.PO_RECEIPTS),
 ])
 def test_frontend_sort_columns_match_the_server_keys(js_file, const, view):
-    """Each list offers exactly the columns the server accepts for its view -
+    """Each list offers exactly the columns the server accepts for its view,
+    and marks `pick: true` exactly the columns the server lets pick values -
     a column the page offers but the server lacks would make "Save preset"
     fail."""
     js = (Path(__file__).resolve().parents[3] / "frontend" / "js" / js_file).read_text(encoding="utf-8")
@@ -150,6 +155,56 @@ def test_frontend_sort_columns_match_the_server_keys(js_file, const, view):
     assert block, f"{const} not found in {js_file}"
     keys = set(re.findall(r"key: '(\w+)'", block.group(1)))
     assert keys == sort_presets.SORT_KEYS_BY_VIEW[view]
+    pickable = set(re.findall(r"key: '(\w+)'[^\n]*pick: true", block.group(1)))
+    assert pickable == sort_presets.PICK_KEYS_BY_VIEW[view]
+
+
+@pytest.mark.django_db
+class TestPickedValues:
+    """A level can pick values to put first (Category -> Sub Category ->
+    Material), and "show only these"; the server stores exactly that and
+    refuses anything it could not mean."""
+
+    def test_picked_values_and_only_round_trip(self):
+        client = _client(make_user(email="picks@ravasco.com"))
+        levels = [
+            {"key": "category", "dir": "asc", "values": ["Polymers", "Chemicals"], "only": True},
+            {"key": "subCategory", "dir": "asc", "values": ["Accelerators"]},
+            {"key": "material", "dir": "asc"},
+        ]
+        res = _save(client, name="Pinned", levels=levels)
+        assert res.status_code == 201
+        assert res.data["levels"] == levels
+        listed = client.get(URL, {"view": "materials"}).data["presets"][0]["levels"]
+        assert listed == levels
+
+    def test_an_empty_pick_list_is_dropped_with_its_only(self):
+        """No values means no pick at all, so a stray "only" cannot hide
+        every row."""
+        client = _client(make_user(email="emptypick@ravasco.com"))
+        res = _save(client, levels=[{"key": "category", "dir": "asc", "values": [], "only": True}])
+        assert res.status_code == 201
+        assert res.data["levels"] == [{"key": "category", "dir": "asc"}]
+
+    @pytest.mark.parametrize("level", [
+        {"key": "value", "dir": "desc", "values": ["1"]},                     # not a pick column
+        {"key": "category", "dir": "asc", "values": "Polymers"},              # not a list
+        {"key": "category", "dir": "asc", "values": [""]},                    # empty value
+        {"key": "category", "dir": "asc", "values": [7]},                     # not text
+        {"key": "category", "dir": "asc", "values": ["x" * 201]},             # too long
+        {"key": "category", "dir": "asc", "values": ["A", "A"]},              # repeated
+        {"key": "category", "dir": "asc", "values": [str(i) for i in range(51)]},  # too many
+        {"key": "category", "dir": "asc", "values": ["A"], "only": "yes"},    # only not a bool
+    ])
+    def test_bad_picks_are_refused(self, level):
+        res = _save(_client(make_user(email="badpick@ravasco.com")), levels=[level])
+        assert res.status_code == 400
+        assert not SortPreset.objects.exists()
+
+    def test_a_view_without_pick_columns_refuses_picks(self):
+        res = _save(_client(make_user(email="nopick@ravasco.com")), view="po_receipts",
+                    levels=[{"key": "mirNo", "dir": "asc", "values": ["M1"]}])
+        assert res.status_code == 400
 
 
 @pytest.mark.django_db

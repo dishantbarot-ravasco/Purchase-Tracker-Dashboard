@@ -7,11 +7,19 @@ trimmed and length-checked, and every sort level must name a column key the
 view actually sorts on. The keys mirror the frontend's column lists -
 "materials" is material-sort.js's MAT_SORT_COLUMNS, "purchase_orders" is
 po-sort.js's PO_SORT_COLUMNS, "import_purchases" is import-sort.js's
-IMPORT_SORT_COLUMNS, and the Raw Material modal's "material_lots" /
+IMPORT_SORT_COLUMNS, the Raw Material modal's "material_lots" /
 "material_open_pos" are material-sort.js's MAT_LOTS_SORT_COLUMNS /
-MAT_OPEN_PO_SORT_COLUMNS - keep them in step (test_sort_presets.py
-checks); a key the frontend offers but this set lacks makes "Save preset"
-fail with a 400, never store a column the page cannot sort on.
+MAT_OPEN_PO_SORT_COLUMNS, and the PO modals' "po_lines" / "po_receipts" are
+po-reconcile.js's PO_LINES_SORT_COLUMNS / PO_RECEIPTS_SORT_COLUMNS - keep
+them in step (test_sort_presets.py checks); a key the frontend offers but
+this set lacks makes "Save preset" fail with a 400, never store a column the
+page cannot sort on.
+
+A level may also pick values (list-sort.js, 2026-09-28): `values`, the
+column values to put first in that order, and `only`, to show only rows
+holding one. Only a column in PICK_KEYS_BY_VIEW (the frontend's `pick: true`
+columns) may carry them; values are strings, each at most
+MAX_PICKED_VALUE_LENGTH long, at most MAX_PICKED_VALUES of them, no repeats.
 
 Errors are ValueError with a message, which apps/api/exceptions.py passes to
 the user as a 400.
@@ -40,10 +48,30 @@ SORT_KEYS_BY_VIEW = {
     SortPreset.View.MATERIAL_OPEN_POS: {
         "delivery", "created", "poNumber", "vendor", "plant", "qtyToCome", "valueToCome", "status",
     },
+    SortPreset.View.PO_LINES: {
+        "line", "material", "category", "subCategory", "delivery", "status",
+        "receivedPct", "orderedQty", "orderedValue",
+    },
+    SortPreset.View.PO_RECEIPTS: {
+        "date", "mirNo", "sheetRow", "invoice", "qty", "rate", "value",
+    },
+}
+# The columns a level may pick values on - the frontend's `pick: true` ones.
+PICK_KEYS_BY_VIEW = {
+    SortPreset.View.MATERIALS: {"material", "category", "subCategory"},
+    SortPreset.View.PURCHASE_ORDERS: {"vendor", "material", "category", "subCategory"},
+    SortPreset.View.IMPORT_PURCHASES: {"vendor", "material", "category", "subCategory", "plant", "country"},
+    SortPreset.View.MATERIAL_LOTS: {"plant", "vendor", "category", "subCategory"},
+    SortPreset.View.MATERIAL_OPEN_POS: {"vendor", "plant"},
+    SortPreset.View.PO_LINES: {"material", "category", "subCategory"},
+    SortPreset.View.PO_RECEIPTS: set(),
 }
 MAX_LEVELS = 5
 MAX_NAME_LENGTH = 60
 MAX_PRESETS_PER_VIEW = 25
+# Mirrored by list-sort.js's LIST_SORT_MAX_PICKS / LIST_SORT_MAX_PICK_LENGTH.
+MAX_PICKED_VALUES = 50
+MAX_PICKED_VALUE_LENGTH = 200
 
 
 def clean_view(view) -> str:
@@ -61,9 +89,29 @@ def clean_name(name) -> str:
     return name
 
 
+def _clean_picks(view: str, key: str, level: dict) -> dict:
+    """A level's picked values and "show only these", or {} when it has none.
+    An empty `values` list counts as none, and so drops `only`."""
+    values, only = level.get("values"), level.get("only", False)
+    if not isinstance(only, bool):
+        raise ValueError('"Show only these" must be true or false.')
+    if values is None or values == []:
+        return {}
+    if key not in PICK_KEYS_BY_VIEW[view]:
+        raise ValueError("Values can only be picked on a column that offers them.")
+    if not isinstance(values, list) or len(values) > MAX_PICKED_VALUES:
+        raise ValueError(f"A sort level can pick at most {MAX_PICKED_VALUES} values.")
+    if not all(isinstance(v, str) and v and len(v) <= MAX_PICKED_VALUE_LENGTH for v in values):
+        raise ValueError(f"Each picked value must be text of at most {MAX_PICKED_VALUE_LENGTH} characters.")
+    if len(set(values)) != len(values):
+        raise ValueError("A value can be picked only once per level.")
+    return {"values": list(values), "only": True} if only else {"values": list(values)}
+
+
 def clean_levels(view: str, levels) -> list[dict]:
     """1 to MAX_LEVELS levels, each a known key sorted asc or desc, no key
-    twice (a second level on the same column could never change the order)."""
+    twice (a second level on the same column could never change the order),
+    with any picked values checked by _clean_picks()."""
     if not isinstance(levels, list) or not levels:
         raise ValueError("A preset needs at least one sort level.")
     if len(levels) > MAX_LEVELS:
@@ -81,7 +129,7 @@ def clean_levels(view: str, levels) -> list[dict]:
         if key in seen:
             raise ValueError("Each column can appear only once in a sort.")
         seen.add(key)
-        cleaned.append({"key": key, "dir": direction})
+        cleaned.append({"key": key, "dir": direction, **_clean_picks(view, key, level)})
     return cleaned
 
 

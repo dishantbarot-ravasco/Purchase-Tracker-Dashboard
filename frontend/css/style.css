@@ -540,6 +540,23 @@ tr.row-tint-severe { background: rgba(220,38,38,.16); }
 .list-sort-level-label { width:56px; font-size:12px; font-weight:700; color:var(--slate-soft); }
 .list-sort-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:4px; }
 .list-sort-msg { font-size:12px; color:var(--slate-soft); min-height:16px; }
+/* Picked values on a sort level: chips in the picked order, the "add"
+   select, and "Show only these". The level and its picks sit together. */
+.list-sort-level-wrap { display:flex; flex-direction:column; gap:6px; }
+.list-sort-picks { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-left:62px; font-size:12px; }
+.list-sort-picks select { max-width:320px; }
+.list-sort-chip { display:inline-flex; align-items:center; gap:2px; padding:2px 4px 2px 9px; border-radius:99px; background:var(--gold-accent-soft); border:1px solid var(--gold-accent); color:var(--navy); font-weight:600; }
+.list-sort-chip button { all:unset; cursor:pointer; padding:0 4px; border-radius:4px; color:var(--slate); line-height:1.4; }
+.list-sort-chip button:hover:not(:disabled) { background:var(--card); }
+.list-sort-chip button:disabled { opacity:.35; cursor:default; }
+.list-sort-chip button:focus-visible { outline:2px solid var(--gold-accent); }
+.list-sort-only { display:inline-flex; align-items:center; gap:5px; font-weight:600; color:var(--slate); cursor:pointer; }
+.list-sort-hint { color:var(--slate-soft); }
+.list-sort-narrowing { all:unset; cursor:pointer; font-size:11.5px; font-weight:700; padding:3px 10px; border-radius:99px; background:var(--gold-accent-soft); color:var(--gold-accent-text); border:1px solid var(--gold-accent); }
+.list-sort-narrowing:focus-visible { outline:2px solid var(--gold-accent); outline-offset:2px; }
+.recon-sort-bars { margin:4px 0 6px; }
+.recon-sort-bars .list-sort-bar { margin:4px 0; }
+@media (max-width: 640px) { .list-sort-picks { margin-left:0; } }
 
 .section-title { font-size:14.5px; font-weight:700; margin: 20px 0 10px; color:var(--navy); }
 .section-sub { font-size:12px; color:var(--slate-soft); margin:-6px 0 12px; }
@@ -990,7 +1007,7 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 }
 
 /* Raw Material Analysis list (materials.js's MAT_LIST_COLUMNS), 2026-09-28
-   layout pass. Its ten columns get their own track widths rather than the
+   layout pass. Its eleven columns (Category and Sub Category separate) get their own track widths rather than the
    PO list's auto-fit grid: at twelve 110px-minimum columns that grid wrapped,
    dropping Details and "View analysis" onto a second line of every row.
    Each cell is one bold figure (.mat-cell-main) with at most one or two
@@ -998,14 +1015,13 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .list-header-row.mat-grid-cols,
 .top5-row.mat-grid-cols {
   grid-template-columns:
-    minmax(160px, 1.7fr) minmax(110px, 1.1fr) minmax(105px, 1fr) minmax(100px, .95fr)
+    minmax(160px, 1.7fr) minmax(105px, 1fr) minmax(110px, 1fr) minmax(105px, 1fr) minmax(100px, .95fr)
     minmax(72px, .6fr) minmax(110px, 1fr) minmax(125px, 1.1fr) minmax(105px, .95fr)
     minmax(84px, .7fr) minmax(90px, .7fr);
   align-items:start;
 }
 .list-header-row.mat-grid-cols:not(.col-filter-row-grid) { align-items:end; }
 .list-header-row.mat-grid-cols.col-filter-row-grid { align-items:center; }
-.col-filter-stack { display:flex; flex-direction:column; gap:4px; }
 .mat-cell-main { font-weight:700; color:var(--navy); font-variant-numeric:tabular-nums; line-height:1.35; }
 .mat-cell-main.mat-cell-text { font-weight:600; }
 .mat-cell-sub { font-size:11px; color:var(--slate-soft); font-variant-numeric:tabular-nums; line-height:1.4; margin-top:2px; }
@@ -1039,9 +1055,12 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .imp-col-0 { width:10%; } .imp-col-1 { width:14%; } .imp-col-2 { width:16%; } .imp-col-3 { width:10%; }
 .imp-col-4 { width:9%; } .imp-col-5 { width:10%; } .imp-col-6 { width:15%; } .imp-col-7 { width:9%; }
 .imp-col-8 { width:7%; }
-.mat-col-0 { width:17%; } .mat-col-1 { width:12%; } .mat-col-2 { width:12%; } .mat-col-3 { width:9%; }
-.mat-col-4 { width:6%; } .mat-col-5 { width:9%; } .mat-col-6 { width:11%; } .mat-col-7 { width:10%; }
-.mat-col-8 { width:7%; } .mat-col-9 { width:7%; }
+/* Raw Material has eleven columns (Category and Sub Category separate), so
+   it needs a little more room than the other two. */
+.fixed-table.mat-table { min-width:1340px; }
+.mat-col-0 { width:16%; } .mat-col-1 { width:9%; } .mat-col-2 { width:9%; } .mat-col-3 { width:11%; }
+.mat-col-4 { width:9%; } .mat-col-5 { width:6%; } .mat-col-6 { width:9%; } .mat-col-7 { width:10%; }
+.mat-col-8 { width:9%; } .mat-col-9 { width:6%; } .mat-col-10 { width:6%; }
 .mat-plant-split > span { white-space:nowrap; }
 .days-left-cell { white-space:nowrap; }
 .mat-table .days-left-cell { padding-top:1px; }
@@ -1066,12 +1085,12 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .imp-bl { margin-top:5px; white-space:nowrap; }
 .imp-bl-num { font-family:var(--mono); }
 
-/* When the page is narrower than the ten columns need, the header and rows
+/* When the page is narrower than the eleven columns need, the header and rows
    scroll sideways together inside .mat-grid-scroll (the heading above stays
    put) instead of squeezing every figure onto two lines. The padding keeps
    the rows' shadow and hover lift from being clipped by the scroller. */
 .mat-grid-scroll { overflow-x:auto; padding:0 2px 4px; margin:0 -2px; }
-.mat-grid-scroll > .list-header-row.mat-grid-cols, .mat-grid-scroll > .top5-list { min-width:1195px; }
+.mat-grid-scroll > .list-header-row.mat-grid-cols, .mat-grid-scroll > .top5-list { min-width:1315px; }
 
 .mini-stepper { display:flex; align-items:center; gap:0; }
 .mini-stepper .step-dot { width:9px; height:9px; border-radius:50%; background:var(--border-strong); flex:none; }

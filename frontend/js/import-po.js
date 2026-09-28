@@ -952,8 +952,10 @@ async function openImportPoModal(compositeKey) {
   // "View full material analysis" link's "All plants total" figure) and is
   // best-effort (a failure here just means no material-analysis links on
   // this open, not a broken modal).
+  // Plus the line cards' and MIR receipts' saved sort presets
+  // (po-reconcile.js), which never throw.
   try {
-    await ensureMaterialsLoaded(PLANT_KEYS);
+    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS), PO_LINES_SORT.ensurePresetsLoaded(), PO_RECEIPTS_SORT.ensurePresetsLoaded()]);
   } catch (e) {
     console.error('openImportPoModal: ensureMaterialsLoaded failed:', e);
   }
@@ -1140,6 +1142,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () =>
     trackBlNumber(el2.dataset.trackBl, () => openImportPoModal(plantKey + '::' + poNumber)));
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
+  wireReconSorting(body); // Items tab's line and receipt sorting (po-reconcile.js)
 }
 
 // A corrected field can move a PO in/out of a KPI bucket (e.g. fixing a bad

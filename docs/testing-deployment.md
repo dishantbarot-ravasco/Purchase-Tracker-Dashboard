@@ -625,7 +625,7 @@ Configuration is `pyproject.toml` plus these:
 | test_review_stats_and_undo.py | yes | Precision/recall figures, latest verdict wins, undo, CSV export. |
 | test_rodtep_api.py | yes | RoDTEP scrip ledger API and import citations. |
 | test_security_headers_and_csrf_scope.py | yes | CSP contents, Permissions-Policy, CSRF only under `/admin/`. |
-| test_sort_presets.py | yes | Sort presets: owner-only (another user reads 404), viewers may save, every bad level/name/view refused, same name saves over, per-view cap, presets kept per view, each list's frontend columns equal the server's keys. |
+| test_sort_presets.py | yes | Sort presets: owner-only (another user reads 404), viewers may save, every bad level/name/view refused, same name saves over, per-view cap, presets kept per view, picked values and "show only" round-trip and are validated (only on pickable columns), each list's frontend columns and `pick` columns equal the server's. |
 | test_stock_matched_field.py | yes | `stockMatched` on line items requires a real MIR<->Stock match. |
 | test_stock_snapshots_api.py | yes | Stock snapshot date list and by-date endpoints, 404/400, plant scoping. |
 | test_user_devices.py | yes | Trusted devices admin list/revoke, hash never exposed, audit rows. |

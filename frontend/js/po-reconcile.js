@@ -125,18 +125,26 @@ function reconReceiptsHtml(line) {
   // PO's unit, so the total row is visibly the sum of the second column.
   const unitsDiffer = mirs.some(m => (m.uom || '').trim().toLowerCase() !== (line.uom || '').trim().toLowerCase() && m.qtyInPoUnit != null && m.qtyInPoUnit !== m.qty);
   // "Sheet row" is the receipt's row in the MIR Excel file (2026-09-24), so
-  // a reader reconciling by hand can go straight to it.
-  const head = '<tr><th>MIR No.</th><th class="num" title="Row number in the MIR Excel sheet">Sheet row</th><th>Date</th><th>Invoice</th><th class="num">Qty</th>' +
-    (unitsDiffer ? '<th class="num">Qty (' + escapeHtml(line.uom || 'PO unit') + ')</th>' : '') +
-    '<th class="num">Rate</th><th class="num">Value</th></tr>';
-  const rows = mirs.map(m => '<tr><td class="mono fw-700">' + escapeHtml(m.mirNo || '-') + '</td>' +
+  // a reader reconciling by hand can go straight to it. Every column but the
+  // converted qty sorts (PO_RECEIPTS_SORT, one sort for all of a modal's
+  // receipt tables, its bar above the cards).
+  const num = ' class="num"';
+  const headers = [
+    { label: 'MIR No.', key: 'mirNo' },
+    { label: 'Sheet row', key: 'sheetRow', attrs: num + ' title="Row number in the MIR Excel sheet"' },
+    { label: 'Date', key: 'date' },
+    { label: 'Invoice', key: 'invoice' },
+    { label: 'Qty', key: 'qty', attrs: num },
+  ].concat(unitsDiffer ? [{ label: 'Qty (' + (line.uom || 'PO unit') + ')', attrs: num }] : [])
+    .concat([{ label: 'Rate', key: 'rate', attrs: num }, { label: 'Value', key: 'value', attrs: num }]);
+  const rowHtml = (m, idx) => '<tr data-sort-row="' + idx + '"><td class="mono fw-700">' + escapeHtml(m.mirNo || '-') + '</td>' +
     '<td class="num mono">' + (m.sheetRow != null ? escapeHtml(String(m.sheetRow)) : '-') + '</td>' +
     '<td>' + escapeHtml(formatDateIN(m.mirDate)) + '</td>' +
     '<td>' + escapeHtml(m.invoiceNo || '-') + '</td>' +
     '<td class="num">' + reconQty(m.qty) + ' <span class="recon-unit">' + escapeHtml(m.uom || '') + '</span></td>' +
     (unitsDiffer ? '<td class="num">' + reconQty(m.qtyInPoUnit) + '</td>' : '') +
     '<td class="num">' + reconMoney(m.rate) + '</td>' +
-    '<td class="num">' + reconMoney(m.value) + '</td></tr>').join('');
+    '<td class="num">' + reconMoney(m.value) + '</td></tr>';
   const foot = mirs.length > 1
     ? '<tfoot><tr><td colspan="4">Total of ' + mirs.length + ' receipts</td>' +
       '<td class="num">' + (unitsDiffer ? '' : reconQty(r.qty) + ' <span class="recon-unit">' + escapeHtml(line.uom || '') + '</span>') + '</td>' +
@@ -148,8 +156,149 @@ function reconReceiptsHtml(line) {
   // not bury the next line.
   return '<details class="recon-receipts"' + (mirs.length <= 6 ? ' open' : '') + '>' +
     '<summary>' + mirs.length + ' MIR receipt' + (mirs.length === 1 ? '' : 's') + ' matched</summary>' +
-    '<div class="recon-receipts-scroll"><table class="recon-mini">' + '<thead>' + head + '</thead><tbody>' + rows + '</tbody>' + foot + '</table></div>' +
+    sortedTableHtml(PO_MODAL_SORT_TABLES, 'receipts-' + line.index, PO_RECEIPTS_SORT, mirs, rowHtml, headers,
+      { wrapClass: 'recon-receipts-scroll', tableClass: 'recon-mini', tfoot: foot }) +
   '</details>';
+}
+
+// ── Sorting the Item & Stock tab (2026-09-28) ──
+// Project owner: "add the same sorting to the PO modal tables too". The line
+// cards sort through list-sort.js (PO_LINES_SORT: line number, material,
+// category, sub category, delivery, status, received %, ordered qty and
+// value, with Material / Category / Sub Category pickable), and every MIR
+// receipts table under them through one shared PO_RECEIPTS_SORT. Both
+// Domestic and Import PO modals render through reconItemsHtml(), so both get
+// it. The cards and rows carry the "change MIR", dismiss and edit controls,
+// so a sort MOVES them (resortReconLines() / list-sort.js's
+// resortSortedTables()) rather than re-rendering. PO_MODAL_SORT_TABLES is
+// the receipts tables' registry and PO_RECON_LINES the cards', both reset by
+// every reconItemsHtml().
+const PO_MODAL_SORT_TABLES = {};
+let PO_RECON_LINES = [];
+
+// Most urgent first: nothing received, partly received, units differ,
+// over-received, fully received.
+const RECON_STATUS_RANK = { 'recon-none': 0, 'recon-part': 1, 'recon-units': 2, 'recon-over': 3, 'recon-full': 4 };
+
+const PO_LINES_SORT_COLUMNS = [
+  { key: 'line', label: 'Line number', kind: 'num', dir: 'asc' },
+  { key: 'material', label: 'Material', kind: 'text', dir: 'asc', pick: true, parent: 'subCategory' },
+  { key: 'category', label: 'Category', kind: 'text', dir: 'asc', pick: true },
+  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc', pick: true, parent: 'category' },
+  { key: 'delivery', label: 'Delivery Date', kind: 'date', dir: 'asc' },
+  { key: 'status', label: 'Receipt status', kind: 'rank', dir: 'asc' },
+  { key: 'receivedPct', label: 'Received %', kind: 'num', dir: 'asc' },
+  { key: 'orderedQty', label: 'Ordered qty', kind: 'num', dir: 'desc' },
+  { key: 'orderedValue', label: 'Ordered value', kind: 'num', dir: 'desc' },
+];
+
+// The first is the default: line order, as the PO lists them.
+const PO_LINES_BUILTIN_SORTS = [
+  { id: 'builtin:line', name: 'Line order (default)', levels: [{ key: 'line', dir: 'asc' }] },
+  { id: 'builtin:status', name: 'Least received first', levels: [{ key: 'status', dir: 'asc' }, { key: 'receivedPct', dir: 'asc' }] },
+  { id: 'builtin:value', name: 'Highest ordered value first', levels: [{ key: 'orderedValue', dir: 'desc' }] },
+  { id: 'builtin:delivery', name: 'Delivery Date (soonest first)', levels: [{ key: 'delivery', dir: 'asc' }] },
+  { id: 'builtin:catSub', name: 'Category, then Sub Category, then Material', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }, { key: 'material', dir: 'asc' }] },
+  { id: 'builtin:material', name: 'Material (A to Z)', levels: [{ key: 'material', dir: 'asc' }] },
+];
+
+function reconLineSortValue(key, l) {
+  switch (key) {
+    case 'line': return l.index;
+    case 'material': return l.description || null;
+    case 'category': return l.category && l.category !== 'Uncategorized' ? l.category : null;
+    case 'subCategory': return l.subCategory && l.subCategory !== 'Uncategorized' ? l.subCategory : null;
+    case 'delivery': return l.deliveryDate || null;
+    case 'status': return RECON_STATUS_RANK[reconStatus(l).cls];
+    case 'receivedPct': { const st = reconStatus(l); return st.pct != null ? st.pct : (l.matched ? null : 0); }
+    case 'orderedQty': return l.ordered.qty != null ? l.ordered.qty : null;
+    case 'orderedValue': return l.ordered.value != null ? l.ordered.value : null;
+    default: return null;
+  }
+}
+
+const PO_LINES_SORT = createListSort({
+  view: 'po_lines',
+  idPrefix: 'poLines',
+  barLabel: 'Sort lines by',
+  columns: PO_LINES_SORT_COLUMNS,
+  builtins: PO_LINES_BUILTIN_SORTS,
+  rowValue: reconLineSortValue,
+  tieBreak: (a, b) => a.index - b.index,
+  rerender: () => resortReconLines(document.getElementById('modalBody')),
+});
+
+const PO_RECEIPTS_SORT_COLUMNS = [
+  { key: 'date', label: 'Date', kind: 'date', dir: 'asc' },
+  { key: 'mirNo', label: 'MIR No.', kind: 'text', dir: 'asc' },
+  { key: 'sheetRow', label: 'Sheet row', kind: 'num', dir: 'asc' },
+  { key: 'invoice', label: 'Invoice', kind: 'text', dir: 'asc' },
+  { key: 'qty', label: 'Qty', kind: 'num', dir: 'desc' },
+  { key: 'rate', label: 'Rate', kind: 'num', dir: 'asc' },
+  { key: 'value', label: 'Value', kind: 'num', dir: 'desc' },
+];
+
+// The first is the default: the order the backend lists them in
+// (_domestic_base._counted_mirs(): oldest first, then MIR number).
+const PO_RECEIPTS_BUILTIN_SORTS = [
+  { id: 'builtin:date', name: 'Oldest receipt first (default)', levels: [{ key: 'date', dir: 'asc' }, { key: 'mirNo', dir: 'asc' }] },
+  { id: 'builtin:newest', name: 'Newest receipt first', levels: [{ key: 'date', dir: 'desc' }, { key: 'mirNo', dir: 'desc' }] },
+  { id: 'builtin:sheet', name: 'Sheet order', levels: [{ key: 'sheetRow', dir: 'asc' }] },
+  { id: 'builtin:qty', name: 'Largest quantity first', levels: [{ key: 'qty', dir: 'desc' }] },
+  { id: 'builtin:rate', name: 'Highest rate first', levels: [{ key: 'rate', dir: 'desc' }] },
+];
+
+// `m` is one of a line's matchedMirs. Quantity compares in the PO line's
+// unit where the backend converted it, so receipts in KG and MT line up.
+function reconReceiptSortValue(key, m) {
+  switch (key) {
+    case 'date': return m.mirDate || null;
+    case 'mirNo': return m.mirNo || null;
+    case 'sheetRow': return m.sheetRow != null ? m.sheetRow : null;
+    case 'invoice': return m.invoiceNo || null;
+    case 'qty': return m.qtyInPoUnit != null ? m.qtyInPoUnit : (m.qty != null ? m.qty : null);
+    case 'rate': return m.rate != null ? m.rate : null;
+    case 'value': return m.value != null ? m.value : null;
+    default: return null;
+  }
+}
+
+const PO_RECEIPTS_SORT = createListSort({
+  view: 'po_receipts',
+  idPrefix: 'poReceipts',
+  barLabel: 'Sort MIR receipts by',
+  columns: PO_RECEIPTS_SORT_COLUMNS,
+  builtins: PO_RECEIPTS_BUILTIN_SORTS,
+  rowValue: reconReceiptSortValue,
+  tieBreak: (a, b) => String(a.mirNo || '').localeCompare(String(b.mirNo || ''), 'en', { numeric: true }),
+  rerender: () => resortSortedTables(PO_MODAL_SORT_TABLES, PO_RECEIPTS_SORT, document.getElementById('modalBody')),
+});
+
+// The line cards' rerender: move each card into the new order, hide what
+// "Show only these" drops, redraw the lines bar, re-wire its controls.
+function resortReconLines(root) {
+  if (!root) return;
+  const list = root.querySelector('.recon-list');
+  if (!list) return;
+  const byIndex = new Map();
+  list.querySelectorAll(':scope > [data-sort-row]').forEach(card => byIndex.set(Number(card.dataset.sortRow), card));
+  const sorted = PO_LINES_SORT.sortRows(PO_RECON_LINES);
+  const kept = new Set(sorted);
+  sorted.concat(PO_RECON_LINES.filter(l => !kept.has(l))).forEach(l => {
+    const card = byIndex.get(l.index);
+    if (!card) return;
+    card.hidden = !kept.has(l);
+    list.appendChild(card);
+  });
+  root.querySelectorAll('[data-sort-bar="' + PO_LINES_SORT.prefix + '"]').forEach(bar => { bar.innerHTML = PO_LINES_SORT.barHtml(); });
+  PO_LINES_SORT.wire(root);
+}
+
+// Called by both PO modals after their body lands: binds the two sorters'
+// controls (each binds only its own - list-sort.js's data-sorter).
+function wireReconSorting(body) {
+  PO_LINES_SORT.wire(body);
+  PO_RECEIPTS_SORT.wire(body);
 }
 
 function reconLineHtml(line, plantKey) {
@@ -233,9 +382,23 @@ function reconSummaryHtml(lines, currencyLabel) {
   '</div>';
 }
 
+// The Item & Stock tab: summary, the two sort bars, then the line cards in
+// PO_LINES_SORT's order (each tagged data-sort-row with its line number; a
+// card "Show only these" drops is rendered hidden). The cards are built
+// before the bars, since sorting records the rows the bars' value pickers
+// offer. The caller wires the sorting with wireReconSorting(body).
 function reconItemsHtml(lines, plantKey, currencyLabel) {
+  Object.keys(PO_MODAL_SORT_TABLES).forEach(k => { delete PO_MODAL_SORT_TABLES[k]; });
+  PO_RECON_LINES = lines;
   if (!lines.length) return '<div class="fs-12-5 text-slate-soft">No line items recorded.</div>';
-  return reconSummaryHtml(lines, currencyLabel) + '<div class="recon-list">' + lines.map(l => reconLineHtml(l, plantKey)).join('') + '</div>';
+  const sorted = PO_LINES_SORT.sortRows(lines);
+  const kept = new Set(sorted);
+  const card = (l, hidden) => reconLineHtml(l, plantKey).replace(/^<article/, '<article data-sort-row="' + l.index + '"' + (hidden ? ' hidden' : ''));
+  const cards = sorted.map(l => card(l, false)).join('') + lines.filter(l => !kept.has(l)).map(l => card(l, true)).join('');
+  const anyReceipts = lines.some(l => (l.mirs || []).length);
+  return reconSummaryHtml(lines, currencyLabel) +
+    '<div class="recon-sort-bars">' + sortedTableBarHtml(PO_LINES_SORT) + (anyReceipts ? sortedTableBarHtml(PO_RECEIPTS_SORT) : '') + '</div>' +
+    '<div class="recon-list">' + cards + '</div>';
 }
 
 // Whether the backend flagged anything on a match - the same four conditions
@@ -283,6 +446,8 @@ function receiptShareNote(share, tier, poolRefs) {
 function domesticReconLine(it, index, po, plantKey) {
   return {
     index, description: it.description, uom: it.uom,
+    // For sorting the cards (PO_LINES_SORT) - not shown as figures.
+    deliveryDate: it.deliveryDate || null, category: it.category || '', subCategory: it.subCategory || '',
     chips: [{ label: 'Delivery', value: it.deliveryDate ? formatDateIN(it.deliveryDate) : '' }],
     ordered: { qty: it.qty, rate: it.netPrice, value: it.netValue != null ? it.netValue : (it.qty != null && it.netPrice != null ? it.qty * it.netPrice : null) },
     notes: [qtyToleranceNote(it), receiptShareNote(it.receiptShare, it.matchTier, it.poolLineRefs)].filter(Boolean),
@@ -306,6 +471,8 @@ function importReconLine(it, index, po, plantKey) {
     : '';
   return {
     index, description: it.description, uom: it.uom,
+    // For sorting the cards (PO_LINES_SORT) - not shown as figures.
+    deliveryDate: it.deliveryDate || null, category: it.category || '', subCategory: it.subCategory || '',
     chips: [
       { label: 'Item', value: it.itemId || '' },
       { label: 'HSN', value: it.hsn || '' },

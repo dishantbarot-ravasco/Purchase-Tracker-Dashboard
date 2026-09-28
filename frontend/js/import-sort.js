@@ -10,19 +10,22 @@
 // Category and Sub Category are not table columns (an order can hold
 // materials of several categories), so they sort from the Sort by select and
 // Custom sort only, the same way po-sort.js does it (poCategoryText()).
+// Picked materials and categories match an order holding them on any line
+// (po-sort.js's poPickValues()).
 //
 // IMPORT_SORT_COLUMNS' keys must equal apps/services/sort_presets.py's
-// SORT_KEYS_BY_VIEW["import_purchases"]; test_sort_presets.py checks.
+// SORT_KEYS_BY_VIEW["import_purchases"], and its `pick` columns
+// PICK_KEYS_BY_VIEW; test_sort_presets.py checks.
 
 const IMPORT_SORT_COLUMNS = [
   { key: 'created', label: 'Created On', kind: 'date', dir: 'desc' },
   { key: 'poNumber', label: 'PO Number', kind: 'text', dir: 'asc' },
-  { key: 'vendor', label: 'Vendor', kind: 'text', dir: 'asc' },
-  { key: 'material', label: 'Material', kind: 'text', dir: 'asc' },
-  { key: 'category', label: 'Category', kind: 'text', dir: 'asc' },
-  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc' },
-  { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc' },
-  { key: 'country', label: 'Country of Origin', kind: 'text', dir: 'asc' },
+  { key: 'vendor', label: 'Vendor', kind: 'text', dir: 'asc', pick: true },
+  { key: 'material', label: 'Material', kind: 'text', dir: 'asc', pick: true, parent: 'subCategory' },
+  { key: 'category', label: 'Category', kind: 'text', dir: 'asc', pick: true },
+  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc', pick: true, parent: 'category' },
+  { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc', pick: true },
+  { key: 'country', label: 'Country of Origin', kind: 'text', dir: 'asc', pick: true },
   { key: 'delivery', label: 'Delivery Date', kind: 'date', dir: 'asc' },
   { key: 'value', label: 'Order Value (before duty)', kind: 'num', dir: 'desc' },
   { key: 'blNumber', label: 'BL Number', kind: 'text', dir: 'asc' },
@@ -34,7 +37,7 @@ const IMPORT_BUILTIN_SORTS = [
   { id: 'builtin:latest', name: 'Latest first (default)', levels: [{ key: 'created', dir: 'desc' }] },
   { id: 'builtin:category', name: 'Category (A to Z)', levels: [{ key: 'category', dir: 'asc' }] },
   { id: 'builtin:subCategory', name: 'Sub Category (A to Z)', levels: [{ key: 'subCategory', dir: 'asc' }] },
-  { id: 'builtin:catSub', name: 'Category, then Sub Category', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
+  { id: 'builtin:catSub', name: 'Category, then Sub Category, then Material', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }, { key: 'material', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
   { id: 'builtin:vendor', name: 'Vendor (A to Z)', levels: [{ key: 'vendor', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
   { id: 'builtin:country', name: 'Country of Origin (A to Z)', levels: [{ key: 'country', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
   { id: 'builtin:stage', name: 'Shipment Stage (earliest first)', levels: [{ key: 'stage', dir: 'asc' }, { key: 'delivery', dir: 'asc' }] },
@@ -74,6 +77,8 @@ const IMPORT_SORT = createListSort({
   columns: IMPORT_SORT_COLUMNS,
   builtins: IMPORT_BUILTIN_SORTS,
   rowValue: importSortValue,
+  pickValues: poPickValues,
+  scopedPickValues: poScopedPickValues,
   // Rows every level ties on keep the default order: latest first, then PO
   // number.
   tieBreak: (a, b) => (b.createdDate || '').localeCompare(a.createdDate || '')

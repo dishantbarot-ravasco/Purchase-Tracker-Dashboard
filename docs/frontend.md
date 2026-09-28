@@ -688,7 +688,26 @@ stated in MIR" when the receipts give none), and a differing count sets the stat
 received · 5 of 6 rolls" or "Over-received · 7 of 6 rolls" whatever the weight.
 `reconMoney()` is exact rupees; epsilons `RECON_QTY_EPS`, `RECON_RATE_EPS`, `RECON_VALUE_EPS` (Rs 1,
 the matcher's value epsilon). Progress bars use `data-width-pct`, so callers run
-`applyDynamicStyles()`. Must load after `flags.js` and before `po-modal.js`/`import-po.js`.
+`applyDynamicStyles()`. Must load after `flags.js` and `list-sort.js`, and before
+`po-modal.js`/`import-po.js`.
+
+**The Item & Stock tab sorts** (2026-09-28, project owner: "add the same sorting to the PO modal
+tables too"), in both PO modals. `reconItemsHtml()` resets `PO_MODAL_SORT_TABLES` and `PO_RECON_LINES`,
+renders the cards in `PO_LINES_SORT`'s order (each `<article>` tagged `data-sort-row` with its line
+number; a card "Show only these" drops rendered `hidden`), then - after the cards, whose receipts
+tables sort as they render - a `.recon-sort-bars` block with "Sort lines by" and, when any line has
+receipts, "Sort MIR receipts by". `PO_LINES_SORT` (view `po_lines`, `PO_LINES_SORT_COLUMNS`: Line
+number, Material, Category, Sub Category, Delivery Date, Receipt status by `RECON_STATUS_RANK` - not
+received, partly, units differ, over, full - Received %, Ordered qty, Ordered value; Material,
+Category and Sub Category pickable; default line order) re-orders the cards in place with
+`resortReconLines()`. Every line's receipts table is list-sort.js's `sortedTableHtml()` under one
+shared `PO_RECEIPTS_SORT` (view `po_receipts`, `PO_RECEIPTS_SORT_COLUMNS`: Date, MIR No., Sheet row,
+Invoice, Qty - in the PO line's unit where converted - Rate, Value; default oldest first then MIR
+number, the order `_counted_mirs()` sends), so a header click in one re-sorts them all through
+`resortSortedTables()`. Cards and rows are moved, never rebuilt, so the "change MIR" picker, dismiss
+links and a correction in progress survive a sort. Both adapters pass `deliveryDate`, `category` and
+`subCategory` for sorting. Both modals' openers load the two sorters' presets before their
+`modalRequestId` check and call `wireReconSorting(body)` after rendering.
 
 ### frontend/js/po-modal.js
 
@@ -817,18 +836,18 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   are counted, never added. `orderedValueOfLine(item)` is the whole line at its PO rate (`netValue`
   when no rate); `formatQtyTotals()` prints per-unit totals, weight in MT from 10,000 KG.
 - **Table columns** (in order, `MAT_LIST_COLUMNS`, which both the "View all" table and the top-5
-  grid read, header `title`s and sort keys included): Material, Category, Stock, Inventory Value,
-  Days Left, Pending Delivery, Open PO Pipeline, Status, Progress, Details. Each of the first seven
-  headers is a `material-sort.js` sort button; Sub Category and Latest Rate, which share a column,
-  sort from the Sort by select instead. `rowCells(m)` builds one row's ten cells for both layouts. Every cell is one bold figure (`.mat-cell-main`) with at most one or two muted lines
+  grid read, header `title`s and sort keys included): Material, Category, Sub Category, Stock,
+  Inventory Value, Days Left, Pending Delivery, Open PO Pipeline, Status, Progress, Details. Each of
+  the first eight headers is a `material-sort.js` sort button; Latest Rate, which shares a column,
+  sorts from the Sort by select instead. `rowCells(m)` builds one row's eleven cells for both layouts. Every cell is one bold figure (`.mat-cell-main`) with at most one or two muted lines
   (`.mat-cell-sub`); an empty figure reads in `.mat-cell-none` ("No open PO", "No stock lot yet").
   2026-09-28 layout pass, project owner: the list was "cluttered and difficult to understand" -
   twelve columns on the PO list's auto-fit grid wrapped Details onto a second line of every row, and
-  most cells stacked three lines of small text. So Category and Sub Category share a column
-  (`categoryCellHtml()`, the Category and Sub Category header selects stacked in `.col-filter-stack`),
-  Latest Rate moved under Inventory Value (`stockValueCellHtml()`: value, "@ rate / unit" under it,
+  most cells stacked three lines of small text. So Latest Rate moved under Inventory Value (`stockValueCellHtml()`: value, "@ rate / unit" under it,
   the unit only when every lot shares one), and the average PO rate moved from the Pending
-  Delivery cell into its tooltip. `matFilterCells` has one entry per column (empty for the ones with
+  Delivery cell into its tooltip. Category and Sub Category are two columns (project owner,
+  2026-09-28: "make category and sub category two different columns"), `categoryCellHtml()` and
+  `subCategoryCellHtml()`, each with its own header select. `matFilterCells` has one entry per column (empty for the ones with
   no header control). `stockCellHtml(m)` shows the row total with its unit (`lotsQtyText()`) and, on
   All Plants, a line per plant when two or more plants hold it, or "<plant> only" when one does (a
   plant with no lot is left out, not shown as 0). `materialOrderFigures(openLinks)` - over the row's
@@ -841,9 +860,9 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   to a KPI card). These are per-row figures: a line the fuzzy link ties to two materials counts under
   both, like `openValue`; the KPI cards are the deduped totals. The grid is `.mat-grid-cols` (its own
   track widths in `style.css`, not `.grid-cols`) inside `.mat-grid-scroll`, which scrolls sideways
-  below about 1200px rather than squeezing every figure onto two lines. The "View all" table
-  (`.mat-table`) is `table-layout: fixed` with a `<colgroup>` of `.mat-col-0` to `.mat-col-9`
-  percentages (min-width 1240px): under automatic layout the browser gave most spare width to
+  below about 1315px rather than squeezing every figure onto two lines. The "View all" table
+  (`.mat-table`) is `table-layout: fixed` with a `<colgroup>` of `.mat-col-0` to `.mat-col-10`
+  percentages (min-width 1340px): under automatic layout the browser gave most spare width to
   Material, a third of the table on real data. The per-plant stock split uses the plant's short
   name (`HRS`, not `HRS, Silvassa`) so each plant stays on one line. The Domestic and Import "View
   all" tables work the same way (`.fixed-table` with `.po-col-*` / `.imp-col-*`, see style.css).
@@ -883,74 +902,118 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
 
 ### frontend/js/list-sort.js
 
-The shared sorting and sort-preset engine behind Raw Material Analysis and its modal's two tables
-(`material-sort.js`), Domestic Purchase Orders (`po-sort.js`) and Import Purchases
-(`import-sort.js`). Loads after `flags.js`, before every configuration.
-`createListSort(cfg)` returns one sorter per list; `cfg` names the server `view`, an element
-`idPrefix`, the `columns` (key, label, `kind`, and the direction a header click starts with), the
-`builtins` (the first is the default), `rowValue(key, row, extra)`, `tieBreak(a, b, extra)`,
-`onChange` (reset the list's page) and `rerender` (the list's region render). A sort is table-only,
-so every change re-renders the list region, never the view.
+The shared sorting and sort-preset engine behind every sortable list and table: Raw Material
+Analysis and its modal's two tables (`material-sort.js`), Domestic Purchase Orders (`po-sort.js`),
+Import Purchases (`import-sort.js`) and the PO modals' line cards and MIR receipts
+(`po-reconcile.js`). Loads after `flags.js`, before every configuration. `createListSort(cfg)`
+returns one sorter per list; `cfg` names the server `view`, an element `idPrefix`, the `columns`
+(key, label, `kind`, the direction a header click starts with, and `pick` / `parent` below), the
+`builtins` (the first is the default), `rowValue(key, row, extra)`, optional `pickValues` and
+`scopedPickValues`, `tieBreak(a, b, extra)`, `onChange` (reset the list's page), `rerender` and an
+optional `barLabel`. A sort is table-only, so every change re-renders the list region (or re-orders
+a modal table in place), never the view.
 
 - `kind` sets the direction wording (`LIST_SORT_DIR_LABELS`): `text` A to Z, `date` oldest/newest,
   `num` smallest/largest, `rank` most/least urgent (an ordered code, e.g. PO status), `stage`
   earliest/latest stage (import shipment stage).
+- **Picking values, down to the finest grain** (2026-09-28, project owner: "go to least
+  granularity... select the category too and then subcategory too", the design left to us for
+  pinning down a PO, material or vendor). A level on a `pick` column may carry `values` - rows holding
+  one come first, in the picked order (a row holding several ranks by its earliest), the rest follow
+  in the level's direction - and `only`, "Show only these", which narrows the list to rows holding a
+  picked value (table-only, like a header search; the bar then shows a "Showing picked values only -
+  Show all" button, `isNarrowing()`). A `parent` column (Sub Category under Category, Material under
+  Sub Category) offers only values found in rows its ancestors' picks select, so Category -> Sub
+  Category -> Material narrows like a tree; `scopedPickValues(key, row, ancestorPicks)` lets a row
+  holding several values (a PO's lines) offer only those under the picks. `pickValues` gives a row's
+  values for a pick column as an array (a PO holds several categories); the default is `[rowValue]`.
+  `LIST_SORT_MAX_PICKS` (50) and `LIST_SORT_MAX_PICK_LENGTH` (200) mirror the server's limits.
 - The sorter's `state` holds `levels` and `presetId` in use (`'custom'` when no preset matches -
-  `presetIdForLevels()` prefers the selected preset), the user's `presets` (from
-  `GET /api/sort-presets?view=<view>`, loaded once per visit by `ensurePresetsLoaded()`, which never
-  throws; on failure `presetsError` and the select says so, built-ins still work) and the Custom sort
-  editor's `draft` / `draftName` / `msg`, kept there so a region re-render never loses them. The sort
-  in use is remembered in localStorage (`pt.sort.<view>.v1`, try/catch both ways, validated on
-  read); presets are on the server.
-- `sortRows(rows, extra)` computes each row's values once (not per comparison); text and dates
-  compare with `localeCompare` (case-insensitive, numeric); **a row with no value for a level sorts
-  after every row that has one, in either direction**; remaining ties go to `tieBreak`.
+  `presetIdForLevels()` prefers the selected preset; `sameSortLevels()` compares picks too), the
+  user's `presets` (from `GET /api/sort-presets?view=<view>`, loaded once per visit by
+  `ensurePresetsLoaded()`, which never throws; on failure `presetsError` and the select says so,
+  built-ins still work), the Custom sort editor's `draft` / `draftName` / `msg` (kept there so a
+  re-render never loses them), and `rows` / `extra` from the last `sortRows()` call, which the
+  editor's value choices are counted from - so a list must sort before it draws its bar. The sort in
+  use is remembered in localStorage (`pt.sort.<view>.v1`, try/catch both ways, validated on read by
+  `validLevels()`); presets are on the server.
+- `sortRows(rows, extra)` drops rows "Show only these" excludes, then computes each row's values and
+  pick ranks once (not per comparison); text and dates compare with `localeCompare`
+  (case-insensitive, numeric); **a row with no value for a level sorts after every row that has one,
+  in either direction**; remaining ties go to `tieBreak`.
 - Three ways in: the **Sort by** select (`barHtml()`: built-ins and "My presets"); a **header
   click** (`headerHtml(label, key)` renders a `.sort-header-btn` with an arrow and, in a multi-level
   sort, the level number; clicking the sole sorted column again reverses it); and **Custom sort...**
   (the editor: "Sort by / Then by" rows with column and direction selects, move up/down, remove,
-  "+ Add level" up to `LIST_SORT_MAX_LEVELS` (5), a column at most once; Apply, Save as preset,
-  Delete the selected own preset, Close). Saving a name the user already has asks before saving over
-  it. Every change goes through `set()`, which calls `onChange` and stores the choice. `wire(region)`
-  binds all of it after each region render; `rerenderKeepingFocus()` wraps `cfg.rerender` so the sort
-  control that had keyboard focus (by id or `data-listsort` / `data-sortlevel-*`) is focused again
-  after the redraw.
+  "+ Add level" up to `LIST_SORT_MAX_LEVELS` (5, offering a child of a used column first), a column at
+  most once; under a pick column, the picked values as chips (move earlier/later, remove), a "+ Pick a
+  ..." select with row counts, and "Show only these"; Apply, Save as preset, Delete the selected own
+  preset, Close). Saving a name the user already has asks before saving over it. Every change goes
+  through `set()`, which calls `onChange` and stores the choice.
+- **Every control a sorter renders carries `data-sorter="<idPrefix>"`, and `wire(region)` binds only
+  those**, so two sorters on one page (a modal's two tables) never bind each other's buttons and
+  `wire()` can be handed any ancestor. `rerenderKeepingFocus()` wraps `cfg.rerender` so the control
+  that had keyboard focus (by id, or `data-sorter` plus `data-listsort` / `data-sortlevel-*` /
+  `data-pick-*`) is focused again after the redraw.
+- **Sortable tables whose rows keep their own controls** (the Raw Material and PO modals):
+  `sortedTableHtml(registry, key, sorter, rows, rowHtml, headers, opts)` renders a
+  `[data-sort-table]` table in the sorter's order (rows tagged `data-sort-row`, rows "Show only these"
+  drops rendered `hidden`; `opts`: `wrapClass`, `tableClass`, `tbodyFoot` - a `data-sort-foot` total
+  row that stays last - and `tfoot`) and records it in the modal's `registry`;
+  `sortedTableBarHtml(sorter)` a `[data-sort-bar]` bar placed anywhere; `resortSortedTables(registry,
+  sorter, root)` is such a sorter's rerender - redraw its bars and header rows, **move the existing
+  rows** into the new order, toggle `hidden`, and re-wire under `root`. Rows are moved, not rebuilt,
+  because they carry edit pencils, dismiss links and MIR / PO links, and re-running `wireEditIcons()`
+  resets a correction the reader may be part-way through.
 - `sortPresetApi()` - JSON fetch for `/api/sort-presets`, same 401/error contract as `apiImports()`.
 
 ### frontend/js/material-sort.js
 
 Raw Material Analysis's sort configuration: `MAT_SORT = createListSort({view: 'materials', ...})`.
 `MAT_SORT_COLUMNS` - Last received / ordered, Material, Category, Sub Category, Stock, Inventory
-Value, Latest Rate, Days Left, Pending Delivery value, Open PO Pipeline value. **Its keys must equal
-`apps/services/sort_presets.py`'s `SORT_KEYS_BY_VIEW["materials"]`** (`test_sort_presets.py`
-checks), or saving a preset that uses the missing key fails with a 400. `MAT_BUILTIN_SORTS`: Latest
-first (the default), Category, Sub Category, Category then Sub Category then Material, fewest Days
-Left, highest Inventory Value, most Pending Delivery. `matSortValue(key, m, extra)` - `extra` is
-`{entryOf, latestOf}` from `materialsListRegionHtml()`; blank for sorting means no category (the
-API's literal "Uncategorized" counts as none), no open PO, no Days Left figure (only where
-`daysLeftCellHtml()` shows a number), or an order-only row's stock/value. Ties keep the default
-order (latest, stock qty, open value). The same file configures the modal's two tables,
-`MAT_LOTS_SORT` (`MAT_LOTS_SORT_COLUMNS`: Plant, Vendor, Received, Category, Sub Category, Qty,
-Rate, Value; view `material_lots`) and `MAT_OPEN_PO_SORT` (`MAT_OPEN_PO_SORT_COLUMNS`: Delivery
-Date, PO Created On, PO Number, Vendor, Plant, Qty to come, Value to come, Status by po-sort.js's
-`PO_STATUS_RANK`; view `material_open_pos`) - see material-modal.js below. A header click sorts only the columns
-with a `sort` key in `materials.js`'s `MAT_LIST_COLUMNS`; Sub Category and Latest Rate share a
-column with Category and Inventory Value, so they sort from the select and Custom sort.
+Value, Latest Rate, Days Left, Pending Delivery value, Open PO Pipeline value; Category, Sub Category
+(parent Category) and Material (parent Sub Category) are `pick` columns. **Its keys must equal
+`apps/services/sort_presets.py`'s `SORT_KEYS_BY_VIEW["materials"]` and its pick columns
+`PICK_KEYS_BY_VIEW["materials"]`** (`test_sort_presets.py` checks), or saving a preset fails with a
+400. `MAT_BUILTIN_SORTS`: Latest first (the default), Category, Sub Category, Category then Sub
+Category then Material, fewest Days Left, highest Inventory Value, most Pending Delivery.
+`matSortValue(key, m, extra)` - `extra` is `{entryOf, latestOf}` from `materialsListRegionHtml()`;
+blank for sorting means no category (the API's literal "Uncategorized" counts as none), no open PO,
+no Days Left figure (only where `daysLeftCellHtml()` shows a number), or an order-only row's
+stock/value. Ties keep the default order (latest, stock qty, open value). A header click sorts only
+the columns with a `sort` key in `materials.js`'s `MAT_LIST_COLUMNS`; Latest Rate shares a column with
+Inventory Value, so it sorts from the select and Custom sort.
+
+The same file configures the Raw Material modal's two tables (see material-modal.js): `MAT_LOTS_SORT`
+(`MAT_LOTS_SORT_COLUMNS`: Plant, Vendor, Received, Category, Sub Category, Qty, Rate, Value - Plant,
+Vendor, Category and Sub Category pickable; view `material_lots`; built-ins By plant (default, with
+in-stock lots then newest first as the tie-break), newest received, largest quantity, highest value,
+lowest rate, Vendor, and Category then Sub Category then Vendor) and `MAT_OPEN_PO_SORT`
+(`MAT_OPEN_PO_SORT_COLUMNS`: Delivery Date, PO Created On, PO Number, Vendor, Plant, Qty to come,
+Value to come, Status by po-sort.js's `PO_STATUS_RANK` - Vendor and Plant pickable; view
+`material_open_pos`; built-ins soonest delivery (default), most value / quantity to come, most urgent
+status, Vendor then delivery, Plant then Vendor then delivery, newest PO). Both rerender through
+list-sort.js's `resortSortedTables()` over material-modal.js's `MAT_MODAL_SORT_TABLES`.
 
 ### frontend/js/po-sort.js
 
 Domestic Purchase Orders' sort configuration: `PO_SORT = createListSort({view: 'purchase_orders',
 ...})`. `PO_SORT_COLUMNS` - Created On, PO Number, Vendor, Material (the first line's), Category,
-Sub Category, Delivery Date, Value (`totalInclTax`, else `totalValue`), Status. **Keys must equal
-`SORT_KEYS_BY_VIEW["purchase_orders"]`.** Category and Sub Category are not table columns (a PO can
-order several categories), so they sort from the select and Custom sort only; `poCategoryText()`
-sorts a PO on its distinct categories A to Z, joined, "Uncategorized" counting as none. Status sorts
-by `PO_STATUS_RANK` (overdue, on order, partial, date unknown, received), `_overdue` winning over
-`_status`. `PO_BUILTIN_SORTS`: Latest first (the default, the list's old fixed order), Category, Sub
-Category, Category then Sub Category, Vendor, Delivery Date soonest, highest Value, most urgent
-status. Ties go latest first, then PO number. `main.js` loads these presets in `loadDashboard()`, and
-`switchPurchaseType()` loads the target sub-tab's presets before rendering (the page may have opened
-on the other sub-tab).
+Sub Category, Delivery Date, Value (`totalInclTax`, else `totalValue`), Status; Vendor, Material,
+Category and Sub Category are `pick` columns. **Keys must equal
+`SORT_KEYS_BY_VIEW["purchase_orders"]`, pick columns `PICK_KEYS_BY_VIEW["purchase_orders"]`.**
+Category and Sub Category are not table columns (a PO can order several categories), so they sort
+from the select and Custom sort only; `poCategoryText()` sorts a PO on its distinct categories A to
+Z, joined, "Uncategorized" counting as none. `poPickValues()` gives a PO's values for a pick column -
+every line's material, every category and sub category it orders - so picking one matches a PO
+holding it on any line; `poScopedPickValues()` offers, under picked categories / sub categories, only
+the sub categories and materials on lines that sit under them (each line item carries its own
+category). Both are shared with import-sort.js. Status sorts by `PO_STATUS_RANK` (overdue, on order,
+partial, date unknown, received), `_overdue` winning over `_status`. `PO_BUILTIN_SORTS`: Latest first
+(the default, the list's old fixed order), Category, Sub Category, Category then Sub Category then
+Material, Vendor, Delivery Date soonest, highest Value, most urgent status. Ties go latest first,
+then PO number. `main.js` loads these presets in `loadDashboard()`, and `switchPurchaseType()` loads
+the target sub-tab's presets before rendering (the page may have opened on the other sub-tab).
 
 ### frontend/js/import-sort.js
 
@@ -960,11 +1023,14 @@ Sub Category (both via po-sort.js's `poCategoryText()`, select and Custom sort o
 (`plantLabel` - the import list is cross-plant), Country of Origin, Delivery Date (the next open
 date, `import-po.js`'s `importPoDeliveryDate()`, what the list's Delivery column shows), Order Value
 (before duty, `importPoInrValue()`, what the Order Value column shows; blank when a line lacks its
-value or exchange rate), BL Number, Shipment Stage (`IMPORT_STAGE_RANK`: Placed, Shipped (BL), Cleared (BOE); kind `stage`).
-**Keys must equal `SORT_KEYS_BY_VIEW["import_purchases"]`.** `IMPORT_BUILTIN_SORTS`: Latest first
-(the default), Category, Sub Category, Category then Sub Category, Vendor, Country of Origin,
-Shipment Stage earliest first, highest Value. Ties go latest first, then PO number. Its presets load
-with the import orders (`loadDashboard()` / `switchPurchaseType()`).
+value or exchange rate), BL Number, Shipment Stage (`IMPORT_STAGE_RANK`: Placed, Shipped (BL), Cleared
+(BOE); kind `stage`). Vendor, Material, Category, Sub Category, Plant and Country are `pick` columns,
+through po-sort.js's `poPickValues()` / `poScopedPickValues()`. **Keys must equal
+`SORT_KEYS_BY_VIEW["import_purchases"]`, pick columns `PICK_KEYS_BY_VIEW["import_purchases"]`.**
+`IMPORT_BUILTIN_SORTS`: Latest first (the default), Category, Sub Category, Category then Sub
+Category then Material, Vendor, Country of Origin, Shipment Stage earliest first, highest Value. Ties
+go latest first, then PO number. Its presets load with the import orders (`loadDashboard()` /
+`switchPurchaseType()`).
 
 ### frontend/js/material-modal.js
 
@@ -990,15 +1056,15 @@ real lot it then GETs `<prefix>/materials/<lot>/stock-trend` and appends a stock
 **Stock by Plant and Open Purchase Orders are sortable** (2026-09-28), through list-sort.js like
 the lists: material-sort.js's `MAT_LOTS_SORT` (default: by plant, in-stock lots first, newest first -
 the order the table always had) and `MAT_OPEN_PO_SORT` (default: soonest delivery first; a line with
-no delivery date now sorts last rather than first). The opener loads both sorters' presets with its
-other data, before the `modalRequestId` check. `sortableModalTableHtml(which, sorter, rows, rowHtml,
-footHtml)` renders a `#matModalSort-<which>` section (sort bar, header row from
-`MAT_MODAL_SORT_HEADERS`, rows tagged `data-sort-row`, then a `data-sort-foot` total row) and keeps the
-rows in `MAT_MODAL_SORT_TABLES`. **A sort change re-orders the existing `<tr>`s in place**
-(`resortMatModalTable()`: redraw bar and header, move rows, keep the total last, re-wire the sort
-controls) rather than rebuilding them: the rows carry edit pencils, dismiss links and PO links, and
-re-running `wireEditIcons()` resets a correction the reader may be part-way through. The correction
-box anchors after the table wrapper, outside the moved rows, so it stays put.
+no delivery date sorts last). The opener loads both sorters' presets with its other data, before the
+`modalRequestId` check. Each table is list-sort.js's `sortedTableHtml()` into `MAT_MODAL_SORT_TABLES`
+(emptied on every render; headers from `MAT_MODAL_SORT_HEADERS`; the Stock by Plant total row is a
+`tbodyFoot`), built BEFORE its `sortedTableBarHtml()` so the bar's value choices come from this
+material's rows. Both sorters are wired on the modal body (each binds only its own controls). **A
+sort change re-orders the existing `<tr>`s in place** (`resortSortedTables()`) rather than rebuilding
+them: the rows carry edit pencils, dismiss links and PO links, and re-running `wireEditIcons()` resets
+a correction the reader may be part-way through. The correction box anchors after the table wrapper,
+outside the moved rows, so it stays put.
 
 ### frontend/js/export-panel.js
 
@@ -1202,7 +1268,7 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   tooltips are `display:none` inside `.table-wrap` and `.mat-grid-scroll` until hovered: hidden
   only by opacity/visibility they still widened the scroll area, and a row-flag tooltip was one
   unbounded nowrap line, which left a blank strip to the right of the table; it now wraps at 240px.
-  **All three "View all" list tables are `.fixed-table`** - `table-layout: fixed`, min-width 1240px,
+  **All three "View all" list tables are `.fixed-table`** - `table-layout: fixed`, min-width 1240px (1340px for the eleven-column Raw Material table),
   and a `<colgroup>` of percentage widths per table (`.po-col-*` Domestic, `.imp-col-*` Import,
   `.mat-col-*` Raw Material; each class list must match its table's column count and order).
   Inside them the date-range filter's two inputs stack, and stepper labels and long rates wrap,

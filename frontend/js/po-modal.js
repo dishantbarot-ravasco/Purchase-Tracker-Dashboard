@@ -60,8 +60,10 @@ async function openPoModal(compositeKey) {
   // re-fetch once any PO/material modal has opened once this session.
   // Best-effort: a failure here just means no material-analysis links on
   // this open, not a broken modal.
+  // Plus the saved sort presets of the Item & Stock tab's line cards and
+  // MIR receipts (po-reconcile.js) - those loaders never throw.
   try {
-    await ensureMaterialsLoaded(PLANT_KEYS);
+    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS), PO_LINES_SORT.ensurePresetsLoaded(), PO_RECEIPTS_SORT.ensurePresetsLoaded()]);
   } catch (e) {
     console.error('openPoModal: ensureMaterialsLoaded failed:', e);
   }
@@ -215,6 +217,7 @@ async function openPoModal(compositeKey) {
   wireDismissLinks(body, plantKey, () => onDomesticFieldSaved(plantKey, poNumber));
   applyDynamicStyles(body); // the reconciliation cards' progress bars
   body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
+  wireReconSorting(body); // Item & Stock's line and receipt sorting (po-reconcile.js)
 }
 
 // ── Change MIR match ────────────────────────────────────────────────────

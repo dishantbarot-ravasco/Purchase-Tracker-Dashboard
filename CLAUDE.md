@@ -230,11 +230,12 @@ Read the linked section before breaking any of these. Each is there because it w
 - Raw Material links each PO line to its best material through `lineLinksFor()`'s token index, built
   over the unfiltered scope; never reintroduce a per-(material x line) loop (it was 1.3M checks).
   [materials.js](docs/frontend.md#frontendjsmaterialsjs)
-- Raw Material (list and modal tables), Purchase Orders and Import Purchases sorting share
-  `list-sort.js`; presets are saved per user and per list on the server. Each list's column keys
-  (`MAT_SORT_COLUMNS`, `MAT_LOTS_SORT_COLUMNS`, `MAT_OPEN_PO_SORT_COLUMNS`, `PO_SORT_COLUMNS`,
-  `IMPORT_SORT_COLUMNS`) must equal
-  `sort_presets.py`'s `SORT_KEYS_BY_VIEW` for its view (a test checks).
+- Every sortable list and table (Raw Material list and modal, Purchase Orders, Import Purchases, the
+  PO modals' lines and receipts) shares `list-sort.js`; presets, picked values included, are saved
+  per user and per list on the server. Each list's `*_SORT_COLUMNS` keys and `pick: true` columns
+  must equal `sort_presets.py`'s `SORT_KEYS_BY_VIEW` / `PICK_KEYS_BY_VIEW` (a test checks). A modal
+  table's sort moves its rows (`resortSortedTables()`), never re-renders them - that would reset an
+  in-progress correction. A list must sort before it draws its sort bar.
   [list-sort.js](docs/frontend.md#frontendjslist-sortjs)
 
 ### MIR entry

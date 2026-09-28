@@ -15,7 +15,9 @@ class SortPreset(models.Model):
 
     Owned by exactly one user and visible only to them - every endpoint
     filters on `user=request.user`. `levels` is an ordered list of
-    {"key": <column key>, "dir": "asc"|"desc"}; the keys a view accepts are
+    {"key": <column key>, "dir": "asc"|"desc", "values"?: [...], "only"?:
+    true} - `values` being picked column values to put first (or, with
+    `only`, the only ones to show); the keys and values a view accepts are
     validated by apps/services/sort_presets.py, never trusted from the body.
     A preset holds no plant data, so it has no plant scope."""
 
@@ -25,6 +27,8 @@ class SortPreset(models.Model):
         IMPORT_PURCHASES = "import_purchases", "Import Purchases"
         MATERIAL_LOTS = "material_lots", "Raw Material modal: Stock by Plant"
         MATERIAL_OPEN_POS = "material_open_pos", "Raw Material modal: Open Purchase Orders"
+        PO_LINES = "po_lines", "PO modal: line items"
+        PO_RECEIPTS = "po_receipts", "PO modal: MIR receipts"
 
     user = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="sort_presets")
     view = models.CharField(max_length=30, choices=View.choices)

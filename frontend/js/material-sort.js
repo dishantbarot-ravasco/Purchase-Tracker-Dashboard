@@ -1,19 +1,24 @@
 // ── Raw Material Analysis: sort configuration (2026-09-28) ───────────────
 // The columns, built-in sorts and row values for list-sort.js's shared sort
-// engine (see that file for how sorting and presets work). MAT_SORT is the
-// sorter materials.js calls: MAT_SORT.sortRows() in
+// engine (see that file for how sorting, picking values and presets work).
+// MAT_SORT is the sorter materials.js calls: MAT_SORT.sortRows() in
 // materialsListRegionHtml(), MAT_SORT.headerHtml()/barHtml() for the markup,
 // MAT_SORT.wire() in wireMaterialsListRegion(), and
 // MAT_SORT.ensurePresetsLoaded() in loadAndRenderMaterials().
 //
-// MAT_SORT_COLUMNS' keys must equal apps/services/sort_presets.py's
-// SORT_KEYS_BY_VIEW["materials"]; test_sort_presets.py checks the two agree.
+// A `pick` column can name values to put first, or show only (list-sort.js);
+// `parent` scopes its choices to the parent level's picks, so Category ->
+// Sub Category -> Material narrows like a tree.
+//
+// Every *_SORT_COLUMNS list's keys must equal apps/services/sort_presets.py's
+// SORT_KEYS_BY_VIEW for its view, and its `pick` columns PICK_KEYS_BY_VIEW;
+// test_sort_presets.py checks.
 
 const MAT_SORT_COLUMNS = [
   { key: 'latest', label: 'Last received / ordered', kind: 'date', dir: 'desc' },
-  { key: 'material', label: 'Material', kind: 'text', dir: 'asc' },
-  { key: 'category', label: 'Category', kind: 'text', dir: 'asc' },
-  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc' },
+  { key: 'material', label: 'Material', kind: 'text', dir: 'asc', pick: true, parent: 'subCategory' },
+  { key: 'category', label: 'Category', kind: 'text', dir: 'asc', pick: true },
+  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc', pick: true, parent: 'category' },
   { key: 'stock', label: 'Stock', kind: 'num', dir: 'desc' },
   { key: 'value', label: 'Inventory Value', kind: 'num', dir: 'desc' },
   { key: 'rate', label: 'Latest Rate', kind: 'num', dir: 'desc' },
@@ -28,7 +33,7 @@ const MAT_BUILTIN_SORTS = [
   { id: 'builtin:latest', name: 'Latest first (default)', levels: [{ key: 'latest', dir: 'desc' }] },
   { id: 'builtin:category', name: 'Category (A to Z)', levels: [{ key: 'category', dir: 'asc' }] },
   { id: 'builtin:subCategory', name: 'Sub Category (A to Z)', levels: [{ key: 'subCategory', dir: 'asc' }] },
-  { id: 'builtin:catSub', name: 'Category, then Sub Category', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }, { key: 'material', dir: 'asc' }] },
+  { id: 'builtin:catSub', name: 'Category, then Sub Category, then Material', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }, { key: 'material', dir: 'asc' }] },
   { id: 'builtin:daysLeft', name: 'Fewest Days Left first', levels: [{ key: 'daysLeft', dir: 'asc' }] },
   { id: 'builtin:value', name: 'Highest Inventory Value first', levels: [{ key: 'value', dir: 'desc' }] },
   { id: 'builtin:pending', name: 'Most Pending Delivery first', levels: [{ key: 'pending', dir: 'desc' }] },
@@ -83,20 +88,17 @@ const MAT_SORT = createListSort({
 // Stock by Plant (MAT_LOTS_SORT, one row per stock lot at any plant) and
 // Purchase Activity's Open Purchase Orders (MAT_OPEN_PO_SORT, one row per
 // open PO line). Their rows carry inline-edit and dismiss controls, so a
-// sort change re-orders the existing rows in place (material-modal.js's
-// resortMatModalTable()) rather than rebuilding them - rebuilding would
-// have to re-wire those controls, and wireEditIcons() resets a correction
-// the reader may be half-way through.
-//
-// Keys must equal SORT_KEYS_BY_VIEW["material_lots"] and
-// ["material_open_pos"]; test_sort_presets.py checks.
+// sort change re-orders the existing rows in place (list-sort.js's
+// resortSortedTables()) rather than rebuilding them - rebuilding would have
+// to re-wire those controls, and wireEditIcons() resets a correction the
+// reader may be half-way through.
 
 const MAT_LOTS_SORT_COLUMNS = [
-  { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc' },
-  { key: 'vendor', label: 'Vendor', kind: 'text', dir: 'asc' },
+  { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc', pick: true },
+  { key: 'vendor', label: 'Vendor', kind: 'text', dir: 'asc', pick: true },
   { key: 'received', label: 'Received', kind: 'date', dir: 'desc' },
-  { key: 'category', label: 'Category', kind: 'text', dir: 'asc' },
-  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc' },
+  { key: 'category', label: 'Category', kind: 'text', dir: 'asc', pick: true },
+  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc', pick: true, parent: 'category' },
   { key: 'qty', label: 'Qty', kind: 'num', dir: 'desc' },
   { key: 'rate', label: 'Rate', kind: 'num', dir: 'asc' },
   { key: 'value', label: 'Value', kind: 'num', dir: 'desc' },
@@ -112,7 +114,7 @@ const MAT_LOTS_BUILTIN_SORTS = [
   { id: 'builtin:value', name: 'Highest value first', levels: [{ key: 'value', dir: 'desc' }] },
   { id: 'builtin:rate', name: 'Lowest rate first', levels: [{ key: 'rate', dir: 'asc' }] },
   { id: 'builtin:vendor', name: 'Vendor (A to Z)', levels: [{ key: 'vendor', dir: 'asc' }, { key: 'received', dir: 'desc' }] },
-  { id: 'builtin:category', name: 'Category, then Sub Category', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }] },
+  { id: 'builtin:category', name: 'Category, then Sub Category, then Vendor', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }, { key: 'vendor', dir: 'asc' }] },
 ];
 
 function matLotSortValue(key, l) {
@@ -137,15 +139,15 @@ const MAT_LOTS_SORT = createListSort({
   rowValue: matLotSortValue,
   tieBreak: (a, b) => (((b.qty || 0) > 0) - ((a.qty || 0) > 0))
     || (b.receivedDate || '').localeCompare(a.receivedDate || ''),
-  rerender: () => resortMatModalTable('lots'),
+  rerender: () => resortSortedTables(MAT_MODAL_SORT_TABLES, MAT_LOTS_SORT, document.getElementById('modalBody')),
 });
 
 const MAT_OPEN_PO_SORT_COLUMNS = [
   { key: 'delivery', label: 'Delivery Date', kind: 'date', dir: 'asc' },
   { key: 'created', label: 'PO Created On', kind: 'date', dir: 'desc' },
   { key: 'poNumber', label: 'PO Number', kind: 'text', dir: 'asc' },
-  { key: 'vendor', label: 'Vendor', kind: 'text', dir: 'asc' },
-  { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc' },
+  { key: 'vendor', label: 'Vendor', kind: 'text', dir: 'asc', pick: true },
+  { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc', pick: true },
   { key: 'qtyToCome', label: 'Qty to come', kind: 'num', dir: 'desc' },
   { key: 'valueToCome', label: 'Value to come', kind: 'num', dir: 'desc' },
   { key: 'status', label: 'Status', kind: 'rank', dir: 'asc' },
@@ -157,7 +159,8 @@ const MAT_OPEN_PO_BUILTIN_SORTS = [
   { id: 'builtin:value', name: 'Most value to come first', levels: [{ key: 'valueToCome', dir: 'desc' }] },
   { id: 'builtin:qty', name: 'Most quantity to come first', levels: [{ key: 'qtyToCome', dir: 'desc' }] },
   { id: 'builtin:status', name: 'Most urgent status first', levels: [{ key: 'status', dir: 'asc' }, { key: 'delivery', dir: 'asc' }] },
-  { id: 'builtin:vendor', name: 'Vendor (A to Z)', levels: [{ key: 'vendor', dir: 'asc' }, { key: 'delivery', dir: 'asc' }] },
+  { id: 'builtin:vendor', name: 'Vendor, then Delivery Date', levels: [{ key: 'vendor', dir: 'asc' }, { key: 'delivery', dir: 'asc' }] },
+  { id: 'builtin:plant', name: 'Plant, then Vendor, then Delivery Date', levels: [{ key: 'plant', dir: 'asc' }, { key: 'vendor', dir: 'asc' }, { key: 'delivery', dir: 'asc' }] },
   { id: 'builtin:created', name: 'Newest PO first', levels: [{ key: 'created', dir: 'desc' }] },
 ];
 
@@ -185,5 +188,5 @@ const MAT_OPEN_PO_SORT = createListSort({
   rowValue: matOpenPoSortValue,
   tieBreak: (a, b) => (a.po._deliveryDate || '').localeCompare(b.po._deliveryDate || '')
     || String(a.po.poNumber || '').localeCompare(String(b.po.poNumber || ''), 'en', { numeric: true }),
-  rerender: () => resortMatModalTable('openPos'),
+  rerender: () => resortSortedTables(MAT_MODAL_SORT_TABLES, MAT_OPEN_PO_SORT, document.getElementById('modalBody')),
 });
