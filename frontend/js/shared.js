@@ -640,7 +640,7 @@ function debounceRender(fn, ms) {
 // Rows per page on every paginated "View all" table - Domestic and Import
 // Purchase Orders (po-list.js / import-po.js) and Raw Material
 // (materials.js) - set by the project owner.
-const LIST_PAGE_SIZE = 50;
+const LIST_PAGE_SIZE = 100;
 
 // ── "Jump to page" control ───────────────────────────────────────────────
 // Small number input + Go button appended to every paginated "View all"

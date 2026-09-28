@@ -473,7 +473,7 @@ few module-level variables for the correction box and modal a11y.
   Never `toISOString().slice(0, 10)`: that is the UTC date, and local midnight in IST is the
   previous day in UTC, so "today" was yesterday (This Week dropped today's POs, and on the 1st This
   Month counted the old month).
-- **Lists:** `LIST_PAGE_SIZE` (50, the page size of every "View all" table: Domestic, Import, Raw
+- **Lists:** `LIST_PAGE_SIZE` (100, the page size of every "View all" table: Domestic, Import, Raw
   Material), `LIST_FILTER_DEBOUNCE_MS`, `debounceRender(fn, ms)` (factory), `jumpToPageHtml()` /
   `wireJumpToPage()` (invalid page numbers are ignored, not clamped), `revealFilteredList(regionId)`
   (announces the list heading; scrolls only if the region's top is off-screen; jumps instead of
@@ -624,7 +624,7 @@ show the "nothing received" part of the Overdue and Date Unknown overlays: produ
 Date Unknown card and 7 on its slice. A click toggles `state.statusFilter` then renders the list
 region. `status:nothing` is also in the header Status select. `PO_LIST_CTX` carries `{el, filtered, totalPages}`. `poListRegionHtml()` applies the status
 filter, month filter and `applyColFilters()`, sorts newest first, and renders a top-5 grid or a
-paginated (`LIST_PAGE_SIZE`, 50/page) "View all" table with the header filter row; row links carry
+paginated (`LIST_PAGE_SIZE`, 100/page) "View all" table with the header filter row; row links carry
 `data-po="<plant>::<poNumber>"` and open `openPoModal()`. Under the list,
 `importCrossHitsHtml()` adds **"Also in Import Purchases (N)"** when the PO Number, Vendor or Material
 filter matches an import order at the selected plants (same contains rule as `applyColFilters()`, up
@@ -713,7 +713,7 @@ Partial Delivered, Overdue, On Order and Date Unknown read the server's receipt-
 as Domestic. `renderImportPoList(el)` mirrors the domestic view with
 13 KPI cards including the shipment-stage trio, the two charts below, the RoDTEP Ledger / Advance License buttons, and `#importListRegion`
 (`IMPORT_LIST_CTX`, `importListRegionHtml()`, `renderImportListRegion()`, `wireImportListRegion()`;
-every `[data-icf]` filter is table-only; "View all" pages at `LIST_PAGE_SIZE`, 50/page). The Material
+every `[data-icf]` filter is table-only; "View all" pages at `LIST_PAGE_SIZE`, 100/page). The Material
 column and its search work as on Domestic (see po-list.js). Under the table,
 `domesticCrossHitsHtml()` adds **"Also in Domestic Purchases (N)"** when the PO Number, Vendor or
 Material filter matches a domestic order at the selected plants (same contains rule, up to 10 shown,

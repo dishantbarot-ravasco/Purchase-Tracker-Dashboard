@@ -555,7 +555,7 @@ function poListRegionHtml() {
 
   const showingAll = state.showAllPOs;
   const totalForList = tableRecs.length;
-  // "View all" is paginated (LIST_PAGE_SIZE, 50/page - project owner) instead
+  // "View all" is paginated (LIST_PAGE_SIZE, 100/page - project owner) instead
   // of dumping every matching row at once - the compact top-5 view is
   // unaffected, it's always just the first 5 of tableRecs, a preview, not
   // a paginated browse. state.tablePage is clamped here (not just where
