@@ -33,7 +33,9 @@ async function loadAndRenderMaterials() {
     // Stock data. Import orders too, since 2026-09-24 - see materialOrders().
     // Cheap: all three loaders cache, so this is a no-op re-fetch if the
     // Purchase Orders tab was already visited for the same plant(s).
-    await Promise.all([ensureMaterialsLoaded(selectedPlantKeys()), ensurePOsLoaded(selectedPlantKeys()), ensureImportPOsLoaded()]);
+    // The user's saved sort presets too (material-sort.js) - that loader never
+    // throws, so a failed preset load cannot take the page down with it.
+    await Promise.all([ensureMaterialsLoaded(selectedPlantKeys()), ensurePOsLoaded(selectedPlantKeys()), ensureImportPOsLoaded(), ensureSortPresetsLoaded()]);
     el.innerHTML = '<div id="materialsContent"></div>';
     renderMaterialsView();
     return true;
@@ -1264,21 +1266,16 @@ function materialsListRegionHtml() {
     tableRecs = ctx.linkage.filter(l => l.categories.some(c => c.label === wantedLabel)).map(l => l.material);
   }
   tableRecs = applyMatColFilters(tableRecs);
-  // LATEST FIRST (2026-09-24, project owner: "stock lot added first or
-  // latest, just like it's for PO latest first"). Was stock qty descending,
-  // which kept the same big-quantity materials pinned to the top whatever
-  // arrived. Now the material whose newest lot was received most recently
-  // leads - the same reading order as Purchase Orders (Latest first). See
-  // materialLatestDate() for what "latest" means on an order-only row.
-  // Rows with no date at all go last; ties fall back to the old order (stock
-  // qty, then value still on order).
+  // Sorted by the user's chosen sort (material-sort.js's MAT_SORT_STATE):
+  // a built-in, a saved preset, a header click or a custom multi-level sort.
+  // The default is LATEST FIRST (2026-09-24, project owner: "stock lot added
+  // first or latest, just like it's for PO latest first") - the material
+  // whose newest lot was received most recently leads. See
+  // materialLatestDate() for what "latest" means on an order-only row. Ties
+  // after the chosen levels fall back to that default order.
   const entryOf = m => ctx.linkageByKey.get(normalizeMaterial(m.description));
-  const openValueOf = m => { const e = entryOf(m); return e ? e.openValue : 0; };
   const latestOf = new Map(tableRecs.map(m => [m, materialLatestDate(m, entryOf(m))]));
-  const sorted = tableRecs.slice().sort((a, b) =>
-    latestOf.get(b).localeCompare(latestOf.get(a))
-    || ((b.qty || 0) - (a.qty || 0))
-    || (openValueOf(b) - openValueOf(a)));
+  const sorted = sortMaterialRows(tableRecs, MAT_SORT_STATE.levels, entryOf, m => latestOf.get(m));
 
   const showingAll = state.showAllMaterials;
   const PAGE_SIZE = LIST_PAGE_SIZE;
@@ -1341,6 +1338,14 @@ function materialsListRegionHtml() {
   ];
   const colFilterRow = '<tr class="col-filter-row">' + matFilterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
   const stockAllPlantsSuffix = isAllPlants() ? ' (All Plants)' : '';
+  // One label per column, in column order - a sortable column's label is a
+  // button that sorts by it (material-sort.js's matSortHeaderHtml()).
+  const headerLabels = [
+    ['Material', 'material'], ['Category', 'category'], ['Sub Category', 'subCategory'],
+    ['Stock' + stockAllPlantsSuffix, 'stock'], ['Inventory Value' + stockAllPlantsSuffix, 'value'],
+    ['Latest Rate', 'rate'], ['Days Left', 'daysLeft'], ['Pending Delivery', 'pending'],
+    ['Open PO Pipeline', 'pipeline'], ['Status', null], ['Progress', null], ['Details', null],
+  ].map(([label, key]) => matSortHeaderHtml(label, key));
 
   // Colored flag-icon cluster per material row, identical pattern to PO's
   // own rowFlags() in renderPoList() - the same four buckets, see flags.js's
@@ -1375,10 +1380,11 @@ function materialsListRegionHtml() {
     return '<div class="fs-11 text-slate-soft">' + (m.orderOnly ? 'Ordered ' : 'Last received ') + escapeHtml(formatDateIN(d)) + '</div>';
   };
 
-  return '<div class="list-toggle-row"><div class="section-title m-0">Materials (Latest first) - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
+  return '<div class="list-toggle-row"><div class="section-title m-0">Materials - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
       (listRecs.some(m => { const e = linkageByKey.get(normalizeMaterial(m.description)); return e && (e.qtyFlag || e.rateFlag); }) ? rowTintLegendHtml() : '') +
       (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all ' + sorted.length + ' materials') + '</button>' : '') +
     '</div>' +
+    matSortBarHtml() +
     (() => {
       // Compact top-5 preview renders as CSS-grid card rows, same
       // .list-header-row/.top5-list/.top5-row structure as Purchase
@@ -1388,7 +1394,7 @@ function materialsListRegionHtml() {
       // the fuller reasoning). "View all" still renders as a plain <table>
       // for all three views.
       if (showingAll) {
-        return '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Sub Category</th><th>Stock' + stockAllPlantsSuffix + '</th><th>Inventory Value' + stockAllPlantsSuffix + '</th><th>Latest Rate</th><th>Days Left</th><th>Pending Delivery</th><th>Open PO Pipeline</th><th>Status</th><th>Progress</th><th>Details</th></tr>' +
+        return '<div class="table-wrap"><table><thead><tr>' + headerLabels.map(h => '<th>' + h + '</th>').join('') + '</tr>' +
           colFilterRow +
         '</thead><tbody>' +
         listRecs.map(m => {
@@ -1410,7 +1416,7 @@ function materialsListRegionHtml() {
         }).join('') +
         '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>Material</div><div>Category</div><div>Sub Category</div><div>Stock' + stockAllPlantsSuffix + '</div><div>Inventory Value' + stockAllPlantsSuffix + '</div><div>Latest Rate</div><div>Days Left</div><div>Pending Delivery</div><div>Open PO Pipeline</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols">' + headerLabels.map(h => '<div>' + h + '</div>').join('') + '</div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + matFilterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="matTop5List">' + listRecs.map(m => {
           const key = escapeHtml(materialModalKey(m));
@@ -1461,6 +1467,7 @@ function wireMaterialsListRegion() {
   if (matNextPageBtn) matNextPageBtn.onclick = () => { state.matTablePage = state.matTablePage + 1; renderMaterialsListRegion(); };
   region.querySelectorAll('[data-matpage]').forEach(btn => btn.onclick = () => { state.matTablePage = Number(btn.dataset.matpage); renderMaterialsListRegion(); });
   wireJumpToPage('mat', totalPages, (n) => { state.matTablePage = n; renderMaterialsListRegion(); });
+  wireMaterialSort(region);
 
   // Header filter row (only present when showingAll).
   //

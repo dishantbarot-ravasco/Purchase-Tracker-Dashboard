@@ -230,6 +230,9 @@ Read the linked section before breaking any of these. Each is there because it w
 - Raw Material links each PO line to its best material through `lineLinksFor()`'s token index, built
   over the unfiltered scope; never reintroduce a per-(material x line) loop (it was 1.3M checks).
   [materials.js](docs/frontend.md#frontendjsmaterialsjs)
+- Raw Material sort presets are saved per user on the server; `material-sort.js`'s
+  `MAT_SORT_COLUMNS` keys must equal `sort_presets.py`'s `SORT_KEYS_BY_VIEW` (a test checks).
+  [material-sort.js](docs/frontend.md#frontendjsmaterial-sortjs)
 
 ### MIR entry
 - MIR entry has **no fuzzy matching and no tolerance**: quantity (accepted = received - rejected) and

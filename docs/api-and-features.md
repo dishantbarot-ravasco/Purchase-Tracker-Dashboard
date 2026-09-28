@@ -94,6 +94,9 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `auth/users/<id>/devices` | `users_views.list_user_devices` | IsAdmin | The account's trusted devices |
 | DELETE | `auth/users/<id>/devices/<device_id>` | `users_views.revoke_user_device` | IsAdmin | Revoke one trusted device |
 | POST | `auth/users/<id>/logout-everywhere` | `users_views.admin_logout_everywhere` | IsAdmin, `AdminWriteThrottle` | `revoke_all_sessions()` for another account |
+| GET | `sort-presets?view=materials` | `preferences_views.presets` | Auth (any role), own rows only | The caller's saved sort presets for a view; 400 on an unknown view |
+| POST | `sort-presets` | `preferences_views.presets` | Auth (any role) | Save `{view, name, levels}`; 201 new, 200 when it saves over the caller's preset of the same name (case-insensitive) |
+| PATCH / DELETE | `sort-presets/<id>` | `preferences_views.preset` | Auth (any role), own rows only (404 otherwise) | Rename / replace levels, or delete |
 | GET | `auth/admin-overview` | `admin_overview_views.admin_overview` | IsAdmin | Top correctors, top vendors, recent corrections |
 | GET / POST | `internal/send-daily-report` | `reports_views.trigger_daily_report` | AllowAny + `REPORT_CRON_SECRET` | Daily RM consumption emails; 502 `partial` if a plant failed |
 | GET / POST | `internal/send-monthly-report?year=&month=` | `reports_views.trigger_monthly_report` | AllowAny + secret | Monthly consumption emails; 502 `partial` if a plant failed |
@@ -882,6 +885,21 @@ email, so the record survives the user's deletion.
 (that would count a receipt twice while the Drive MIR files still carry it); a PO missing from the
 master CSV cannot be received against (the search says to ask purchase to add it); RM stock is next.
 
+### Sort presets (2026-09-28)
+
+Raw Material Analysis sorts by any column, in up to 5 levels ("Category, then Sub Category, then
+Inventory Value"), and a user can save a sort as a named preset **to their account**, so it follows
+them to any device (owner's choice over browser-only or shared presets). Built-in sorts (Category
+alone, Sub Category alone, Category then Sub Category, and a few more) live in the frontend, not the
+database. Every role may save presets, viewers included: a preset is the caller's own display
+preference, not a write to business data. Every query filters on the caller, so another user's id
+reads 404. Nothing in a preset is trusted - `sort_presets.clean_levels()` accepts only the view's
+known column keys, each once, asc or desc, at most 5; a name is 1-60 characters; at most 25 presets
+per user per view. Saving under an existing name (ignoring case and repeated spaces) saves over it,
+Excel-style; the page asks first. The server's key list must match `material-sort.js`'s
+`MAT_SORT_COLUMNS`; `test_sort_presets.py` checks the two agree. The frontend side is in
+[frontend.md](frontend.md#frontendjsmaterial-sortjs).
+
 ### Data export
 
 An "Export Data" button next to "Refresh Data" opens a panel (`export-panel.js`) that downloads the full
@@ -1161,6 +1179,20 @@ quantities are returned as strings, never floats. `_po_line()` / `_po_summary()`
 gates preview and post. The three PO lookups are cross-plant by owner rule and listed as such in
 `test_endpoint_permission_guard.py`. `entries` orders explicitly: Django ignores `Meta.ordering` on
 its aggregate query.
+
+### apps/api/routers/preferences_views.py
+
+The sort-preset endpoints above: `presets` (GET list / POST save) and `preset` (PATCH / DELETE), both
+`IsAuthenticated` declared explicitly (every role; see [sort presets](#sort-presets-2026-09-28)),
+both filtered on `user=request.user`. Validation is in `apps/services/sort_presets.py`.
+
+### apps/services/sort_presets.py
+
+`SORT_KEYS_BY_VIEW` (the columns each view sorts on - keep `materials` equal to `material-sort.js`'s
+`MAT_SORT_COLUMNS`), `clean_view()` / `clean_name()` / `clean_levels()` (raise `ValueError`, which
+becomes a 400), `list_presets()`, `save_preset()` (create or save over the same name; locks the
+user's row so two tabs cannot both pass the 25-preset cap) and `update_preset()` (rename refuses a
+name the user already has).
 
 ### apps/services/mir_service.py
 

@@ -15,7 +15,7 @@ from django.urls import include, path
 
 from apps.api import views
 from apps.api.auth_views import PTLoginView, PTTokenRefreshView, PTTokenVerifyView, whoami
-from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, mir_views, password_views, reports_views, review_views, vapi_views
+from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, mir_views, password_views, preferences_views, reports_views, review_views, vapi_views
 
 urlpatterns = [
     path("health", views.health, name="health"),
@@ -49,6 +49,10 @@ urlpatterns = [
     path("auth/change-password/confirm", password_views.confirm_password_change, name="change-password-confirm"),
     # Admin Panel Overview tab - top correctors/vendors + recent activity
     path("auth/admin-overview", admin_overview_views.admin_overview, name="admin-overview"),
+
+    # Per-user sort presets (2026-09-28) - apps/api/routers/preferences_views.py.
+    path("sort-presets", preferences_views.presets, name="sort-presets"),
+    path("sort-presets/<int:preset_id>", preferences_views.preset, name="sort-preset"),
 
     # MIR entry against the normalized POs (2026-09-28) - apps/api/routers/mir_views.py.
     path("mir/meta", mir_views.meta, name="mir-meta"),

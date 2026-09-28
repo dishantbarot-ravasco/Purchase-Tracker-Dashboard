@@ -569,6 +569,13 @@ Normalized POs and MIRs (migrations `0067`, and `0068` seeding the plants and re
   and actual, `difference_pct`, `reason`, `note`, `status` OPEN/RESOLVED/VOID; a RESOLVED one carries
   `resolved_at` and a `resolution_note`.
 
+### apps/core/models/preferences.py
+
+`SortPreset` - a user's named, multi-level sort for one list view (`view`: only `materials` today),
+`levels` a JSON list of `{key, dir}`, unique on (user, view, name), deleted with its user. It holds
+no plant data, so it has no plant scope; it is read and written only as its owner
+(`preferences_views.py`), and `apps/services/sort_presets.py` validates every level.
+
 ### apps/core/audit_log.py
 
 - `PTAuditLog` (`pt_audit_log`) - append-only auth/account events: `ACTION_LOGIN`, `LOGOUT`,

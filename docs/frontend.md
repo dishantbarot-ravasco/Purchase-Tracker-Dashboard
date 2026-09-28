@@ -374,7 +374,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 
 | Page | Served | Styles | Scripts (in order) |
 | --- | --- | --- | --- |
-| `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `po-list.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-modal.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
+| `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `po-list.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-sort.js`, `material-modal.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
 | `home.html` | WhiteNoise | `brand.css`, `home-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `home-page.js` |
 | `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `search-po-page.js` |
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
@@ -824,14 +824,51 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   `.kpi-grid.mat-kpi-grid` in `style.css`: an even grid, 8 across from 1500px, 4 below, 2 on a
   phone, with the value size scaling so nothing clips. Then
   Category/Sub Category/Flags selects, the drill-down
-  chart (stock rows only), then `#matListRegion` (`MAT_LIST_CTX`, `materialsListRegionHtml()` sorted
-  latest first by `materialLatestDate()`, `renderMaterialsListRegion()`, `wireMaterialsListRegion()`;
-  `status`/`category`/`subCategory` header selects take the full render, `material` text and
-  `progress` stay in the region).
+  chart (stock rows only), then `#matListRegion` (`MAT_LIST_CTX`, `materialsListRegionHtml()`
+  sorted by `material-sort.js`'s `sortMaterialRows()` over `MAT_SORT_STATE.levels` - latest first by
+  `materialLatestDate()` unless the user chose another sort - with `matSortBarHtml()` above the table
+  and each sortable header label from `matSortHeaderHtml()`; `renderMaterialsListRegion()`,
+  `wireMaterialsListRegion()` (which calls `wireMaterialSort()`); `status`/`category`/`subCategory`
+  header selects take the full render, `material` text, `progress` and every sort change stay in the
+  region). `loadAndRenderMaterials()` also awaits `ensureSortPresetsLoaded()`, which never throws.
 - `renderMaterialsChart()` / `wireMaterialsChart()` - Inventory Value by Category -> Subcategory ->
   Material (top 5 by value via `materialsChartBars()`, no "Other" bar - a note under the chart says
   how many more there are and what they hold; breadcrumb, height via `data-height-px`); a material
   bar opens `openMaterialModal()`.
+
+### frontend/js/material-sort.js
+
+Raw Material Analysis's sorting and sort presets. Loads after `materials.js`; everything it does
+runs at render time, from `materialsListRegionHtml()` / `wireMaterialsListRegion()`. A sort is
+table-only (like the Material search), so every change re-renders the list region, never the view.
+
+- `MAT_SORT_COLUMNS` - the sortable columns: key, label, `kind` (`text` A to Z, `num`
+  smallest/largest, `date` oldest/newest) and the direction a header click starts with. **Its keys
+  must equal `apps/services/sort_presets.py`'s `SORT_KEYS_BY_VIEW["materials"]`**
+  (`test_sort_presets.py` checks), or saving a preset that uses the missing key fails with a 400.
+- `MAT_BUILTIN_SORTS` - ready-made sorts (`builtin:*` ids): Latest first (the default), Category,
+  Sub Category, Category then Sub Category then Material, fewest Days Left, highest Inventory Value,
+  most Pending Delivery. `MAT_USER_PRESETS` - the user's saved presets from
+  `GET /api/sort-presets?view=materials` (`ensureSortPresetsLoaded()`, once per visit; on failure
+  `MAT_USER_PRESETS_ERROR` and the select says so, built-ins still work).
+- `MAT_SORT_STATE` - `levels` and `presetId` in use (`'custom'` when no preset matches;
+  `presetIdForLevels()`), plus the Custom sort editor's `draft` / `draftName` / `msg`, kept here so a
+  region re-render never loses them. The sort in use is remembered in localStorage
+  (`pt.matSort.v1`, try/catch both ways, validated on read); presets are on the server.
+- `matSortValue(key, m, entry, latest)` - what a row sorts on. **Blanks sort last in either
+  direction**: no category (the API's literal "Uncategorized" counts as blank), no open PO, no Days
+  Left figure (only where `daysLeftCellHtml()` shows a number), an order-only row's stock/value.
+  `sortMaterialRows(rows, levels, entryOf, latestOf)` sorts on precomputed values (one pass per row,
+  not per comparison), text by `localeCompare` (case-insensitive, numeric), and breaks remaining ties
+  with the default order (latest, stock qty, open value).
+- Three ways in: the **Sort by** select (built-ins and "My presets"); a **header click**
+  (`matSortHeaderHtml()` renders a `.sort-header-btn` with an arrow and, in a multi-level sort, the
+  level number; clicking the sole sorted column again reverses it); and **Custom sort...**
+  (`matSortEditorHtml()`: "Sort by / Then by" rows with column and direction selects, move up/down,
+  remove, "+ Add level" up to 5, a column at most once; Apply, Save as preset, Delete the selected
+  own preset, Close). Saving a name the user already has asks before saving over it. Every change
+  goes through `setMatSort()`, which resets to page 1 and stores the choice.
+- `sortPresetApi()` - JSON fetch for `/api/sort-presets`, same 401/error contract as `apiImports()`.
 
 ### frontend/js/material-modal.js
 
