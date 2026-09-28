@@ -687,15 +687,18 @@ function importListRegionHtml() {
         return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Rate</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(po.plant + '::' + po.poNumber);
-            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
-              '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
-              '<td>' + poMaterialCellHtml(po, cf.material, '-') + '</td>' +
-              '<td>' + poRateCellHtml(po, cf.material, '-', po.currency) + '</td>' +
-              '<td>' + escapeHtml(po.countryOfOrigin || '-') + '</td>' +
-              '<td>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-') + '</td>' +
-              '<td>' + blNumberCellHtml(po, '-') + '</td>' +
-              '<td><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</td>' +
-              '<td><span class="row-link" data-impo="' + key + '">View details</span></td></tr>';
+            // One <tr> per line item (Material + Rate), the order-level
+            // cells spanning them - see flags.js's poTableRowsHtml().
+            return poTableRowsHtml(po, cf.material, rowTintClass(po), [
+              '<b>' + escapeHtml(po.poNumber) + '</b>',
+              escapeHtml(po.vendorName || '-'),
+            ], [
+              escapeHtml(po.countryOfOrigin || '-'),
+              po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-',
+              blNumberCellHtml(po, '-'),
+              '<span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po),
+              '<span class="row-link" data-impo="' + key + '">View details</span>',
+            ]);
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
       return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Rate</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
@@ -705,8 +708,7 @@ function importListRegionHtml() {
           return '<div class="top5-row' + rowTintClass(po) + '">' +
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
-            '<div>' + poMaterialCellHtml(po, cf.material, 'Not available') + '</div>' +
-            '<div>' + poRateCellHtml(po, cf.material, 'Not available', po.currency) + '</div>' +
+            poLinesBlockHtml(po, cf.material, 'Not available') +
             '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
             '<div>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : 'Not available') + '</div>' +
             '<div>' + blNumberCellHtml(po, 'Not available') + '</div>' +

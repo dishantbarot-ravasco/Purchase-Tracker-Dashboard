@@ -598,8 +598,9 @@ Status, flag and badge logic shared by every list and modal. Feature semantics a
 - `rowTintClass(rec)` (mild/moderate/severe at 5% and 20%, only when qty or rate is flagged; reads
   both `_qtyFlag` and material `qtyFlag` shapes), `rowTintLegendHtml()`, `miniStepperHtml(po)`,
   `materialStepperHtml(m)`, `poHasMaterial(po, text)` (Material search on both PO lists: any line
-  `description` contains the text, case-insensitive, whitespace collapsed), `poMaterialCellHtml()`,
-  `poRateCellHtml()` / `formatUnitRate()` (the Rate column), `applyColFilters(recs)`
+  `description` contains the text, case-insensitive, whitespace collapsed), `poListLines()` /
+  `poTableRowsHtml()` / `poLinesBlockHtml()` / `formatUnitRate()` / `PO_LIST_MAX_LINES` (the Material + Rate
+  line rows), `applyColFilters(recs)`
   (Domestic table-only filters), `FILTER_ATTRS` and
   `preserveFocus(container, renderFn)`.
 
@@ -636,14 +637,19 @@ failed fetch just means no hint. A hit's `data-import-po` link runs `openImportP
 jump-to-page, the "N filters active - Clear" chip (full render) and the `[data-cf]` header filters
 (`createdFrom`/`createdTo`/`status` full render, the rest debounced region render).
 
-**Material and Rate columns, and the Material search** (project owner, 2026-09-26 / 2026-09-28).
-Both PO lists have a Material column after Vendor, then a Rate column (`poRateCellHtml()`: the
-per-unit `netPrice` / `uom` of the same line the Material cell leads with, in `po.currency` via
-`formatUnitRate()` - INR or blank shows as ₹, 2 decimals, 4 below 1; an order whose lines differ in
-rate gets "+N more" and every line's rate in the tooltip; no header filter, like Value). The Material
-column shows `poMaterialCellHtml()` (the first line's description, or the first line matching the
-search, plus "+N more" with every description in the tooltip) and has a text filter under it
-(`colFilters.material` here, `importColFilters.material` on Import). It is a plain filter exactly
+**Material and Rate columns, one row per line item, and the Material search** (project owner,
+2026-09-26 / 2026-09-28). Both PO lists have Material and Rate columns after Vendor showing **every
+line item of the order, each line's rate beside its own material** - one material and one rate per
+order hid the second line of a two-line order, and on an order of different materials a single rate
+read as the rate of all of them. The "View all" table gives each line its own `<tr>`
+(`poTableRowsHtml()`: the order-level cells are `rowspan`'d over the order's line rows, a dashed rule
+between them); the top-5 card puts one `.po-lines-block` across the two tracks with its own two
+columns (`poLinesBlockHtml()`). Lines are numbered when there is more than one; past
+`PO_LIST_MAX_LINES` (4) the rest are counted in a "+N more lines" row, and while a Material search is
+active the matching lines are shown first (and bold) so the cap never hides why a row is listed. The
+rate is the line's per-unit `netPrice` / `uom` in `po.currency` (`formatUnitRate()`: INR or blank
+shows as ₹, 2 decimals, 4 below 1); the Rate column has no header filter, like Value. The Material
+filter (`colFilters.material` here, `importColFilters.material` on Import) is a plain filter exactly
 like PO Number / Vendor: an order matches when any line's `description` contains the text
 (`poHasMaterial()`), whatever its status, and it feeds the "Also in Import Purchases" panel the same
 way. Import Purchases has the mirror panel (`domesticCrossHits()`), so a search finds the order

@@ -957,13 +957,20 @@ function poHasMaterial(po, text) {
   return (po.items || []).some(it => normMaterialText(it.description).includes(want));
 }
 
-// The Rate column cell on both PO lists: the per-unit rate of the same line
-// the Material cell leads with (the first line, or the first matching the
-// Material search), with its unit, in the PO's own currency (po.currency,
-// "Currency (As Per PO)" on imports - the figure the PO states, as the import
-// modal shows it); INR or blank shows as ₹. An order whose lines carry different rates gets
-// "+N more" (N = other distinct rates) and every line's rate in the tooltip;
-// lines that all share one rate show just that rate.
+// The Material and Rate columns on both PO lists show EVERY line item of
+// the order, each line's rate beside its own material (project owner,
+// 2026-09-28): one material and one rate per order hid the second line of a
+// two-line order, and on an order of different materials a single rate
+// reads as the rate of all of them. The "View all" table gives each line its
+// own <tr> (poTableRowsHtml(), the order-level cells rowspan'd across them);
+// the top-5 card puts one block across the two columns (poLinesBlockHtml()).
+// Lines keep their PO order; past PO_LIST_MAX_LINES the rest are counted in
+// a "+N more lines" row, and while a Material search is active the matching
+// lines are shown first so the cap never hides the reason a row is listed.
+// Rates are per unit, in the PO's own currency (po.currency - "Currency (As
+// Per PO)" on imports, the figure the PO states); INR or blank shows as ₹.
+const PO_LIST_MAX_LINES = 4;
+
 function formatUnitRate(n, currency) {
   if (n == null || isNaN(n)) return '-';
   const digits = Math.abs(n) < 1 ? 4 : 2;
@@ -972,40 +979,57 @@ function formatUnitRate(n, currency) {
   return code && code.toUpperCase() !== 'INR' ? code + ' ' + num : '₹' + num;
 }
 
-function poRateCellHtml(po, searchText, emptyText, currency) {
+// [{descHtml, rateHtml}] per shown line, plus how many lines were left out.
+function poListLines(po, searchText, emptyText) {
   const want = normMaterialText(searchText);
-  const lines = (po.items || []).map(it => ({
+  const all = (po.items || []).map((it, i) => ({
+    n: i + 1,
     desc: String(it.description || '').trim(),
-    rate: it.netPrice == null ? null : formatUnitRate(it.netPrice, currency) + (it.uom ? ' / ' + it.uom : ''),
+    rate: it.netPrice == null ? '-' : formatUnitRate(it.netPrice, po.currency) + (it.uom ? ' / ' + it.uom : ''),
+    hit: !!want && normMaterialText(it.description).includes(want),
   }));
-  const priced = lines.filter(l => l.rate != null);
-  if (!priced.length) return escapeHtml(emptyText);
-  const lead = (want && priced.find(l => normMaterialText(l.desc).includes(want))) || priced[0];
-  const distinct = [];
-  priced.forEach(l => { if (distinct.indexOf(l.rate) === -1) distinct.push(l.rate); });
-  const more = distinct.length - 1;
-  const tip = lines.map(l => (l.desc || 'Line') + ': ' + (l.rate || 'no rate')).join('\n');
-  return '<span class="nowrap" title="' + escapeHtml(tip) + '">' + escapeHtml(lead.rate) + '</span>' +
-    (more ? ' <span class="text-muted fs-11">+' + more + ' more</span>' : '');
+  if (!all.length) return { lines: [{ descHtml: escapeHtml(emptyText), rateHtml: escapeHtml(emptyText) }], hidden: 0 };
+  const ordered = want ? all.filter(l => l.hit).concat(all.filter(l => !l.hit)) : all;
+  const shown = ordered.slice(0, PO_LIST_MAX_LINES).sort((x, y) => x.n - y.n);
+  const numbered = all.length > 1;
+  return {
+    lines: shown.map(l => ({
+      descHtml: '<span class="po-line' + (l.hit ? ' po-line-hit' : '') + '">' +
+        (numbered ? '<span class="po-line-no">' + l.n + '</span>' : '') + escapeHtml(l.desc || '-') + '</span>',
+      rateHtml: '<span class="po-line nowrap' + (l.hit ? ' po-line-hit' : '') + '">' +
+        (numbered ? '<span class="po-line-no">' + l.n + '</span>' : '') + escapeHtml(l.rate) + '</span>',
+    })),
+    hidden: all.length - shown.length,
+  };
 }
 
-// The Material column cell on both PO lists: the first line's description,
-// or - while a Material search is active - the first line that matched it,
-// so the reader sees why the order is listed. "+N more" counts the order's
-// other distinct descriptions, all of which are in the tooltip.
-function poMaterialCellHtml(po, searchText, emptyText) {
-  const want = normMaterialText(searchText);
-  const descs = [];
-  (po.items || []).forEach(it => {
-    const d = String(it.description || '').trim();
-    if (d && descs.indexOf(d) === -1) descs.push(d);
-  });
-  if (!descs.length) return escapeHtml(emptyText);
-  const hit = want ? descs.find(d => normMaterialText(d).includes(want)) : null;
-  const first = hit || descs[0];
-  const more = descs.length - 1;
-  return '<span title="' + escapeHtml(descs.join('\n')) + '">' + escapeHtml(first) + '</span>' +
-    (more ? ' <span class="text-muted fs-11">+' + more + ' more</span>' : '');
+function poLinesMoreHtml(hidden) {
+  return '<span class="text-muted fs-11">+' + hidden + ' more line' + (hidden > 1 ? 's' : '') + ' - open View details for all</span>';
+}
+
+// Top-5 card: one grid item spanning the Material and Rate tracks, laid out
+// as its own two-column grid so each rate sits on its line's row.
+function poLinesBlockHtml(po, searchText, emptyText) {
+  const { lines, hidden } = poListLines(po, searchText, emptyText);
+  return '<div class="po-lines-block">' +
+    lines.map(l => '<div>' + l.descHtml + '</div><div>' + l.rateHtml + '</div>').join('') +
+    (hidden ? '<div class="po-lines-more">' + poLinesMoreHtml(hidden) + '</div>' : '') +
+  '</div>';
+}
+
+// "View all" table: `lead` / `tail` are the order-level cells before and
+// after Material + Rate (inner HTML), rowspan'd over the order's line rows.
+function poTableRowsHtml(po, searchText, trClass, lead, tail) {
+  const { lines, hidden } = poListLines(po, searchText, '-');
+  const span = lines.length + (hidden ? 1 : 0);
+  const rs = span > 1 ? ' rowspan="' + span + '"' : '';
+  const cls = (extra) => ' class="' + (trClass + extra).trim() + '"';
+  const pair = l => '<td>' + l.descHtml + '</td><td>' + l.rateHtml + '</td>';
+  return '<tr' + cls(span > 1 ? ' po-line-first' : '') + '>' +
+      lead.map(c => '<td' + rs + '>' + c + '</td>').join('') + pair(lines[0]) + tail.map(c => '<td' + rs + '>' + c + '</td>').join('') +
+    '</tr>' +
+    lines.slice(1).map(l => '<tr' + cls(' po-line-cont') + '>' + pair(l) + '</tr>').join('') +
+    (hidden ? '<tr' + cls(' po-line-cont') + '><td colspan="2">' + poLinesMoreHtml(hidden) + '</td></tr>' : '');
 }
 
 function applyColFilters(recs) {

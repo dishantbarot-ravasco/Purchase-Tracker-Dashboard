@@ -658,6 +658,22 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .badge-import { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--indigo-soft); color:var(--indigo-text); cursor:help; }
 tr.lot-used-up td { opacity:.55; }
 td.nowrap, div.nowrap, span.nowrap { white-space:nowrap; }
+
+/* Material + Rate per line item on the PO lists - flags.js's
+   poTableRowsHtml() (View all: one <tr> per line, the order-level cells
+   rowspan'd, a dashed rule between an order's own lines) and
+   poLinesBlockHtml() (top-5 card: one block across the Material and Rate
+   tracks, its own two columns matching them so each rate sits on its line). */
+tr.po-line-first td[rowspan] { vertical-align:middle; }
+tr.po-line-first > td:not([rowspan]), tr.po-line-cont > td { vertical-align:top; }
+tr.po-line-first > td:not([rowspan]) { border-bottom-style:dashed; }
+tr.po-line-cont > td { border-top-style:dashed; border-bottom-style:dashed; }
+.po-line { display:inline-flex; gap:6px; align-items:baseline; }
+.po-line-no { flex:none; min-width:16px; height:16px; line-height:16px; border-radius:99px; background:var(--gray-soft); border:1px solid var(--border); color:var(--slate-soft); font-size:10px; font-weight:700; text-align:center; }
+.po-line-hit { font-weight:700; }
+.po-lines-block { grid-column:span 2; display:grid; grid-template-columns:1fr 1fr; column-gap:12px; row-gap:6px; align-items:start; }
+.po-lines-block > div:nth-child(4n+3), .po-lines-block > div:nth-child(4n+4) { border-top:1px dashed var(--border); padding-top:6px; }
+.po-lines-more { grid-column:span 2; }
 .badge-warn { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--red-soft); color:var(--red-text); }
 .dismiss-link { display:inline-block; font-size:10.5px; font-weight:600; margin-left:6px; color:var(--gold-accent-text); cursor:pointer; }
 .dismiss-link:hover { text-decoration:underline; }

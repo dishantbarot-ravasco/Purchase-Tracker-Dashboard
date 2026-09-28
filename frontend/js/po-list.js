@@ -667,16 +667,19 @@ function poListRegionHtml() {
         return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Rate</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
-            return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
-              '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
-              '<td>' + poMaterialCellHtml(po, state.colFilters.material, '-') + '</td>' +
-              '<td>' + poRateCellHtml(po, state.colFilters.material, '-', po.currency) + '</td>' +
-              '<td>' + escapeHtml(formatDateIN(po.createdDate)) + '</td>' +
-              '<td>' + escapeHtml(formatDateIN(po._deliveryDate)) + '</td>' +
-              '<td>' + poValueCellHtml(po) + '</td>' +
-              '<td><span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po) + '</td>' +
-              '<td>' + miniStepperHtml(po) + '</td>' +
-              '<td><span class="row-link" data-po="' + key + '">View details</span></td></tr>';
+            // One <tr> per line item (Material + Rate), the order-level
+            // cells spanning them - see flags.js's poTableRowsHtml().
+            return poTableRowsHtml(po, state.colFilters.material, rowTintClass(po), [
+              '<b>' + escapeHtml(po.poNumber) + '</b>',
+              escapeHtml(po.vendorName || '-'),
+            ], [
+              escapeHtml(formatDateIN(po.createdDate)),
+              escapeHtml(formatDateIN(po._deliveryDate)),
+              poValueCellHtml(po),
+              '<span class="status-pill status-' + po._status + '">' + escapeHtml(STATUS_LABELS[po._status]) + '</span>' + rowFlags(po),
+              miniStepperHtml(po),
+              '<span class="row-link" data-po="' + key + '">View details</span>',
+            ]);
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
       return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Rate</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
@@ -686,8 +689,7 @@ function poListRegionHtml() {
           return '<div class="top5-row' + rowTintClass(po) + '">' +
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
-            '<div>' + poMaterialCellHtml(po, state.colFilters.material, 'Not available') + '</div>' +
-            '<div>' + poRateCellHtml(po, state.colFilters.material, 'Not available', po.currency) + '</div>' +
+            poLinesBlockHtml(po, state.colFilters.material, 'Not available') +
             '<div>' + escapeHtml(formatDateIN(po.createdDate) || 'Not available') + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po._deliveryDate) || 'Not available') + '</div>' +
             '<div>' + poValueCellHtml(po) + '</div>' +
