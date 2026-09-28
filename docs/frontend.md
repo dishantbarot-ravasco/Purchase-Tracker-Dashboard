@@ -786,11 +786,25 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
 - `openQtyOfLine(item)` / `openValueOfLine(item)` - what is still to come on an open line: ordered
   qty less the server's `received.qty` (already in the line's unit; `importPoAsMaterialOrder()`
   passes the import match's `received` through), or the whole qty when nothing comparable arrived
-  (no match, a dismissed match, a unit clash). `summariseOpenQty(lines)` totals open qty per base
-  unit through `MAT_UOM_FAMILIES`, a mirror of `parsers/common.py`'s `_UOM_FAMILIES` - keep the two
-  in step. Unrecognised units are counted, never added.
+  (no match, a dismissed match, a unit clash). `summariseLineQty(lines, qtyOf)` totals a per-line
+  qty per base unit through `MAT_UOM_FAMILIES`, a mirror of `parsers/common.py`'s `_UOM_FAMILIES` -
+  keep the two in step; `summariseOpenQty(lines)` is it over `openQtyOfLine()`. Unrecognised units
+  are counted, never added. `orderedValueOfLine(item)` is the whole line at its PO rate (`netValue`
+  when no rate); `formatQtyTotals()` prints per-unit totals, weight in MT from 10,000 KG.
+- **Table columns** (in order): Material, Category, Sub Category, Stock, Inventory Value, Latest
+  Rate, Days Left, Pending Delivery, Open PO Pipeline, Status, Progress, Details; `matFilterCells`
+  has one entry per column (empty for the ones with no header control). `stockCellHtml(m)` shows the
+  row total and, on All Plants, a line per plant holding a lot of it (`lotsQtyText()`, unit-aware;
+  a plant with no lot is left out, not shown as 0). `materialOrderFigures(openLinks)` - over the
+  row's open lines: pending qty/value (`openQtyOfLine()`/`openValueOfLine()`), the value-weighted PO
+  rate when every line is in one recognised unit, the full ordered qty/value, distinct open PO count
+  and the share of ordered value already received. `pendingDeliveryCellHtml()` / `pipelineCellHtml()`
+  render them ("No open PO" when there are none), with a cell tooltip via `cellInfoHtml()`
+  (`infoTooltipHtml()` minus `kpi-info`, whose `position:static` anchors to a KPI card). These are
+  per-row figures: a line the fuzzy link ties to two materials counts under both, like `openValue`;
+  the KPI cards are the deduped totals.
 - `computeMaterialPoLinkage(materials, plantKeys)` - per material: `links`, `openLinks`, `openValue`
-  (still-to-come value), per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. "PO Not
+  (still-to-come value), `orderFigures` (below), per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. "PO Not
   Found in MIR" is not raised for a line whose PO is `pending` (nothing arrived, not past due) -
   the same rule as `rowFlagsHtml()`'s On Order suppression; left in, every open order and every
   order-only row counted as a Data Quality Flag. `computeMaterialStatus()`
