@@ -1018,12 +1018,30 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mat-pipe-bar { height:5px; border-radius:99px; background:var(--gray-soft); overflow:hidden; margin:5px 0 1px; max-width:150px; }
 .mat-pipe-fill { display:block; height:100%; width:0; border-radius:99px; background:var(--green); }
 .mat-table td { vertical-align:top; }
-.mat-table { table-layout:fixed; min-width:1240px; }
+/* Fixed-width "View all" tables (2026-09-28): Domestic (.po-table), Import
+   (.imp-table) and Raw Material (.mat-table). Each has a <colgroup> of
+   percentage widths, so the browser cannot hand the spare width to whichever
+   column holds the longest text (Material took a third of the Raw Material
+   table under automatic layout). min-width keeps the columns usable on a
+   laptop; below it the table scrolls sideways inside .table-wrap. */
+.fixed-table { table-layout:fixed; min-width:1240px; }
+.fixed-table td, .fixed-table th { overflow-wrap:anywhere; }
+.fixed-table .mat-view-link, .fixed-table .row-link { white-space:normal; }
+/* Two date inputs no longer fit side by side in a fixed column: stacked. */
+.fixed-table .col-filter-range { flex-direction:column; align-items:stretch; }
+.fixed-table .col-filter-range input[type=date] { width:100%; }
+.po-col-0 { width:9%; } .po-col-1 { width:12%; } .po-col-2 { width:13%; } .po-col-3 { width:10%; }
+.po-col-4 { width:9%; } .po-col-5 { width:9%; } .po-col-6 { width:8%; } .po-col-7 { width:13%; }
+.po-col-8 { width:10%; } .po-col-9 { width:7%; }
+/* A stepper's stage names and a long rate ("Rs 12,345.50 / KG") wrap within
+   their column rather than running into the next one. */
+.fixed-table .mini-stepper-labels, .fixed-table .po-line.nowrap { white-space:normal; }
+.imp-col-0 { width:10%; } .imp-col-1 { width:14%; } .imp-col-2 { width:16%; } .imp-col-3 { width:10%; }
+.imp-col-4 { width:9%; } .imp-col-5 { width:10%; } .imp-col-6 { width:15%; } .imp-col-7 { width:9%; }
+.imp-col-8 { width:7%; }
 .mat-col-0 { width:17%; } .mat-col-1 { width:12%; } .mat-col-2 { width:12%; } .mat-col-3 { width:9%; }
 .mat-col-4 { width:6%; } .mat-col-5 { width:9%; } .mat-col-6 { width:11%; } .mat-col-7 { width:10%; }
 .mat-col-8 { width:7%; } .mat-col-9 { width:7%; }
-.mat-table td, .mat-table th { overflow-wrap:anywhere; }
-.mat-table .mat-view-link { white-space:normal; }
 .mat-plant-split > span { white-space:nowrap; }
 .days-left-cell { white-space:nowrap; }
 .mat-table .days-left-cell { padding-top:1px; }

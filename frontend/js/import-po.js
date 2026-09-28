@@ -761,7 +761,8 @@ function importListRegionHtml() {
               jumpToPageHtml('import', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table class="imp-table"><thead><tr>' + IMPORT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' + colFilterRow + '</thead>' +
+        // Fixed column proportions (.imp-col-* in style.css), as on Domestic.
+        return '<div class="table-wrap"><table class="fixed-table imp-table"><colgroup>' + IMPORT_LIST_COLUMNS.map((c, i) => '<col class="imp-col-' + i + '">').join('') + '</colgroup><thead><tr>' + IMPORT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(po.plant + '::' + po.poNumber);
             // One <tr> per line item (Material + Rate), the order-level

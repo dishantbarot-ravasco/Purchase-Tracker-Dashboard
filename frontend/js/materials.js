@@ -1458,7 +1458,7 @@ function materialsListRegionHtml() {
         // Fixed column proportions (.mat-col-* in style.css) - under automatic
         // layout the browser handed most spare width to Material, whose long
         // names made it a third of the table.
-        return '<div class="table-wrap"><table class="mat-table"><colgroup>' + MAT_LIST_COLUMNS.map((c, i) => '<col class="mat-col-' + i + '">').join('') + '</colgroup><thead><tr>' + MAT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' +
+        return '<div class="table-wrap"><table class="fixed-table mat-table"><colgroup>' + MAT_LIST_COLUMNS.map((c, i) => '<col class="mat-col-' + i + '">').join('') + '</colgroup><thead><tr>' + MAT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' +
           colFilterRow +
         '</thead><tbody>' +
         listRecs.map(m => {

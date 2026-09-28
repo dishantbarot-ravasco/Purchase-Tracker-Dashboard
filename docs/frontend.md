@@ -629,7 +629,8 @@ region. `status:nothing` is also in the header Status select. `PO_LIST_CTX` carr
 filter, month filter and `applyColFilters()`, sorts with `PO_SORT.sortRows()` (po-sort.js; newest
 first unless the user chose another sort, with `PO_SORT.barHtml()` above the list and sortable
 header labels from `PO_SORT.headerHtml()`), and renders a top-5 grid or a
-paginated (`LIST_PAGE_SIZE`, 100/page) "View all" table with the header filter row; row links carry
+paginated (`LIST_PAGE_SIZE`, 100/page) "View all" table (`.fixed-table.po-table`, a `<colgroup>` of
+`.po-col-0` to `.po-col-9` widths) with the header filter row; row links carry
 `data-po="<plant>::<poNumber>"` and open `openPoModal()`. Under the list,
 `importCrossHitsHtml()` adds **"Also in Import Purchases (N)"** when the PO Number, Vendor or Material
 filter matches an import order at the selected plants (same contains rule as `applyColFilters()`, up
@@ -844,7 +845,8 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   (`.mat-table`) is `table-layout: fixed` with a `<colgroup>` of `.mat-col-0` to `.mat-col-9`
   percentages (min-width 1240px): under automatic layout the browser gave most spare width to
   Material, a third of the table on real data. The per-plant stock split uses the plant's short
-  name (`HRS`, not `HRS, Silvassa`) so each plant stays on one line.
+  name (`HRS`, not `HRS, Silvassa`) so each plant stays on one line. The Domestic and Import "View
+  all" tables work the same way (`.fixed-table` with `.po-col-*` / `.imp-col-*`, see style.css).
 - `computeMaterialPoLinkage(materials, plantKeys)` - per material: `links`, `openLinks`, `openValue`
   (still-to-come value), `orderFigures` (below), per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. "PO Not
   Found in MIR" is not raised for a line whose PO is `pending` (nothing arrived, not past due) -
@@ -1199,7 +1201,12 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   and collapsed borders scrolled away from the stuck cells. Hidden `.info-tooltip` / `.row-flag-wrap`
   tooltips are `display:none` inside `.table-wrap` and `.mat-grid-scroll` until hovered: hidden
   only by opacity/visibility they still widened the scroll area, and a row-flag tooltip was one
-  unbounded nowrap line, which left a blank strip to the right of the table; it now wraps at 240px), status pills and badges, legend, disclaimer, modal shell, correction
+  unbounded nowrap line, which left a blank strip to the right of the table; it now wraps at 240px.
+  **All three "View all" list tables are `.fixed-table`** - `table-layout: fixed`, min-width 1240px,
+  and a `<colgroup>` of percentage widths per table (`.po-col-*` Domestic, `.imp-col-*` Import,
+  `.mat-col-*` Raw Material; each class list must match its table's column count and order).
+  Inside them the date-range filter's two inputs stack, and stepper labels and long rates wrap,
+  so nothing spills into the next column), status pills and badges, legend, disclaimer, modal shell, correction
   box, MIR picker and its "already matched" choice (`.mir-choice*`), reconciliation cards, steppers, the Domestic list's "Also in Import Purchases"
   box (`.cross-kind-*`), chart panels (`.chart-head`, `.chart-legend` / `.legend-chip`, `.chart-foot`
   and its month `.chart-filter-chip`; `.doughnut-layout` puts the rings beside their legend through a

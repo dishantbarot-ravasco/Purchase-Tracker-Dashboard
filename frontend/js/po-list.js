@@ -675,7 +675,10 @@ function poListRegionHtml() {
               jumpToPageHtml('po', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr>' + headerLabels.map(h => '<th>' + h + '</th>').join('') + '</tr>' + colFilterRow + '</thead>' +
+        // Fixed column proportions (.po-col-* in style.css), not automatic
+        // layout, so a long vendor or material name cannot widen its column
+        // at the others' expense.
+        return '<div class="table-wrap"><table class="fixed-table po-table"><colgroup>' + headerLabels.map((h, i) => '<col class="po-col-' + i + '">').join('') + '</colgroup><thead><tr>' + headerLabels.map(h => '<th>' + h + '</th>').join('') + '</tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
             // One <tr> per line item (Material + Rate), the order-level
