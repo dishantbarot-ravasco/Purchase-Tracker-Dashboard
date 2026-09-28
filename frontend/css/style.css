@@ -563,13 +563,37 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    annoying. */
 .table-wrap { border-radius:10px; overflow-x:auto; overflow-y:auto; max-height:70vh; border:1px solid var(--border); box-shadow:var(--dash-shadow); background:var(--card); }
 .table-wrap table { border:none; }
-/* Sticky header - both <thead> rows when a column-filter row is present
-   (frontend/js/main.js's colFilterRow), stacked via an approximate but
-   stable offset (the label row's own padding/font-size are fixed in this
-   stylesheet, so its rendered height doesn't vary by content). */
-.table-wrap thead th { position:sticky; z-index:5; }
-.table-wrap thead tr:first-child th { top:0; }
-.table-wrap thead tr.col-filter-row th { top:33px; }
+/* Frozen header (2026-09-28). The whole <thead> - label row and, on the
+   "View all" lists, the column-filter row - sticks as one block. It used to
+   pin each row separately, the filter row at a fixed top:33px, so a label
+   that wrapped to two lines ("Value (Incl.)", a sort button) slid under the
+   filter row and was cut in half. `separate` borders, not `collapse`: a
+   collapsed border belongs to the table, not the cell, and scrolls away from
+   a stuck header, leaving borderless floating labels. Each cell draws its
+   own right and bottom edge instead, and the header's bottom edge is doubled
+   so it reads as a boundary over the rows scrolling beneath it. */
+.table-wrap table { border-collapse:separate; border-spacing:0; }
+.table-wrap th, .table-wrap td { border:0; border-right:1px solid var(--border-soft); border-bottom:1px solid var(--border-soft); }
+.table-wrap th:last-child, .table-wrap td:last-child { border-right:0; }
+.table-wrap tbody tr:last-child td { border-bottom:0; }
+.table-wrap thead { position:sticky; top:0; z-index:6; }
+.table-wrap thead th { border-right-color:var(--border); border-bottom-color:var(--border); }
+.table-wrap thead tr:last-child th { border-bottom:2px solid var(--border-strong); box-shadow:0 2px 4px rgba(15,23,42,.06); }
+/* A rowspan'd order cell spans its lines, so its right edge must be drawn
+   even where the last visible column of a line row is not the table's. */
+.table-wrap td[rowspan] { border-right:1px solid var(--border-soft); }
+/* Hover tooltips inside a scroll container take no space until shown.
+   Hidden with only opacity/visibility they still counted toward the
+   container's scroll width, so a long row-flag list (one nowrap line) left
+   a blank strip hundreds of pixels wide to the right of the table. */
+.table-wrap .info-tooltip:not(:hover):not(:focus-visible)::after,
+.table-wrap .info-tooltip:not(:hover):not(:focus-visible)::before,
+.table-wrap .row-flag-wrap:not(:hover)::after,
+.table-wrap .row-flag-wrap:not(:hover)::before,
+.mat-grid-scroll .info-tooltip:not(:hover):not(:focus-visible)::after,
+.mat-grid-scroll .info-tooltip:not(:hover):not(:focus-visible)::before,
+.mat-grid-scroll .row-flag-wrap:not(:hover)::after,
+.mat-grid-scroll .row-flag-wrap:not(:hover)::before { display:none; }
 
 /* Per-column header filter row on the "View all" PO table - see
    frontend/js/main.js's colFilterRow. A second <tr> of <th>s directly under
@@ -616,7 +640,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .row-flag-wrap::after {
   content: attr(data-tooltip);
   position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%);
-  background:var(--navy-solid); color:#fff; font-size:11px; font-weight:600; line-height:1.3; white-space:nowrap;
+  background:var(--navy-solid); color:#fff; font-size:11px; font-weight:600; line-height:1.3; white-space:normal; width:max-content; max-width:240px; text-align:left;
   padding:5px 9px; border-radius:6px; opacity:0; visibility:hidden; pointer-events:none;
   transition:opacity .1s ease; z-index:30; box-shadow:0 4px 14px rgba(0,0,0,.2);
 }
@@ -986,7 +1010,7 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mat-cell-main.mat-cell-text { font-weight:600; }
 .mat-cell-sub { font-size:11px; color:var(--slate-soft); font-variant-numeric:tabular-nums; line-height:1.4; margin-top:2px; }
 .mat-cell-none { font-size:11.5px; color:var(--slate-soft); }
-.mat-plant-split { display:flex; justify-content:space-between; gap:8px; max-width:190px; }
+.mat-plant-split { display:flex; justify-content:space-between; gap:8px; max-width:170px; }
 .mat-name { display:block; font-size:13px; line-height:1.3; }
 .mat-tag { display:inline-block; margin-top:4px; padding:1px 7px; border-radius:99px; font-size:10px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; background:var(--gray-soft); color:var(--slate-soft); }
 .mat-status-cell { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; }
@@ -994,6 +1018,14 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mat-pipe-bar { height:5px; border-radius:99px; background:var(--gray-soft); overflow:hidden; margin:5px 0 1px; max-width:150px; }
 .mat-pipe-fill { display:block; height:100%; width:0; border-radius:99px; background:var(--green); }
 .mat-table td { vertical-align:top; }
+.mat-table { table-layout:fixed; min-width:1240px; }
+.mat-col-0 { width:17%; } .mat-col-1 { width:12%; } .mat-col-2 { width:12%; } .mat-col-3 { width:9%; }
+.mat-col-4 { width:6%; } .mat-col-5 { width:9%; } .mat-col-6 { width:11%; } .mat-col-7 { width:10%; }
+.mat-col-8 { width:7%; } .mat-col-9 { width:7%; }
+.mat-table td, .mat-table th { overflow-wrap:anywhere; }
+.mat-table .mat-view-link { white-space:normal; }
+.mat-plant-split > span { white-space:nowrap; }
+.days-left-cell { white-space:nowrap; }
 .mat-table .days-left-cell { padding-top:1px; }
 /* Import Purchases list (import-po.js's IMPORT_LIST_COLUMNS), same cell
    style: PO Number, Vendor, Material + Rate (.po-lines-block spans both),

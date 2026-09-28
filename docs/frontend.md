@@ -840,7 +840,11 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   to a KPI card). These are per-row figures: a line the fuzzy link ties to two materials counts under
   both, like `openValue`; the KPI cards are the deduped totals. The grid is `.mat-grid-cols` (its own
   track widths in `style.css`, not `.grid-cols`) inside `.mat-grid-scroll`, which scrolls sideways
-  below about 1200px rather than squeezing every figure onto two lines.
+  below about 1200px rather than squeezing every figure onto two lines. The "View all" table
+  (`.mat-table`) is `table-layout: fixed` with a `<colgroup>` of `.mat-col-0` to `.mat-col-9`
+  percentages (min-width 1240px): under automatic layout the browser gave most spare width to
+  Material, a third of the table on real data. The per-plant stock split uses the plant's short
+  name (`HRS`, not `HRS, Silvassa`) so each plant stays on one line.
 - `computeMaterialPoLinkage(materials, plantKeys)` - per material: `links`, `openLinks`, `openValue`
   (still-to-come value), `orderFigures` (below), per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. "PO Not
   Found in MIR" is not raised for a line whose PO is `pending` (nothing arrived, not past due) -
@@ -1188,8 +1192,14 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
 - **`style.css`** (`index.html` only) - `--dash-*` and dashboard tokens, sync bar and refresh status,
   the three tab components, KPI cards (flexbox with a fixed basis, not grid - both grid variants were
   tried and looked wrong with 8 vs 13 cards), info and row-flag CSS tooltips (instant, unlike native
-  `title`), tables (sticky headers inside `.table-wrap`, which is a two-axis scroll container, so a CSS
-  tooltip inside it is clipped), status pills and badges, legend, disclaimer, modal shell, correction
+  `title`), tables (`.table-wrap` is a two-axis scroll container, so a CSS tooltip inside it is
+  clipped; **its whole `<thead>` is sticky as one block**, label row and filter row together, with
+  `border-collapse: separate` and per-cell right/bottom borders so the boundaries stay on the frozen
+  header - it used to pin the filter row at a fixed `top:33px`, which cut a two-line label in half,
+  and collapsed borders scrolled away from the stuck cells. Hidden `.info-tooltip` / `.row-flag-wrap`
+  tooltips are `display:none` inside `.table-wrap` and `.mat-grid-scroll` until hovered: hidden
+  only by opacity/visibility they still widened the scroll area, and a row-flag tooltip was one
+  unbounded nowrap line, which left a blank strip to the right of the table; it now wraps at 240px), status pills and badges, legend, disclaimer, modal shell, correction
   box, MIR picker and its "already matched" choice (`.mir-choice*`), reconciliation cards, steppers, the Domestic list's "Also in Import Purchases"
   box (`.cross-kind-*`), chart panels (`.chart-head`, `.chart-legend` / `.legend-chip`, `.chart-foot`
   and its month `.chart-filter-chip`; `.doughnut-layout` puts the rings beside their legend through a

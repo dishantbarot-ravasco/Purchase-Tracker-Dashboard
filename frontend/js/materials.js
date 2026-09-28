@@ -794,8 +794,10 @@ function stockCellHtml(m) {
   });
   const keys = Object.keys(PLANTS).filter(k => byPlant.has(k));
   if (keys.length === 1) return main + '<div class="mat-cell-sub">' + escapeHtml(PLANTS[keys[0]].label) + ' only</div>';
+  // The plant's short name ("HRS", not "HRS, Silvassa") so the name and its
+  // quantity stay on one line each.
   return main + keys.map(k =>
-    '<div class="mat-cell-sub mat-plant-split"><span>' + escapeHtml(PLANTS[k].label) + '</span><span>' + escapeHtml(lotsQtyText(byPlant.get(k))) + '</span></div>').join('');
+    '<div class="mat-cell-sub mat-plant-split"><span>' + escapeHtml(PLANTS[k].label.split(',')[0]) + '</span><span>' + escapeHtml(lotsQtyText(byPlant.get(k))) + '</span></div>').join('');
 }
 
 // Rows for materials that are ON ORDER but have no RM Stock lot at all
@@ -1453,7 +1455,10 @@ function materialsListRegionHtml() {
       // the fuller reasoning). "View all" still renders as a plain <table>
       // for all three views.
       if (showingAll) {
-        return '<div class="table-wrap"><table class="mat-table"><thead><tr>' + MAT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' +
+        // Fixed column proportions (.mat-col-* in style.css) - under automatic
+        // layout the browser handed most spare width to Material, whose long
+        // names made it a third of the table.
+        return '<div class="table-wrap"><table class="mat-table"><colgroup>' + MAT_LIST_COLUMNS.map((c, i) => '<col class="mat-col-' + i + '">').join('') + '</colgroup><thead><tr>' + MAT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' +
           colFilterRow +
         '</thead><tbody>' +
         listRecs.map(m => {
