@@ -24,6 +24,55 @@ function resolveOrderOnlyAnchor(normKey) {
   return anchor;
 }
 
+// ── Sortable tables inside this modal (2026-09-28) ──
+// Stock by Plant and Open Purchase Orders sort through list-sort.js like the
+// lists do (material-sort.js's MAT_LOTS_SORT / MAT_OPEN_PO_SORT). The rows
+// carry inline-edit, dismiss and open-PO controls, so a sort change moves
+// the existing <tr>s into the new order rather than rebuilding them (see
+// material-sort.js for why); only the sort bar and header row are redrawn.
+// MAT_MODAL_SORT_TABLES keeps each table's rows and header labels for that,
+// replaced on every modal render.
+const MAT_MODAL_SORT_TABLES = {};
+const MAT_MODAL_SORT_HEADERS = {
+  lots: [['Plant', 'plant'], ['Vendor', 'vendor'], ['Received', 'received'], ['Category', 'category'], ['Qty', 'qty'], ['Rate', 'rate'], ['Value', 'value'], ['MIR↔Stock Match', null]],
+  openPos: [['PO Number', 'poNumber'], ['Vendor', 'vendor'], ['Plant', 'plant'], ['Qty to come', 'qtyToCome'], ['Value to come (INR)', 'valueToCome'], ['Status', 'status']],
+};
+
+function matModalHeaderRowHtml(which, sorter) {
+  return MAT_MODAL_SORT_HEADERS[which].map(([label, key]) => '<th>' + sorter.headerHtml(label, key) + '</th>').join('');
+}
+
+// The table's section: sort bar, header row, rows in the current sort (each
+// tagged data-sort-row with its index in `rows`), then `footHtml` (a total
+// row, tagged data-sort-foot so it stays last).
+function sortableModalTableHtml(which, sorter, rows, rowHtml, footHtml) {
+  MAT_MODAL_SORT_TABLES[which] = { sorter, rows, index: new Map(rows.map((r, i) => [r, i])) };
+  return '<div class="modal-sort-section" id="matModalSort-' + which + '">' +
+    '<div data-sort-bar>' + sorter.barHtml() + '</div>' +
+    '<div class="table-wrap"><table><thead><tr>' + matModalHeaderRowHtml(which, sorter) + '</tr></thead><tbody>' +
+      sorter.sortRows(rows).map(r => rowHtml(r, MAT_MODAL_SORT_TABLES[which].index.get(r))).join('') + footHtml +
+    '</tbody></table></div></div>';
+}
+
+// A sorter's rerender for these tables: redraw the bar and header, move the
+// rows into the new order, re-wire the sort controls.
+function resortMatModalTable(which) {
+  const table = MAT_MODAL_SORT_TABLES[which];
+  const section = document.getElementById('matModalSort-' + which);
+  if (!table || !section) return;
+  section.querySelector('[data-sort-bar]').innerHTML = table.sorter.barHtml();
+  section.querySelector('thead tr').innerHTML = matModalHeaderRowHtml(which, table.sorter);
+  const tbody = section.querySelector('tbody');
+  const foot = tbody.querySelector('[data-sort-foot]');
+  const byIndex = new Map();
+  tbody.querySelectorAll('[data-sort-row]').forEach(tr => byIndex.set(Number(tr.dataset.sortRow), tr));
+  table.sorter.sortRows(table.rows).forEach(r => {
+    const tr = byIndex.get(table.index.get(r));
+    if (tr) tbody.insertBefore(tr, foot);
+  });
+  table.sorter.wire(section);
+}
+
 async function openMaterialModal(compositeKey) {
   const myModalRequestId = ++modalRequestId;
   const sep = compositeKey.indexOf('::');
@@ -62,7 +111,10 @@ async function openMaterialModal(compositeKey) {
   body.innerHTML = '<div class="modal-head"><div></div><span class="close-btn">&times;</span></div><div class="load-banner"><div class="spinner"></div><div>Loading material analysis&hellip;</div></div>';
 
   try {
-    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS), ensurePOsLoaded(PLANT_KEYS), ensureImportPOsLoaded()]);
+    // Plus the saved sort presets of this modal's two sortable tables
+    // (material-sort.js) - those loaders never throw.
+    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS), ensurePOsLoaded(PLANT_KEYS), ensureImportPOsLoaded(),
+      MAT_LOTS_SORT.ensurePresetsLoaded(), MAT_OPEN_PO_SORT.ensurePresetsLoaded()]);
   } catch (e) {
     console.error('openMaterialModal cross-plant load failed:', e);
     if (myModalRequestId !== modalRequestId) return; // a newer modal open superseded this one
@@ -179,23 +231,24 @@ async function openMaterialModal(compositeKey) {
     plantOrder(a._plantKey) - plantOrder(b._plantKey)
     || ((b.qty || 0) > 0) - ((a.qty || 0) > 0)
     || (b.receivedDate || '').localeCompare(a.receivedDate || ''));
+  // Sortable (material-sort.js's MAT_LOTS_SORT): the order above is the
+  // default, and the Total row always stays last.
+  const lotRowHtml = (l, idx) => {
+    const usedUp = !((l.qty || 0) > 0);
+    return '<tr data-sort-row="' + idx + '"' + (usedUp ? ' class="lot-used-up" title="Used up - still listed in the Stock sheet"' : '') + '>' +
+      '<td>' + escapeHtml(l._plantLabel) +
+        (l.locationTag ? '<div class="fs-11 text-slate-soft nowrap" title="Where the Stock sheet files this lot">Location: ' + escapeHtml(l.locationTag) + '</div>' : '') + '</td>' +
+      '<td>' + escapeHtml(l.vendor || '-') + '</td>' +
+      '<td class="nowrap">' + escapeHtml(l.receivedDate ? formatDateIN(l.receivedDate) : '-') + '</td>' +
+      '<td>' + editableCell(l._plantKey, 'Category (' + l._plantLabel + ')', l.category, 'category', l.lotId, 'text') + '</td>' +
+      '<td>' + (l.qty != null ? l.qty : '-') + (usedUp ? '<div class="fs-11 text-slate-soft">used up</div>' : '') + '</td>' +
+      '<td>' + editableCell(l._plantKey, 'Rate (' + l._plantLabel + ')', l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
+      '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
+      '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>';
+  };
   const stockTableHtml = siblingLots.length
-    ? '<div class="table-wrap"><table><thead><tr><th>Plant</th><th>Vendor</th><th>Received</th><th>Category</th><th>Qty</th><th>Rate</th><th>Value</th><th>MIR↔Stock Match</th></tr></thead><tbody>' +
-        siblingLots.map(l => {
-          const usedUp = !((l.qty || 0) > 0);
-          return '<tr' + (usedUp ? ' class="lot-used-up" title="Used up - still listed in the Stock sheet"' : '') + '>' +
-            '<td>' + escapeHtml(l._plantLabel) +
-              (l.locationTag ? '<div class="fs-11 text-slate-soft nowrap" title="Where the Stock sheet files this lot">Location: ' + escapeHtml(l.locationTag) + '</div>' : '') + '</td>' +
-            '<td>' + escapeHtml(l.vendor || '-') + '</td>' +
-            '<td class="nowrap">' + escapeHtml(l.receivedDate ? formatDateIN(l.receivedDate) : '-') + '</td>' +
-            '<td>' + editableCell(l._plantKey, 'Category (' + l._plantLabel + ')', l.category, 'category', l.lotId, 'text') + '</td>' +
-            '<td>' + (l.qty != null ? l.qty : '-') + (usedUp ? '<div class="fs-11 text-slate-soft">used up</div>' : '') + '</td>' +
-            '<td>' + editableCell(l._plantKey, 'Rate (' + l._plantLabel + ')', l.rate, materialRateFieldName(l._plantKey), l.lotId, 'number') + '</td>' +
-            '<td>' + (l.value != null ? formatInr(l.value) : '-') + '</td>' +
-            '<td>' + mirStockMatchHtml(l, l._plantKey) + '</td></tr>';
-        }).join('') +
-        '<tr class="fw-700"><td>Total</td><td></td><td></td><td></td><td>' + escapeHtml(qtyAllPlantsText) + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>' +
-      '</tbody></table></div>'
+    ? sortableModalTableHtml('lots', MAT_LOTS_SORT, siblingLots, lotRowHtml,
+        '<tr class="fw-700" data-sort-foot><td>Total</td><td></td><td></td><td></td><td>' + escapeHtml(qtyAllPlantsText) + '</td><td>-</td><td>' + formatInr(valueAllPlants) + '</td><td></td></tr>')
     : '<div class="no-data-note">No stock found for this material at any plant.</div>';
 
   // "Flags & Corrections" tab (2026-09-05, project owner: the Domestic/
@@ -328,10 +381,10 @@ async function openMaterialModal(compositeKey) {
       // Import orders are listed here too since 2026-09-24 (materials.js's
       // materialOrders()), tagged so they are never mistaken for domestic
       // ones, with the INR value the In Transit figure counts them at.
-      ? '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Plant</th><th>Qty to come</th><th>Value to come (INR)</th><th>Status</th></tr></thead><tbody>' +
-          // The PO number opens that order's own detail modal (Domestic or
-          // Import), wired below by [data-open-po].
-          openLinked.map(l => '<tr><td><span class="row-link" tabindex="0" role="button"' +
+      // Sortable (material-sort.js's MAT_OPEN_PO_SORT), soonest delivery
+      // first by default. The PO number opens that order's own detail modal
+      // (Domestic or Import), wired below by [data-open-po].
+      ? sortableModalTableHtml('openPos', MAT_OPEN_PO_SORT, openLinked, (l, idx) => '<tr data-sort-row="' + idx + '"><td><span class="row-link" tabindex="0" role="button"' +
             ' data-open-po="' + escapeHtml(l.plantKey + '::' + l.po.poNumber) + '"' +
             ' data-open-po-kind="' + (l.po.isImport ? 'import' : 'domestic') + '"' +
             ' title="Open this purchase order">' + escapeHtml(l.po.poNumber) + '</span>' +
@@ -340,8 +393,7 @@ async function openMaterialModal(compositeKey) {
             '</td><td>' + (openQtyOfLine(l.item) != null ? openQtyOfLine(l.item) : '-') + ' ' + escapeHtml(l.item.uom || '') +
             (openQtyOfLine(l.item) !== l.item.qty && l.item.qty != null ? ' <span class="text-slate-soft">of ' + l.item.qty + '</span>' : '') +
             '</td><td>' + (l.item.netPrice != null && l.item.qty != null ? formatInr(openValueOfLine(l.item)) : '-') +
-            '</td><td><span class="status-pill status-' + l.po._status + '">' + escapeHtml(STATUS_LABELS[l.po._status]) + '</span></td></tr>').join('') +
-        '</tbody></table></div>'
+            '</td><td><span class="status-pill status-' + l.po._status + '">' + escapeHtml(STATUS_LABELS[l.po._status]) + '</span></td></tr>', '')
       : '<div class="no-data-note">No open purchase orders currently linked to this material by automated matching.</div>');
 
   const priceTrendHtml =
@@ -409,6 +461,9 @@ async function openMaterialModal(compositeKey) {
     el2.onclick = open;
     el2.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } };
   });
+
+  MAT_LOTS_SORT.wire(body.querySelector('#matModalSort-lots') || body);
+  MAT_OPEN_PO_SORT.wire(body.querySelector('#matModalSort-openPos') || body);
 
   const panelIds = { overview: 'matModalOverview', stockplant: 'matModalStockPlant', poactivity: 'matModalPoActivity', pricetrend: 'matModalPriceTrend', flags: 'matModalFlags' };
   body.querySelectorAll('[data-tab]').forEach(tab => tab.onclick = () => {

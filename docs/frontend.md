@@ -860,9 +860,9 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
 
 ### frontend/js/list-sort.js
 
-The shared sorting and sort-preset engine behind Raw Material Analysis (`material-sort.js`),
-Domestic Purchase Orders (`po-sort.js`) and Import Purchases (`import-sort.js`). Loads after
-`flags.js`, before all three configurations.
+The shared sorting and sort-preset engine behind Raw Material Analysis and its modal's two tables
+(`material-sort.js`), Domestic Purchase Orders (`po-sort.js`) and Import Purchases
+(`import-sort.js`). Loads after `flags.js`, before every configuration.
 `createListSort(cfg)` returns one sorter per list; `cfg` names the server `view`, an element
 `idPrefix`, the `columns` (key, label, `kind`, and the direction a header click starts with), the
 `builtins` (the first is the default), `rowValue(key, row, extra)`, `tieBreak(a, b, extra)`,
@@ -889,7 +889,9 @@ so every change re-renders the list region, never the view.
   "+ Add level" up to `LIST_SORT_MAX_LEVELS` (5), a column at most once; Apply, Save as preset,
   Delete the selected own preset, Close). Saving a name the user already has asks before saving over
   it. Every change goes through `set()`, which calls `onChange` and stores the choice. `wire(region)`
-  binds all of it after each region render.
+  binds all of it after each region render; `rerenderKeepingFocus()` wraps `cfg.rerender` so the sort
+  control that had keyboard focus (by id or `data-listsort` / `data-sortlevel-*`) is focused again
+  after the redraw.
 - `sortPresetApi()` - JSON fetch for `/api/sort-presets`, same 401/error contract as `apiImports()`.
 
 ### frontend/js/material-sort.js
@@ -904,7 +906,11 @@ Left, highest Inventory Value, most Pending Delivery. `matSortValue(key, m, extr
 `{entryOf, latestOf}` from `materialsListRegionHtml()`; blank for sorting means no category (the
 API's literal "Uncategorized" counts as none), no open PO, no Days Left figure (only where
 `daysLeftCellHtml()` shows a number), or an order-only row's stock/value. Ties keep the default
-order (latest, stock qty, open value). A header click sorts only the columns
+order (latest, stock qty, open value). The same file configures the modal's two tables,
+`MAT_LOTS_SORT` (`MAT_LOTS_SORT_COLUMNS`: Plant, Vendor, Received, Category, Sub Category, Qty,
+Rate, Value; view `material_lots`) and `MAT_OPEN_PO_SORT` (`MAT_OPEN_PO_SORT_COLUMNS`: Delivery
+Date, PO Created On, PO Number, Vendor, Plant, Qty to come, Value to come, Status by po-sort.js's
+`PO_STATUS_RANK`; view `material_open_pos`) - see material-modal.js below. A header click sorts only the columns
 with a `sort` key in `materials.js`'s `MAT_LIST_COLUMNS`; Sub Category and Latest Rate share a
 column with Category and Inventory Value, so they sort from the select and Custom sort.
 
@@ -956,6 +962,19 @@ the correction box rests, plus per-row-plant revert links). Edits PATCH `materia
 lot)`; after a save or dismiss every plant's materials cache is dropped and the modal reopens. For a
 real lot it then GETs `<prefix>/materials/<lot>/stock-trend` and appends a stock chart, re-checking
 `modalRequestId` after that await.
+
+**Stock by Plant and Open Purchase Orders are sortable** (2026-09-28), through list-sort.js like
+the lists: material-sort.js's `MAT_LOTS_SORT` (default: by plant, in-stock lots first, newest first -
+the order the table always had) and `MAT_OPEN_PO_SORT` (default: soonest delivery first; a line with
+no delivery date now sorts last rather than first). The opener loads both sorters' presets with its
+other data, before the `modalRequestId` check. `sortableModalTableHtml(which, sorter, rows, rowHtml,
+footHtml)` renders a `#matModalSort-<which>` section (sort bar, header row from
+`MAT_MODAL_SORT_HEADERS`, rows tagged `data-sort-row`, then a `data-sort-foot` total row) and keeps the
+rows in `MAT_MODAL_SORT_TABLES`. **A sort change re-orders the existing `<tr>`s in place**
+(`resortMatModalTable()`: redraw bar and header, move rows, keep the total last, re-wire the sort
+controls) rather than rebuilding them: the rows carry edit pencils, dismiss links and PO links, and
+re-running `wireEditIcons()` resets a correction the reader may be part-way through. The correction
+box anchors after the table wrapper, outside the moved rows, so it stays put.
 
 ### frontend/js/export-panel.js
 

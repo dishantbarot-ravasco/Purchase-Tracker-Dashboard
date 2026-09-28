@@ -1,10 +1,12 @@
 // ── Shared list sorting and sort presets (2026-09-28) ────────────────────
 // Project owner: sort by Category and Sub Category, plus "presets like we
 // have in Excel and Sheets", saved to the user's account - first on Raw
-// Material Analysis, then the same on Purchase Orders. One engine, one
-// configuration per list: material-sort.js (MAT_SORT) and po-sort.js
-// (PO_SORT) and import-sort.js (IMPORT_SORT) each call createListSort() with their own columns, built-in
-// sorts and row values.
+// Material Analysis, then Purchase Orders, Import Purchases and the Raw
+// Material modal's tables. One engine, one configuration per list:
+// material-sort.js (MAT_SORT, and the modal's MAT_LOTS_SORT and
+// MAT_OPEN_PO_SORT), po-sort.js (PO_SORT) and import-sort.js (IMPORT_SORT)
+// each call createListSort() with their own columns, built-in sorts and row
+// values.
 //
 // Three ways in, one sort state (sorter.state.levels):
 //   - the "Sort by" select: built-in sorts and the user's own presets;
@@ -76,7 +78,8 @@ function cloneSortLevels(levels) {
  *               LAST in either direction, the way a spreadsheet keeps blanks
  *               at the bottom
  *   tieBreak  - (a, b) => number over two rows, for rows every level ties on
- *   rerender  - () => void, the list's region re-render
+ *   rerender  - () => void, the list's region re-render (or, for a table
+ *               whose rows carry their own listeners, a re-order in place)
  * }
  */
 function createListSort(cfg) {
@@ -257,9 +260,27 @@ function createListSort(cfg) {
     '</div>' + (state.editorOpen ? editorHtml() : '');
   }
 
+  // A re-render replaces the sort controls, so the one that had keyboard
+  // focus is found again by its id or data attribute and focused, rather
+  // than dropping the reader back to the top of the page.
+  const FOCUS_ATTRS = ['data-listsort', 'data-sortlevel-key', 'data-sortlevel-dir', 'data-sortlevel-up', 'data-sortlevel-down', 'data-sortlevel-remove'];
+  function rerenderKeepingFocus() {
+    const active = document.activeElement;
+    let selector = null;
+    if (active && active.id) selector = '#' + active.id;
+    else if (active && active.getAttribute) {
+      const attr = FOCUS_ATTRS.find(a => active.hasAttribute(a));
+      if (attr) selector = '[' + attr + '="' + active.getAttribute(attr) + '"]';
+    }
+    cfg.rerender();
+    if (!selector) return;
+    const again = document.querySelector(selector);
+    if (again && again !== document.activeElement && !again.disabled) again.focus();
+  }
+
   // Called by the list's own wiring after every region render.
   function wire(region) {
-    const rerender = cfg.rerender;
+    const rerender = rerenderKeepingFocus;
     const byId = name => document.getElementById(id(name));
     const select = byId('SortSelect');
     if (select) select.addEventListener('change', () => {

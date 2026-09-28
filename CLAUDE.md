@@ -230,9 +230,10 @@ Read the linked section before breaking any of these. Each is there because it w
 - Raw Material links each PO line to its best material through `lineLinksFor()`'s token index, built
   over the unfiltered scope; never reintroduce a per-(material x line) loop (it was 1.3M checks).
   [materials.js](docs/frontend.md#frontendjsmaterialsjs)
-- Raw Material, Purchase Orders and Import Purchases sorting share `list-sort.js`; presets are saved
-  per user and per list on the server. Each list's column keys (`MAT_SORT_COLUMNS`,
-  `PO_SORT_COLUMNS`, `IMPORT_SORT_COLUMNS`) must equal
+- Raw Material (list and modal tables), Purchase Orders and Import Purchases sorting share
+  `list-sort.js`; presets are saved per user and per list on the server. Each list's column keys
+  (`MAT_SORT_COLUMNS`, `MAT_LOTS_SORT_COLUMNS`, `MAT_OPEN_PO_SORT_COLUMNS`, `PO_SORT_COLUMNS`,
+  `IMPORT_SORT_COLUMNS`) must equal
   `sort_presets.py`'s `SORT_KEYS_BY_VIEW` for its view (a test checks).
   [list-sort.js](docs/frontend.md#frontendjslist-sortjs)
 

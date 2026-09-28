@@ -12,7 +12,8 @@ What is pinned here:
   - saving under a name that exists saves over it (case-insensitively)
     rather than forking a second preset of the same name;
   - the per-view cap holds;
-  - presets are kept per view (Raw Material, Purchase Orders, Import Purchases);
+  - presets are kept per view (Raw Material, its modal's two tables,
+    Purchase Orders, Import Purchases);
   - each list's sortable columns and the server's allowed keys agree.
 """
 
@@ -137,6 +138,8 @@ class TestSaveOver:
     ("material-sort.js", "MAT_SORT_COLUMNS", SortPreset.View.MATERIALS),
     ("po-sort.js", "PO_SORT_COLUMNS", SortPreset.View.PURCHASE_ORDERS),
     ("import-sort.js", "IMPORT_SORT_COLUMNS", SortPreset.View.IMPORT_PURCHASES),
+    ("material-sort.js", "MAT_LOTS_SORT_COLUMNS", SortPreset.View.MATERIAL_LOTS),
+    ("material-sort.js", "MAT_OPEN_PO_SORT_COLUMNS", SortPreset.View.MATERIAL_OPEN_POS),
 ])
 def test_frontend_sort_columns_match_the_server_keys(js_file, const, view):
     """Each list offers exactly the columns the server accepts for its view -

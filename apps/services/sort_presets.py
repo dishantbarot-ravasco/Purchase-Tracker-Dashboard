@@ -7,7 +7,9 @@ trimmed and length-checked, and every sort level must name a column key the
 view actually sorts on. The keys mirror the frontend's column lists -
 "materials" is material-sort.js's MAT_SORT_COLUMNS, "purchase_orders" is
 po-sort.js's PO_SORT_COLUMNS, "import_purchases" is import-sort.js's
-IMPORT_SORT_COLUMNS - keep them in step (test_sort_presets.py
+IMPORT_SORT_COLUMNS, and the Raw Material modal's "material_lots" /
+"material_open_pos" are material-sort.js's MAT_LOTS_SORT_COLUMNS /
+MAT_OPEN_PO_SORT_COLUMNS - keep them in step (test_sort_presets.py
 checks); a key the frontend offers but this set lacks makes "Save preset"
 fail with a 400, never store a column the page cannot sort on.
 
@@ -31,6 +33,12 @@ SORT_KEYS_BY_VIEW = {
     SortPreset.View.IMPORT_PURCHASES: {
         "created", "poNumber", "vendor", "material", "category", "subCategory",
         "plant", "country", "delivery", "value", "blNumber", "stage",
+    },
+    SortPreset.View.MATERIAL_LOTS: {
+        "plant", "vendor", "received", "category", "subCategory", "qty", "rate", "value",
+    },
+    SortPreset.View.MATERIAL_OPEN_POS: {
+        "delivery", "created", "poNumber", "vendor", "plant", "qtyToCome", "valueToCome", "status",
     },
 }
 MAX_LEVELS = 5

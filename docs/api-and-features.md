@@ -94,7 +94,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `auth/users/<id>/devices` | `users_views.list_user_devices` | IsAdmin | The account's trusted devices |
 | DELETE | `auth/users/<id>/devices/<device_id>` | `users_views.revoke_user_device` | IsAdmin | Revoke one trusted device |
 | POST | `auth/users/<id>/logout-everywhere` | `users_views.admin_logout_everywhere` | IsAdmin, `AdminWriteThrottle` | `revoke_all_sessions()` for another account |
-| GET | `sort-presets?view=<view>` | `preferences_views.presets` | Auth (any role), own rows only | The caller's saved sort presets for a view (`materials`, `purchase_orders`, `import_purchases`); 400 on an unknown view |
+| GET | `sort-presets?view=<view>` | `preferences_views.presets` | Auth (any role), own rows only | The caller's saved sort presets for a view (`materials`, `purchase_orders`, `import_purchases`, `material_lots`, `material_open_pos`); 400 on an unknown view |
 | POST | `sort-presets` | `preferences_views.presets` | Auth (any role) | Save `{view, name, levels}`; 201 new, 200 when it saves over the caller's preset of the same name (case-insensitive) |
 | PATCH / DELETE | `sort-presets/<id>` | `preferences_views.preset` | Auth (any role), own rows only (404 otherwise) | Rename / replace levels, or delete |
 | GET | `auth/admin-overview` | `admin_overview_views.admin_overview` | IsAdmin | Top correctors, top vendors, recent corrections |
@@ -887,10 +887,11 @@ master CSV cannot be received against (the search says to ask purchase to add it
 
 ### Sort presets (2026-09-28)
 
-Raw Material Analysis, Domestic Purchase Orders and Import Purchases sort by any column, in up to 5
-levels ("Category, then Sub Category, then Inventory Value"), and a user can save a sort as a named
-preset **to their account**, kept per list (`view`: `materials`, `purchase_orders`,
-`import_purchases`), so it follows
+Raw Material Analysis (and its modal's Stock by Plant and Open Purchase Orders tables), Domestic
+Purchase Orders and Import Purchases sort by any column, in up to 5 levels ("Category, then Sub
+Category, then Inventory Value"), and a user can save a sort as a named preset **to their
+account**, kept per list (`view`: `materials`, `material_lots`, `material_open_pos`,
+`purchase_orders`, `import_purchases`), so it follows
 them to any device (owner's choice over browser-only or shared presets). Built-in sorts (Category
 alone, Sub Category alone, Category then Sub Category, and a few more) live in the frontend, not the
 database. Every role may save presets, viewers included: a preset is the caller's own display
@@ -899,8 +900,9 @@ reads 404. Nothing in a preset is trusted - `sort_presets.clean_levels()` accept
 known column keys, each once, asc or desc, at most 5; a name is 1-60 characters; at most 25 presets
 per user per view. Saving under an existing name (ignoring case and repeated spaces) saves over it,
 Excel-style; the page asks first. The server's key lists must match the frontend's
-(`material-sort.js`'s `MAT_SORT_COLUMNS`, `po-sort.js`'s `PO_SORT_COLUMNS`, `import-sort.js`'s
-`IMPORT_SORT_COLUMNS`); `test_sort_presets.py` checks each pair. The frontend side is in [frontend.md](frontend.md#frontendjslist-sortjs).
+(`material-sort.js`'s `MAT_SORT_COLUMNS`, `MAT_LOTS_SORT_COLUMNS` and `MAT_OPEN_PO_SORT_COLUMNS`,
+`po-sort.js`'s `PO_SORT_COLUMNS`, `import-sort.js`'s `IMPORT_SORT_COLUMNS`); `test_sort_presets.py`
+checks each pair. The frontend side is in [frontend.md](frontend.md#frontendjslist-sortjs).
 
 ### Data export
 
@@ -1191,8 +1193,9 @@ both filtered on `user=request.user`. Validation is in `apps/services/sort_prese
 ### apps/services/sort_presets.py
 
 `SORT_KEYS_BY_VIEW` (the columns each view sorts on - keep `materials` equal to `material-sort.js`'s
-`MAT_SORT_COLUMNS`, `purchase_orders` to `po-sort.js`'s `PO_SORT_COLUMNS` and `import_purchases` to
-`import-sort.js`'s `IMPORT_SORT_COLUMNS`), `clean_view()` / `clean_name()` / `clean_levels()` (raise `ValueError`, which
+`MAT_SORT_COLUMNS` (and `material_lots` / `material_open_pos` to its `MAT_LOTS_SORT_COLUMNS` /
+`MAT_OPEN_PO_SORT_COLUMNS`), `purchase_orders` to `po-sort.js`'s `PO_SORT_COLUMNS` and
+`import_purchases` to `import-sort.js`'s `IMPORT_SORT_COLUMNS`), `clean_view()` / `clean_name()` / `clean_levels()` (raise `ValueError`, which
 becomes a 400), `list_presets()`, `save_preset()` (create or save over the same name; locks the
 user's row so two tabs cannot both pass the 25-preset cap) and `update_preset()` (rename refuses a
 name the user already has).
