@@ -1059,6 +1059,9 @@ Small rules that hold across files, recorded once here:
 - **Background re-match.** A pin (`applyMirMatch()`) or a correction to a matching field
   (`wireOverrideBox()`) that comes back with `rematch` pending says "Saved - re-matching in the
   background" and awaits `shared.js`'s `waitForRematch(plantKey)` (polls sync-status every 2 s, up to
-  3 minutes) before reloading; the pin picker then checks the finished run's `unfilledPins`. The MIR
+  3 minutes) before reloading; the pin picker then checks the finished run's `unfilledPins`. When the
+  server marks the run `stalled` (worker not picking it up), `waitForRematch()` returns at once and
+  both callers show `rematchStalledText()` (the pin picker in its status line, a correction in an
+  alert, since the reload rebuilds the box). The MIR
   picker's `api` object carries `plantKey` for this. Refresh Data triggers one job per plant - the
   imports pipeline is part of it (see [data-sync.md](data-sync.md)).

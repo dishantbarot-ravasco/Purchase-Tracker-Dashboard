@@ -387,12 +387,17 @@ description exactly; plus the same rate and unit - pool the receipts any of them
   received, the rest unmatched ("not received yet", not short). Sharing a partial delivery by quantity
   was built first and measured worse (Vapi's flagged Madura lines 97 -> 108): it spread the shortfall
   over every line.
+- **Every kilo in, a roll short** (roll count short, weight at or over the order): the weight is
+  shared by ordered quantity, as for a full order, and only the rolls fill the lines in order, so the
+  line the missing rolls belong to reads short. Filling the weight in order too would count the
+  order's quantity and leave the excess on no line.
 
 GSM is deliberately not part of the fabric identity: no fabric pool at any plant has lines of
 differing GSM (checked 2026-09-26), since GSM follows the grade. Never pooled: a pinned, BOE-settled or "Keep both" line, a line already counting a share, a line that
 identified none of the pooled receipts, and a pool whose receipts' units do not convert. The pool's
 line numbers are stored as `pool_line_refs` ("1, 3, 4"). Only the full run pools - the single-line
-`match_po_mir_line_item()` does not, and the next full run restores the pool. Measured on Render by
+`match_po_mir_line_item()` does not; like the import single-line path it writes `receipt_share=None`
+and `pool_line_refs=""`, and the next full run restores the pool. Measured on Render by
 simulation over the stored assignment: 75 Vapi pools, Madura mismatches 72 -> 43, matched 88 -> 113.
 
 ### MIR ↔ Stock

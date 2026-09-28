@@ -58,6 +58,21 @@ class TestQueueing:
         rematch.run_rematch("vapi")
         assert len(tasks) == 2
 
+    def test_a_run_the_worker_never_starts_is_reported_stalled(self, monkeypatch):
+        """qcluster down: the flag sits there. Fresh it is just queued; past
+        _STALL_SECONDS the page is told to stop waiting."""
+        import datetime
+
+        from django.utils import timezone
+        monkeypatch.setattr(rematch, "_inline", lambda: False)
+        import django_q.tasks
+        monkeypatch.setattr(django_q.tasks, "async_task", lambda *a, **k: None)
+        assert rematch.request_rematch("vapi")["stalled"] is False
+        old = (timezone.now() - datetime.timedelta(seconds=rematch._STALL_SECONDS + 5)).isoformat()
+        cache.set(rematch._PENDING_KEY.format("vapi"), old, 60)
+        status = rematch.status("vapi")
+        assert status["queued"] is True and status["stalled"] is True
+
     def test_a_finished_run_reports_the_pins_it_could_not_apply(self, monkeypatch):
         unfilled = [{"poNumber": "1", "itemRef": "0", "mirNo": "MIR1", "poKind": "domestic"}]
         _stub(monkeypatch, {"manual_pins_unfilled": unfilled, "manual_pins_stale": []})

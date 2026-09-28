@@ -165,7 +165,7 @@ function applyImportColFilters(recs) {
     if (f.poNumber && !(po.poNumber || '').toLowerCase().includes(f.poNumber.toLowerCase())) return false;
     if (f.vendor && !(po.vendorName || '').toLowerCase().includes(f.vendor.toLowerCase())) return false;
     if (f.material && !poHasMaterial(po, f.material)) return false;
-    if (f.country &&!(po.countryOfOrigin || '').toLowerCase().includes(f.country.toLowerCase())) return false;
+    if (f.country && !(po.countryOfOrigin || '').toLowerCase().includes(f.country.toLowerCase())) return false;
     if (f.stage && po.shipmentStage !== f.stage) return false;
     return true;
   });

@@ -46,9 +46,11 @@ function rematchPending(rm) {
 }
 
 // Waits for the plant's queued re-match to finish, polling sync-status.
-// Resolves with the finished run's status (unfilledPins etc.), or null when
-// it has not finished within REMATCH_WAIT_MS - the freshness watcher then
-// picks the change up when it lands.
+// Resolves with the finished run's status (unfilledPins etc.), with the
+// status as soon as the server marks the queued run `stalled` (the
+// background worker is not picking it up - rematchStalledText() says so),
+// or null when it has not finished within REMATCH_WAIT_MS - the freshness
+// watcher then picks the change up when it lands.
 const REMATCH_POLL_MS = 2000;
 const REMATCH_WAIT_MS = 180000;
 async function waitForRematch(plantKey) {
@@ -61,9 +63,16 @@ async function waitForRematch(plantKey) {
     } catch (e) {
       continue;
     }
-    if (rm && !rematchPending(rm)) return rm;
+    if (rm && (rm.stalled || !rematchPending(rm))) return rm;
   }
   return null;
+}
+
+// What to tell the reader when the background worker has not started the
+// re-match: the save stands, the match will not move until the worker runs.
+function rematchStalledText() {
+  return 'Saved, but the background worker has not started the re-match yet, so the match shown has not ' +
+    'changed. It will update once the worker runs - if this persists, tell an admin the sync worker is down.';
 }
 
 // A category filter option's text. 'Uncategorized' is the code's own
@@ -1547,7 +1556,10 @@ function wireOverrideBox(root) {
       // reload once it has finished rather than showing the old match.
       if (rematchPending(result.rematch) && savedPlant) {
         if (statusEl.isConnected) statusEl.textContent += ' Re-matching in the background…';
-        await waitForRematch(savedPlant);
+        const rm = await waitForRematch(savedPlant);
+        // onSaved() below rebuilds the modal and this box with it, so the
+        // worker-down notice cannot live in statusEl.
+        if (rm && rm.stalled) window.alert(rematchStalledText());
       }
       // The save is done. A failure reloading the page after it is not a
       // failed save, and used to be reported as "Could not save".

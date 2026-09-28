@@ -126,6 +126,20 @@ class TestPooling:
         assert (mb.rolls_ordered, mb.rolls_received, mb.qty_mismatched) == (2, 1, True)
         assert mb.qty_over_delivered is False
 
+    def test_a_missing_roll_with_all_the_weight_counts_every_kilo(self):
+        """3 of 4 rolls but 2,100 of 2,000 KG: the weight is all in, so it is
+        shared by ordered quantity (filling in order counted 2,000 and let
+        100 KG belong to no line); only the rolls fill in order."""
+        po = _po()
+        a, b = _line(po, "1000", 2, "1"), _line(po, "1000", 2, "2")
+        _mir("MIR-ONE", "10", "2100", po=po, desc="EE350 142CM - 3 Rolls")
+        run_full_match()
+        ma, mb = _match(a), _match(b)
+        assert ma.receipt_share + mb.receipt_share == Decimal("1.000000")
+        assert ma.qty_diff_pct == mb.qty_diff_pct == Decimal("5.00")
+        assert (ma.rolls_ordered, ma.rolls_received, ma.qty_mismatched) == (2, 2, False)
+        assert (mb.rolls_ordered, mb.rolls_received, mb.qty_mismatched) == (2, 1, True)
+
     def test_a_part_delivered_order_fills_its_lines_in_order(self):
         """9,000 of 14,000 KG arrived: line 1 (7,000) is full, line 2 (3,000)
         has the other 2,000, line 3 has had nothing yet. Sharing it by
@@ -139,6 +153,17 @@ class TestPooling:
         assert m1.qty_diff_pct == Decimal("0.00") and not m1.qty_mismatched
         assert m2.qty_diff_pct == Decimal("33.33") and m2.qty_over_delivered is False
         assert m3 is None
+
+    def test_the_single_line_matcher_clears_what_a_pool_left(self):
+        """match_po_mir_line_item() does not pool, so it must not leave a
+        full run's share and pool numbers on the line it rewrites."""
+        from apps.services.matching import match_po_mir_line_item
+        _po_, lines = self._order()
+        run_full_match()
+        assert _match(lines[0]).pool_line_refs == "1, 2, 3"
+        match_po_mir_line_item(lines[0])
+        m = _match(lines[0])
+        assert m.pool_line_refs == "" and m.receipt_share is None
 
     def test_a_different_rate_is_not_the_same_line(self):
         po = _po()

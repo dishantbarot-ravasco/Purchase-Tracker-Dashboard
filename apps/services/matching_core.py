@@ -2640,6 +2640,17 @@ def _pool_duplicate_lines(config, assigned, items_by_key, po_of_key, candidates_
         complete = (pooled.rolls >= pool_rolls_ordered) if rolls_known else (pooled.qty >= total)
         if complete:
             allocation = {k: (base_qty[k] / total, pooled.rolls, pool_rolls_ordered) for k in members}
+        elif pooled.qty >= total:
+            # Rolls short but the weight is all in: the weight is shared by
+            # ordered quantity (filling lines in order would leave the excess
+            # counted by no line), and only the rolls fill the lines in order,
+            # so the line the missing rolls belong to reads short.
+            allocation = {}
+            rolls_left = pooled.rolls
+            for k in members:
+                rolls_take = min(line_rolls[k], rolls_left)
+                rolls_left -= rolls_take
+                allocation[k] = (base_qty[k] / total, rolls_take, line_rolls[k])
         else:
             allocation = {}
             qty_left, rolls_left = pooled.qty, (pooled.rolls if rolls_known else None)
@@ -3148,6 +3159,11 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             net_value_mismatched=net_value_mismatched,
             taxable_value_mismatched=taxable_value_mismatched,
             final_value_mismatched=final_value_mismatched,
+            # Receipt shares and pools span several lines of the plant, so
+            # only run_full_match() sets them; this single-line path clears
+            # what a previous full run left, as the import path does.
+            receipt_share=None,
+            pool_line_refs="",
         ),
     )
     match.group_entries.set(group.entries if group is not None else [])

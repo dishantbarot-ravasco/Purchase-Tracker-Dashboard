@@ -1082,7 +1082,9 @@ Clearing wipes the audit columns. Does no plant check itself; callers do.
 already queued (`cache.add` on a pending key); `run_rematch()` clears that key FIRST, so a save made
 while a run is under way queues the next one rather than being folded into a run that may have read
 the old data; it records `{state, startedAt, finishedAt, unfilledPins, stalePins, manualPinsApplied}`
-(or `error`) for `status(plant_key)`, which `sync-status` serves as `rematch`. `_inline()` runs it in
+(or `error`) for `status(plant_key)`, which `sync-status` serves as `rematch`. `status()` also carries
+`queuedAt` and `stalled`: True once a queued run has waited more than `_STALL_SECONDS` (120) without
+the worker starting it - the qcluster is down - so the page stops waiting and says so. `_inline()` runs it in
 process under pytest. Two runs of one plant never overlap: `matching_core.run_full_match()` takes a
 per-plant `pg_advisory_xact_lock` (`_lock_plant_match()`), so a queued re-match and the hourly sync's
 match of the same plant run one after the other.

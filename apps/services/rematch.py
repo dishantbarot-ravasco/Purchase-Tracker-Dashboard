@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import datetime
 
 from django.core.cache import cache
 from django.utils import timezone
@@ -33,6 +34,10 @@ log = logging.getLogger(__name__)
 # A queued run that has not started within this long is treated as lost (the
 # worker was down or the task was dropped), so the next save queues afresh.
 _PENDING_TTL_SECONDS = 900
+
+# A queued run the worker has not started within this long means the
+# qcluster is not running: a re-match normally starts within seconds.
+_STALL_SECONDS = 120
 
 _PENDING_KEY = "pt:rematch-pending:{}"
 _RESULT_KEY = "pt:rematch-result:{}"
@@ -90,8 +95,18 @@ def run_rematch(plant_key: str) -> None:
 
 
 def status(plant_key: str) -> dict:
-    """{"queued": bool, "state": "idle"|"running"|"done"|"failed", ...}:
-    whether a re-match is waiting, and the last run's outcome with the pins
-    it could not apply - for sync-status and the save responses."""
+    """{"queued": bool, "state": "idle"|"running"|"done"|"failed",
+    "queuedAt", "stalled", ...}: whether a re-match is waiting, whether the
+    worker has left it waiting past _STALL_SECONDS (the qcluster is down, so
+    the page stops waiting and says so), and the last run's outcome with the
+    pins it could not apply - for sync-status and the save responses."""
     last = cache.get(_RESULT_KEY.format(plant_key)) or {"state": "idle"}
-    return {"queued": bool(cache.get(_PENDING_KEY.format(plant_key))), **last}
+    queued_at = cache.get(_PENDING_KEY.format(plant_key))
+    stalled = False
+    if queued_at:
+        try:
+            waited = (timezone.now() - datetime.fromisoformat(queued_at)).total_seconds()
+            stalled = waited > _STALL_SECONDS
+        except (TypeError, ValueError):
+            stalled = False
+    return {**last, "queued": bool(queued_at), "queuedAt": queued_at or None, "stalled": stalled}

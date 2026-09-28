@@ -384,6 +384,11 @@ async function applyMirMatch(opts) {
     if (rematchPending(res && res.rematch)) {
       status.textContent = 'Saved. Re-matching in the background - this line updates in a moment…';
       const done = await waitForRematch(p.api.plantKey);
+      if (done && done.stalled) {
+        status.className = 'override-status err';
+        status.textContent = rematchStalledText();
+        return;
+      }
       if (done && MIR_PICKER === p) res = Object.assign({}, res, { unfilledPins: done.unfilledPins || [] });
       if (!done) {
         status.className = 'override-status ok';
