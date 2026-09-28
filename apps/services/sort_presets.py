@@ -4,10 +4,12 @@ presets (apps.core.models.SortPreset), behind apps/api/routers/preferences_views
 
 A preset is data a browser sends, so nothing in it is trusted: the name is
 trimmed and length-checked, and every sort level must name a column key the
-view actually sorts on. The keys for "materials" mirror materials.js's
-MAT_SORT_COLUMNS - keep the two in step; a key the frontend offers but this
-set lacks makes "Save preset" fail with a 400, never store a column the
-page cannot sort on.
+view actually sorts on. The keys mirror the frontend's column lists -
+"materials" is material-sort.js's MAT_SORT_COLUMNS, "purchase_orders" is
+po-sort.js's PO_SORT_COLUMNS, "import_purchases" is import-sort.js's
+IMPORT_SORT_COLUMNS - keep them in step (test_sort_presets.py
+checks); a key the frontend offers but this set lacks makes "Save preset"
+fail with a 400, never store a column the page cannot sort on.
 
 Errors are ValueError with a message, which apps/api/exceptions.py passes to
 the user as a 400.
@@ -21,6 +23,14 @@ SORT_KEYS_BY_VIEW = {
     SortPreset.View.MATERIALS: {
         "latest", "material", "category", "subCategory", "stock", "value",
         "rate", "daysLeft", "pending", "pipeline",
+    },
+    SortPreset.View.PURCHASE_ORDERS: {
+        "created", "poNumber", "vendor", "material", "category", "subCategory",
+        "delivery", "value", "status",
+    },
+    SortPreset.View.IMPORT_PURCHASES: {
+        "created", "poNumber", "vendor", "material", "category", "subCategory",
+        "plant", "country", "delivery", "value", "blNumber", "stage",
     },
 }
 MAX_LEVELS = 5

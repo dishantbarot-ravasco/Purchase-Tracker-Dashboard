@@ -12,7 +12,8 @@ What is pinned here:
   - saving under a name that exists saves over it (case-insensitively)
     rather than forking a second preset of the same name;
   - the per-view cap holds;
-  - the frontend's sortable columns and the server's allowed keys agree.
+  - presets are kept per view (Raw Material, Purchase Orders, Import Purchases);
+  - each list's sortable columns and the server's allowed keys agree.
 """
 
 import re
@@ -132,11 +133,37 @@ class TestSaveOver:
         assert _save(client, name="2").status_code == 200
 
 
-def test_frontend_sort_columns_match_the_server_keys():
-    """material-sort.js offers exactly the columns the server accepts - a column
-    the page offers but the server lacks would make "Save preset" fail."""
-    js = (Path(__file__).resolve().parents[3] / "frontend" / "js" / "material-sort.js").read_text(encoding="utf-8")
-    block = re.search(r"const MAT_SORT_COLUMNS = \[(.*?)\n\];", js, re.S)
-    assert block, "MAT_SORT_COLUMNS not found in material-sort.js"
+@pytest.mark.parametrize("js_file, const, view", [
+    ("material-sort.js", "MAT_SORT_COLUMNS", SortPreset.View.MATERIALS),
+    ("po-sort.js", "PO_SORT_COLUMNS", SortPreset.View.PURCHASE_ORDERS),
+    ("import-sort.js", "IMPORT_SORT_COLUMNS", SortPreset.View.IMPORT_PURCHASES),
+])
+def test_frontend_sort_columns_match_the_server_keys(js_file, const, view):
+    """Each list offers exactly the columns the server accepts for its view -
+    a column the page offers but the server lacks would make "Save preset"
+    fail."""
+    js = (Path(__file__).resolve().parents[3] / "frontend" / "js" / js_file).read_text(encoding="utf-8")
+    block = re.search(r"const " + const + r" = \[(.*?)\n\];", js, re.S)
+    assert block, f"{const} not found in {js_file}"
     keys = set(re.findall(r"key: '(\w+)'", block.group(1)))
-    assert keys == sort_presets.SORT_KEYS_BY_VIEW[SortPreset.View.MATERIALS]
+    assert keys == sort_presets.SORT_KEYS_BY_VIEW[view]
+
+
+@pytest.mark.django_db
+class TestPerView:
+    def test_presets_are_kept_per_view(self):
+        """A Purchase Orders preset never shows on Raw Material, and a PO
+        column is refused on the materials view (and vice versa)."""
+        client = _client(make_user(email="views@ravasco.com"))
+        po_levels = [{"key": "vendor", "dir": "asc"}, {"key": "created", "dir": "desc"}]
+        assert _save(client, name="By vendor", levels=po_levels, view="purchase_orders").status_code == 201
+        assert client.get(URL, {"view": "materials"}).data["presets"] == []
+        assert [p["name"] for p in client.get(URL, {"view": "purchase_orders"}).data["presets"]] == ["By vendor"]
+        assert _save(client, name="x", levels=po_levels, view="materials").status_code == 400
+        assert _save(client, name="y", levels=[{"key": "daysLeft", "dir": "asc"}], view="purchase_orders").status_code == 400
+
+    def test_the_same_name_may_exist_once_per_view(self):
+        client = _client(make_user(email="sameview@ravasco.com"))
+        assert _save(client, name="Mine", view="materials").status_code == 201
+        assert _save(client, name="Mine", view="purchase_orders").status_code == 201
+        assert SortPreset.objects.count() == 2

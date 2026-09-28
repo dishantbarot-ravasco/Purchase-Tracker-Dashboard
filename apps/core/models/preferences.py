@@ -21,6 +21,8 @@ class SortPreset(models.Model):
 
     class View(models.TextChoices):
         MATERIALS = "materials", "Raw Material Analysis"
+        PURCHASE_ORDERS = "purchase_orders", "Purchase Orders (Domestic)"
+        IMPORT_PURCHASES = "import_purchases", "Import Purchases"
 
     user = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="sort_presets")
     view = models.CharField(max_length=30, choices=View.choices)

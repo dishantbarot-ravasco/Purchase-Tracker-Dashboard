@@ -571,7 +571,7 @@ Normalized POs and MIRs (migrations `0067`, and `0068` seeding the plants and re
 
 ### apps/core/models/preferences.py
 
-`SortPreset` - a user's named, multi-level sort for one list view (`view`: only `materials` today),
+`SortPreset` - a user's named, multi-level sort for one list view (`view`: `materials`, `purchase_orders` or `import_purchases`),
 `levels` a JSON list of `{key, dir}`, unique on (user, view, name), deleted with its user. It holds
 no plant data, so it has no plant scope; it is read and written only as its owner
 (`preferences_views.py`), and `apps/services/sort_presets.py` validates every level.

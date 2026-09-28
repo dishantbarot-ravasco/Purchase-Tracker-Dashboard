@@ -551,7 +551,9 @@ function poListRegionHtml() {
   // handlers below.
   if (state.chartMonthFilter) tableRecs = tableRecs.filter(po => (po.createdDate || '').slice(0, 7) === state.chartMonthFilter);
   tableRecs = applyColFilters(tableRecs);
-  tableRecs = tableRecs.slice().sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
+  // The user's chosen sort (po-sort.js's PO_SORT) - latest first unless they
+  // picked another built-in, a saved preset, a header or a custom sort.
+  tableRecs = PO_SORT.sortRows(tableRecs);
 
   const showingAll = state.showAllPOs;
   const totalForList = tableRecs.length;
@@ -626,13 +628,22 @@ function poListRegionHtml() {
     (cf.deliveryFrom || cf.deliveryTo ? 1 : 0) +
     (cf.progress ? 1 : 0);
 
-  return '<div class="list-toggle-row"><div class="section-title m-0">Purchase Orders (Latest first)</div>' +
+  // One label per column, in column order - a sortable column's label is a
+  // button that sorts by it (list-sort.js's headerHtml()).
+  const headerLabels = [
+    ['PO Number', 'poNumber'], ['Vendor', 'vendor'], ['Material', 'material'], ['Rate', null],
+    ['Created On', 'created'], ['Delivery Date', 'delivery'], ['Value (incl. tax)', 'value'],
+    ['Status', 'status'], ['Progress', null], ['Details', null],
+  ].map(([label, key]) => PO_SORT.headerHtml(label, key));
+
+  return '<div class="list-toggle-row"><div class="section-title m-0">Purchase Orders</div>' +
       (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
       '<div class="flex-row-gap10">' +
         (activeFilterCount ? '<span class="clear-list-filters" id="clearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
         (totalForList > 5 ? '<button class="view-all-btn" id="toggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
       '</div>' +
     '</div>' +
+    PO_SORT.barHtml() +
     (() => {
       // Four buckets, one icon each - see flags.js's rowFlagsHtml() for what
       // they are and what this replaced (one identical red icon per critical
@@ -664,7 +675,7 @@ function poListRegionHtml() {
               jumpToPageHtml('po', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Rate</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+        return '<div class="table-wrap"><table><thead><tr>' + headerLabels.map(h => '<th>' + h + '</th>').join('') + '</tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
             // One <tr> per line item (Material + Rate), the order-level
@@ -682,7 +693,7 @@ function poListRegionHtml() {
             ]);
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Rate</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols">' + headerLabels.map(h => '<div>' + h + '</div>').join('') + '</div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="top5List">' + listRecs.map(po => {
           const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
@@ -790,6 +801,7 @@ function wirePoListRegion() {
   if (nextPageBtn) nextPageBtn.onclick = () => { state.tablePage = state.tablePage + 1; renderPoListRegion(); }; // clamped to totalPages on next render
   region.querySelectorAll('.page-num').forEach(btn => btn.onclick = () => { state.tablePage = Number(btn.dataset.page); renderPoListRegion(); });
   wireJumpToPage('po', totalPages, (n) => { state.tablePage = n; renderPoListRegion(); });
+  PO_SORT.wire(region);
 
   // Clears the "global" date/category/status filters too, so this one has
   // to go through the full render.

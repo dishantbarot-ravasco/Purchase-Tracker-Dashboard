@@ -3,7 +3,8 @@ apps/api/routers/preferences_views.py - Per-user sort presets (2026-09-28).
 
 Endpoints
 ---------
-GET    /api/sort-presets?view=materials   the caller's own presets for a view
+GET    /api/sort-presets?view=<view>      the caller's own presets for a view
+                                          (materials | purchase_orders | import_purchases)
 POST   /api/sort-presets                  {view, name, levels} - create, or save over the
                                           caller's preset of the same name (201 / 200)
 PATCH  /api/sort-presets/<id>             {name?, levels?} - rename / replace levels

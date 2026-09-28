@@ -947,6 +947,10 @@ async function switchPurchaseType(ptype, opts) {
     // The reader may have clicked the other tab while this was loading.
     if (state.purchaseType !== ptype) return false;
   }
+  // The page may have opened on the other sub-tab, so this list's sort
+  // presets may not be loaded yet. A no-op once loaded; never throws.
+  await (ptype === 'import' ? IMPORT_SORT : PO_SORT).ensurePresetsLoaded();
+  if (state.purchaseType !== ptype) return false;
   renderPoList(content);
   return true;
 }
@@ -1315,8 +1319,11 @@ async function loadDashboard() {
   const el = document.getElementById('viewContent');
   el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading purchase orders&hellip;</div></div>';
   try {
-    if (state.purchaseType === 'import') await ensureImportPOsLoaded();
-    else await ensurePOsLoaded(selectedPlantKeys());
+    // Plus the user's saved sort presets for the list shown (po-sort.js /
+    // import-sort.js) - those loaders never throw, so a failed preset load
+    // cannot take the list down with it.
+    if (state.purchaseType === 'import') await Promise.all([ensureImportPOsLoaded(), IMPORT_SORT.ensurePresetsLoaded()]);
+    else await Promise.all([ensurePOsLoaded(selectedPlantKeys()), PO_SORT.ensurePresetsLoaded()]);
     el.innerHTML = '<div id="content"></div>';
     renderPoList(document.getElementById('content'));
     return true;

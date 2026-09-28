@@ -641,7 +641,10 @@ function importListRegionHtml() {
   else if (sf === 'cleared') tableRecs = filtered.filter(p => p.shipmentStage === 'Cleared (BOE)');
   if (state.importChartMonthFilter) tableRecs = tableRecs.filter(po => (po.createdDate || '').slice(0, 7) === state.importChartMonthFilter);
   tableRecs = applyImportColFilters(tableRecs);
-  tableRecs = tableRecs.slice().sort((a, b) => (b.createdDate || '').localeCompare(a.createdDate || ''));
+  // The user's chosen sort (import-sort.js's IMPORT_SORT) - latest first
+  // unless they picked another built-in, a saved preset, a header or a
+  // custom sort.
+  tableRecs = IMPORT_SORT.sortRows(tableRecs);
 
   const showingAll = state.importShowAllPOs;
   const totalForList = tableRecs.length;
@@ -661,13 +664,22 @@ function importListRegionHtml() {
     (state.importCategoryFilter ? 1 : 0) + (state.importSubCategoryFilter ? 1 : 0) +
     (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.material ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
 
-  return '<div class="list-toggle-row"><div class="section-title m-0">Import Purchase Orders (Latest first)</div>' +
+  // One label per column, in column order - a sortable column's label is a
+  // button that sorts by it (list-sort.js's headerHtml()).
+  const headerLabels = [
+    ['PO Number', 'poNumber'], ['Vendor', 'vendor'], ['Material', 'material'], ['Rate', null],
+    ['Country of Origin', 'country'], ['Value (Incl.)', 'value'], ['BL Number', 'blNumber'],
+    ['Shipment Stage', 'stage'], ['Details', null],
+  ].map(([label, key]) => IMPORT_SORT.headerHtml(label, key));
+
+  return '<div class="list-toggle-row"><div class="section-title m-0">Import Purchase Orders</div>' +
       (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
       '<div class="flex-row-gap10">' +
         (activeFilterCount ? '<span class="clear-list-filters" id="importClearListFilters">' + activeFilterCount + ' filter' + (activeFilterCount > 1 ? 's' : '') + ' active &middot; Clear &times;</span>' : '') +
         (totalForList > 5 ? '<button class="view-all-btn" id="importToggleAllBtn">' + (showingAll ? 'Show top 5' : 'View all') + '</button>' : '') +
       '</div>' +
     '</div>' +
+    IMPORT_SORT.barHtml() +
     (() => {
       if (showingAll) {
         const colFilterRow = '<tr class="col-filter-row">' + filterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
@@ -684,7 +696,7 @@ function importListRegionHtml() {
               jumpToPageHtml('import', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Rate</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+        return '<div class="table-wrap"><table><thead><tr>' + headerLabels.map(h => '<th>' + h + '</th>').join('') + '</tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(po.plant + '::' + po.poNumber);
             // One <tr> per line item (Material + Rate), the order-level
@@ -701,7 +713,7 @@ function importListRegionHtml() {
             ]);
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Rate</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols">' + headerLabels.map(h => '<div>' + h + '</div>').join('') + '</div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
           const key = escapeHtml(po.plant + '::' + po.poNumber);
@@ -805,6 +817,7 @@ function wireImportListRegion() {
   if (nextPageBtn) nextPageBtn.onclick = () => { state.importTablePage = state.importTablePage + 1; renderImportListRegion(); };
   region.querySelectorAll('[data-impage]').forEach(btn => btn.onclick = () => { state.importTablePage = Number(btn.dataset.impage); renderImportListRegion(); });
   wireJumpToPage('import', totalPages, (n) => { state.importTablePage = n; renderImportListRegion(); });
+  IMPORT_SORT.wire(region);
 
   // Clears the "global" date/category/status filters too, so this one has
   // to go through the full render.

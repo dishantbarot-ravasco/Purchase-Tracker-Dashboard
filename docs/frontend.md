@@ -374,7 +374,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 
 | Page | Served | Styles | Scripts (in order) |
 | --- | --- | --- | --- |
-| `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `po-list.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-sort.js`, `material-modal.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
+| `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `list-sort.js`, `po-list.js`, `po-sort.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `import-sort.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-sort.js`, `material-modal.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
 | `home.html` | WhiteNoise | `brand.css`, `home-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `home-page.js` |
 | `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `search-po-page.js` |
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
@@ -626,7 +626,9 @@ are disjoint because overdue needs a passed date and Date Unknown has none. A si
 show the "nothing received" part of the Overdue and Date Unknown overlays: production read 142 on the
 Date Unknown card and 7 on its slice. A click toggles `state.statusFilter` then renders the list
 region. `status:nothing` is also in the header Status select. `PO_LIST_CTX` carries `{el, filtered, totalPages}`. `poListRegionHtml()` applies the status
-filter, month filter and `applyColFilters()`, sorts newest first, and renders a top-5 grid or a
+filter, month filter and `applyColFilters()`, sorts with `PO_SORT.sortRows()` (po-sort.js; newest
+first unless the user chose another sort, with `PO_SORT.barHtml()` above the list and sortable
+header labels from `PO_SORT.headerHtml()`), and renders a top-5 grid or a
 paginated (`LIST_PAGE_SIZE`, 100/page) "View all" table with the header filter row; row links carry
 `data-po="<plant>::<poNumber>"` and open `openPoModal()`. Under the list,
 `importCrossHitsHtml()` adds **"Also in Import Purchases (N)"** when the PO Number, Vendor or Material
@@ -636,8 +638,10 @@ should still find it. The Domestic rows are untouched. `importCrossHits()` start
 the first such search (`IMPORT_CROSS_LOAD`, one in flight) and re-renders the region when it lands; a
 failed fetch just means no hint. A hit's `data-import-po` link runs `openImportPoFromDomestic()`:
 `switchPurchaseType('import', {importPoNumber})`, then `openImportPoModal()`. `wirePoListRegion()` wires pagination,
-jump-to-page, the "N filters active - Clear" chip (full render) and the `[data-cf]` header filters
-(`createdFrom`/`createdTo`/`status` full render, the rest debounced region render).
+jump-to-page, the "N filters active - Clear" chip (full render), the `[data-cf]` header filters
+(`createdFrom`/`createdTo`/`status` full render, the rest debounced region render) and the sort
+(`PO_SORT.wire()`, region render). `main.js`'s `loadDashboard()` loads the PO sort presets alongside
+the domestic orders.
 
 **Material and Rate columns, one row per line item, and the Material search** (project owner,
 2026-09-26 / 2026-09-28). Both PO lists have Material and Rate columns after Vendor showing **every
@@ -725,7 +729,10 @@ Partial Delivered, Overdue, On Order and Date Unknown read the server's receipt-
 as Domestic. `renderImportPoList(el)` mirrors the domestic view with
 13 KPI cards including the shipment-stage trio, the two charts below, the RoDTEP Ledger / Advance License buttons, and `#importListRegion`
 (`IMPORT_LIST_CTX`, `importListRegionHtml()`, `renderImportListRegion()`, `wireImportListRegion()`;
-every `[data-icf]` filter is table-only; "View all" pages at `LIST_PAGE_SIZE`, 100/page). The Material
+every `[data-icf]` filter is table-only; "View all" pages at `LIST_PAGE_SIZE`, 100/page). The list is
+sorted by `IMPORT_SORT.sortRows()` (import-sort.js; newest first unless the user chose another sort),
+with `IMPORT_SORT.barHtml()` above it, sortable header labels from `IMPORT_SORT.headerHtml()`, and
+`IMPORT_SORT.wire()` in `wireImportListRegion()`. The Material
 column and its search work as on Domestic (see po-list.js). Under the table,
 `domesticCrossHitsHtml()` adds **"Also in Domestic Purchases (N)"** when the PO Number, Vendor or
 Material filter matches a domestic order at the selected plants (same contains rule, up to 10 shown,
@@ -839,50 +846,95 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   phone, with the value size scaling so nothing clips. Then
   Category/Sub Category/Flags selects, the drill-down
   chart (stock rows only), then `#matListRegion` (`MAT_LIST_CTX`, `materialsListRegionHtml()`
-  sorted by `material-sort.js`'s `sortMaterialRows()` over `MAT_SORT_STATE.levels` - latest first by
-  `materialLatestDate()` unless the user chose another sort - with `matSortBarHtml()` above the table
-  and each sortable header label from `matSortHeaderHtml()`; `renderMaterialsListRegion()`,
-  `wireMaterialsListRegion()` (which calls `wireMaterialSort()`); `status`/`category`/`subCategory`
+  sorted by `MAT_SORT.sortRows()` (material-sort.js over list-sort.js) - latest first by
+  `materialLatestDate()` unless the user chose another sort - with `MAT_SORT.barHtml()` above the
+  table and each sortable header label from `MAT_SORT.headerHtml()`; `renderMaterialsListRegion()`,
+  `wireMaterialsListRegion()` (which calls `MAT_SORT.wire()`); `status`/`category`/`subCategory`
   header selects take the full render, `material` text, `progress` and every sort change stay in the
-  region). `loadAndRenderMaterials()` also awaits `ensureSortPresetsLoaded()`, which never throws.
+  region). `loadAndRenderMaterials()` also awaits `MAT_SORT.ensurePresetsLoaded()`, which never
+  throws.
 - `renderMaterialsChart()` / `wireMaterialsChart()` - Inventory Value by Category -> Subcategory ->
   Material (top 5 by value via `materialsChartBars()`, no "Other" bar - a note under the chart says
   how many more there are and what they hold; breadcrumb, height via `data-height-px`); a material
   bar opens `openMaterialModal()`.
 
+### frontend/js/list-sort.js
+
+The shared sorting and sort-preset engine behind Raw Material Analysis (`material-sort.js`),
+Domestic Purchase Orders (`po-sort.js`) and Import Purchases (`import-sort.js`). Loads after
+`flags.js`, before all three configurations.
+`createListSort(cfg)` returns one sorter per list; `cfg` names the server `view`, an element
+`idPrefix`, the `columns` (key, label, `kind`, and the direction a header click starts with), the
+`builtins` (the first is the default), `rowValue(key, row, extra)`, `tieBreak(a, b, extra)`,
+`onChange` (reset the list's page) and `rerender` (the list's region render). A sort is table-only,
+so every change re-renders the list region, never the view.
+
+- `kind` sets the direction wording (`LIST_SORT_DIR_LABELS`): `text` A to Z, `date` oldest/newest,
+  `num` smallest/largest, `rank` most/least urgent (an ordered code, e.g. PO status), `stage`
+  earliest/latest stage (import shipment stage).
+- The sorter's `state` holds `levels` and `presetId` in use (`'custom'` when no preset matches -
+  `presetIdForLevels()` prefers the selected preset), the user's `presets` (from
+  `GET /api/sort-presets?view=<view>`, loaded once per visit by `ensurePresetsLoaded()`, which never
+  throws; on failure `presetsError` and the select says so, built-ins still work) and the Custom sort
+  editor's `draft` / `draftName` / `msg`, kept there so a region re-render never loses them. The sort
+  in use is remembered in localStorage (`pt.sort.<view>.v1`, try/catch both ways, validated on
+  read); presets are on the server.
+- `sortRows(rows, extra)` computes each row's values once (not per comparison); text and dates
+  compare with `localeCompare` (case-insensitive, numeric); **a row with no value for a level sorts
+  after every row that has one, in either direction**; remaining ties go to `tieBreak`.
+- Three ways in: the **Sort by** select (`barHtml()`: built-ins and "My presets"); a **header
+  click** (`headerHtml(label, key)` renders a `.sort-header-btn` with an arrow and, in a multi-level
+  sort, the level number; clicking the sole sorted column again reverses it); and **Custom sort...**
+  (the editor: "Sort by / Then by" rows with column and direction selects, move up/down, remove,
+  "+ Add level" up to `LIST_SORT_MAX_LEVELS` (5), a column at most once; Apply, Save as preset,
+  Delete the selected own preset, Close). Saving a name the user already has asks before saving over
+  it. Every change goes through `set()`, which calls `onChange` and stores the choice. `wire(region)`
+  binds all of it after each region render.
+- `sortPresetApi()` - JSON fetch for `/api/sort-presets`, same 401/error contract as `apiImports()`.
+
 ### frontend/js/material-sort.js
 
-Raw Material Analysis's sorting and sort presets. Loads after `materials.js`; everything it does
-runs at render time, from `materialsListRegionHtml()` / `wireMaterialsListRegion()`. A sort is
-table-only (like the Material search), so every change re-renders the list region, never the view.
+Raw Material Analysis's sort configuration: `MAT_SORT = createListSort({view: 'materials', ...})`.
+`MAT_SORT_COLUMNS` - Last received / ordered, Material, Category, Sub Category, Stock, Inventory
+Value, Latest Rate, Days Left, Pending Delivery value, Open PO Pipeline value. **Its keys must equal
+`apps/services/sort_presets.py`'s `SORT_KEYS_BY_VIEW["materials"]`** (`test_sort_presets.py`
+checks), or saving a preset that uses the missing key fails with a 400. `MAT_BUILTIN_SORTS`: Latest
+first (the default), Category, Sub Category, Category then Sub Category then Material, fewest Days
+Left, highest Inventory Value, most Pending Delivery. `matSortValue(key, m, extra)` - `extra` is
+`{entryOf, latestOf}` from `materialsListRegionHtml()`; blank for sorting means no category (the
+API's literal "Uncategorized" counts as none), no open PO, no Days Left figure (only where
+`daysLeftCellHtml()` shows a number), or an order-only row's stock/value. Ties keep the default
+order (latest, stock qty, open value). A header click sorts only the columns
+with a `sort` key in `materials.js`'s `MAT_LIST_COLUMNS`; Sub Category and Latest Rate share a
+column with Category and Inventory Value, so they sort from the select and Custom sort.
 
-- `MAT_SORT_COLUMNS` - the sortable columns: key, label, `kind` (`text` A to Z, `num`
-  smallest/largest, `date` oldest/newest) and the direction a header click starts with. **Its keys
-  must equal `apps/services/sort_presets.py`'s `SORT_KEYS_BY_VIEW["materials"]`**
-  (`test_sort_presets.py` checks), or saving a preset that uses the missing key fails with a 400.
-- `MAT_BUILTIN_SORTS` - ready-made sorts (`builtin:*` ids): Latest first (the default), Category,
-  Sub Category, Category then Sub Category then Material, fewest Days Left, highest Inventory Value,
-  most Pending Delivery. `MAT_USER_PRESETS` - the user's saved presets from
-  `GET /api/sort-presets?view=materials` (`ensureSortPresetsLoaded()`, once per visit; on failure
-  `MAT_USER_PRESETS_ERROR` and the select says so, built-ins still work).
-- `MAT_SORT_STATE` - `levels` and `presetId` in use (`'custom'` when no preset matches;
-  `presetIdForLevels()`), plus the Custom sort editor's `draft` / `draftName` / `msg`, kept here so a
-  region re-render never loses them. The sort in use is remembered in localStorage
-  (`pt.matSort.v1`, try/catch both ways, validated on read); presets are on the server.
-- `matSortValue(key, m, entry, latest)` - what a row sorts on. **Blanks sort last in either
-  direction**: no category (the API's literal "Uncategorized" counts as blank), no open PO, no Days
-  Left figure (only where `daysLeftCellHtml()` shows a number), an order-only row's stock/value.
-  `sortMaterialRows(rows, levels, entryOf, latestOf)` sorts on precomputed values (one pass per row,
-  not per comparison), text by `localeCompare` (case-insensitive, numeric), and breaks remaining ties
-  with the default order (latest, stock qty, open value).
-- Three ways in: the **Sort by** select (built-ins and "My presets"); a **header click** on a
-  column with a `sort` key in `materials.js`'s `MAT_LIST_COLUMNS` (`matSortHeaderHtml()` renders a `.sort-header-btn` with an arrow and, in a multi-level sort, the
-  level number; clicking the sole sorted column again reverses it); and **Custom sort...**
-  (`matSortEditorHtml()`: "Sort by / Then by" rows with column and direction selects, move up/down,
-  remove, "+ Add level" up to 5, a column at most once; Apply, Save as preset, Delete the selected
-  own preset, Close). Saving a name the user already has asks before saving over it. Every change
-  goes through `setMatSort()`, which resets to page 1 and stores the choice.
-- `sortPresetApi()` - JSON fetch for `/api/sort-presets`, same 401/error contract as `apiImports()`.
+### frontend/js/po-sort.js
+
+Domestic Purchase Orders' sort configuration: `PO_SORT = createListSort({view: 'purchase_orders',
+...})`. `PO_SORT_COLUMNS` - Created On, PO Number, Vendor, Material (the first line's), Category,
+Sub Category, Delivery Date, Value (`totalInclTax`, else `totalValue`), Status. **Keys must equal
+`SORT_KEYS_BY_VIEW["purchase_orders"]`.** Category and Sub Category are not table columns (a PO can
+order several categories), so they sort from the select and Custom sort only; `poCategoryText()`
+sorts a PO on its distinct categories A to Z, joined, "Uncategorized" counting as none. Status sorts
+by `PO_STATUS_RANK` (overdue, on order, partial, date unknown, received), `_overdue` winning over
+`_status`. `PO_BUILTIN_SORTS`: Latest first (the default, the list's old fixed order), Category, Sub
+Category, Category then Sub Category, Vendor, Delivery Date soonest, highest Value, most urgent
+status. Ties go latest first, then PO number. `main.js` loads these presets in `loadDashboard()`, and
+`switchPurchaseType()` loads the target sub-tab's presets before rendering (the page may have opened
+on the other sub-tab).
+
+### frontend/js/import-sort.js
+
+Import Purchases' sort configuration: `IMPORT_SORT = createListSort({view: 'import_purchases',
+...})`. `IMPORT_SORT_COLUMNS` - Created On, PO Number, Vendor, Material (first line's), Category,
+Sub Category (both via po-sort.js's `poCategoryText()`, select and Custom sort only), Plant
+(`plantLabel` - the import list is cross-plant), Country of Origin, Delivery Date (the earliest
+line's, `importEarliestDelivery()`), Value (Incl.) (the API's 0 for "no value" counts as blank), BL
+Number, Shipment Stage (`IMPORT_STAGE_RANK`: Placed, Shipped (BL), Cleared (BOE); kind `stage`).
+**Keys must equal `SORT_KEYS_BY_VIEW["import_purchases"]`.** `IMPORT_BUILTIN_SORTS`: Latest first
+(the default), Category, Sub Category, Category then Sub Category, Vendor, Country of Origin,
+Shipment Stage earliest first, highest Value. Ties go latest first, then PO number. Its presets load
+with the import orders (`loadDashboard()` / `switchPurchaseType()`).
 
 ### frontend/js/material-modal.js
 

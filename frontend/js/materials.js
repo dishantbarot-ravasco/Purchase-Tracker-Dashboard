@@ -35,7 +35,7 @@ async function loadAndRenderMaterials() {
     // Purchase Orders tab was already visited for the same plant(s).
     // The user's saved sort presets too (material-sort.js) - that loader never
     // throws, so a failed preset load cannot take the page down with it.
-    await Promise.all([ensureMaterialsLoaded(selectedPlantKeys()), ensurePOsLoaded(selectedPlantKeys()), ensureImportPOsLoaded(), ensureSortPresetsLoaded()]);
+    await Promise.all([ensureMaterialsLoaded(selectedPlantKeys()), ensurePOsLoaded(selectedPlantKeys()), ensureImportPOsLoaded(), MAT_SORT.ensurePresetsLoaded()]);
     el.innerHTML = '<div id="materialsContent"></div>';
     renderMaterialsView();
     return true;
@@ -1297,16 +1297,17 @@ function materialsListRegionHtml() {
     tableRecs = ctx.linkage.filter(l => l.categories.some(c => c.label === wantedLabel)).map(l => l.material);
   }
   tableRecs = applyMatColFilters(tableRecs);
-  // Sorted by the user's chosen sort (material-sort.js's MAT_SORT_STATE):
+  // Sorted by the user's chosen sort (material-sort.js's MAT_SORT):
   // a built-in, a saved preset, a header click or a custom multi-level sort.
   // The default is LATEST FIRST (2026-09-24, project owner: "stock lot added
   // first or latest, just like it's for PO latest first") - the material
   // whose newest lot was received most recently leads. See
   // materialLatestDate() for what "latest" means on an order-only row. Ties
   // after the chosen levels fall back to that default order.
-  const entryOf = m => ctx.linkageByKey.get(normalizeMaterial(m.description));
-  const latestOf = new Map(tableRecs.map(m => [m, materialLatestDate(m, entryOf(m))]));
-  const sorted = sortMaterialRows(tableRecs, MAT_SORT_STATE.levels, entryOf, m => latestOf.get(m));
+  // Looked up once per row here, not once per comparison.
+  const entries = new Map(tableRecs.map(m => [m, ctx.linkageByKey.get(normalizeMaterial(m.description))]));
+  const latestOf = new Map(tableRecs.map(m => [m, materialLatestDate(m, entries.get(m))]));
+  const sorted = MAT_SORT.sortRows(tableRecs, { entryOf: m => entries.get(m), latestOf: m => latestOf.get(m) });
 
   const showingAll = state.showAllMaterials;
   const PAGE_SIZE = LIST_PAGE_SIZE;
@@ -1364,7 +1365,7 @@ function materialsListRegionHtml() {
   const colFilterRow = '<tr class="col-filter-row">' + matFilterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
   // The ten columns, in order; `tip` becomes the header cell's title and
   // `sort` the material-sort.js key a header click sorts by (its label is a
-  // button, matSortHeaderHtml()). Sub Category and Latest Rate share a column
+  // button, list-sort.js's headerHtml() via MAT_SORT). Sub Category and Latest Rate share a column
   // with Category and Inventory Value, so they sort from the Sort by select
   // rather than a header. Both the "View all" table and the top-5 grid read
   // this one list, so the two can never disagree about what a column is.
@@ -1381,7 +1382,7 @@ function materialsListRegionHtml() {
     { label: 'Progress', tip: 'MIR matched, then stocked.' },
     { label: 'Details' },
   ];
-  const headerCell = (c, tag) => '<' + tag + (c.tip ? ' title="' + escapeHtml(c.tip) + '"' : '') + '>' + matSortHeaderHtml(c.label, c.sort || null) + '</' + tag + '>';
+  const headerCell = (c, tag) => '<' + tag + (c.tip ? ' title="' + escapeHtml(c.tip) + '"' : '') + '>' + MAT_SORT.headerHtml(c.label, c.sort || null) + '</' + tag + '>';
   // One row's ten cells, as inner HTML, shared by both layouts below.
   const rowCells = m => {
     const key = escapeHtml(materialModalKey(m));
@@ -1442,7 +1443,7 @@ function materialsListRegionHtml() {
       (listRecs.some(m => { const e = linkageByKey.get(normalizeMaterial(m.description)); return e && (e.qtyFlag || e.rateFlag); }) ? rowTintLegendHtml() : '') +
       (sorted.length > 5 ? '<button class="view-all-btn" id="toggleMatBtn">' + (showingAll ? 'Show top 5' : 'View all ' + sorted.length + ' materials') + '</button>' : '') +
     '</div>' +
-    matSortBarHtml() +
+    MAT_SORT.barHtml() +
     (() => {
       // Compact top-5 preview renders as CSS-grid card rows, same
       // .list-header-row/.top5-list/.top5-row structure as Purchase
@@ -1497,7 +1498,7 @@ function wireMaterialsListRegion() {
   if (matNextPageBtn) matNextPageBtn.onclick = () => { state.matTablePage = state.matTablePage + 1; renderMaterialsListRegion(); };
   region.querySelectorAll('[data-matpage]').forEach(btn => btn.onclick = () => { state.matTablePage = Number(btn.dataset.matpage); renderMaterialsListRegion(); });
   wireJumpToPage('mat', totalPages, (n) => { state.matTablePage = n; renderMaterialsListRegion(); });
-  wireMaterialSort(region);
+  MAT_SORT.wire(region);
 
   // Header filter row (only present when showingAll).
   //
