@@ -598,9 +598,10 @@ function poListRegionHtml() {
     '<input type="text" class="col-filter-input" data-cf="poNumber" placeholder="Search..." value="' + escapeHtml(state.colFilters.poNumber) + '">',
     '<input type="text" class="col-filter-input" data-cf="vendor" placeholder="Search..." value="' + escapeHtml(state.colFilters.vendor) + '">',
     '<input type="text" class="col-filter-input" data-cf="material" placeholder="Search..." value="' + escapeHtml(state.colFilters.material) + '">',
+    '', // Rate - no header filter, like Value
     '<div class="col-filter-range"><input type="date" data-cf="createdFrom" value="' + (state.from || '') + '"><input type="date" data-cf="createdTo" value="' + (state.to || '') + '"></div>',
     '<div class="col-filter-range"><input type="date" data-cf="deliveryFrom" value="' + (state.colFilters.deliveryFrom || '') + '"><input type="date" data-cf="deliveryTo" value="' + (state.colFilters.deliveryTo || '') + '"></div>',
-    '', // Value (incl. tax) - no header filter (min/max removed); keeps this array 1:1 with the 9 table columns
+    '', // Value (incl. tax) - no header filter (min/max removed); keeps this array 1:1 with the 10 table columns
     '<select class="col-filter-input" data-cf="status"><option value="">All</option>' + statusOptionsHtml + '</select>',
     '<select class="col-filter-input" data-cf="progress"><option value="">All</option><option value="inwarded"' + (state.colFilters.progress === 'inwarded' ? ' selected' : '') + '>Inwarded</option><option value="not"' + (state.colFilters.progress === 'not' ? ' selected' : '') + '>Not Inwarded</option></select>',
     '',
@@ -663,12 +664,13 @@ function poListRegionHtml() {
               jumpToPageHtml('po', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Rate</th><th>Created On</th><th>Delivery Date</th><th>Value (incl. tax)</th><th>Status</th><th>Progress</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
             return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
               '<td>' + poMaterialCellHtml(po, state.colFilters.material, '-') + '</td>' +
+              '<td>' + poRateCellHtml(po, state.colFilters.material, '-', po.currency) + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po.createdDate)) + '</td>' +
               '<td>' + escapeHtml(formatDateIN(po._deliveryDate)) + '</td>' +
               '<td>' + poValueCellHtml(po) + '</td>' +
@@ -677,7 +679,7 @@ function poListRegionHtml() {
               '<td><span class="row-link" data-po="' + key + '">View details</span></td></tr>';
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Rate</div><div>Created On</div><div>Delivery Date</div><div>Value (incl. tax)</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="top5List">' + listRecs.map(po => {
           const key = escapeHtml(plantKeyFor(po) + '::' + po.poNumber);
@@ -685,6 +687,7 @@ function poListRegionHtml() {
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
             '<div>' + poMaterialCellHtml(po, state.colFilters.material, 'Not available') + '</div>' +
+            '<div>' + poRateCellHtml(po, state.colFilters.material, 'Not available', po.currency) + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po.createdDate) || 'Not available') + '</div>' +
             '<div>' + escapeHtml(formatDateIN(po._deliveryDate) || 'Not available') + '</div>' +
             '<div>' + poValueCellHtml(po) + '</div>' +

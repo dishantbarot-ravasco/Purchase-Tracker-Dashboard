@@ -957,6 +957,38 @@ function poHasMaterial(po, text) {
   return (po.items || []).some(it => normMaterialText(it.description).includes(want));
 }
 
+// The Rate column cell on both PO lists: the per-unit rate of the same line
+// the Material cell leads with (the first line, or the first matching the
+// Material search), with its unit, in the PO's own currency (po.currency,
+// "Currency (As Per PO)" on imports - the figure the PO states, as the import
+// modal shows it); INR or blank shows as ₹. An order whose lines carry different rates gets
+// "+N more" (N = other distinct rates) and every line's rate in the tooltip;
+// lines that all share one rate show just that rate.
+function formatUnitRate(n, currency) {
+  if (n == null || isNaN(n)) return '-';
+  const digits = Math.abs(n) < 1 ? 4 : 2;
+  const num = Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: digits });
+  const code = String(currency || '').trim();
+  return code && code.toUpperCase() !== 'INR' ? code + ' ' + num : '₹' + num;
+}
+
+function poRateCellHtml(po, searchText, emptyText, currency) {
+  const want = normMaterialText(searchText);
+  const lines = (po.items || []).map(it => ({
+    desc: String(it.description || '').trim(),
+    rate: it.netPrice == null ? null : formatUnitRate(it.netPrice, currency) + (it.uom ? ' / ' + it.uom : ''),
+  }));
+  const priced = lines.filter(l => l.rate != null);
+  if (!priced.length) return escapeHtml(emptyText);
+  const lead = (want && priced.find(l => normMaterialText(l.desc).includes(want))) || priced[0];
+  const distinct = [];
+  priced.forEach(l => { if (distinct.indexOf(l.rate) === -1) distinct.push(l.rate); });
+  const more = distinct.length - 1;
+  const tip = lines.map(l => (l.desc || 'Line') + ': ' + (l.rate || 'no rate')).join('\n');
+  return '<span class="nowrap" title="' + escapeHtml(tip) + '">' + escapeHtml(lead.rate) + '</span>' +
+    (more ? ' <span class="text-muted fs-11">+' + more + ' more</span>' : '');
+}
+
 // The Material column cell on both PO lists: the first line's description,
 // or - while a Material search is active - the first line that matched it,
 // so the reader sees why the order is listed. "+N more" counts the order's

@@ -607,6 +607,7 @@ function importListRegionHtml() {
     '<input type="text" class="col-filter-input" data-icf="poNumber" placeholder="Search..." value="' + escapeHtml(cf.poNumber) + '">',
     '<input type="text" class="col-filter-input" data-icf="vendor" placeholder="Search..." value="' + escapeHtml(cf.vendor) + '">',
     '<input type="text" class="col-filter-input" data-icf="material" placeholder="Search..." value="' + escapeHtml(cf.material) + '">',
+    '', // Rate - no header filter, like Value
     '<input type="text" class="col-filter-input" data-icf="country" placeholder="Search..." value="' + escapeHtml(cf.country) + '">',
     '',
     '',
@@ -683,12 +684,13 @@ function importListRegionHtml() {
               jumpToPageHtml('import', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
+        return '<div class="table-wrap"><table><thead><tr><th>PO Number</th><th>Vendor</th><th>Material</th><th>Rate</th><th>Country of Origin</th><th>Value (Incl.)</th><th>BL Number</th><th>Shipment Stage</th><th>Details</th></tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(po.plant + '::' + po.poNumber);
             return '<tr class="' + rowTintClass(po).trim() + '"><td><b>' + escapeHtml(po.poNumber) + '</b></td>' +
               '<td>' + escapeHtml(po.vendorName || '-') + '</td>' +
               '<td>' + poMaterialCellHtml(po, cf.material, '-') + '</td>' +
+              '<td>' + poRateCellHtml(po, cf.material, '-', po.currency) + '</td>' +
               '<td>' + escapeHtml(po.countryOfOrigin || '-') + '</td>' +
               '<td>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-') + '</td>' +
               '<td>' + blNumberCellHtml(po, '-') + '</td>' +
@@ -696,7 +698,7 @@ function importListRegionHtml() {
               '<td><span class="row-link" data-impo="' + key + '">View details</span></td></tr>';
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols"><div>PO Number</div><div>Vendor</div><div>Material</div><div>Rate</div><div>Country of Origin</div><div>Value (Incl.)</div><div>BL Number</div><div>Shipment Stage</div><div>Details</div></div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
           const key = escapeHtml(po.plant + '::' + po.poNumber);
@@ -704,6 +706,7 @@ function importListRegionHtml() {
             '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
             '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
             '<div>' + poMaterialCellHtml(po, cf.material, 'Not available') + '</div>' +
+            '<div>' + poRateCellHtml(po, cf.material, 'Not available', po.currency) + '</div>' +
             '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
             '<div>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : 'Not available') + '</div>' +
             '<div>' + blNumberCellHtml(po, 'Not available') + '</div>' +

@@ -376,6 +376,9 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_r
         # into every list row costs nothing worth optimizing away.
         "paymentTerms": po.payment_terms,
         "incoterms": po.incoterms,
+        # The currency every line's net_price is in ("Currency (As Per PO)") -
+        # the PO list's Rate column shows the rate in it.
+        "currency": po.currency,
         "items": item_dicts,
         # Same canonical Category/Sub Category lookup the domestic Purchase
         # Orders page uses (see _domestic_base.py's _po_material_categories
@@ -400,7 +403,6 @@ def _po_dict(po, plant_key, plant_label, detail=False, sr_plant=None, category_r
             "vendorCode": po.vendor_code,
             "billingAddress": po.billing_address,
             "shipTo": po.ship_to,
-            "currency": po.currency,
             "totalValue": _f(po.total_value),
             "remarks": po.remarks,
             "corrections": [_correction_dict(c) for c in corrections],

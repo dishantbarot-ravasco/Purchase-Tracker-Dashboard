@@ -78,6 +78,18 @@ class TestPurchaseOrdersList:
         assert row["shipmentStage"] == "Cleared (BOE)"
         assert row["countryOfOrigin"] == "China"
 
+    def test_list_rows_carry_the_po_currency_and_line_rates(self):
+        """The PO list's Rate column shows each line's net_price in the PO's
+        own currency, so the list row (not just the detail payload) must
+        carry `currency` alongside every line's netPrice / uom."""
+        po = _make_po(currency="EUR")
+        _make_item(po, item_id="1", net_price="1.5", uom="KG")
+        _make_item(po, item_id="2", description="Gadget", net_price="2.25", uom="MT")
+
+        row = self.client.get(LIST_URL).json()["purchaseOrders"][0]
+        assert row["currency"] == "EUR"
+        assert sorted((i["netPrice"], i["uom"]) for i in row["items"]) == [(1.5, "KG"), (2.25, "MT")]
+
     def test_qty_discrepancy_flagged_only_when_boe_qty_present_and_differs(self):
         """A PO with no BOE quantity yet (not cleared through customs) must
         never show a qty discrepancy - only once qty_as_per_boe is present

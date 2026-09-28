@@ -599,7 +599,7 @@ Status, flag and badge logic shared by every list and modal. Feature semantics a
   both `_qtyFlag` and material `qtyFlag` shapes), `rowTintLegendHtml()`, `miniStepperHtml(po)`,
   `materialStepperHtml(m)`, `poHasMaterial(po, text)` (Material search on both PO lists: any line
   `description` contains the text, case-insensitive, whitespace collapsed), `poMaterialCellHtml()`,
-  `applyColFilters(recs)`
+  `poRateCellHtml()` / `formatUnitRate()` (the Rate column), `applyColFilters(recs)`
   (Domestic table-only filters), `FILTER_ATTRS` and
   `preserveFocus(container, renderFn)`.
 
@@ -636,9 +636,13 @@ failed fetch just means no hint. A hit's `data-import-po` link runs `openImportP
 jump-to-page, the "N filters active - Clear" chip (full render) and the `[data-cf]` header filters
 (`createdFrom`/`createdTo`/`status` full render, the rest debounced region render).
 
-**Material column and search** (project owner, 2026-09-26). Both PO lists have a Material column
-after Vendor (`poMaterialCellHtml()`: the first line's description, or the first line matching the
-search, plus "+N more" with every description in the tooltip) and a text filter under it
+**Material and Rate columns, and the Material search** (project owner, 2026-09-26 / 2026-09-28).
+Both PO lists have a Material column after Vendor, then a Rate column (`poRateCellHtml()`: the
+per-unit `netPrice` / `uom` of the same line the Material cell leads with, in `po.currency` via
+`formatUnitRate()` - INR or blank shows as ₹, 2 decimals, 4 below 1; an order whose lines differ in
+rate gets "+N more" and every line's rate in the tooltip; no header filter, like Value). The Material
+column shows `poMaterialCellHtml()` (the first line's description, or the first line matching the
+search, plus "+N more" with every description in the tooltip) and has a text filter under it
 (`colFilters.material` here, `importColFilters.material` on Import). It is a plain filter exactly
 like PO Number / Vendor: an order matches when any line's `description` contains the text
 (`poHasMaterial()`), whatever its status, and it feeds the "Also in Import Purchases" panel the same

@@ -963,7 +963,9 @@ endpoints.
   `orderedRateInr` / `orderedValueInr` from `_import_rate_value_inr()` and reads optional columns with
   `getattr` defaults. `_item_dict()` adds `shipmentStage`, `qtyDiscrepancy[Pct]`, `deliveryDateStatus`
   (from `import_flags`, with `timezone.localdate()`). `_po_dict()` adds the PO-level
-  `shipmentStage`, `deliveryDateStatus`, `partialDelivery`, `materialInwarded` and `qtyDiscrepancy`;
+  `shipmentStage`, `deliveryDateStatus`, `partialDelivery`, `materialInwarded` and `qtyDiscrepancy`,
+  plus `currency` ("Currency (As Per PO)", the currency every line's `netPrice` is in - the PO list's
+  Rate column and the modal's currency dropdown read it from the list row);
   `_po_dict(detail=True)` adds vendor / billing fields, corrections and flag dismissals.
 - **`purchase_orders`**: all readable plants' active POs, sorted newest first; out-of-scope plants are
   skipped silently. **`purchase_order_detail`**: 404 for unknown or out-of-scope plant; does not filter
