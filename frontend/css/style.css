@@ -995,6 +995,27 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mat-pipe-fill { display:block; height:100%; width:0; border-radius:99px; background:var(--green); }
 .mat-table td { vertical-align:top; }
 .mat-table .days-left-cell { padding-top:1px; }
+/* Import Purchases list (import-po.js's IMPORT_LIST_COLUMNS), same cell
+   style: PO Number, Vendor, Material + Rate (.po-lines-block spans both),
+   Delivery, Order Value, Shipment, Progress, Details. */
+.list-header-row.imp-grid-cols,
+.top5-row.imp-grid-cols {
+  grid-template-columns:
+    minmax(110px, .9fr) minmax(140px, 1.3fr) minmax(150px, 1.4fr) minmax(100px, .9fr)
+    minmax(92px, .8fr) minmax(110px, .95fr) minmax(150px, 1.3fr) minmax(112px, .8fr) minmax(88px, .6fr);
+  align-items:start;
+}
+.list-header-row.imp-grid-cols.col-filter-row-grid { align-items:center; }
+/* Material + Rate follow the grid's own two tracks, so each sits under its
+   header (the block's default is two equal halves). */
+.top5-row.imp-grid-cols > .po-lines-block { grid-template-columns:subgrid; }
+.imp-grid-scroll > .list-header-row.imp-grid-cols, .imp-grid-scroll > .top5-list { min-width:1180px; }
+.imp-table .po-num { font-family:var(--mono); font-weight:700; color:var(--navy); }
+.imp-table td { vertical-align:top; }
+.mat-cell-sub.imp-overdue { color:var(--red-text); font-weight:700; }
+.imp-bl { margin-top:5px; white-space:nowrap; }
+.imp-bl-num { font-family:var(--mono); }
+
 /* When the page is narrower than the ten columns need, the header and rows
    scroll sideways together inside .mat-grid-scroll (the heading above stays
    put) instead of squeezing every figure onto two lines. The padding keeps

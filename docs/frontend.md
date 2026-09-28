@@ -749,7 +749,24 @@ zero. **The doughnut is "Delivery Status (MIR)", two rings like Domestic's:** in
 arrived (`inwarded`, `partial`, `recv:nothing`), outer = the server's `deliveryDateStatus`, already
 one value per PO (`overdue`, `onorder`, `unknowndate`, and an unclickable Delivered remainder), so each
 slice equals its card. It replaced a shipment-stage doughnut (customs clearance is not delivery; on
-production 40 of 43 import POs sat in "Cleared"). BL numbers render with a `data-track-bl` "Track" link.
+production 40 of 43 import POs sat in "Cleared").
+
+**List columns** (`IMPORT_LIST_COLUMNS`, read by both the "View all" table and the top-5 grid, header
+`title`s and `import-sort.js` sort keys included - PO Number, Vendor, Material, Delivery, Order Value
+and Shipment headers are sort buttons via `IMPORT_SORT.headerHtml()`): PO Number (created date under it, `importPoCellHtml()`), Vendor (country of
+origin under it, `importVendorCellHtml()`; the Vendor and Country search boxes stacked in
+`.col-filter-stack`), Material, Rate, Delivery (`importDeliveryCellHtml()`: `importPoDeliveryDate()`,
+the earliest date among lines not yet `Delivered`, else the earliest of all - Domestic's
+`computePoDeliveryDate()` rule - with the server's `deliveryDateStatus` in words under it, Overdue in
+red), Order Value (`importValueCellHtml()`: `importPoInrValue()` before duty, with the duty-inclusive
+landed `totalInclusiveValue` under it once a BOE sets it, else "Duty not assessed yet"), Shipment
+(`importShipmentCellHtml()`: `IMPORT_STAGE_LABELS` pill, row flags, then the BL number with its
+`data-track-bl` "Track" link), Progress (`shipmentStepperHtml()`), Details. 2026-09-28 layout pass,
+same cell classes as Raw Material's list (`.mat-cell-main` / `.mat-cell-sub`): the list used to show
+the raw stage text, no dates at all, and "Value (Incl.)" as the duty-paid total, so every order not
+yet through customs read "Rs 0". The grid is `.imp-grid-cols` inside `.mat-grid-scroll`, sideways
+scroll below about 1180px; `.po-lines-block` takes `grid-template-columns: subgrid` there so Material
+and Rate sit under their own headers.
 
 `openImportPoModal("<plant>::<poNumber>")` is guarded, fetches the detail once via
 `ensureImportPoDetailLoaded()` (GET `/api/imports/purchase-orders/<plant>/<po>`, cached in
@@ -934,9 +951,10 @@ on the other sub-tab).
 Import Purchases' sort configuration: `IMPORT_SORT = createListSort({view: 'import_purchases',
 ...})`. `IMPORT_SORT_COLUMNS` - Created On, PO Number, Vendor, Material (first line's), Category,
 Sub Category (both via po-sort.js's `poCategoryText()`, select and Custom sort only), Plant
-(`plantLabel` - the import list is cross-plant), Country of Origin, Delivery Date (the earliest
-line's, `importEarliestDelivery()`), Value (Incl.) (the API's 0 for "no value" counts as blank), BL
-Number, Shipment Stage (`IMPORT_STAGE_RANK`: Placed, Shipped (BL), Cleared (BOE); kind `stage`).
+(`plantLabel` - the import list is cross-plant), Country of Origin, Delivery Date (the next open
+date, `import-po.js`'s `importPoDeliveryDate()`, what the list's Delivery column shows), Order Value
+(before duty, `importPoInrValue()`, what the Order Value column shows; blank when a line lacks its
+value or exchange rate), BL Number, Shipment Stage (`IMPORT_STAGE_RANK`: Placed, Shipped (BL), Cleared (BOE); kind `stage`).
 **Keys must equal `SORT_KEYS_BY_VIEW["import_purchases"]`.** `IMPORT_BUILTIN_SORTS`: Latest first
 (the default), Category, Sub Category, Category then Sub Category, Vendor, Country of Origin,
 Shipment Stage earliest first, highest Value. Ties go latest first, then PO number. Its presets load
@@ -1053,7 +1071,7 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   timeout it reports "still running" and leaves the rest to the freshness watcher. Status text:
   `setRefreshStatus()`, `syncOutcome()`, `stepName()`, `clockTime()`, `latestSyncTime()`,
   `elapsedLabel()`, `DOMESTIC_SYNC_STEPS`, `SYNC_STEP_LABELS`, `DRIVE_SYNC_STEPS`.
-- `loadAndRender()` -> `loadDashboard()` or `loadAndRenderMaterials()`, then refreshes `DATA_STAMP`;
+- `loadAndRender()` -> `loadDashboard()` or `loadAndRenderMaterials()`, then refreshes `DATA_STAMP`. `loadDashboard()` reloads itself when the reader switched Domestic/Import while it was fetching - that switch found no `#content` yet, and the Import list was drawn from an empty cache as "No import purchase orders synced yet";
   resolves `false` when the view showed its own error.
 - Freshness: `currentDataStamp()`, `checkFreshness()`, `startFreshnessWatch()`.
 - Deep links: `readDeepLinkParams()`, `applyDeepLinkToState()`, `clearDeepLinkParams()`,
@@ -1177,7 +1195,7 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   and its month `.chart-filter-chip`; `.doughnut-layout` puts the rings beside their legend through a
   container query on the panel at 540px, and a bar chart's `.chart-box` grows to its panel's height),
   filter bars (one 32px control height, uppercase labels, stacking per group under 560px), the Raw
-  Material list's `.mat-*` cell classes and `.mat-grid-cols` track widths, dark mode. Both lists'
+  Material list's `.mat-*` cell classes and `.mat-grid-cols` track widths, the Import list's `.imp-grid-cols` track widths and `.imp-*` classes, dark mode. Both lists'
   rows use tabular figures and lift on hover; `.status-pill` never wraps.
 - **`mir-page.css`** (`mir.html`) - brand tokens only, defines no custom property: view tabs, step
   cards, PO results, line cards, reason rows (`.mir-reason.is-short` / `.is-over`), register and

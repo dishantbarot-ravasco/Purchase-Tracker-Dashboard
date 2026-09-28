@@ -24,7 +24,7 @@ const IMPORT_SORT_COLUMNS = [
   { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc' },
   { key: 'country', label: 'Country of Origin', kind: 'text', dir: 'asc' },
   { key: 'delivery', label: 'Delivery Date', kind: 'date', dir: 'asc' },
-  { key: 'value', label: 'Value (Incl.)', kind: 'num', dir: 'desc' },
+  { key: 'value', label: 'Order Value (before duty)', kind: 'num', dir: 'desc' },
   { key: 'blNumber', label: 'BL Number', kind: 'text', dir: 'asc' },
   { key: 'stage', label: 'Shipment Stage', kind: 'stage', dir: 'asc' },
 ];
@@ -45,12 +45,6 @@ const IMPORT_BUILTIN_SORTS = [
 // customs on a Bill of Entry - import-po.js's IMPORT_STAGES order.
 const IMPORT_STAGE_RANK = { Placed: 0, 'Shipped (BL)': 1, 'Cleared (BOE)': 2 };
 
-// The earliest delivery date on any of the order's lines; null when none.
-function importEarliestDelivery(po) {
-  const dates = (po.items || []).map(i => i.deliveryDate).filter(Boolean).sort();
-  return dates.length ? dates[0] : null;
-}
-
 // The value an import order sorts on; null sorts last in either direction.
 function importSortValue(key, po) {
   switch (key) {
@@ -62,9 +56,12 @@ function importSortValue(key, po) {
     case 'subCategory': return poCategoryText(po, 'subCategory');
     case 'plant': return po.plantLabel || po.plant || null;
     case 'country': return po.countryOfOrigin || null;
-    case 'delivery': return importEarliestDelivery(po);
-    // The API sends 0 when no value is on file; that sorts with the blanks.
-    case 'value': return po.totalInclusiveValue ? po.totalInclusiveValue : null;
+    // What the list's Delivery and Order Value columns show (import-po.js's
+    // importPoDeliveryDate() and importPoInrValue(): the next open delivery
+    // date, and the order value in INR before duty - null, sorting with the
+    // blanks, when a line lacks its value or exchange rate).
+    case 'delivery': return importPoDeliveryDate(po);
+    case 'value': return importPoInrValue(po);
     case 'blNumber': return po.billOfLadingNumber || null;
     case 'stage': { const rank = IMPORT_STAGE_RANK[po.shipmentStage]; return rank != null ? rank : null; }
     default: return null;

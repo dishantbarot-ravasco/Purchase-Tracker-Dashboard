@@ -1322,8 +1322,14 @@ async function loadDashboard() {
     // Plus the user's saved sort presets for the list shown (po-sort.js /
     // import-sort.js) - those loaders never throw, so a failed preset load
     // cannot take the list down with it.
-    if (state.purchaseType === 'import') await Promise.all([ensureImportPOsLoaded(), IMPORT_SORT.ensurePresetsLoaded()]);
+    const ptype = state.purchaseType;
+    if (ptype === 'import') await Promise.all([ensureImportPOsLoaded(), IMPORT_SORT.ensurePresetsLoaded()]);
     else await Promise.all([ensurePOsLoaded(selectedPlantKeys()), PO_SORT.ensurePresetsLoaded()]);
+    // The reader switched Domestic/Import while this was loading: the
+    // switch found no #content to render into yet, so load what it asked
+    // for rather than drawing the Import list from an empty cache ("No
+    // import purchase orders synced yet" with orders on file).
+    if (state.purchaseType !== ptype) return loadDashboard();
     el.innerHTML = '<div id="content"></div>';
     renderPoList(document.getElementById('content'));
     return true;

@@ -123,12 +123,6 @@ function poQtyDiscPo(po) {
   return !!po.qtyDiscrepancy && !poFlagDismissed(po, 'Qty Mismatch (PO vs BOE)');
 }
 
-// BL Number cell content, shared by the "View all" table and the top5 grid -
-// the bare number plus a "Track" link (data-track-bl, wired once after
-// render alongside every other [data-...] handler below) that opens the
-// shared modal with live shipment status via shared.js's trackBlNumber()
-// (see that function's own header comment for why the SAME #modalBackdrop
-// every other modal on this page uses is reused here, not a new component).
 // What has arrived for an import PO, for the doughnut's inner ring, the bar
 // stacks and the 'recv:' table filter: received in full, part-received, or
 // nothing yet. The delivery date is the outer ring (deliveryDateStatus).
@@ -153,10 +147,67 @@ function importPoInrValue(po) {
   return total;
 }
 
-function blNumberCellHtml(po, emptyText) {
-  if (!po.billOfLadingNumber) return emptyText;
-  return escapeHtml(po.billOfLadingNumber) +
-    ' <span class="row-link fs-11" data-track-bl="' + escapeHtml(po.billOfLadingNumber) + '">Track</span>';
+
+// ── List cells (2026-09-28 layout pass) ──────────────────────────────────
+// Each cell is one bold figure (.mat-cell-main) with at most one muted line
+// (.mat-cell-sub) - the same cell style as Raw Material Analysis's list.
+
+// The date the order next falls due: the earliest delivery date among lines
+// not yet fully received, or the earliest of all once everything has
+// arrived. Same rule as Domestic's computePoDeliveryDate(), read off each
+// line's own deliveryDateStatus (import_flags.py) instead of `matched`.
+function importPoDeliveryDate(po) {
+  const items = po.items || [];
+  const open = items.filter(i => i.deliveryDateStatus !== 'Delivered').map(i => i.deliveryDate).filter(Boolean).sort();
+  if (open.length) return open[0];
+  const all = items.map(i => i.deliveryDate).filter(Boolean).sort();
+  return all.length ? all[0] : null;
+}
+
+const IMPORT_DELIVERY_NOTE = { 'Overdue': 'Overdue', 'On Order': 'On order', 'Unknown': 'Date not on file', 'Delivered': 'Received in full' };
+
+function importPoCellHtml(po) {
+  return '<div class="po-num">' + escapeHtml(po.poNumber) + '</div>' +
+    (po.createdDate ? '<div class="mat-cell-sub">Created ' + escapeHtml(formatDateIN(po.createdDate)) + '</div>' : '');
+}
+
+function importVendorCellHtml(po) {
+  return '<div class="mat-cell-main mat-cell-text">' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
+    (po.countryOfOrigin ? '<div class="mat-cell-sub">' + escapeHtml(po.countryOfOrigin) + '</div>' : '');
+}
+
+function importDeliveryCellHtml(po) {
+  const d = importPoDeliveryDate(po);
+  const note = IMPORT_DELIVERY_NOTE[po.deliveryDateStatus] || '';
+  return '<div class="mat-cell-main">' + (d ? escapeHtml(formatDateIN(d)) : '<span class="mat-cell-none">No date</span>') + '</div>' +
+    (note && d ? '<div class="mat-cell-sub' + (po.deliveryDateStatus === 'Overdue' ? ' imp-overdue' : '') + '">' + escapeHtml(note) + '</div>' : '');
+}
+
+// Order value in INR before duty (net value x exchange rate, the basis
+// matching compares on), with the landed, duty-inclusive value under it once
+// a BOE has assessed it. totalInclusiveValue is 0 until then - shown as
+// "Duty not assessed yet", never as a Rs 0 order.
+function importValueCellHtml(po) {
+  const inr = importPoInrValue(po);
+  const landed = po.totalInclusiveValue > 0 ? po.totalInclusiveValue : null;
+  const tip = 'Order value in INR before duty: each line\'s net value at its exchange rate. Landed is the duty-inclusive value from the Bill of Entry, known once the order clears customs.';
+  const main = inr != null ? formatInr(inr) : (landed != null ? formatInr(landed) : '<span class="mat-cell-none">Not available</span>');
+  const sub = inr == null
+    ? (landed != null ? 'Landed (incl. duty)' : '')
+    : (landed != null ? formatInr(landed) + ' landed' : 'Duty not assessed yet');
+  return '<div class="mat-cell-main">' + main + cellInfoHtml(tip) + '</div>' + (sub ? '<div class="mat-cell-sub">' + sub + '</div>' : '');
+}
+
+// Shipment stage in words, the row flags beside it, and the Bill of Lading
+// number under it with a "Track" link (data-track-bl, wired after render in
+// wireImportListRegion()) that opens the shared modal with live shipment
+// status via shared.js's trackBlNumber().
+function importShipmentCellHtml(po) {
+  return '<div class="mat-status-cell"><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '" title="' + escapeHtml(po.shipmentStage) + '">' +
+      escapeHtml(IMPORT_STAGE_LABELS[po.shipmentStage] || po.shipmentStage) + '</span>' + importRowFlags(po) + '</div>' +
+    (po.billOfLadingNumber
+      ? '<div class="mat-cell-sub imp-bl">BL <span class="imp-bl-num">' + escapeHtml(po.billOfLadingNumber) + '</span> <span class="row-link fs-11" data-track-bl="' + escapeHtml(po.billOfLadingNumber) + '">Track</span></div>'
+      : '');
 }
 
 function applyImportColFilters(recs) {
@@ -603,19 +654,40 @@ function importListRegionHtml() {
   // list would narrow correctly while the text vanished under the cursor.
   // No Value column filter here - min/max value narrowing was removed
   // (project owner, 2026-09-04), same as Domestic's own table.
+  // One entry per column of IMPORT_LIST_COLUMNS below (Material and Rate
+  // are two). Vendor and Country of Origin share a column, so their two
+  // search boxes are stacked in it.
   const filterCells = [
     '<input type="text" class="col-filter-input" data-icf="poNumber" placeholder="Search..." value="' + escapeHtml(cf.poNumber) + '">',
-    '<input type="text" class="col-filter-input" data-icf="vendor" placeholder="Search..." value="' + escapeHtml(cf.vendor) + '">',
+    '<div class="col-filter-stack">' +
+      '<input type="text" class="col-filter-input" data-icf="vendor" placeholder="Vendor..." value="' + escapeHtml(cf.vendor) + '">' +
+      '<input type="text" class="col-filter-input" data-icf="country" placeholder="Country..." value="' + escapeHtml(cf.country) + '">' +
+    '</div>',
     '<input type="text" class="col-filter-input" data-icf="material" placeholder="Search..." value="' + escapeHtml(cf.material) + '">',
-    '', // Rate - no header filter, like Value
-    '<input type="text" class="col-filter-input" data-icf="country" placeholder="Search..." value="' + escapeHtml(cf.country) + '">',
-    '',
-    '',
+    '', // Rate
+    '', // Delivery
+    '', // Order Value
     '<select class="col-filter-input" data-icf="stage"><option value="">All</option>' +
       IMPORT_STAGES.map(s => '<option value="' + s + '"' + (cf.stage === s ? ' selected' : '') + '>' + escapeHtml(IMPORT_STAGE_LABELS[s]) + '</option>').join('') +
     '</select>',
-    '',
+    '', // Progress
+    '', // Details
   ];
+  const IMPORT_LIST_COLUMNS = [
+    { label: 'PO Number', sort: 'poNumber', tip: 'PO number, with the date it was created.' },
+    { label: 'Vendor', sort: 'vendor', tip: 'Vendor, with the country of origin under it.' },
+    { label: 'Material', sort: 'material' },
+    { label: 'Rate', tip: 'Net price per unit in the PO\'s own currency.' },
+    { label: 'Delivery', sort: 'delivery', tip: 'The next delivery date still open on the order, and whether it is on time.' },
+    { label: 'Order Value', sort: 'value', tip: 'Before duty, in INR at each line\'s exchange rate. Landed (incl. duty) under it once the Bill of Entry is filed.' },
+    { label: 'Shipment', sort: 'stage', tip: 'Where the shipment is, with its Bill of Lading number.' },
+    { label: 'Progress', tip: 'Placed, shipped (Bill of Lading), cleared (Bill of Entry).' },
+    { label: 'Details' },
+  ];
+  // `sort` is the import-sort.js key a header click sorts by (the label is a
+  // button, IMPORT_SORT.headerHtml()); Rate, Country, BL Number, Category
+  // and Plant sort from the Sort by select.
+  const headerCell = (c, tag) => '<' + tag + (c.tip ? ' title="' + escapeHtml(c.tip) + '"' : '') + '>' + IMPORT_SORT.headerHtml(c.label, c.sort || null) + '</' + tag + '>';
 
   let tableRecs = filtered;
   const sf = state.importStatusFilter;
@@ -664,13 +736,6 @@ function importListRegionHtml() {
     (state.importCategoryFilter ? 1 : 0) + (state.importSubCategoryFilter ? 1 : 0) +
     (cf.poNumber ? 1 : 0) + (cf.vendor ? 1 : 0) + (cf.material ? 1 : 0) + (cf.country ? 1 : 0) + (cf.stage ? 1 : 0);
 
-  // One label per column, in column order - a sortable column's label is a
-  // button that sorts by it (list-sort.js's headerHtml()).
-  const headerLabels = [
-    ['PO Number', 'poNumber'], ['Vendor', 'vendor'], ['Material', 'material'], ['Rate', null],
-    ['Country of Origin', 'country'], ['Value (Incl.)', 'value'], ['BL Number', 'blNumber'],
-    ['Shipment Stage', 'stage'], ['Details', null],
-  ].map(([label, key]) => IMPORT_SORT.headerHtml(label, key));
 
   return '<div class="list-toggle-row"><div class="section-title m-0">Import Purchase Orders</div>' +
       (listRecs.some(po => po._qtyFlag || po._rateFlag) ? rowTintLegendHtml() : '') +
@@ -696,37 +761,37 @@ function importListRegionHtml() {
               jumpToPageHtml('import', totalPages) +
             '</div>'
           : '';
-        return '<div class="table-wrap"><table><thead><tr>' + headerLabels.map(h => '<th>' + h + '</th>').join('') + '</tr>' + colFilterRow + '</thead>' +
+        return '<div class="table-wrap"><table class="imp-table"><thead><tr>' + IMPORT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' + colFilterRow + '</thead>' +
           '<tbody>' + listRecs.map(po => {
             const key = escapeHtml(po.plant + '::' + po.poNumber);
             // One <tr> per line item (Material + Rate), the order-level
             // cells spanning them - see flags.js's poTableRowsHtml().
             return poTableRowsHtml(po, cf.material, rowTintClass(po), [
-              '<b>' + escapeHtml(po.poNumber) + '</b>',
-              escapeHtml(po.vendorName || '-'),
+              importPoCellHtml(po),
+              importVendorCellHtml(po),
             ], [
-              escapeHtml(po.countryOfOrigin || '-'),
-              po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : '-',
-              blNumberCellHtml(po, '-'),
-              '<span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po),
-              '<span class="row-link" data-impo="' + key + '">View details</span>',
+              importDeliveryCellHtml(po),
+              importValueCellHtml(po),
+              importShipmentCellHtml(po),
+              shipmentStepperHtml(po),
+              '<span class="row-link mat-view-link" data-impo="' + key + '">View details</span>',
             ]);
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols">' + headerLabels.map(h => '<div>' + h + '</div>').join('') + '</div>' +
-        '<div class="list-header-row grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
+      return '<div class="mat-grid-scroll imp-grid-scroll"><div class="list-header-row imp-grid-cols">' + IMPORT_LIST_COLUMNS.map(c => headerCell(c, 'div')).join('') + '</div>' +
+        '<div class="list-header-row imp-grid-cols col-filter-row-grid">' + filterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="importTop5List">' + listRecs.map(po => {
           const key = escapeHtml(po.plant + '::' + po.poNumber);
-          return '<div class="top5-row' + rowTintClass(po) + '">' +
-            '<div><span class="po-num">' + escapeHtml(po.poNumber) + '</span></div>' +
-            '<div>' + escapeHtml(po.vendorName || 'Not available') + '</div>' +
+          return '<div class="top5-row imp-grid-cols' + rowTintClass(po) + '">' +
+            '<div>' + importPoCellHtml(po) + '</div>' +
+            '<div>' + importVendorCellHtml(po) + '</div>' +
             poLinesBlockHtml(po, cf.material, 'Not available') +
-            '<div>' + escapeHtml(po.countryOfOrigin || 'Not available') + '</div>' +
-            '<div>' + (po.totalInclusiveValue != null ? formatInr(po.totalInclusiveValue) : 'Not available') + '</div>' +
-            '<div>' + blNumberCellHtml(po, 'Not available') + '</div>' +
-            '<div><span class="status-pill ' + IMPORT_STAGE_PILL_CLASS[po.shipmentStage] + '">' + escapeHtml(po.shipmentStage) + '</span>' + importRowFlags(po) + '</div>' +
-            '<div><span class="row-link" data-impo="' + key + '">View details</span></div></div>';
-        }).join('') + '</div>';
+            '<div>' + importDeliveryCellHtml(po) + '</div>' +
+            '<div>' + importValueCellHtml(po) + '</div>' +
+            '<div>' + importShipmentCellHtml(po) + '</div>' +
+            '<div>' + shipmentStepperHtml(po) + '</div>' +
+            '<div><span class="row-link mat-view-link" data-impo="' + key + '">View details</span></div></div>';
+        }).join('') + '</div></div>';
     })() +
     domesticCrossHitsHtml();
 }
