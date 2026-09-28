@@ -62,6 +62,23 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `imports/advance-license` | `advance_license_ledger` | Auth | Advance Licence ledger with utilisation, validity and BOE cross-check |
 | POST | `imports/advance-license/sync-trigger` | `advance_license_sync_trigger` | IsAdmin | Run `sync_advance_license` synchronously; 200 or 409 |
 
+### MIR entry, cross-plant (`mir_views`)
+
+| Method | Path | View | Permission | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `mir/meta` | `meta` | Auth | Plants with `canRead` / `canReceive`, reason codes, tax types, GST slabs, today |
+| GET | `mir/open-pos?q=` | `open_pos` | IsEditor, every plant on purpose | Active POs with an open line whose number, vendor name or GSTIN matches |
+| GET | `mir/purchase-orders/<id>` | `purchase_order` | IsEditor, every plant on purpose | A normalized PO with each line's received-so-far, open quantity and whether it can take a receipt |
+| GET | `mir/vendors?q=` | `vendors` | IsEditor | Vendor picker for a PO that names no vendor |
+| POST | `mir/preview` | `preview` | IsEditor + receiving plant (403) | Check and price the form; saves nothing |
+| POST | `mir/entries/new` | `post_entry` | IsEditor + receiving plant (403) | Save a MIR; 201, or 400 with `errors: [{field, message}]` |
+| GET | `mir/entries?plant=&status=&q=&from=&to=` | `entries` | Auth, readable plants only | The MIR register, newest first |
+| GET | `mir/entries/<id>` | `entry` | Auth, readable plant (404) | One MIR with lines and mismatches |
+| POST | `mir/entries/<id>/cancel` | `cancel_entry` | IsEditor + MIR's plant (403) | Cancel with a reason |
+| GET | `mir/mismatches?status=&plant=` | `mismatches` | Auth, readable plants only | Mismatches, `OPEN` by default |
+| POST | `mir/mismatches/<id>/resolve` | `resolve` | IsEditor + MIR's or PO's plant (403) | Resolve with a note |
+| POST | `mir/po-lines/<id>/close` / `reopen` / `review` | `close_line` / `reopen_line` / `review_line` | IsEditor + PO's plant (403) | Short-close a line, reopen it, or clear a `needs_review` flag |
+
 ### Review, admin, reports
 
 | Method | Path | View | Permission | Purpose |
@@ -261,7 +278,7 @@ for HRS/Achhad and ~96-99.5% for Vapi, the remainder genuine data issues.
 
 ### Frontend pages and the shared top nav
 
-Five protected pages share one header (`brand.css`, modelled on the TDS Automation App's nav). The JS
+Six protected pages share one header (`brand.css`, modelled on the TDS Automation App's nav). The JS
 side is in [frontend.md](frontend.md); the server-relevant facts:
 
 - **`index.html`** (`/`) - the PO↔MIR↔Stock reconciliation dashboard. Reads every domestic and import
@@ -274,6 +291,8 @@ side is in [frontend.md](frontend.md); the server-relevant facts:
   case-insensitive, ≥ 2 characters). **Deliberately self-contained**: it fetches its own copy of each
   plant's PO list and deep-links into `/?plant=<key>&po=<number>` for full detail.
 - **`review.html`** (`review-page.js`) - the match-accuracy queue and Accuracy view (above).
+- **`mir.html`** (`mir-page.js`) - MIR entry, the register and open mismatches ([MIR entry](#mir-entry-2026-09-28)).
+  Any role reads the register; entering needs Editor or Admin at the receiving plant.
 - **`admin.html`** (`admin-page.js`) - admin only: per-plant sync status, Overview tab, Users panel.
   The client-side access-denied panel is defence in depth; **the endpoints enforce `IsAdmin`
   server-side**.
@@ -805,6 +824,64 @@ the consumption ledger via `_domestic_base._consumption_by_material()` (one quer
 engine, the ledger, why the old Days-Left arithmetic was wrong, and the report emails are all in
 [consumption.md](consumption.md).
 
+### MIR entry (2026-09-28)
+
+The project owner's direction: MIR moves into the app, one form for every plant, entered against the
+POs the CSV already gives, and without the fuzzy matching and tolerances the Drive files forced - the
+receipt is linked to the PO line the clerk picked, so every figure either agrees exactly or is a
+mismatch with a reason. PO extraction and PDF upload are on hold; the PO master CSV stays the only PO
+source. The Drive MIR files and the existing matching keep running untouched: MIRs entered here are
+separate records (`Mir` / `MirLine`, [architecture.md](architecture.md#appscoremodelsprocurementpy)),
+so nothing is counted twice while both exist.
+
+**The flow.** The clerk picks the receiving plant and searches open POs by number or vendor. **Every
+plant's open POs are offered** (owner rule: any plant's store may receive any plant's PO), then lines
+of one or several POs of **one vendor** (one MIR is one vendor's invoice). Per MIR they type the
+invoice number, date and total, TCS, and transport details; per line the quantity received and
+rejected, the invoice rate, discount, freight/packing, GST rate, and optionally rolls, batch and
+department. The page sends the form to `preview` on every change and paints what comes back; it never
+computes a figure itself. Saving runs the same check again inside the transaction.
+
+**What is computed** (`procurement_rules.line_amounts()`): gross = qty x rate, taxable = gross -
+discount + freight/packing, GST on taxable - IGST, or half CGST and half SGST/UGST - each tax rounded
+on its own as invoices print them. The tax type follows the states: the vendor's GSTIN state against
+the RECEIVING plant's (HRS 26, a union territory, so UGST; Achhad 27; Vapi 24), falling back to the
+PO's tax type when the vendor has no GSTIN. The GST field defaults to the rate the PO's two totals
+imply when it lands on a slab.
+
+**What needs a reason** (a `MirReasonCode` of the matching kind, plus a note where the reason says so):
+
+| Difference | Compared | Kind | Effect of the reason |
+| --- | --- | --- | --- |
+| Accepted quantity below the open quantity | accepted = received - rejected, exactly | `QTY_SHORT` | "balance to come" keeps the line open; "close the line" short-closes it |
+| Accepted quantity above the open quantity | exactly - there is no tolerance, weighbridge included | `QTY_OVER` | recorded; the line reads received |
+| Invoice rate different from the PO rate | at 4 decimals | `RATE_HIGH` / `RATE_LOW` | recorded |
+| Invoice total more than Rs 1 from the computed total | the rupee an invoice rounds to | `INVOICE_TOTAL` | recorded |
+| Tax type other than the states imply | | `TAX_TYPE` | recorded |
+
+Each becomes a `MirMismatch` that stays `OPEN` until a purchase manager resolves it with a note.
+
+**What is refused outright**: a receiving plant the account may not edit (403); a MIR date in the
+future or before a line's PO date; an invoice date after the MIR date; a PO line that is retired,
+dropped from the sheet, closed, waiting for review, without a quantity or rate, or already received in
+full; the same line twice; two vendors on one MIR; a PO with no vendor and none chosen; a GST rate off
+the slabs; a discount above the line's value. And **the same vendor invoice already on a posted MIR at
+any plant** - "MIR already created at <plant>: <MIR no> ... by <who>" (invoice numbers compared after
+upper-casing, removing spaces and leading zeros; separators stay significant, so "1-23" and "12-3"
+never collide). A database constraint backs this, so two clerks posting one invoice at the same
+moment save it once.
+
+**Received so far is never stored.** It is summed from posted MIR lines, so cancelling a MIR returns
+its quantity at once, voids its open mismatches and reopens any line it closed. Posting locks the PO
+lines first (`select_for_update`, id order), so two receipts of one line cannot both count the same
+open quantity. MIR numbers are per plant and financial year (`HRS/26-27/0001`), gapless, and a
+cancelled MIR keeps its number. Who entered, cancelled or resolved is stored as a user link and the
+email, so the record survives the user's deletion.
+
+**Not yet done, on purpose:** MIRs entered here do not feed the reconciliation dashboard's matching
+(that would count a receipt twice while the Drive MIR files still carry it); a PO missing from the
+master CSV cannot be received against (the search says to ask purchase to add it); RM stock is next.
+
 ### Data export
 
 An "Export Data" button next to "Refresh Data" opens a panel (`export-panel.js`) that downloads the full
@@ -1075,6 +1152,42 @@ Clearing wipes the audit columns. Does no plant check itself; callers do.
 - The RoDTEP and Advance Licence ledgers load the BOE-number set once (`_known_boe_numbers()`) and pass
   it to `_boe_exists()`: per citation it was up to three one-row lookups (48 queries per Advance
   Licence load, now 16).
+
+### apps/api/routers/mir_views.py
+
+The MIR endpoints above. Gates, parses and serializes only; every rule is in `mir_service`. Money and
+quantities are returned as strings, never floats. `_po_line()` / `_po_summary()` / `_mir_detail()` /
+`_mismatch()` are the payload shapes; `_readable_plants()` filters reads; `_receiving_plant_allowed()`
+gates preview and post. The three PO lookups are cross-plant by owner rule and listed as such in
+`test_endpoint_permission_guard.py`. `entries` orders explicitly: Django ignores `Meta.ordering` on
+its aggregate query.
+
+### apps/services/mir_service.py
+
+`evaluate(payload, lock=False)` - the one check-and-price of a MIR (header, vendor, duplicate invoice,
+tax type, lines, mismatches, invoice total); returns errors and figures, never saves.
+`post_mir(payload, user)` - `evaluate(lock=True)` then saves `Mir`, `MirLine`s, `MirMismatch`es and any
+line closure in one transaction; the MIR number comes from `_next_seq()` (row-locked `MirSequence`); an
+`IntegrityError` on the invoice constraint becomes a duplicate-invoice error. `cancel_mir()`,
+`resolve_mismatch()`, `close_po_line()`, `reopen_po_line()`, `clear_line_review()` - the other writes,
+each row-locked and requiring a reason or note. `accepted_by_line()` / `line_state()` - received so far
+and whether a line can take a receipt. `search_open_pos()` - open POs by number, vendor or GSTIN.
+`MirValidationError.errors` is `[{field, message}]`, the field in the payload's own terms
+(`lines.0.qty_reason`).
+
+### apps/services/procurement_rules.py
+
+Pure rules, no Django imports: `canonical_uom()` (spellings of one unit folded, KG and MT kept apart,
+an unknown unit kept and flagged), `clean_gstin()` / `gstin_state()`, `canonical_tax_type()`,
+`expected_tax_type()`, `po_gst_rate()`, `GST_SLABS` / `is_gst_slab()`, `financial_year()`,
+`mir_number()`, `invoice_key()`, `vendor_name_key()`, `line_amounts()`, `rate_differs()`, `pct_of()`,
+`INVOICE_ROUNDING_TOLERANCE` (Rs 1).
+
+### apps/services/procurement_sync.py
+
+`project_plant_orders(plant_code)` - see [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28).
+`upsert_vendor()` - one `Vendor` per GSTIN (or cleaned name without one); the newest PO's details win,
+a blank never erases. `LEGACY_PO_MODELS` names each plant's CSV mirror model.
 
 ### apps/services/rematch.py
 

@@ -15,7 +15,7 @@ from django.urls import include, path
 
 from apps.api import views
 from apps.api.auth_views import PTLoginView, PTTokenRefreshView, PTTokenVerifyView, whoami
-from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, password_views, reports_views, review_views, vapi_views
+from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, mir_views, password_views, reports_views, review_views, vapi_views
 
 urlpatterns = [
     path("health", views.health, name="health"),
@@ -50,6 +50,21 @@ urlpatterns = [
     # Admin Panel Overview tab - top correctors/vendors + recent activity
     path("auth/admin-overview", admin_overview_views.admin_overview, name="admin-overview"),
 
+    # MIR entry against the normalized POs (2026-09-28) - apps/api/routers/mir_views.py.
+    path("mir/meta", mir_views.meta, name="mir-meta"),
+    path("mir/open-pos", mir_views.open_pos, name="mir-open-pos"),
+    path("mir/purchase-orders/<int:po_id>", mir_views.purchase_order, name="mir-purchase-order"),
+    path("mir/vendors", mir_views.vendors, name="mir-vendors"),
+    path("mir/preview", mir_views.preview, name="mir-preview"),
+    path("mir/entries", mir_views.entries, name="mir-entries"),
+    path("mir/entries/new", mir_views.post_entry, name="mir-post"),
+    path("mir/entries/<int:mir_id>", mir_views.entry, name="mir-entry"),
+    path("mir/entries/<int:mir_id>/cancel", mir_views.cancel_entry, name="mir-cancel"),
+    path("mir/mismatches", mir_views.mismatches, name="mir-mismatches"),
+    path("mir/mismatches/<int:mismatch_id>/resolve", mir_views.resolve, name="mir-resolve"),
+    path("mir/po-lines/<int:line_id>/close", mir_views.close_line, name="mir-close-line"),
+    path("mir/po-lines/<int:line_id>/reopen", mir_views.reopen_line, name="mir-reopen-line"),
+    path("mir/po-lines/<int:line_id>/review", mir_views.review_line, name="mir-review-line"),
     path("purchase-orders", hrs_views.purchase_orders, name="hrs-purchase-orders"),
     path("purchase-orders/summary", hrs_views.purchase_order_summary, name="hrs-purchase-order-summary"),
     path("purchase-orders/<str:po_number>/fields", hrs_views.correct_field, name="hrs-correct-field"),

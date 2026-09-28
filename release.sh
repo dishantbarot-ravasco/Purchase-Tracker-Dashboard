@@ -22,3 +22,10 @@ python manage.py ensure_schedules
 # specifically), not a general error swallow elsewhere in this script (note
 # `set -e` above still applies to every other line).
 python manage.py createcachetable || true
+
+# Projects the PO master CSV mirrors into the normalized procurement tables
+# the MIR form reads (apps/services/procurement_sync.py). Every hourly PO
+# sync does this for its own plant; running it here means a deploy that adds
+# the tables, or changes the projection, is populated immediately instead of
+# at the next sync. Database only, idempotent, a few seconds.
+python manage.py sync_procurement_pos

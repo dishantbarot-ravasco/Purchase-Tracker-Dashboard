@@ -1,0 +1,166 @@
+<!--
+  mir.html - MIR (Material Inward Register) entry, the same form at every
+  plant (2026-09-28). Three views: New MIR, the MIR register, and open
+  mismatches. Talks to /api/mir/... (apps/api/routers/mir_views.py) only;
+  every figure and check comes from the server's preview
+  (apps/services/mir_service.py's evaluate()), so this page never computes
+  a total or decides a mismatch itself.
+
+  Protected page: requireAuth() (js/auth.js). Entering a MIR needs the
+  Editor or Admin role at the receiving plant; any role can read the
+  register for the plants it may see.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <script src="js/theme-init.js"></script>
+  <link rel="icon" type="image/png" href="img/indus_logo.png">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MIR Entry - Purchase Tracker</title>
+  <link rel="stylesheet" href="css/brand.css">
+  <link rel="stylesheet" href="css/mir-page.css">
+</head>
+<body>
+  <a class="sr-only sr-only-focusable skip-link" href="#main-content">Skip to main content</a>
+
+  <nav class="topnav">
+    <a href="home.html" class="nav-brand">
+      <img src="img/indus_logo.png" alt="Ravasco" class="nav-logo" data-hide-on-error>
+      <div class="nav-brand-text">
+        <h1>Purchase Tracker</h1>
+        <p>Ravasco Transmission &amp; Packing</p>
+      </div>
+    </a>
+    <div class="nav-tabs" id="navTabs"></div>
+    <div class="nav-spacer"></div>
+    <div class="nav-user" id="navUser"></div>
+  </nav>
+
+  <div class="page-wrap" id="main-content" role="main" tabindex="-1">
+    <div class="section-title">Material Inward Register</div>
+
+    <div class="mir-viewtabs" role="tablist" aria-label="MIR views">
+      <button type="button" class="mir-viewtab active" id="tabNew" role="tab" aria-selected="true" aria-controls="viewNew">New MIR</button>
+      <button type="button" class="mir-viewtab" id="tabRegister" role="tab" aria-selected="false" aria-controls="viewRegister">MIR register</button>
+      <button type="button" class="mir-viewtab" id="tabMismatches" role="tab" aria-selected="false" aria-controls="viewMismatches">Open mismatches</button>
+    </div>
+
+    <!-- ── New MIR ─────────────────────────────────────────────── -->
+    <div id="viewNew" role="tabpanel" aria-labelledby="tabNew">
+      <div class="mir-notice" id="noReceive" hidden>
+        Your account cannot enter MIRs. Ask an admin for the Editor role at your plant.
+      </div>
+      <div class="mir-success" id="postedBanner" role="status" hidden>
+        <div><b id="postedNo"></b> saved. <span id="postedDetail"></span></div>
+        <button type="button" class="btn btn-navy" id="newAnotherBtn">Enter another MIR</button>
+      </div>
+
+      <form id="mirForm" novalidate>
+        <section class="mir-card">
+          <h2 class="mir-card-title"><span class="mir-step">1</span> Receipt</h2>
+          <div class="mir-grid">
+            <div class="form-group">
+              <label class="form-label" for="plantSel">Receiving plant</label>
+              <select class="form-control" id="plantSel"></select>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="mirDate">MIR date</label>
+              <input class="form-control" type="date" id="mirDate">
+            </div>
+          </div>
+        </section>
+
+        <section class="mir-card">
+          <h2 class="mir-card-title"><span class="mir-step">2</span> Find the PO</h2>
+          <p class="mir-help">Search by PO number or vendor. Open POs of every plant are listed; pick the lines this delivery covers.
+            One MIR is one vendor's invoice, so lines can come from several POs of the same vendor.</p>
+          <div class="mir-search">
+            <input class="form-control" type="search" id="poSearch" placeholder="PO number or vendor name" autocomplete="off" aria-label="Search open POs">
+          </div>
+          <div id="poResults" class="mir-po-results" aria-live="polite"></div>
+        </section>
+
+        <section class="mir-card" id="invoiceCard" hidden>
+          <h2 class="mir-card-title"><span class="mir-step">3</span> Invoice</h2>
+          <div class="mir-vendor" id="vendorBox"></div>
+          <div class="mir-grid">
+            <div class="form-group">
+              <label class="form-label" for="invoiceNo">Invoice number</label>
+              <input class="form-control" id="invoiceNo" data-field="invoice_no" maxlength="60" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="invoiceDate">Invoice date</label>
+              <input class="form-control" type="date" id="invoiceDate" data-field="invoice_date">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="invoiceTotal">Invoice total (Rs, incl. GST)</label>
+              <input class="form-control num" id="invoiceTotal" data-field="invoice_total" inputmode="decimal" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="tcsAmount">TCS (Rs)</label>
+              <input class="form-control num" id="tcsAmount" data-field="tcs_amount" inputmode="decimal" placeholder="0">
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="taxType">Tax type</label>
+              <select class="form-control" id="taxType" data-field="tax_type"></select>
+              <span class="mir-hint" id="taxTypeHint"></span>
+            </div>
+          </div>
+          <div class="mir-reason-row" id="taxReasonRow" hidden></div>
+          <details class="mir-more">
+            <summary>Transport and gate details</summary>
+            <div class="mir-grid">
+              <div class="form-group"><label class="form-label" for="challanNo">Challan no.</label><input class="form-control" id="challanNo" maxlength="60"></div>
+              <div class="form-group"><label class="form-label" for="lrNo">LR no.</label><input class="form-control" id="lrNo" maxlength="60"></div>
+              <div class="form-group"><label class="form-label" for="vehicleNo">Vehicle no.</label><input class="form-control" id="vehicleNo" maxlength="30"></div>
+              <div class="form-group"><label class="form-label" for="ewayBillNo">E-way bill no.</label><input class="form-control" id="ewayBillNo" maxlength="30"></div>
+              <div class="form-group"><label class="form-label" for="gateEntryNo">Gate entry no.</label><input class="form-control" id="gateEntryNo" maxlength="40"></div>
+              <div class="form-group"><label class="form-label" for="weighbridgeSlipNo">Weighbridge slip no.</label><input class="form-control" id="weighbridgeSlipNo" maxlength="40"></div>
+            </div>
+            <div class="form-group"><label class="form-label" for="remarks">Remarks</label><textarea class="form-control" id="remarks" rows="2" maxlength="2000"></textarea></div>
+          </details>
+        </section>
+
+        <section class="mir-card" id="linesCard" hidden>
+          <h2 class="mir-card-title"><span class="mir-step">4</span> Lines received</h2>
+          <p class="mir-help">Enter what arrived and the rate on the invoice. A quantity or rate that differs from the PO needs a reason before the MIR can be saved.</p>
+          <div id="linesArea"></div>
+          <div class="mir-totals" id="totalsBox"></div>
+          <div class="mir-reason-row" id="totalReasonRow" hidden></div>
+          <ul class="mir-errors" id="formErrors" role="alert"></ul>
+          <div class="mir-actions">
+            <button type="submit" class="btn btn-primary" id="postBtn" disabled>Save MIR</button>
+            <span class="mir-hint" id="postHint"></span>
+          </div>
+        </section>
+      </form>
+    </div>
+
+    <!-- ── Register ─────────────────────────────────────────────── -->
+    <div id="viewRegister" role="tabpanel" aria-labelledby="tabRegister" hidden>
+      <div class="mir-filters">
+        <select class="form-control" id="regPlant" aria-label="Plant"></select>
+        <select class="form-control" id="regStatus" aria-label="Status">
+          <option value="">All statuses</option><option value="POSTED">Posted</option><option value="CANCELLED">Cancelled</option>
+        </select>
+        <input class="form-control" type="search" id="regSearch" placeholder="MIR, invoice, vendor or PO" aria-label="Search the register">
+        <input class="form-control" type="date" id="regFrom" aria-label="From date">
+        <input class="form-control" type="date" id="regTo" aria-label="To date">
+      </div>
+      <div id="registerArea"></div>
+      <div id="detailArea"></div>
+    </div>
+
+    <!-- ── Mismatches ───────────────────────────────────────────── -->
+    <div id="viewMismatches" role="tabpanel" aria-labelledby="tabMismatches" hidden>
+      <p class="mir-help">Every quantity, rate, invoice-total and tax-type difference recorded at entry stays here until a purchase manager resolves it.</p>
+      <div id="mismatchArea"></div>
+    </div>
+  </div>
+
+  <script src="js/auth.js"></script>
+  <script src="js/shared.js"></script>
+  <script src="js/mir-page.js"></script>
+</body>
+</html>

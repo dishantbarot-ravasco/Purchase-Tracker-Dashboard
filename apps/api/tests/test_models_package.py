@@ -16,7 +16,7 @@ import apps.core.models as core_models
 def test_every_model_defined_in_the_package_is_re_exported():
     defined = {
         name
-        for module_name in ("sync", "hrs", "achhad", "vapi", "review", "auth", "reports", "ledgers", "consumption")
+        for module_name in ("sync", "hrs", "achhad", "vapi", "review", "auth", "reports", "ledgers", "consumption", "procurement")
         for name, obj in vars(getattr(core_models, module_name)).items()
         if inspect.isclass(obj) and issubclass(obj, dj_models.Model) and obj.__module__.endswith(module_name)
     }

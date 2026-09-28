@@ -43,6 +43,10 @@ uv run python manage.py compute_hrs_consumption   # consumption ledger (reads th
 # RTP-Achhad and RTP-Vapi: identical shape, separate models/commands
 uv run python manage.py sync_achhad_po_csv / sync_achhad_mir / sync_achhad_stock / match_achhad
 uv run python manage.py sync_vapi_po_csv   / sync_vapi_mir   / sync_vapi_stock   / match_vapi
+
+# Normalized POs for MIR entry (every sync_*_po_csv already runs it for its plant; release.sh runs it
+# once per deploy). Reads the database only, idempotent.
+uv run python manage.py sync_procurement_pos [--plant hrs|achhad|vapi]
 uv run python manage.py compute_achhad_consumption / compute_vapi_consumption
 
 # Import POs (one command per plant, one shared parser)
@@ -236,6 +240,32 @@ When MIR names the clean number, `_po_number_contradicts()` already drops the an
 - the ghost's own multi-token number doesn't match what MIR wrote, while the clean number is a known
 order. That protection evaporates the moment the receipt has no PO reference to contradict with, and
 ~64% of Achhad's MIR rows have none.
+
+### PO CSV into the procurement tables (2026-09-28)
+
+The PO master CSV feeds two places. Each plant's own mirror (`HRSDomesticPurchaseOrder` etc.) serves
+the reconciliation dashboard and its matcher, as before. The normalized `PurchaseOrder` /
+`PurchaseOrderLine` tables ([architecture.md](architecture.md#appscoremodelsprocurementpy)) serve MIR
+entry, and are projected from the mirror by `procurement_sync.project_plant_orders()` at the end of
+every `sync_*_po_csv` run. Both are written as a **diff, never delete-and-rebuild** (project owner,
+2026-09-28):
+
+- **The mirror** - a changed order's lines go through `sync_utils.sync_line_items()`: line N is
+  updated in place only where a field differs, a new trailing line is created, a dropped line is
+  deleted. An unchanged line keeps its primary key and its match rows.
+- **The procurement tables** - carry receipts, so a line is **never deleted**: one the CSV drops is
+  deactivated, an order the CSV drops is deactivated, and every changed value is logged in
+  `PurchaseOrderLineChange` (field, old, new). If the CSV changes what a line IS (material, item code
+  or unit) after a MIR was posted against it, the line is flagged `needs_review` and takes no new
+  receipt until a purchase manager clears it; the posted receipt stays linked.
+
+A line is identified by its **position** in the order, because the CSV gives nothing better: a PO can
+list one material on several lines, and the matcher and manual pins already number lines by
+position. The projection also cleans on the way in: one `Vendor` per GSTIN, units in canonical codes
+(`KG`, `MT`, `L`, `NOS`...; an unknown spelling kept and marked), tax types as `IGST` / `CGST_SGST` /
+`CGST_UGST` ("mixed" or blank kept only in `tax_type_raw`). An order whose mirror hash and active flag
+are unchanged is skipped, so a second run writes nothing. The projection runs after the mirror's own
+commit: if it fails, that run's SyncRun is FAILED but the CSV sync itself stands.
 
 ### Parser conventions
 
@@ -441,6 +471,11 @@ Shared, DB-light helpers for the sync commands.
   every *active* order absent from the CSV and returns the sorted numbers it retired **this run**
   (not the standing list, which would repeat the same names forever). Materializes the queryset before
   the UPDATE because its own filter is `is_active=True`.
+- `sync_line_items(order, parsed_items, item_model) -> dict` - applies a changed PO's line items as a
+  diff keyed on position (`PO_LINE_FIELDS`): update in place only where `unchanged()` says a field
+  differs, create new trailing lines, delete lines past the new end. Returns
+  `{"updated", "created", "deleted"}`. See
+  [PO CSV into the procurement tables](#po-csv-into-the-procurement-tables-2026-09-28).
 
 ### [apps/services/import_sync.py](../apps/services/import_sync.py)
 
@@ -676,11 +711,13 @@ codes are not trusted), and splits `"CARBON BLACK (RM-CB001)"` into subcategory 
 Identical apart from model classes, `*_PO_CSV_TITLE` and the `SyncRun.Plant` tag. Download from the
 shared PO folder (or `--file`), `parse_po_csv()`, then in one transaction: `_upsert_order()` per
 order (skip on matching `_po_hash` when active; otherwise `update_or_create` on `po_number` with
-`is_active=True`, delete and bulk-recreate line items), then `deactivate_missing_orders()`. After the
-transaction: `po_qty_rate_value` data-quality flags, and `_report_retired()` prints this run's retired
-numbers to stdout, calling out annotated ones as likely renames. Line items are recreated on any
-change, so their primary keys are not stable - anything pointing at a line item must key on position
-or description (see the manual-pin rules in [matching-engine.md](matching-engine.md)).
+`is_active=True`, and the line items as a diff through `sync_utils.sync_line_items()`), then
+`deactivate_missing_orders()`. After the transaction: `po_qty_rate_value` data-quality flags,
+`procurement_sync.project_plant_orders()` for the plant (warning on stdout about any line flagged for
+review), and `_report_retired()` prints this run's retired numbers, calling out annotated ones as
+likely renames. An unchanged line keeps its primary key; a line whose content changed keeps its key
+too, so anything that must follow the material rather than the slot still keys on position plus
+description (see the manual-pin rules in [matching-engine.md](matching-engine.md)).
 
 ### MIR syncs: [sync_mir.py](../apps/core/management/commands/sync_mir.py), [sync_achhad_mir.py](../apps/core/management/commands/sync_achhad_mir.py), [sync_vapi_mir.py](../apps/core/management/commands/sync_vapi_mir.py)
 
@@ -740,6 +777,12 @@ history, `--since YYYY-MM-DD`, default `timezone.localdate()` minus 45 days - an
 `SyncRun.Source.CONSUMPTION` row (`rows_seen` = lots read, `rows_changed` = material-days written).
 No Drive access. Identical except the plant key; Achhad's also folds in any existing
 `RTPAchhadRMDailyMovement` rows. Everything about the ledger is in [consumption.md](consumption.md).
+
+### [apps/core/management/commands/sync_procurement_pos.py](../apps/core/management/commands/sync_procurement_pos.py)
+
+`project_plant_orders()` for all three plants, or `--plant`. No Drive call. For the first backfill
+after a deploy (release.sh runs it) and for re-running by hand; prints counts and any line flagged for
+review.
 
 ### [apps/core/management/commands/ensure_schedules.py](../apps/core/management/commands/ensure_schedules.py)
 

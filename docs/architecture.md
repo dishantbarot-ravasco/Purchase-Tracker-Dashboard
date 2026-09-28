@@ -135,6 +135,25 @@ now re-keyed by its stripped header name once, right after validation
 with what the header check already accepted - see `parse_po_csv()`'s own comment and
 `test_po_csv_parser.py`.
 
+### The app's own records are normalized - procurement (2026-09-28)
+
+The per-plant rule above is about **Drive mirrors**: tables that copy a spreadsheet whose layout
+differs by plant. Records the app itself owns have no spreadsheet to mirror, so they are normalized
+instead - one table per entity with a `plant` foreign key - and the MIR entry tables are the first
+of them (`apps/core/models/procurement.py`): the MIR form, its rules and its numbers are the same at
+every plant, and an HRS store may receive a Vapi PO, which per-plant tables could not link.
+
+What normalized means here, concretely: a vendor exists once (`Vendor`, keyed on GSTIN) and PO and MIR
+point at it; a PO line exists once and MIR lines point at it with `PROTECT`; "received so far" and
+"open quantity" are **derived** (summed from posted MIR lines), never stored; reference lists
+(`Plant`, `MirReasonCode`) are rows, not constants scattered through code. The one deliberate copy is
+on a posted `MirLine`: the PO rate and open quantity it was compared against, and its computed
+amounts - a posted receipt is a record and must not change when the PO is amended later.
+
+Until the reconciliation dashboard reads these tables, the PO CSV lands twice - in each plant's mirror
+and in `PurchaseOrder` - through the same sync run ([data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)).
+That duplication is transitional and one-way (the projection only reads the mirror).
+
 ### Domestic router de-duplication
 
 The per-plant *model* decision above does **not** extend to the view layer. That part has nothing
@@ -517,6 +536,38 @@ in [consumption.md](consumption.md).
 - `ConsumptionEvent` - an interval deliberately not counted (or logged for disagreement), with
   `lot_ref` as a `'<model>#<pk>'` string, `kind`, both issue-book and balance quantities.
 - `ConsumptionCoverage` - one row per (plant, day) observed; the rate denominator.
+
+### apps/core/models/procurement.py
+
+Normalized POs and MIRs (migrations `0067`, and `0068` seeding the plants and reasons). See
+[The app's own records are normalized](#the-apps-own-records-are-normalized---procurement-2026-09-28).
+
+- `Plant` - `code` (the lowercase key `PTUser.plants` uses), `state_code` (GSTIN state: HRS 26, Achhad
+  27, Vapi 24 - read from the PO sheets), `is_union_territory` (HRS: UGST), unique `mir_prefix`.
+- `Vendor` - unique non-blank `gstin`; a vendor with no GSTIN is unique on `name_key`
+  (`procurement_rules.vendor_name_key()`).
+- `PurchaseOrder` - unique `(plant, po_number)` (one number exists at two plants); `vendor` null only
+  for the legacy HRS orders naming none; `tax_type` canonical or blank, `tax_type_raw` as typed;
+  `is_active`; `source_hash` (the mirror's hash, for skip-if-unchanged).
+- `PurchaseOrderLine` - unique `(purchase_order, line_no)`, `line_no` being the line's position; `uom`
+  canonical plus `uom_raw`; `is_active` (never deleted); `needs_review` / `review_note`; short-close
+  fields (`closed_at`, `closed_by`, `closed_reason`, `close_note`, `closed_by_mir_line`).
+- `PurchaseOrderLineChange` - every value the CSV changed on a line, old and new.
+- `MirReasonCode` - `code`, `kind` (`QTY_SHORT`, `QTY_OVER`, `RATE`, `INVOICE_TOTAL`, `TAX_TYPE`),
+  `closes_line` (only a shortfall may), `note_required`.
+- `MirSequence` - unique `(plant, fy)` counter, row-locked when a MIR number is issued.
+- `Mir` - receiving `plant`, `fy`/`seq`/unique `mir_no`, `vendor`, invoice fields with `invoice_key`
+  and `invoice_fy`, entered `invoice_total`, `tcs_amount`, `tax_type` and `tax_type_expected`,
+  transport fields, `status` POSTED/CANCELLED, who created and cancelled (user link and email).
+  Constraints: one POSTED MIR per `(vendor, invoice_key, invoice_fy)`; invoice date not after MIR
+  date; a cancelled MIR has a reason.
+- `MirLine` - `po_line` (`PROTECT`), received and rejected quantity (rejected within received,
+  received above zero), invoice `rate`, the `po_rate` and `open_qty_before` snapshots, discount, other
+  charges, `gst_rate` (0-40), computed gross/taxable/igst/cgst/sgst/line_total, rolls, batch, dept.
+  Unique `(mir, line_no)` and `(mir, po_line)`.
+- `MirMismatch` - one per `(mir_line, kind)` (or `(mir, kind)` for the invoice-level kinds), expected
+  and actual, `difference_pct`, `reason`, `note`, `status` OPEN/RESOLVED/VOID; a RESOLVED one carries
+  `resolved_at` and a `resolution_note`.
 
 ### apps/core/audit_log.py
 

@@ -55,6 +55,15 @@ PLANT_ENDPOINTS_NOT_SCOPED = {
         "Same as the domestic sync_trigger: IsAdmin, status-only response, re-reads that plant's own Drive CSV.",
     ("views.py", "readiness"):
         "Unauthenticated uptime probe; loops over plants only to name stale pipeline steps - no plant data returned.",
+    # MIR entry (2026-09-28): project owner's rule - any plant's store may
+    # receive against ANY plant's open PO, so finding one is cross-plant on
+    # purpose. IsEditor-gated; posting is then scoped to the receiving plant.
+    ("mir_views.py", "open_pos"):
+        "Owner rule 2026-09-28: every plant may receive any plant's open PO; IsEditor, read-only PO lookup.",
+    ("mir_views.py", "purchase_order"):
+        "Owner rule 2026-09-28: the PO a store receives against may belong to another plant; IsEditor, read-only.",
+    ("mir_views.py", "vendors"):
+        "Vendor master is company-wide, not plant data; IsEditor picker for a PO that names no vendor.",
 }
 
 

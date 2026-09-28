@@ -72,6 +72,47 @@ def orphaned_orders(order_model, parsed_orders):
     return list(order_model.objects.exclude(po_number__in=live).values_list("po_number", flat=True))
 
 
+PO_LINE_FIELDS = ("item_id", "description", "hsn", "qty", "uom", "delivery_date", "net_price", "net_value")
+
+
+def sync_line_items(order, parsed_items, item_model) -> dict:
+    """Apply a changed PO's line items as a DIFF, keyed on each line's
+    position in the order (project owner, 2026-09-28: change only what was
+    altered, never delete-and-rebuild the whole order).
+
+    Position is the identity because it is the only one the CSV gives: a PO
+    may list one material on several lines (item_id repeats), and the
+    matcher, manual pins (ManualMirMatch.item_ref) and the procurement
+    projection all number lines by it (line_item_positions() reads pk
+    order, which an in-place update preserves). So line N is updated in
+    place only where a field actually differs, a new trailing line is
+    created, and a line the CSV no longer lists is deleted - these legacy
+    rows carry nothing but the CSV's own data and their match rows, which
+    the same pipeline's match step rebuilds. The procurement tables, which
+    DO carry receipts, never delete a line (apps/services/procurement_sync.py).
+
+    Returns {"updated", "created", "deleted"} counts."""
+    existing = list(order.items.order_by("pk"))
+    counts = {"updated": 0, "created": 0, "deleted": 0}
+    for position, parsed in enumerate(parsed_items):
+        if position < len(existing):
+            row = existing[position]
+            if unchanged(item_model, row, parsed, list(PO_LINE_FIELDS)):
+                continue
+            for field in PO_LINE_FIELDS:
+                setattr(row, field, getattr(parsed, field))
+            row.save(update_fields=list(PO_LINE_FIELDS))
+            counts["updated"] += 1
+        else:
+            item_model.objects.create(purchase_order=order, **{f: getattr(parsed, f) for f in PO_LINE_FIELDS})
+            counts["created"] += 1
+    extra = [row.pk for row in existing[len(parsed_items):]]
+    if extra:
+        item_model.objects.filter(pk__in=extra).delete()
+        counts["deleted"] = len(extra)
+    return counts
+
+
 def deactivate_missing_orders(order_model, parsed_orders) -> list[str]:
     """Flip is_active off for every stored order the master CSV no longer
     lists, and return the po_numbers it actually retired.

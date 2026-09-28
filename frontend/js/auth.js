@@ -236,6 +236,9 @@ function renderNavTabs(container, activePage) {
     { key: 'home', href: '/home.html', label: 'Home' },
     { key: 'dashboard', href: '/', label: 'Dashboard' },
     { key: 'search', href: '/search-po.html', label: 'Search PO' },
+    // MIR entry (2026-09-28) - every role reads the register; entering a
+    // MIR needs Editor at the receiving plant (mir.html says so itself).
+    { key: 'mir', href: '/mir.html', label: 'MIR Entry' },
     // Match Accuracy Programme, Phase 1 (doc 03) - any authenticated role
     // can review, not just admin/editor, since throughput (~200 reviews)
     // matters more than gating here (see review_views.py's own docstring).

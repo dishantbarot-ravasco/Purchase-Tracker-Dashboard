@@ -4,7 +4,7 @@ Master_RTP_Achhad_Domestic_Purchase_Data.csv from Drive into
 RTPAchhadDomesticPurchaseOrder / RTPAchhadDomesticPOLineItem.
 
 Same shape as sync_po_csv.py for HRS - see that file for the general design
-(whole-order hash for change detection, delete-and-rebuild line items,
+(whole-order hash for change detection, line items written as a diff,
 --file for offline testing). What's different for this plant: the Drive
 file title comes from settings.ACHHAD_PO_CSV_TITLE (still read from the same
 shared settings.PURCHASE_TRACKER_DB_FOLDER_ID as HRS/Vapi - all three
@@ -26,7 +26,8 @@ from django.utils import timezone
 from apps.core.models import DataQualityFlag, RTPAchhadDomesticPOLineItem, RTPAchhadDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
-from apps.services.sync_utils import deactivate_missing_orders
+from apps.services.procurement_sync import project_plant_orders
+from apps.services.sync_utils import deactivate_missing_orders, sync_line_items
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
@@ -83,6 +84,15 @@ class Command(BaseCommand):
                 deactivated = len(retired)
 
             self._sync_data_quality_flags()
+            # The normalized POs the MIR form reads, as a diff of this plant's
+            # orders (apps/services/procurement_sync.py). After the commit above,
+            # so a projection error fails this run without undoing the CSV sync.
+            projected = project_plant_orders("achhad")
+            if projected.lines_flagged:
+                self.stdout.write(self.style.WARNING(
+                    "sync_achhad_po_csv: PO lines changed after receipts, need review: "
+                    + ", ".join(projected.lines_flagged[:10])
+                ))
             self._report_retired(retired)
 
             self.stdout.write(self.style.SUCCESS(
@@ -163,21 +173,9 @@ class Command(BaseCommand):
                 last_synced_at=timezone.now(),
             ),
         )
-        order.items.all().delete()
-        RTPAchhadDomesticPOLineItem.objects.bulk_create([
-            RTPAchhadDomesticPOLineItem(
-                purchase_order=order,
-                item_id=item.item_id,
-                description=item.description,
-                hsn=item.hsn,
-                qty=item.qty,
-                uom=item.uom,
-                delivery_date=item.delivery_date,
-                net_price=item.net_price,
-                net_value=item.net_value,
-            )
-            for item in parsed.items
-        ])
+        # A diff, not delete-and-rebuild: only the lines that changed are
+        # written (sync_utils.sync_line_items()).
+        sync_line_items(order, parsed.items, RTPAchhadDomesticPOLineItem)
         return True
 
     def _report_retired(self, retired: list) -> None:

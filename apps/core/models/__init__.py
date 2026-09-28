@@ -45,6 +45,7 @@ concern, each class moved verbatim with the comments above it:
   reports.py      Report dedup log (claim-before-send for the scheduled report emails).
   ledgers.py      Company-wide licence ledgers: RoDTEP scrips/usage and Advance Licences/materials.
   consumption.py  The raw-material consumption ledger: daily rows, excluded events, and observed-day coverage.
+  procurement.py  The app's own normalized POs and MIRs (one table per entity, plant as a column) - MIR entry.
 
 Every class is re-exported below, so `from apps.core.models import X` - the only import
 style this codebase uses - is unchanged everywhere. Django registers models by app label,
@@ -124,6 +125,18 @@ from .consumption import (  # noqa: F401
     ConsumptionEvent,
     ConsumptionCoverage,
 )
+from .procurement import (  # noqa: F401
+    Plant,
+    Vendor,
+    PurchaseOrder,
+    PurchaseOrderLine,
+    PurchaseOrderLineChange,
+    MirReasonCode,
+    MirSequence,
+    Mir,
+    MirLine,
+    MirMismatch,
+)
 
 __all__ = [
     "SyncRun",
@@ -178,4 +191,14 @@ __all__ = [
     "MaterialConsumptionDaily",
     "ConsumptionEvent",
     "ConsumptionCoverage",
+    "Plant",
+    "Vendor",
+    "PurchaseOrder",
+    "PurchaseOrderLine",
+    "PurchaseOrderLineChange",
+    "MirReasonCode",
+    "MirSequence",
+    "Mir",
+    "MirLine",
+    "MirMismatch",
 ]

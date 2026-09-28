@@ -121,7 +121,12 @@ behaviour rather than confirming a PO exists.
 
 `IsEditor` gates: `correct_field` (domestic and import), `correct_material_field`,
 `dismiss_po_mir_match`/`dismiss_mir_stock_match`/`dismiss_import_po_mir_match`/`dismiss_flag`
-(domestic and import), `set_mir_match` (domestic and import), and the stock-snapshot export.
+(domestic and import), `set_mir_match` (domestic and import), the stock-snapshot export, and MIR
+entry (`mir_views`: preview, post, cancel, resolve, PO-line close/reopen/review, each also scoped
+to the receiving, MIR or PO plant). **One deliberate exception to plant scoping:** MIR entry's PO
+lookups (`open_pos`, `purchase_order`, `vendors`) return every plant's open POs to an editor, by the
+project owner's rule that any plant's store may receive any plant's PO (2026-09-28); the MIR it
+then saves is scoped to the receiving plant, and the MIR register narrows by readable plant.
 `IsAdmin` gates: every plant `sync_trigger` and the imports/RoDTEP/Advance Licence sync triggers,
 `admin_overview`, and every [users_views.py](../apps/api/routers/users_views.py) endpoint (including
 the password field on `PATCH /api/auth/users/<id>`). The per-endpoint list lives in

@@ -13,12 +13,15 @@ those thin variants.
 
 Change detection here is a whole-order SHA-256 hash (_po_hash), not
 sync_utils.unchanged()'s per-field Decimal-quantized comparison used by
-sync_mir.py/sync_stock.py - a PO and all its line items are always rewritten
-together as one unit (line items are deleted and bulk_created fresh on any
-change), so a single hash over every field that matters is enough to decide
-whether to skip the write; there's no per-field "what changed" tracking to
-lose. po_number is used as the natural key (POs don't shift rows the way
-MIR/Stock sheet rows do), so no soft-deactivation logic is needed either.
+sync_mir.py/sync_stock.py - a single hash over every field that matters
+decides whether an order is touched at all. A changed order is then written
+as a diff: header fields in place, and its line items through
+sync_utils.sync_line_items(), which updates only the lines that differ
+(keyed on line position), adds new ones and removes dropped ones, never
+delete-and-rebuild. po_number is the natural key; an order the CSV no
+longer lists is deactivated, not deleted (sync_utils.deactivate_missing_orders()).
+After the upserts, apps/services/procurement_sync.py projects the plant's
+orders into the normalized procurement tables the MIR entry form reads.
 
 Drive folder: PURCHASE_TRACKER_DB_FOLDER_ID - all three plants' PO master
 CSVs live in one shared folder, distinct from each plant's own MIR/Stock
@@ -42,7 +45,8 @@ from django.utils import timezone
 from apps.core.models import DataQualityFlag, HRSDomesticPOLineItem, HRSDomesticPurchaseOrder, SyncRun
 from apps.services.arithmetic_checks import check_po_line_item
 from apps.services.data_quality import sync_data_quality_flags
-from apps.services.sync_utils import deactivate_missing_orders
+from apps.services.procurement_sync import project_plant_orders
+from apps.services.sync_utils import deactivate_missing_orders, sync_line_items
 from apps.services.parsers.po_csv import HeaderMismatch, parse_po_csv
 
 
@@ -74,7 +78,7 @@ class Command(BaseCommand):
 
     Idempotent: an order whose _po_hash matches the stored
     synced_from_row_hash is left untouched; only orders that changed (or are
-    new) get their line items deleted and rebuilt. Safe to re-run any time.
+    new) are written, as a line-by-line diff. Safe to re-run any time.
     """
 
     help = "Sync the HRS Purchase Order master CSV from Drive into HRSDomesticPurchaseOrder/HRSDomesticPOLineItem."
@@ -110,6 +114,15 @@ class Command(BaseCommand):
                 deactivated = len(retired)
 
             self._sync_data_quality_flags()
+            # The normalized POs the MIR form reads, as a diff of this plant's
+            # orders (apps/services/procurement_sync.py). After the commit above,
+            # so a projection error fails this run without undoing the CSV sync.
+            projected = project_plant_orders("hrs")
+            if projected.lines_flagged:
+                self.stdout.write(self.style.WARNING(
+                    "sync_po_csv: PO lines changed after receipts, need review: "
+                    + ", ".join(projected.lines_flagged[:10])
+                ))
             self._report_retired(retired)
 
             self.stdout.write(self.style.SUCCESS(
@@ -192,23 +205,9 @@ class Command(BaseCommand):
                 last_synced_at=timezone.now(),
             ),
         )
-        # Line items have no independent identity worth diffing - simplest
-        # correct approach is delete-and-rebuild rather than per-item upsert.
-        order.items.all().delete()
-        HRSDomesticPOLineItem.objects.bulk_create([
-            HRSDomesticPOLineItem(
-                purchase_order=order,
-                item_id=item.item_id,
-                description=item.description,
-                hsn=item.hsn,
-                qty=item.qty,
-                uom=item.uom,
-                delivery_date=item.delivery_date,
-                net_price=item.net_price,
-                net_value=item.net_value,
-            )
-            for item in parsed.items
-        ])
+        # A diff, not delete-and-rebuild: only the lines that changed are
+        # written (sync_utils.sync_line_items()).
+        sync_line_items(order, parsed.items, HRSDomesticPOLineItem)
         return True
 
     def _report_retired(self, retired: list) -> None:

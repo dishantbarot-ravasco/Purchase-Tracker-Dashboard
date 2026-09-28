@@ -89,7 +89,8 @@ single-unit test:
   which is precisely why it is a test and not a one-time cleanup.
 - `test_endpoint_permission_guard.py` - every write endpoint declares `permission_classes` and every
   plant endpoint calls a plant-scoping helper (see
-  [auth-security-email.md](auth-security-email.md)).
+  [auth-security-email.md](auth-security-email.md)). The MIR page's three PO lookups are listed in
+  its allow-list as cross-plant by the owner's rule.
 - `test_email_delivery_is_observable.py` - no application module passes `fail_silently=True`, and a
   failed send logs an ERROR (see [auth-security-email.md](auth-security-email.md)).
 - `test_dockerignore_mirrors_gitignore.py` - `.dockerignore` must exclude everything `.gitignore`
@@ -202,7 +203,8 @@ build on a stale OS indefinitely. **Merge those Dependabot PRs** - they are the 
 Four things about the image and how Render runs it:
 
 - **Release tasks run once per deploy, on the web service only.** `release.sh` (migrate,
-  `ensure_schedules`, `createcachetable || true`) is the web service's `preDeployCommand`; a failure
+  `ensure_schedules`, `createcachetable || true`, `sync_procurement_pos`) is the web service's
+  `preDeployCommand`; a failure
   aborts the deploy and the old version keeps serving. Running them from `docker-entrypoint.sh` on
   every container start would have the web and worker containers migrating the shared Postgres at
   the same moment on every deploy, and again on every restart. The entrypoint runs them only when
@@ -388,7 +390,9 @@ Must stay LF (see `.gitattributes`).
 [release.sh](../release.sh). The DB-dependent release steps: `migrate --noinput`,
 `ensure_schedules` (idempotent, never resets an existing schedule's `next_run`), and
 `createcachetable || true` (the `|| true` covers only "table already exists"; `set -e` still
-applies to every other line). Must be safe to run on every deploy against the same database - CI
+applies to every other line), and `sync_procurement_pos` (projects the PO CSV mirrors into the
+normalized procurement tables so a deploy that adds or changes them is populated at once; database
+only, idempotent). Must be safe to run on every deploy against the same database - CI
 runs it twice. Runs as Render's web `preDeployCommand` and as compose `app`'s entrypoint step.
 
 ### render.yaml
@@ -483,9 +487,17 @@ commands without Postgres (`DJANGO_SETTINGS_MODULE=config.settings_dev_sqlite py
 Not used by CI, production or the test suite, and **not valid for running tests** (see
 [Run against Postgres, never SQLite](#run-against-postgres-never-sqlite)).
 
-### Test helpers (no conftest.py)
+### Test helpers
 
-There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these:
+Configuration is `pyproject.toml` plus these:
+
+- [`conftest.py`](../conftest.py) (repo root, the only one) - the autouse `procurement_reference`
+  fixture: for every database test, the plants and MIR reasons exactly as migration `0068` seeds
+  them, re-seeded only when missing (two COUNT queries otherwise; tests without database access pay
+  nothing). A `transaction=True` test anywhere in the run flushes every table, migration data
+  included, so a test relying on the migration alone passed or failed by test order (found
+  2026-09-28: the MIR concurrency tests wiped the plants, and every PO sync test after them failed
+  at the projection step).
 
 - [`apps/api/tests/factories.py`](../apps/api/tests/factories.py) - `make_user(email, password,
   role="viewer", **extra)` creates an active `PTUser` with a real bcrypt hash; `extra` passes through
@@ -520,6 +532,7 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_manual_mir_match_imports.py | yes | Import MIR pins: `po_kind` separation, domestic vs import pins competing for one MIR table. |
 | test_matching.py | no | Pure PO<->MIR<->Stock scoring helpers (`_closeness`, `_diff_pct`, `_token_overlap`, vendor/PO-number matching). |
 | test_matching_query_scaling.py | yes | `run_full_match()` query count does not scale with row count (N+1 regression). |
+| test_mir_service.py | yes | MIR entry rules: exact receipt, tax type by state, short/over/rejected quantity and their reasons, rate differences, invoice total within the rounding rupee, the cross-plant duplicate-invoice refusal, receiving another plant's PO, one vendor per MIR, lines that cannot be received, dates and field checks, numbering, cancel, resolve, line close/reopen/review, and two threaded tests of simultaneous posting (one invoice twice, one line in full twice). |
 | test_material_category_reference_parser.py | no | Material category reference sheet parser. |
 | test_mir_stock_identification.py | no | MIR<->Stock description cleaning, fuzzy tokens, grade-code contradiction gate, `NO_RM_STOCK_VENDORS`. |
 | test_mir_stock_pipeline_tiers.py | yes | MIR<->Stock three-tier identification against real rows (name, fuzzy, date+rate). |
@@ -528,6 +541,8 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_parsers_common.py | no | Parser normalisation helpers (`to_decimal`, `to_date`, `normalize_vendor`, ...). |
 | test_plant_mismatch_report.py | yes | Per-plant Data Correction email: rows, dismissals, plant head + admin CC routing. |
 | test_po_csv_parser.py | no | PO master CSV header/row-shape edge cases (trailing-space headers, blank currency, grouping). |
+| test_procurement_po_sync.py | yes | The PO CSV as a diff through the real `sync_po_csv`: an unchanged line keeps its row and match, lines added and dropped; the projection's normalized rows, idempotence, in-place change logging, dropped lines deactivated not deleted, lines with receipts flagged when the sheet changes or drops them, retired orders, the GSTIN-keyed vendor master. |
+| test_procurement_rules.py | no | `procurement_rules.py`: unit and tax-type canonicalisation, expected tax type by state, GSTIN, PO GST rate, financial year, MIR number, invoice keys (spellings of one invoice agree, different invoices never collide), line amounts, exact rate comparison, GST slabs. |
 | test_po_deactivation.py | yes | POs dropped from the master CSV are deactivated (not deleted) and stop competing for MIR rows. |
 | test_po_number_groups.py | yes | One PO, many MIR receipts: every receipt naming the PO is saved and compared as one total. |
 | test_received_against_line.py | no | `received_against_line()` sums matched MIR qty in the PO line's unit. |
@@ -586,6 +601,7 @@ There is no `conftest.py` anywhere; configuration is `pyproject.toml` plus these
 | test_material_category_reference.py | yes | Canonical category/subcategory lookup on `GET /api/materials`. |
 | test_material_correct_field.py | yes | Raw Material modal inline edit on stock lots. |
 | test_materials_days_left.py | yes | Days-of-cover on `/materials` read from the consumption ledger. |
+| test_mir_api.py | yes | `/api/mir/...`: viewer cannot enter, editor posts at their plant against another plant's PO but not at another plant, 400 field errors, preview saves nothing, cross-plant PO search, register scoping and newest-first order, cancel and line-close scoping, mismatch resolve, `meta` flags. |
 | test_mir_without_po_endpoint.py | yes | `mir-without-po` drill-down: shape, bucket filter, plant gate, CSV. |
 | test_models_package.py | no | `apps/core/models/` package re-exports every model. |
 | test_no_em_dashes.py | no | No em dash in any text file in the repo (code, docs, config; skips `.venv`, migrations, `staticfiles`). |

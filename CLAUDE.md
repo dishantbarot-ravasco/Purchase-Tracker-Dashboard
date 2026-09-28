@@ -84,6 +84,7 @@ DJANGO_DEBUG=false uv run python manage.py check --deploy --fail-level WARNING
 # Flags: every sync_* takes --file <path>; sync_*_stock takes --no-snapshot;
 #        compute_*_consumption takes --all | --since YYYY-MM-DD (default 45-day lookback)
 # Read-only: report_retired_pos, report_match_accuracy, backfill_achhad_po_numbers
+# Procurement (MIR entry): sync_procurement_pos [--plant x] - DB-only projection, also in release.sh
 # Maintenance: prune_revoked_tokens
 ```
 
@@ -103,8 +104,11 @@ Read the linked section before breaking any of these. Each is there because it w
 - Keep `parsers/common.py`, `validation.py`, `stock_identity.py`, `arithmetic_checks.py`, and
   `consumption_engine.py` free of Django imports - migrations import them.
   [layering](docs/architecture.md#layering)
-- Per-plant model classes are deliberate; never merge them into one table with a `plant` column.
-  [per-plant models](docs/architecture.md#per-plant-models-not-a-shared-schema---deliberate-dont-fix-it)
+- Per-plant model classes are deliberate for the **Drive mirrors**; never merge them into one table
+  with a `plant` column. Records the app owns (procurement: POs for MIR entry, MIRs) are the opposite:
+  normalized, one table per entity with a `plant` FK, derived figures never stored.
+  [per-plant models](docs/architecture.md#per-plant-models-not-a-shared-schema---deliberate-dont-fix-it),
+  [normalized](docs/architecture.md#the-apps-own-records-are-normalized---procurement-2026-09-28)
 - Plant differences in domestic routers go in `_PlantConfig` values, and in matching in
   `_MatchConfig` fields - never a branch or a per-plant copy of a helper.
   [routers](docs/architecture.md#domestic-router-de-duplication),
@@ -123,7 +127,10 @@ Read the linked section before breaking any of these. Each is there because it w
 - Change detection uses `sync_utils.unchanged()` with `ROUND_HALF_UP`, never `HALF_EVEN`. Two
   back-to-back syncs must report 0 changed.
   [change detection](docs/data-sync.md#change-detection-must-compare-quantized-decimals-rounded-the-way-postgres-rounds)
-- POs are deactivated, never deleted; a hash-skip must check `existing.is_active`.
+- POs are deactivated, never deleted; a hash-skip must check `existing.is_active`. PO lines are
+  written as a diff keyed on position (`sync_line_items()`), never delete-and-rebuild; a procurement
+  PO line is never deleted at all (MIR lines point at it).
+  [PO diff](docs/data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)
   [retired POs](docs/data-sync.md#purchase-orders-are-retired-not-deleted---and-until-2026-09-18-they-were-neither)
 - Parsers use `read_only=True` + `stream_rows()`, never `ws.max_row`; a layout change raises
   `HeaderMismatch` rather than being guessed around. [parsers](docs/data-sync.md#parser-conventions)
@@ -219,6 +226,19 @@ Read the linked section before breaking any of these. Each is there because it w
 - Raw Material links each PO line to its best material through `lineLinksFor()`'s token index, built
   over the unfiltered scope; never reintroduce a per-(material x line) loop (it was 1.3M checks).
   [materials.js](docs/frontend.md#frontendjsmaterialsjs)
+
+### MIR entry
+- MIR entry has **no fuzzy matching and no tolerance**: quantity (accepted = received - rejected) and
+  rate compare exactly against the PO line picked; a difference needs a reason of its kind and becomes
+  an OPEN `MirMismatch`. The only allowance is the Rs 1 an invoice total rounds to.
+  [MIR entry](docs/api-and-features.md#mir-entry-2026-09-28)
+- `mir_service.evaluate()` is the only place a MIR is checked and priced; the page previews through it
+  and never computes a figure. Received-so-far is summed from POSTED lines, never stored.
+- One posted MIR per vendor invoice at ANY plant (DB constraint too); any plant may receive any
+  plant's open PO (the PO lookups are cross-plant on purpose); posting is scoped to the receiving plant.
+- Reference rows (plants, MIR reasons) come from migration `0068`; a `transaction=True` test flushes
+  them, so the root `conftest.py` re-seeds them for every database test. Never make a test depend on
+  migration data without it. [helpers](docs/testing-deployment.md#test-helpers)
 
 ### Consumption
 - `received`/`issued` are period-to-date cumulative at all three plants. Consumption is
@@ -320,6 +340,8 @@ Read the linked section before breaking any of these. Each is there because it w
 | A dismissed PO-level flag still counting on the KPI cards (only the modal honoured it); the status doughnut's Overdue slice filtering to the card's larger overlay set | [api](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag) |
 | A `critical` category firing on every not-yet-due order, red on nearly every row | [api](docs/api-and-features.md#row-flags-are-four-buckets-one-icon-each-2026-09-22) |
 | Raw Material's in-transit KPIs summing per material (a fuzzy-linked PO line counted once per material it touched), counting the full ordered qty of a part-delivered line, and adding KG to metres | [frontend](docs/frontend.md#frontendjsmaterialsjs) |
+| An aggregate (`annotate(Sum(...))`) query silently dropping `Meta.ordering`, so the MIR register listed oldest first | [api](docs/api-and-features.md#appsapiroutersmir_viewspy) |
+| A `transaction=True` test flushing migration-seeded reference rows, breaking every later test by order | [testing](docs/testing-deployment.md#test-helpers) |
 | Stale modal data from a fast row-switch | [frontend](docs/frontend.md#modals-one-shared-shell-and-the-stale-response-guard) |
 | `[hidden]` losing a specificity tie to a `display` rule (now a global `[hidden]{display:none !important}` in `brand.css`) | [frontend](docs/frontend.md#other-traps) |
 | Duplicate CSS custom properties across two stylesheets | [frontend](docs/frontend.md#css-custom-property-collisions) |

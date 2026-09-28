@@ -379,6 +379,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `search-po-page.js` |
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
 | `admin.html` | WhiteNoise | `brand.css`, `admin-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `admin-page.js` |
+| `mir.html` | WhiteNoise | `brand.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `mir-page.js` |
 | `login.html` | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
 
 Every protected page has the same static `.topnav` markup (brand link, `#navTabs`, `#navUser`) that
@@ -386,7 +387,8 @@ Every protected page has the same static `.topnav` markup (brand link, `#navTabs
 replaced wholesale by `main.js`'s `init()`. `admin.html` ships its create/edit-user modal
 (`#uf-overlay`) and `#toastStack` as static markup, plus a `#deniedContent` panel for non-admins
 (defence in depth; the endpoints enforce `IsAdmin`). `review.html` has two views (`#viewQueue`,
-`#viewStats`) behind `review-viewtab` buttons. Page header comments in `home.html` still mention an
+`#viewStats`) behind `review-viewtab` buttons. `mir.html` has three views (`#viewNew`, `#viewRegister`, `#viewMismatches`) behind
+`mir-viewtab` buttons. Page header comments in `home.html` still mention an
 "inline script"; it is `home-page.js`.
 
 ### frontend/js/theme-init.js
@@ -423,9 +425,9 @@ cookie; nothing here holds a token.
 - `requireAuth()` - GET `/api/auth/me`, fills `CURRENT_USER`; any failure logs and redirects to
   `/login.html`. Each page bootstrap returns early when it resolves `null`.
 - `logout()` - best-effort POST `/api/auth/logout`, then always redirects.
-- `renderNavTabs(container, activePage)` - Home (`/home.html`), Dashboard (`/`), Search PO, Review
-  Matches, and Admin only when `role === 'admin'`. `activePage` is `home`/`dashboard`/`search`/
-  `review`/`admin`.
+- `renderNavTabs(container, activePage)` - Home (`/home.html`), Dashboard (`/`), Search PO, MIR Entry
+  (`/mir.html`, every role), Review Matches, and Admin only when `role === 'admin'`. `activePage` is
+  `home`/`dashboard`/`search`/`mir`/`review`/`admin`.
 - `renderUserBadge(container)` - initials avatar coloured by role (`.avatar-role-*`), name/role, a
   dropdown with Change Password and Logout; a document click closes it.
 - `initThemeToggle()` - inserts `#themeToggleBtn` before `.nav-user` and persists the choice to
@@ -966,6 +968,25 @@ Accuracy view: `loadStats()` (GET `/api/review/stats`, refetched on every open),
 link to `/api/review/stats/export`. `formatMoneyExact()` keeps full precision on purpose. Its own
 `showToast(text)` targets `#reviewToast`.
 
+### frontend/js/mir-page.js
+
+`mir.html`, self-contained like `review-page.js`: `apiMir(path, opts)` wraps `/api/mir` (JSON body
+encoded for it, `err.errors` carries the server's `[{field, message}]`). **It never prices a line or
+decides a mismatch**: every input change runs the debounced `schedulePreview` -> `runPreview()` (POST
+`/api/mir/preview`, a sequence number drops a stale reply) -> `paintPreview()`, and Save posts the same
+`payload()` to `/api/mir/entries/new`. Inputs are rendered once per line change (`renderLines()`) and
+never re-rendered while typing; `paintPreview()` repaints only the computed figures (`#fig-<i>`), the
+reason rows (`#reasons-<i>`, rebuilt only when the mismatch signature changes, so a chosen reason and
+focus survive), the header reason rows (`headerReason()` for tax type and invoice total), the totals
+and the error list. `showErrors()` hides "Required." / "Choose a reason." until the first Save attempt.
+New MIR: `runSearch()` (GET `open-pos`), `openPo()` (GET `purchase-orders/<id>`, a line that cannot take
+a receipt is shown greyed with the server's reason, "late" when past its delivery date), `addLines()`
+(one vendor per MIR: a result of another vendor is shown disabled), `renderVendor()` (a vendor picker
+when the PO names none), `postMir()`, `resetForm()`. Register: `loadRegister()`, `loadDetail()` (cancel
+with a reason when the caller may receive at that plant). Mismatches: `loadMismatches()` with inline
+resolve. Money is shown exact (`money()`, "Rs 5,42,800.00"), never the dashboard's rounded `formatInr()`.
+Top-level names were checked against `auth.js` / `shared.js` for collisions (one global scope).
+
 ### frontend/js/admin-page.js
 
 `admin.html` bootstrap and Users panel. Shows `#deniedContent` for non-admins and stops. Sidebar tabs
@@ -1004,6 +1025,8 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   stat/action/user cards, search results (`.search-result-badges`, and `.search-result-import` for the Import badge), admin user form (`.uf-*`, also used by the Change Password
   modal), toasts, the global `[hidden]` rule, the closed set of CSP utility classes (add one only for
   a real call site), `.sr-only` / `.sr-only-focusable` / `.skip-link`, and its dark-mode blocks.
+  `.nav-tabs` shrinks and scrolls inside itself (no visible scrollbar) and `.nav-user` never shrinks,
+  so a sixth tab never pushes the user badge off the page; tabs tighten below 1200px.
 - **`style.css`** (`index.html` only) - `--dash-*` and dashboard tokens, sync bar and refresh status,
   the three tab components, KPI cards (flexbox with a fixed basis, not grid - both grid variants were
   tried and looked wrong with 8 vs 13 cards), info and row-flag CSS tooltips (instant, unlike native
@@ -1014,6 +1037,9 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   and its month `.chart-filter-chip`; `.doughnut-layout` puts the rings beside their legend through a
   container query on the panel at 540px, and a bar chart's `.chart-box` grows to its panel's height),
   filter bars (one 32px control height, uppercase labels, stacking per group under 560px), dark mode.
+- **`mir-page.css`** (`mir.html`) - brand tokens only, defines no custom property: view tabs, step
+  cards, PO results, line cards, reason rows (`.mir-reason.is-short` / `.is-over`), register and
+  mismatch tables, status pills.
 - **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,
   `login-page.css`) - extracted from inline `<style>` blocks for CSP; they use `brand.css` tokens
   (several review/admin rules carry literal fallbacks, e.g. `var(--green, #16a34a)`, because the
