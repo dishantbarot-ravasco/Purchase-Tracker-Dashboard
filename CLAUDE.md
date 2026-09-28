@@ -7,6 +7,10 @@ in [`docs/`](docs/). Read the doc for the area you are about to touch before cha
 **No em dashes anywhere** (project owner, 2026-09-22). Not in code comments, docstrings, markdown,
 UI copy, or emails - use a spaced hyphen " - ". `test_no_em_dashes.py` enforces it.
 
+**Push directly to `main`** (project owner, 2026-09-28). Commit and push finished work straight to
+`main`, not to a feature branch or pull request, unless the owner says otherwise for that change.
+CI's full suite then runs on `main`, so run the local checks you can before pushing.
+
 ---
 
 ## Documentation rule - keep docs/ in step with the code
