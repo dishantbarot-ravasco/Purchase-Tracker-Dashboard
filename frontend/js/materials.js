@@ -623,19 +623,146 @@ const MAT_UOM_FAMILIES = {
   M: ['M', 1], CM: ['M', 0.01], MM: ['M', 0.001], MTR: ['M', 1], MTRS: ['M', 1],
 };
 
-// Open quantity across a set of distinct open lines, per base unit:
-// { totals: { KG: n, M: n, ... }, unrecognised: <line count> }.
-function summariseOpenQty(openLines) {
+// A quantity per line, summed across lines per base unit:
+// { totals: { KG: n, M: n, ... }, unrecognised: <line count> }. `qtyOf(item)`
+// picks which quantity - still to come (openQtyOfLine) or ordered (item.qty).
+function summariseLineQty(lines, qtyOf) {
   const totals = {};
   let unrecognised = 0;
-  openLines.forEach(x => {
-    const qty = openQtyOfLine(x.item);
+  lines.forEach(x => {
+    const qty = qtyOf(x.item);
     if (qty == null) return;
     const fam = MAT_UOM_FAMILIES[String(x.item.uom || '').trim().toUpperCase().replace(/\.$/, '')];
     if (!fam) { unrecognised++; return; }
     totals[fam[0]] = (totals[fam[0]] || 0) + qty * fam[1];
   });
   return { totals, unrecognised };
+}
+
+// Open quantity across a set of distinct open lines, per base unit.
+function summariseOpenQty(openLines) {
+  return summariseLineQty(openLines, openQtyOfLine);
+}
+
+// The whole ordered value of a line, at the PO rate in INR - the same rate
+// openValueOfLine() prices what is still to come at, so the two compare.
+function orderedValueOfLine(item) {
+  if (item.netPrice != null && item.qty != null) return item.netPrice * item.qty;
+  return item.netValue != null ? item.netValue : 0;
+}
+
+// Per-unit totals as one line of text: "48.9 MT + 1,200 M". Weight reads in
+// MT from 10,000 KG, the same switch the Quantity to Come card makes.
+function formatQtyTotals(totals) {
+  const units = Object.keys(totals).sort((a, b) => (b === 'KG') - (a === 'KG') || totals[b] - totals[a]);
+  return units.map(u => {
+    const inMt = u === 'KG' && totals[u] >= 10000;
+    const q = inMt ? totals[u] / 1000 : totals[u];
+    return q.toLocaleString('en-IN', { maximumFractionDigits: inMt ? 1 : 0 }) + ' ' + (inMt ? 'MT' : u);
+  }).join(' + ');
+}
+
+// Pending Delivery and Open PO Pipeline, per material row (2026-09-28,
+// project owner: pending qty and value on its open POs, and the total
+// pipeline across every open PO for the material). Both read the row's own
+// open lines (computeMaterialPoLinkage()'s `openLinks`):
+//   pending  - what is still to come on them (openQtyOfLine/openValueOfLine),
+//              with the value-weighted PO rate when every line is in one
+//              recognised unit, so a reader can see the price it is coming at
+//   pipeline - the full ordered qty/value of those open POs, how many POs,
+//              and how much of that value has already been received.
+// A line the fuzzy link ties to two materials counts under both rows, like
+// `openValue` - the KPI cards, not these cells, are the deduped totals.
+function materialOrderFigures(openLinks) {
+  const pendingQty = summariseLineQty(openLinks, openQtyOfLine);
+  const orderedQty = summariseLineQty(openLinks, item => item.qty);
+  const pendingValue = openLinks.reduce((s, x) => s + openValueOfLine(x.item), 0);
+  const orderedValue = openLinks.reduce((s, x) => s + orderedValueOfLine(x.item), 0);
+  const pendingUnits = Object.keys(pendingQty.totals);
+  const onePendingUnit = pendingUnits.length === 1 && !pendingQty.unrecognised && pendingQty.totals[pendingUnits[0]] > 0;
+  return {
+    lineCount: openLinks.length,
+    poCount: new Set(openLinks.map(x => x.po)).size,
+    pendingQty, pendingValue, orderedQty, orderedValue,
+    pendingRate: onePendingUnit ? { value: pendingValue / pendingQty.totals[pendingUnits[0]], unit: pendingUnits[0] } : null,
+    receivedPct: orderedValue > 0 ? Math.max(0, Math.min(100, (1 - pendingValue / orderedValue) * 100)) : null,
+  };
+}
+
+function qtySummaryText(summary) {
+  const parts = [];
+  const text = formatQtyTotals(summary.totals);
+  if (text) parts.push(text);
+  if (summary.unrecognised) parts.push(summary.unrecognised + (summary.unrecognised === 1 ? ' line' : ' lines') + ' in another unit');
+  return parts.join(' + ');
+}
+
+// A cell's own "i" - infoTooltipHtml() minus `kpi-info`, whose
+// position:static anchors the tooltip to a KPI card, not to a table cell.
+function cellInfoHtml(tip) {
+  return infoTooltipHtml(tip).replace('info-tooltip kpi-info', 'info-tooltip');
+}
+
+function pendingDeliveryCellHtml(entry) {
+  const f = entry && entry.orderFigures;
+  if (!f || !f.lineCount) return '<span class="text-slate-soft">No open PO</span>';
+  const qty = qtySummaryText(f.pendingQty) || '-';
+  const rate = f.pendingRate ? '<div class="fs-11 text-slate-soft">at ' + formatInr(f.pendingRate.value) + ' / ' + escapeHtml(f.pendingRate.unit) + ' avg PO rate</div>' : '';
+  const tip = 'Still to arrive on ' + f.lineCount + ' open PO ' + (f.lineCount === 1 ? 'line' : 'lines') + ' for this material: ordered quantity less what MIR has already received, valued at each line\'s own PO rate in INR (pre-tax). The rate shown is the value-weighted average across those lines.';
+  return '<div class="fw-700">' + escapeHtml(qty) + cellInfoHtml(tip) + '</div>' +
+    '<div>' + formatInr(f.pendingValue) + '</div>' + rate;
+}
+
+function pipelineCellHtml(entry) {
+  const f = entry && entry.orderFigures;
+  if (!f || !f.lineCount) return '<span class="text-slate-soft">No open PO</span>';
+  const qty = qtySummaryText(f.orderedQty) || '-';
+  const tip = 'Everything ordered on the ' + f.poCount + ' open ' + (f.poCount === 1 ? 'PO' : 'POs') + ' (domestic and import) for this material, at the PO rate in INR (pre-tax), including what has already arrived. Received is the share of that value MIR has already received.';
+  return '<div class="fw-700">' + escapeHtml(qty) + cellInfoHtml(tip) + '</div>' +
+    '<div>' + formatInr(f.orderedValue) + '</div>' +
+    '<div class="fs-11 text-slate-soft">' + f.poCount + ' open ' + (f.poCount === 1 ? 'PO' : 'POs') +
+      (f.receivedPct != null ? ', ' + Math.round(f.receivedPct) + '% received' : '') + '</div>';
+}
+
+// A lot set's quantity as text, unit-aware: one unit (or none named) reads
+// as the plain sum with its unit; lots in two different units read per unit,
+// converted within a family, the same rule as aggregateMaterialsByName()'s
+// qtyLabel.
+function lotsQtyText(lots) {
+  const byUnit = new Map();
+  const rawUnits = new Set();
+  let sum = 0;
+  lots.forEach(l => {
+    sum += l.qty || 0;
+    const raw = String(l.uom || '').trim().toUpperCase().replace(/\.$/, '');
+    if (!raw) return;
+    rawUnits.add(raw);
+    const fam = MAT_UOM_FAMILIES[raw];
+    const unit = fam ? fam[0] : raw;
+    byUnit.set(unit, (byUnit.get(unit) || 0) + (l.qty || 0) * (fam ? fam[1] : 1));
+  });
+  if (byUnit.size > 1) return Array.from(byUnit.entries()).map(([u, q]) => q.toLocaleString('en-IN', { maximumFractionDigits: 3 }) + ' ' + u).join(' + ');
+  return sum.toLocaleString('en-IN', { maximumFractionDigits: 3 }) + (rawUnits.size === 1 ? ' ' + Array.from(rawUnits)[0] : '');
+}
+
+// The Stock cell: the row's total, and on All Plants a line per plant that
+// holds a lot of it (2026-09-28, project owner: "bifurcation in that column
+// with plant wise stock"), so a shortage at one plant is visible beside
+// another plant's surplus. Plants in PLANTS order; a plant with no lot of
+// the material is left out rather than shown as a zero it never reported.
+function stockCellHtml(m) {
+  const total = m.qtyLabel ? escapeHtml(m.qtyLabel) : (m.qty ? m.qty.toLocaleString('en-IN') : '0');
+  if (!isAllPlants() || !m.lots || !m.lots.length) return total;
+  const byPlant = new Map();
+  m.lots.forEach(l => {
+    const key = l._plantKey;
+    if (!key) return;
+    if (!byPlant.has(key)) byPlant.set(key, []);
+    byPlant.get(key).push(l);
+  });
+  const split = Object.keys(PLANTS).filter(k => byPlant.has(k)).map(k =>
+    '<div class="fs-11 text-slate-soft">' + escapeHtml(PLANTS[k].label) + ': ' + escapeHtml(lotsQtyText(byPlant.get(k))) + '</div>').join('');
+  return '<div class="fw-700">' + total + '</div>' + split;
 }
 
 // Rows for materials that are ON ORDER but have no RM Stock lot at all
@@ -766,6 +893,7 @@ function computeMaterialPoLinkage(materials, plantKeys, scope) {
       links,
       openLinks,
       openValue: openLinks.reduce((s, x) => s + openValueOfLine(x.item), 0),
+      orderFigures: materialOrderFigures(openLinks),
       categories,
       qtyFlag: categories.some(c => c.label === 'Quantity Mismatch in MIR'),
       rateFlag: categories.some(c => c.label === 'Rate Mismatch in MIR'),
@@ -998,8 +1126,9 @@ function renderMaterialsView() {
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
     '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + ', plus anything on an open order that has no stock lot yet. Click a row for its full cross-plant analysis.</div>' +
     matchingDisclaimerHtml(
-      'Ordered qty, in-transit value and the flag columns are matched automatically. Days Left is an estimate.',
-      '<p><strong>Matched columns.</strong> "Value in Transit", "Quantity to Come" and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
+      'Ordered qty, in-transit value, pending delivery, pipeline and the flag columns are matched automatically. Days Left is an estimate.',
+      '<p><strong>Matched columns.</strong> "Value in Transit", "Quantity to Come", the Pending Delivery and Open PO Pipeline columns and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
+      '<p><strong>Pending Delivery and Open PO Pipeline.</strong> Pending Delivery is what is still to arrive on this material\'s open PO lines (ordered less what MIR has received), valued at each line\'s PO rate. Open PO Pipeline is the full quantity and value of those open POs, with how much of it has already been received. Both are pre-tax and in INR (import prices converted at the PO\'s exchange rate).</p>' +
       '<p><strong>Days Left.</strong> Estimated from recent stock-snapshot history, not reported by the sheet. The confidence dot beside it shows how much history it is based on.</p>'
     ) +
     '<div class="kpi-grid mat-kpi-grid">' + kpiHtml + '</div>' +
@@ -1169,7 +1298,9 @@ function materialsListRegionHtml() {
   // Category/Progress here, removed the old Stock/Inventory Value/Latest
   // Rate min/max ranges). One entry per <th> in the table header (Material,
   // Category, Sub Category, Stock, Inventory Value, Latest Rate, Status,
-  // Progress, Details) - Stock/Inventory Value/Latest Rate/Details have no
+  // Progress, Details, plus Days Left, Pending Delivery and Open PO Pipeline
+  // after Latest Rate) - Stock/Inventory Value/Latest Rate/Days Left/Pending
+  // Delivery/Open PO Pipeline/Details have no
   // header-row control of their own, so they still need an empty
   // placeholder entry, or every later cell silently shifts one column left
   // under the wrong header.
@@ -1189,6 +1320,8 @@ function materialsListRegionHtml() {
     '',
     '',
     '', // Days Left - no header-row control of its own, same reasoning as Stock/Inventory Value/Latest Rate above.
+    '', // Pending Delivery - likewise.
+    '', // Open PO Pipeline - likewise.
     '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
       // The two filters a KPI card or flag chip sets that the select used to
       // lack, so after such a click it read "All" while the list was narrowed.
@@ -1255,7 +1388,7 @@ function materialsListRegionHtml() {
       // the fuller reasoning). "View all" still renders as a plain <table>
       // for all three views.
       if (showingAll) {
-        return '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Sub Category</th><th>Stock' + stockAllPlantsSuffix + '</th><th>Inventory Value' + stockAllPlantsSuffix + '</th><th>Latest Rate</th><th>Days Left</th><th>Status</th><th>Progress</th><th>Details</th></tr>' +
+        return '<div class="table-wrap"><table><thead><tr><th>Material</th><th>Category</th><th>Sub Category</th><th>Stock' + stockAllPlantsSuffix + '</th><th>Inventory Value' + stockAllPlantsSuffix + '</th><th>Latest Rate</th><th>Days Left</th><th>Pending Delivery</th><th>Open PO Pipeline</th><th>Status</th><th>Progress</th><th>Details</th></tr>' +
           colFilterRow +
         '</thead><tbody>' +
         listRecs.map(m => {
@@ -1265,17 +1398,19 @@ function materialsListRegionHtml() {
           return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</td>' +
           '<td>' + escapeHtml(m.category || '-') + '</td>' +
           '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
-          '<td>' + (m.qtyLabel ? escapeHtml(m.qtyLabel) : (m.qty ? m.qty.toLocaleString('en-IN') : '0')) + '</td>' +
+          '<td>' + stockCellHtml(m) + '</td>' +
           '<td>' + formatInr(m.value || 0) + '</td>' +
           '<td>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</td>' +
           '<td>' + daysLeftCellHtml(m) + '</td>' +
+          '<td>' + pendingDeliveryCellHtml(entry) + '</td>' +
+          '<td>' + pipelineCellHtml(entry) + '</td>' +
           (() => { const st = computeMaterialStatus(m, entry); return '<td><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry, st) + '</td>'; })() +
           '<td>' + materialStepperHtml(m) + '</td>' +
           '<td><span class="row-link" data-lot="' + key + '">View analysis</span></td></tr>';
         }).join('') +
         '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols"><div>Material</div><div>Category</div><div>Sub Category</div><div>Stock' + stockAllPlantsSuffix + '</div><div>Inventory Value' + stockAllPlantsSuffix + '</div><div>Latest Rate</div><div>Days Left</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
+      return '<div class="list-header-row grid-cols"><div>Material</div><div>Category</div><div>Sub Category</div><div>Stock' + stockAllPlantsSuffix + '</div><div>Inventory Value' + stockAllPlantsSuffix + '</div><div>Latest Rate</div><div>Days Left</div><div>Pending Delivery</div><div>Open PO Pipeline</div><div>Status</div><div>Progress</div><div>Details</div></div>' +
         '<div class="list-header-row grid-cols col-filter-row-grid">' + matFilterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="matTop5List">' + listRecs.map(m => {
           const key = escapeHtml(materialModalKey(m));
@@ -1286,10 +1421,12 @@ function materialsListRegionHtml() {
             '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</div>' +
             '<div>' + escapeHtml(m.category || 'Not available') + '</div>' +
             '<div>' + escapeHtml(m.subCategory || 'Not available') + '</div>' +
-            '<div>' + (m.qtyLabel ? escapeHtml(m.qtyLabel) : (m.qty ? m.qty.toLocaleString('en-IN') : '0')) + '</div>' +
+            '<div>' + stockCellHtml(m) + '</div>' +
             '<div>' + formatInr(m.value || 0) + '</div>' +
             '<div>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</div>' +
             '<div>' + daysLeftCellHtml(m) + '</div>' +
+            '<div>' + pendingDeliveryCellHtml(entry) + '</div>' +
+            '<div>' + pipelineCellHtml(entry) + '</div>' +
             '<div><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry, st) + '</div>' +
             '<div>' + materialStepperHtml(m) + '</div>' +
             '<div><span class="row-link" data-lot="' + key + '">View analysis</span></div></div>';
