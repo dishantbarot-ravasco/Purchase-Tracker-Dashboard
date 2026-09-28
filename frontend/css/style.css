@@ -503,6 +503,12 @@ tr.row-tint-severe { background: rgba(220,38,38,.16); }
 .top5-row.row-tint-moderate { background: rgba(220,38,38,.11); }
 .top5-row.row-tint-severe { background: rgba(220,38,38,.18); }
 .top5-row .po-num { font-family:var(--mono); font-weight:700; color:var(--navy); }
+/* Figures line up row to row; a row lifts on hover so the eye can track it
+   across ten columns (both lists). */
+.top5-row, .table-wrap td { font-variant-numeric:tabular-nums; }
+.top5-row { transition:border-color .15s, box-shadow .15s; }
+.top5-row:hover { border-color:var(--border-strong); box-shadow:0 4px 14px rgba(15,23,42,.08); }
+.table-wrap tbody tr:hover td { background:rgba(15,23,42,.025); }
 .top5-row .row-link { font-weight:700; color:var(--gold-accent-text); cursor:pointer; }
 .list-header-row { display:grid; gap:12px; padding:0 14px 6px; font-size:10px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
 /* Generic auto-fit column grid, named for what it does (not "po-cols") since
@@ -627,7 +633,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    default/fallback before Chart.js's own JS takes over. */
 .chart-box canvas { cursor: pointer; }
 
-.status-pill { display:inline-block; padding:3px 9px; border-radius:99px; font-size:10.5px; font-weight:700; letter-spacing:0.02em; text-transform:uppercase; }
+.status-pill { display:inline-block; white-space:nowrap; padding:3px 9px; border-radius:99px; font-size:10.5px; font-weight:700; letter-spacing:0.02em; text-transform:uppercase; }
 .status-received { background:var(--green-soft); color:var(--green-text); }
 /* Partial Delivered - blue, matching .kpi-card.partial's own border/value
    color (a real pre-existing inconsistency this pass fixed: this pill used
@@ -958,6 +964,43 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
   .mat-kpi-grid .kpi-card { padding:14px; }
   .mat-kpi-grid .kpi-card .val { font-size:20px; }
 }
+
+/* Raw Material Analysis list (materials.js's MAT_LIST_COLUMNS), 2026-09-28
+   layout pass. Its ten columns get their own track widths rather than the
+   PO list's auto-fit grid: at twelve 110px-minimum columns that grid wrapped,
+   dropping Details and "View analysis" onto a second line of every row.
+   Each cell is one bold figure (.mat-cell-main) with at most one or two
+   muted lines under it (.mat-cell-sub); anything longer lives in a tooltip. */
+.list-header-row.mat-grid-cols,
+.top5-row.mat-grid-cols {
+  grid-template-columns:
+    minmax(160px, 1.7fr) minmax(110px, 1.1fr) minmax(105px, 1fr) minmax(100px, .95fr)
+    minmax(72px, .6fr) minmax(110px, 1fr) minmax(125px, 1.1fr) minmax(105px, .95fr)
+    minmax(84px, .7fr) minmax(90px, .7fr);
+  align-items:start;
+}
+.list-header-row.mat-grid-cols:not(.col-filter-row-grid) { align-items:end; }
+.list-header-row.mat-grid-cols.col-filter-row-grid { align-items:center; }
+.col-filter-stack { display:flex; flex-direction:column; gap:4px; }
+.mat-cell-main { font-weight:700; color:var(--navy); font-variant-numeric:tabular-nums; line-height:1.35; }
+.mat-cell-main.mat-cell-text { font-weight:600; }
+.mat-cell-sub { font-size:11px; color:var(--slate-soft); font-variant-numeric:tabular-nums; line-height:1.4; margin-top:2px; }
+.mat-cell-none { font-size:11.5px; color:var(--slate-soft); }
+.mat-plant-split { display:flex; justify-content:space-between; gap:8px; max-width:190px; }
+.mat-name { display:block; font-size:13px; line-height:1.3; }
+.mat-tag { display:inline-block; margin-top:4px; padding:1px 7px; border-radius:99px; font-size:10px; font-weight:700; letter-spacing:.02em; text-transform:uppercase; background:var(--gray-soft); color:var(--slate-soft); }
+.mat-status-cell { display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; }
+.mat-view-link { white-space:nowrap; }
+.mat-pipe-bar { height:5px; border-radius:99px; background:var(--gray-soft); overflow:hidden; margin:5px 0 1px; max-width:150px; }
+.mat-pipe-fill { display:block; height:100%; width:0; border-radius:99px; background:var(--green); }
+.mat-table td { vertical-align:top; }
+.mat-table .days-left-cell { padding-top:1px; }
+/* When the page is narrower than the ten columns need, the header and rows
+   scroll sideways together inside .mat-grid-scroll (the heading above stays
+   put) instead of squeezing every figure onto two lines. The padding keeps
+   the rows' shadow and hover lift from being clipped by the scroller. */
+.mat-grid-scroll { overflow-x:auto; padding:0 2px 4px; margin:0 -2px; }
+.mat-grid-scroll > .list-header-row.mat-grid-cols, .mat-grid-scroll > .top5-list { min-width:1195px; }
 
 .mini-stepper { display:flex; align-items:center; gap:0; }
 .mini-stepper .step-dot { width:9px; height:9px; border-radius:50%; background:var(--border-strong); flex:none; }

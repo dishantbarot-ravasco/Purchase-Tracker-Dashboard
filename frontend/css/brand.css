@@ -163,7 +163,25 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   background: var(--gold-pale); border: 1px solid var(--gold-border); color: var(--navy);
   padding: 8px 15px; /* -1px to offset the border, keeps height identical to inactive tabs */
 }
-@media (max-width: 700px) { .nav-tabs { display: none; } }
+/* Phones (2026-09-28). The header is one row on a desktop, but the brand and
+   the user badge never shrank, so on a 375px screen the row measured 482px
+   and every page scrolled sideways; the tabs were also hidden outright,
+   leaving a phone with no way between pages. Below 700px the header wraps
+   into two rows: brand, theme toggle and avatar on the first (the brand
+   subtitle dropped, the title free to shrink), and the tabs as a strip on
+   the second that scrolls inside itself. */
+@media (max-width: 700px) {
+  .topnav { height: auto; flex-wrap: wrap; padding: 8px 12px 0; gap: 4px 10px; }
+  .nav-brand { flex-shrink: 1; min-width: 0; gap: 8px; }
+  .nav-logo { height: 30px; }
+  .nav-brand-text { min-width: 0; }
+  .nav-brand-text h1 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nav-brand-text p { display: none; }
+  .theme-toggle-btn { margin-right: 4px; width: 34px; height: 34px; }
+  .nav-tabs { order: 10; flex-basis: 100%; margin: 0 -12px; padding: 2px 12px 6px; }
+  .nav-tab { flex-shrink: 0; padding: 7px 10px; font-size: 11px; }
+  .nav-tab.active { padding: 6px 9px; }
+}
 
 /* ── LAYOUT ─────────────────────────────────────────────── */
 .page-wrap { max-width: 1280px; margin: 0 auto; padding: 32px 32px 80px; }

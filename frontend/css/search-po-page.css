@@ -37,6 +37,12 @@
 .search-filter-field .form-control { font-size: 13.5px; padding: 9px 12px; }
 .search-filter-field.search-filter-date-range { flex-direction: row; align-items: center; gap: 6px; }
 .search-filter-date-range label { margin-right: 2px; }
+/* On a phone the two date inputs share the row instead of overflowing it. */
+@media (max-width: 500px) {
+  .search-filter-field.search-filter-date-range { flex-wrap: wrap; max-width: 100%; }
+  .search-filter-date-range .form-control { flex: 1 1 120px; min-width: 0; }
+  .search-filter-date-range label { flex-basis: 100%; }
+}
 /* Match highlighting in result cards (2026-09-10) - a plain semantic <mark>,
    styled with the same gold token the rest of this app already uses for
    "currently active/selected" emphasis (see brand.css), so it reads as a

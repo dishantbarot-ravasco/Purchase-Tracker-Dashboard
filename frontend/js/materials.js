@@ -705,25 +705,51 @@ function cellInfoHtml(tip) {
   return infoTooltipHtml(tip).replace('info-tooltip kpi-info', 'info-tooltip');
 }
 
+// Pending Delivery: what is still to come, quantity first and its value
+// under it. The value-weighted PO rate lives in the tooltip rather than as a
+// third line in the cell (2026-09-28 layout pass: the column read as a wall
+// of small text).
 function pendingDeliveryCellHtml(entry) {
   const f = entry && entry.orderFigures;
-  if (!f || !f.lineCount) return '<span class="text-slate-soft">No open PO</span>';
+  if (!f || !f.lineCount) return '<span class="mat-cell-none">No open PO</span>';
   const qty = qtySummaryText(f.pendingQty) || '-';
-  const rate = f.pendingRate ? '<div class="fs-11 text-slate-soft">at ' + formatInr(f.pendingRate.value) + ' / ' + escapeHtml(f.pendingRate.unit) + ' avg PO rate</div>' : '';
-  const tip = 'Still to arrive on ' + f.lineCount + ' open PO ' + (f.lineCount === 1 ? 'line' : 'lines') + ' for this material: ordered quantity less what MIR has already received, valued at each line\'s own PO rate in INR (pre-tax). The rate shown is the value-weighted average across those lines.';
-  return '<div class="fw-700">' + escapeHtml(qty) + cellInfoHtml(tip) + '</div>' +
-    '<div>' + formatInr(f.pendingValue) + '</div>' + rate;
+  const tip = 'Still to arrive on ' + f.lineCount + ' open PO ' + (f.lineCount === 1 ? 'line' : 'lines') + ' for this material: ordered quantity less what MIR has already received, valued at each line\'s own PO rate in INR (pre-tax).' +
+    (f.pendingRate ? ' Value-weighted average PO rate: ' + formatInr(f.pendingRate.value) + ' / ' + f.pendingRate.unit + '.' : '');
+  return '<div class="mat-cell-main">' + escapeHtml(qty) + cellInfoHtml(tip) + '</div>' +
+    '<div class="mat-cell-sub">' + formatInr(f.pendingValue) + '</div>';
 }
 
+// Open PO Pipeline: the full ordered quantity and value of the row's open POs,
+// with a received-share bar and the PO count under it.
 function pipelineCellHtml(entry) {
   const f = entry && entry.orderFigures;
-  if (!f || !f.lineCount) return '<span class="text-slate-soft">No open PO</span>';
+  if (!f || !f.lineCount) return '<span class="mat-cell-none">No open PO</span>';
   const qty = qtySummaryText(f.orderedQty) || '-';
-  const tip = 'Everything ordered on the ' + f.poCount + ' open ' + (f.poCount === 1 ? 'PO' : 'POs') + ' (domestic and import) for this material, at the PO rate in INR (pre-tax), including what has already arrived. Received is the share of that value MIR has already received.';
-  return '<div class="fw-700">' + escapeHtml(qty) + cellInfoHtml(tip) + '</div>' +
-    '<div>' + formatInr(f.orderedValue) + '</div>' +
-    '<div class="fs-11 text-slate-soft">' + f.poCount + ' open ' + (f.poCount === 1 ? 'PO' : 'POs') +
-      (f.receivedPct != null ? ', ' + Math.round(f.receivedPct) + '% received' : '') + '</div>';
+  const tip = 'Everything ordered on the ' + f.poCount + ' open ' + (f.poCount === 1 ? 'PO' : 'POs') + ' (domestic and import) for this material: ' + qty + ', ' + formatInr(f.orderedValue) + ' at the PO rate in INR (pre-tax), including what has already arrived. The bar is the share of that value MIR has already received.';
+  const pct = f.receivedPct != null ? Math.round(f.receivedPct) : null;
+  return '<div class="mat-cell-main">' + formatInr(f.orderedValue) + cellInfoHtml(tip) + '</div>' +
+    (pct != null
+      ? '<div class="mat-pipe-bar" aria-hidden="true"><span class="mat-pipe-fill" data-width-pct="' + pct + '"></span></div>'
+      : '') +
+    '<div class="mat-cell-sub">' + (pct != null ? pct + '% received &middot; ' : '') + f.poCount + (f.poCount === 1 ? ' PO' : ' POs') + '</div>';
+}
+
+// Category and Sub Category share one cell: the category, and the
+// sub-category under it in the muted line.
+function categoryCellHtml(m) {
+  if (!m.category || m.category === 'Uncategorized') return '<span class="mat-cell-none">' + escapeHtml(categoryLabel('Uncategorized')) + '</span>';
+  return '<div class="mat-cell-main mat-cell-text">' + escapeHtml(categoryLabel(m.category)) + '</div>' +
+    (m.subCategory ? '<div class="mat-cell-sub">' + escapeHtml(categoryLabel(m.subCategory)) + '</div>' : '');
+}
+
+// Inventory Value: the stock sheet's own Value column, with the latest rate
+// under it.
+function stockValueCellHtml(m) {
+  if (m.orderOnly) return '<span class="mat-cell-none">Not in stock</span>';
+  const units = new Set((m.lots || []).map(l => String(l.uom || '').trim().toUpperCase()));
+  const unit = units.size === 1 ? Array.from(units)[0] : '';
+  return '<div class="mat-cell-main">' + formatInr(m.value || 0) + '</div>' +
+    (m.rate != null ? '<div class="mat-cell-sub">@ ' + formatInr(m.rate) + (unit ? ' / ' + escapeHtml(unit) : '') + '</div>' : '');
 }
 
 // A lot set's quantity as text, unit-aware: one unit (or none named) reads
@@ -747,14 +773,18 @@ function lotsQtyText(lots) {
   return sum.toLocaleString('en-IN', { maximumFractionDigits: 3 }) + (rawUnits.size === 1 ? ' ' + Array.from(rawUnits)[0] : '');
 }
 
-// The Stock cell: the row's total, and on All Plants a line per plant that
-// holds a lot of it (2026-09-28, project owner: "bifurcation in that column
-// with plant wise stock"), so a shortage at one plant is visible beside
-// another plant's surplus. Plants in PLANTS order; a plant with no lot of
-// the material is left out rather than shown as a zero it never reported.
+// The Stock cell: the row's total with its unit, and on All Plants where it
+// is held (2026-09-28, project owner: "bifurcation in that column with plant
+// wise stock"), so a shortage at one plant is visible beside another plant's
+// surplus. Two or more plants get a line each, in PLANTS order; a material
+// held at one plant names that plant on one short line instead of repeating
+// the total. A plant with no lot of the material is left out rather than
+// shown as a zero it never reported.
 function stockCellHtml(m) {
-  const total = m.qtyLabel ? escapeHtml(m.qtyLabel) : (m.qty ? m.qty.toLocaleString('en-IN') : '0');
-  if (!isAllPlants() || !m.lots || !m.lots.length) return total;
+  if (m.orderOnly) return '<span class="mat-cell-none">No stock lot yet</span>';
+  const total = m.lots && m.lots.length ? lotsQtyText(m.lots) : (m.qtyLabel || (m.qty ? m.qty.toLocaleString('en-IN') : '0'));
+  const main = '<div class="mat-cell-main">' + escapeHtml(total) + '</div>';
+  if (!isAllPlants() || !m.lots || !m.lots.length) return main;
   const byPlant = new Map();
   m.lots.forEach(l => {
     const key = l._plantKey;
@@ -762,9 +792,10 @@ function stockCellHtml(m) {
     if (!byPlant.has(key)) byPlant.set(key, []);
     byPlant.get(key).push(l);
   });
-  const split = Object.keys(PLANTS).filter(k => byPlant.has(k)).map(k =>
-    '<div class="fs-11 text-slate-soft">' + escapeHtml(PLANTS[k].label) + ': ' + escapeHtml(lotsQtyText(byPlant.get(k))) + '</div>').join('');
-  return '<div class="fw-700">' + total + '</div>' + split;
+  const keys = Object.keys(PLANTS).filter(k => byPlant.has(k));
+  if (keys.length === 1) return main + '<div class="mat-cell-sub">' + escapeHtml(PLANTS[keys[0]].label) + ' only</div>';
+  return main + keys.map(k =>
+    '<div class="mat-cell-sub mat-plant-split"><span>' + escapeHtml(PLANTS[k].label) + '</span><span>' + escapeHtml(lotsQtyText(byPlant.get(k))) + '</span></div>').join('');
 }
 
 // Rows for materials that are ON ORDER but have no RM Stock lot at all
@@ -1290,35 +1321,29 @@ function materialsListRegionHtml() {
   // Built HERE, not handed over in MAT_LIST_CTX - see that object's own
   // comment for the blank-search-box bug a snapshot causes.
   // Header filter row inside the table, same pattern as PO's filterCells -
-  // text search for Material, a <select> each for Category, Sub Category,
-  // Status, and Progress (project owner, 2026-09-04: added Category/Sub
-  // Category/Progress here, removed the old Stock/Inventory Value/Latest
-  // Rate min/max ranges). One entry per <th> in the table header (Material,
-  // Category, Sub Category, Stock, Inventory Value, Latest Rate, Status,
-  // Progress, Details, plus Days Left, Pending Delivery and Open PO Pipeline
-  // after Latest Rate) - Stock/Inventory Value/Latest Rate/Days Left/Pending
-  // Delivery/Open PO Pipeline/Details have no
-  // header-row control of their own, so they still need an empty
-  // placeholder entry, or every later cell silently shifts one column left
-  // under the wrong header.
+  // text search for Material, the Category and Sub Category selects stacked
+  // in the one Category column, and a <select> each for Status and Progress.
+  // One entry per column (MAT_LIST_COLUMNS below): Stock, Inventory Value, Days
+  // Left, Pending Delivery, Open PO Pipeline and Details have no header-row
+  // control of their own, so they still need an empty placeholder entry, or
+  // every later cell silently shifts one column left under the wrong header.
   // Category/Sub Category header-row selects reuse catOptions/subCatOptions
   // (already built above for the "Filter by" bar) and write into
   // state.matCategoryFilter/matSubCategoryFilter directly - same field, two
-  // controls, same single-source-of-truth reasoning as Status. No more
-  // Stock/Inventory Value/Latest Rate range filters (project owner,
-  // 2026-09-04, removed to make room for these plus Progress).
+  // controls, same single-source-of-truth reasoning as Status.
   const matCatColOptionsHtml = ctx.catOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(categoryLabel(c)) + ' (' + n + ')</option>').join('');
   const matSubCatColOptionsHtml = ctx.subCatOptions.map(([c, n]) => '<option value="' + escapeHtml(c) + '"' + (state.matSubCategoryFilter === c ? ' selected' : '') + '>' + escapeHtml(categoryLabel(c)) + ' (' + n + ')</option>').join('');
   const matFilterCells = [
     '<input type="text" class="col-filter-input" data-mcf="material" placeholder="Search..." value="' + escapeHtml(state.matColFilters.material) + '">',
-    '<select class="col-filter-input" data-mcf="category"><option value="">All</option>' + matCatColOptionsHtml + '</select>',
-    '<select class="col-filter-input" data-mcf="subCategory"><option value="">All</option>' + matSubCatColOptionsHtml + '</select>',
-    '',
-    '',
-    '',
-    '', // Days Left - no header-row control of its own, same reasoning as Stock/Inventory Value/Latest Rate above.
-    '', // Pending Delivery - likewise.
-    '', // Open PO Pipeline - likewise.
+    '<div class="col-filter-stack">' +
+      '<select class="col-filter-input" data-mcf="category"><option value="">All categories</option>' + matCatColOptionsHtml + '</select>' +
+      '<select class="col-filter-input" data-mcf="subCategory"><option value="">All sub-categories</option>' + matSubCatColOptionsHtml + '</select>' +
+    '</div>',
+    '', // Stock
+    '', // Inventory Value
+    '', // Days Left
+    '', // Pending Delivery
+    '', // Open PO Pipeline
     '<select class="col-filter-input" data-mcf="status"><option value="">All</option>' +
       // The two filters a KPI card or flag chip sets that the select used to
       // lack, so after such a click it read "All" while the list was narrowed.
@@ -1337,15 +1362,48 @@ function materialsListRegionHtml() {
     '',
   ];
   const colFilterRow = '<tr class="col-filter-row">' + matFilterCells.map(c => '<th>' + c + '</th>').join('') + '</tr>';
-  const stockAllPlantsSuffix = isAllPlants() ? ' (All Plants)' : '';
-  // One label per column, in column order - a sortable column's label is a
-  // button that sorts by it (material-sort.js's matSortHeaderHtml()).
-  const headerLabels = [
-    ['Material', 'material'], ['Category', 'category'], ['Sub Category', 'subCategory'],
-    ['Stock' + stockAllPlantsSuffix, 'stock'], ['Inventory Value' + stockAllPlantsSuffix, 'value'],
-    ['Latest Rate', 'rate'], ['Days Left', 'daysLeft'], ['Pending Delivery', 'pending'],
-    ['Open PO Pipeline', 'pipeline'], ['Status', null], ['Progress', null], ['Details', null],
-  ].map(([label, key]) => matSortHeaderHtml(label, key));
+  // The ten columns, in order; `tip` becomes the header cell's title and
+  // `sort` the material-sort.js key a header click sorts by (its label is a
+  // button, matSortHeaderHtml()). Sub Category and Latest Rate share a column
+  // with Category and Inventory Value, so they sort from the Sort by select
+  // rather than a header. Both the "View all" table and the top-5 grid read
+  // this one list, so the two can never disagree about what a column is.
+  const plantScope = isAllPlants() ? ' Summed across all plants.' : '';
+  const MAT_LIST_COLUMNS = [
+    { label: 'Material', sort: 'material' },
+    { label: 'Category', sort: 'category', tip: 'Category, with the sub-category under it.' },
+    { label: 'Stock', sort: 'stock', tip: 'Quantity on hand on the stock sheet.' + (isAllPlants() ? ' Split by plant when more than one plant holds it.' : '') },
+    { label: 'Inventory Value', sort: 'value', tip: 'The stock sheet\'s own Value column, with the latest rate under it.' + plantScope },
+    { label: 'Days Left', sort: 'daysLeft', tip: 'Estimated days of cover at the recent consumption rate. The dot is how much history it rests on.' },
+    { label: 'Pending Delivery', sort: 'pending', tip: 'Still to arrive on this material\'s open PO lines, and its value at the PO rate (pre-tax, INR).' },
+    { label: 'Open PO Pipeline', sort: 'pipeline', tip: 'Full value of the open POs for this material, and how much of it MIR has received.' },
+    { label: 'Status' },
+    { label: 'Progress', tip: 'MIR matched, then stocked.' },
+    { label: 'Details' },
+  ];
+  const headerCell = (c, tag) => '<' + tag + (c.tip ? ' title="' + escapeHtml(c.tip) + '"' : '') + '>' + matSortHeaderHtml(c.label, c.sort || null) + '</' + tag + '>';
+  // One row's ten cells, as inner HTML, shared by both layouts below.
+  const rowCells = m => {
+    const key = escapeHtml(materialModalKey(m));
+    const entry = linkageByKey.get(normalizeMaterial(m.description));
+    const orderOnlyNote = m.orderOnly ? '<span class="mat-tag">On order only</span>' : '';
+    const st = computeMaterialStatus(m, entry);
+    return {
+      entry: entry,
+      cells: [
+        '<span class="row-link mat-name" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m),
+        categoryCellHtml(m),
+        stockCellHtml(m),
+        stockValueCellHtml(m),
+        daysLeftCellHtml(m),
+        pendingDeliveryCellHtml(entry),
+        pipelineCellHtml(entry),
+        '<div class="mat-status-cell"><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry, st) + '</div>',
+        materialStepperHtml(m),
+        '<span class="row-link mat-view-link" data-lot="' + key + '">View analysis</span>',
+      ],
+    };
+  };
 
   // Colored flag-icon cluster per material row, identical pattern to PO's
   // own rowFlags() in renderPoList() - the same four buckets, see flags.js's
@@ -1377,7 +1435,7 @@ function materialsListRegionHtml() {
   const latestNote = m => {
     const d = latestOf.get(m);
     if (!d) return '';
-    return '<div class="fs-11 text-slate-soft">' + (m.orderOnly ? 'Ordered ' : 'Last received ') + escapeHtml(formatDateIN(d)) + '</div>';
+    return '<div class="mat-cell-sub">' + (m.orderOnly ? 'Ordered ' : 'Last received ') + escapeHtml(formatDateIN(d)) + '</div>';
   };
 
   return '<div class="list-toggle-row"><div class="section-title m-0">Materials - showing ' + listRecs.length + ' of ' + sorted.length + '</div>' +
@@ -1394,49 +1452,21 @@ function materialsListRegionHtml() {
       // the fuller reasoning). "View all" still renders as a plain <table>
       // for all three views.
       if (showingAll) {
-        return '<div class="table-wrap"><table><thead><tr>' + headerLabels.map(h => '<th>' + h + '</th>').join('') + '</tr>' +
+        return '<div class="table-wrap"><table class="mat-table"><thead><tr>' + MAT_LIST_COLUMNS.map(c => headerCell(c, 'th')).join('') + '</tr>' +
           colFilterRow +
         '</thead><tbody>' +
         listRecs.map(m => {
-          const key = escapeHtml(materialModalKey(m));
-          const entry = linkageByKey.get(normalizeMaterial(m.description));
-          const orderOnlyNote = m.orderOnly ? '<div class="fs-11 text-slate-soft">On order, no stock lot yet</div>' : '';
-          return '<tr class="' + (entry ? rowTintClass(entry).trim() : '') + '"><td><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</td>' +
-          '<td>' + escapeHtml(m.category || '-') + '</td>' +
-          '<td>' + escapeHtml(m.subCategory || '-') + '</td>' +
-          '<td>' + stockCellHtml(m) + '</td>' +
-          '<td>' + formatInr(m.value || 0) + '</td>' +
-          '<td>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</td>' +
-          '<td>' + daysLeftCellHtml(m) + '</td>' +
-          '<td>' + pendingDeliveryCellHtml(entry) + '</td>' +
-          '<td>' + pipelineCellHtml(entry) + '</td>' +
-          (() => { const st = computeMaterialStatus(m, entry); return '<td><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry, st) + '</td>'; })() +
-          '<td>' + materialStepperHtml(m) + '</td>' +
-          '<td><span class="row-link" data-lot="' + key + '">View analysis</span></td></tr>';
+          const r = rowCells(m);
+          return '<tr class="' + (r.entry ? rowTintClass(r.entry).trim() : '') + '">' + r.cells.map(c => '<td>' + c + '</td>').join('') + '</tr>';
         }).join('') +
         '</tbody></table></div>' + paginationHtml;
       }
-      return '<div class="list-header-row grid-cols">' + headerLabels.map(h => '<div>' + h + '</div>').join('') + '</div>' +
-        '<div class="list-header-row grid-cols col-filter-row-grid">' + matFilterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
+      return '<div class="mat-grid-scroll"><div class="list-header-row mat-grid-cols">' + MAT_LIST_COLUMNS.map(c => headerCell(c, 'div')).join('') + '</div>' +
+        '<div class="list-header-row mat-grid-cols col-filter-row-grid">' + matFilterCells.map(c => '<div>' + c + '</div>').join('') + '</div>' +
         '<div class="top5-list" id="matTop5List">' + listRecs.map(m => {
-          const key = escapeHtml(materialModalKey(m));
-          const entry = linkageByKey.get(normalizeMaterial(m.description));
-          const orderOnlyNote = m.orderOnly ? '<div class="fs-11 text-slate-soft">On order, no stock lot yet</div>' : '';
-          const st = computeMaterialStatus(m, entry);
-          return '<div class="top5-row' + (entry ? rowTintClass(entry) : '') + '">' +
-            '<div><span class="row-link" data-lot="' + key + '">' + escapeHtml(m.description || m.materialCode) + '</span>' + orderOnlyNote + latestNote(m) + '</div>' +
-            '<div>' + escapeHtml(m.category || 'Not available') + '</div>' +
-            '<div>' + escapeHtml(m.subCategory || 'Not available') + '</div>' +
-            '<div>' + stockCellHtml(m) + '</div>' +
-            '<div>' + formatInr(m.value || 0) + '</div>' +
-            '<div>' + (m.rate != null ? formatInr(m.rate) : 'Not available') + '</div>' +
-            '<div>' + daysLeftCellHtml(m) + '</div>' +
-            '<div>' + pendingDeliveryCellHtml(entry) + '</div>' +
-            '<div>' + pipelineCellHtml(entry) + '</div>' +
-            '<div><span class="status-pill ' + MAT_STATUS_PILL_CLASS[st] + '">' + escapeHtml(MAT_STATUS_LABELS[st]) + '</span>' + rowFlags(entry, st) + '</div>' +
-            '<div>' + materialStepperHtml(m) + '</div>' +
-            '<div><span class="row-link" data-lot="' + key + '">View analysis</span></div></div>';
-        }).join('') + '</div>';
+          const r = rowCells(m);
+          return '<div class="top5-row mat-grid-cols' + (r.entry ? rowTintClass(r.entry) : '') + '">' + r.cells.map(c => '<div>' + c + '</div>').join('') + '</div>';
+        }).join('') + '</div></div>';
     })();
 }
 

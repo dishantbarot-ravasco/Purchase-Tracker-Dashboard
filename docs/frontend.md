@@ -791,18 +791,32 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
   keep the two in step; `summariseOpenQty(lines)` is it over `openQtyOfLine()`. Unrecognised units
   are counted, never added. `orderedValueOfLine(item)` is the whole line at its PO rate (`netValue`
   when no rate); `formatQtyTotals()` prints per-unit totals, weight in MT from 10,000 KG.
-- **Table columns** (in order): Material, Category, Sub Category, Stock, Inventory Value, Latest
-  Rate, Days Left, Pending Delivery, Open PO Pipeline, Status, Progress, Details; `matFilterCells`
-  has one entry per column (empty for the ones with no header control). `stockCellHtml(m)` shows the
-  row total and, on All Plants, a line per plant holding a lot of it (`lotsQtyText()`, unit-aware;
-  a plant with no lot is left out, not shown as 0). `materialOrderFigures(openLinks)` - over the
-  row's open lines: pending qty/value (`openQtyOfLine()`/`openValueOfLine()`), the value-weighted PO
-  rate when every line is in one recognised unit, the full ordered qty/value, distinct open PO count
-  and the share of ordered value already received. `pendingDeliveryCellHtml()` / `pipelineCellHtml()`
-  render them ("No open PO" when there are none), with a cell tooltip via `cellInfoHtml()`
-  (`infoTooltipHtml()` minus `kpi-info`, whose `position:static` anchors to a KPI card). These are
-  per-row figures: a line the fuzzy link ties to two materials counts under both, like `openValue`;
-  the KPI cards are the deduped totals.
+- **Table columns** (in order, `MAT_LIST_COLUMNS`, which both the "View all" table and the top-5
+  grid read, header `title`s and sort keys included): Material, Category, Stock, Inventory Value,
+  Days Left, Pending Delivery, Open PO Pipeline, Status, Progress, Details. Each of the first seven
+  headers is a `material-sort.js` sort button; Sub Category and Latest Rate, which share a column,
+  sort from the Sort by select instead. `rowCells(m)` builds one row's ten cells for both layouts. Every cell is one bold figure (`.mat-cell-main`) with at most one or two muted lines
+  (`.mat-cell-sub`); an empty figure reads in `.mat-cell-none` ("No open PO", "No stock lot yet").
+  2026-09-28 layout pass, project owner: the list was "cluttered and difficult to understand" -
+  twelve columns on the PO list's auto-fit grid wrapped Details onto a second line of every row, and
+  most cells stacked three lines of small text. So Category and Sub Category share a column
+  (`categoryCellHtml()`, the Category and Sub Category header selects stacked in `.col-filter-stack`),
+  Latest Rate moved under Inventory Value (`stockValueCellHtml()`: value, "@ rate / unit" under it,
+  the unit only when every lot shares one), and the average PO rate moved from the Pending
+  Delivery cell into its tooltip. `matFilterCells` has one entry per column (empty for the ones with
+  no header control). `stockCellHtml(m)` shows the row total with its unit (`lotsQtyText()`) and, on
+  All Plants, a line per plant when two or more plants hold it, or "<plant> only" when one does (a
+  plant with no lot is left out, not shown as 0). `materialOrderFigures(openLinks)` - over the row's
+  open lines: pending qty/value (`openQtyOfLine()`/`openValueOfLine()`), the value-weighted PO rate
+  when every line is in one recognised unit, the full ordered qty/value, distinct open PO count and
+  the share of ordered value already received. `pendingDeliveryCellHtml()` shows pending qty over
+  its value; `pipelineCellHtml()` shows the ordered value, a received-share bar (`.mat-pipe-bar`,
+  width via `data-width-pct`) and "N% received - N POs", the ordered qty in its tooltip. Both tooltips
+  go through `cellInfoHtml()` (`infoTooltipHtml()` minus `kpi-info`, whose `position:static` anchors
+  to a KPI card). These are per-row figures: a line the fuzzy link ties to two materials counts under
+  both, like `openValue`; the KPI cards are the deduped totals. The grid is `.mat-grid-cols` (its own
+  track widths in `style.css`, not `.grid-cols`) inside `.mat-grid-scroll`, which scrolls sideways
+  below about 1200px rather than squeezing every figure onto two lines.
 - `computeMaterialPoLinkage(materials, plantKeys)` - per material: `links`, `openLinks`, `openValue`
   (still-to-come value), `orderFigures` (below), per-line-item `categories`, `qtyFlag`/`rateFlag`/`maxDiffPct`. "PO Not
   Found in MIR" is not raised for a line whose PO is `pending` (nothing arrived, not past due) -
@@ -861,8 +875,8 @@ table-only (like the Material search), so every change re-renders the list regio
   `sortMaterialRows(rows, levels, entryOf, latestOf)` sorts on precomputed values (one pass per row,
   not per comparison), text by `localeCompare` (case-insensitive, numeric), and breaks remaining ties
   with the default order (latest, stock qty, open value).
-- Three ways in: the **Sort by** select (built-ins and "My presets"); a **header click**
-  (`matSortHeaderHtml()` renders a `.sort-header-btn` with an arrow and, in a multi-level sort, the
+- Three ways in: the **Sort by** select (built-ins and "My presets"); a **header click** on a
+  column with a `sort` key in `materials.js`'s `MAT_LIST_COLUMNS` (`matSortHeaderHtml()` renders a `.sort-header-btn` with an arrow and, in a multi-level sort, the
   level number; clicking the sole sorted column again reverses it); and **Custom sort...**
   (`matSortEditorHtml()`: "Sort by / Then by" rows with column and direction selects, move up/down,
   remove, "+ Add level" up to 5, a column at most once; Apply, Save as preset, Delete the selected
@@ -1077,7 +1091,11 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   modal), toasts, the global `[hidden]` rule, the closed set of CSP utility classes (add one only for
   a real call site), `.sr-only` / `.sr-only-focusable` / `.skip-link`, and its dark-mode blocks.
   `.nav-tabs` shrinks and scrolls inside itself (no visible scrollbar) and `.nav-user` never shrinks,
-  so a sixth tab never pushes the user badge off the page; tabs tighten below 1200px.
+  so a sixth tab never pushes the user badge off the page; tabs tighten below 1200px. **Below 700px
+  the top nav wraps into two rows**: brand (subtitle hidden, title ellipsed), theme toggle and avatar
+  on the first, the tabs as a full-width strip on the second that scrolls inside itself. Before
+  2026-09-28 the brand and badge never shrank, so every page measured 482px on a 375px phone and
+  scrolled sideways, and the tabs were simply hidden, leaving a phone no way between pages.
 - **`style.css`** (`index.html` only) - `--dash-*` and dashboard tokens, sync bar and refresh status,
   the three tab components, KPI cards (flexbox with a fixed basis, not grid - both grid variants were
   tried and looked wrong with 8 vs 13 cards), info and row-flag CSS tooltips (instant, unlike native
@@ -1087,10 +1105,14 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   box (`.cross-kind-*`), chart panels (`.chart-head`, `.chart-legend` / `.legend-chip`, `.chart-foot`
   and its month `.chart-filter-chip`; `.doughnut-layout` puts the rings beside their legend through a
   container query on the panel at 540px, and a bar chart's `.chart-box` grows to its panel's height),
-  filter bars (one 32px control height, uppercase labels, stacking per group under 560px), dark mode.
+  filter bars (one 32px control height, uppercase labels, stacking per group under 560px), the Raw
+  Material list's `.mat-*` cell classes and `.mat-grid-cols` track widths, dark mode. Both lists'
+  rows use tabular figures and lift on hover; `.status-pill` never wraps.
 - **`mir-page.css`** (`mir.html`) - brand tokens only, defines no custom property: view tabs, step
   cards, PO results, line cards, reason rows (`.mir-reason.is-short` / `.is-over`), register and
   mismatch tables, status pills.
+- **`search-po-page.css`** also lets the date-range filter's two inputs share the row under 500px
+  instead of overflowing a phone screen.
 - **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,
   `login-page.css`) - extracted from inline `<style>` blocks for CSP; they use `brand.css` tokens
   (several review/admin rules carry literal fallbacks, e.g. `var(--green, #16a34a)`, because the
