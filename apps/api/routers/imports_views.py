@@ -37,6 +37,7 @@ from apps.core.models import (
     HRSImportPurchaseOrder,
     ImportPOCorrection,
     ManualMirMatch,
+    MatchReview,
     RTPAchhadImportPOLineItem,
     RTPAchhadImportPOMirMatch,
     RTPAchhadImportPurchaseOrder,
@@ -695,7 +696,10 @@ def dismiss_import_po_mir_match(request, plant, match_id: int):
     _po_model, _item_model, _sr_plant, _label, match_model = resolved
     dismissed = _request_bool(request.data.get("dismissed"), True)
     reason = (request.data.get("reason") or "").strip()
-    match = dismiss_match(match_model, match_id, request.user, dismissed, reason)
+    match = dismiss_match(
+        match_model, match_id, request.user, dismissed, reason,
+        plant=_sr_plant, match_type=MatchReview.MatchType.IMPORT_PO_MIR,
+    )
     if not match:
         return Response({"error": "Match not found."}, status=404)
     data_stamp.touch(_sr_plant)

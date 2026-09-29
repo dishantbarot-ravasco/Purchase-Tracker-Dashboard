@@ -40,6 +40,7 @@ from apps.core.models import (
     DomesticPOCorrection,
     FlagDismissal,
     ManualMirMatch,
+    MatchReview,
     MaterialCategoryReference,
     MaterialCorrection,
 )
@@ -1438,7 +1439,10 @@ def make_dismiss_po_mir_match(cfg: _PlantConfig):
             return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
         dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
-        match = dismiss_match(cfg.po_mir_match_model, match_id, request.user, dismissed, reason)
+        match = dismiss_match(
+            cfg.po_mir_match_model, match_id, request.user, dismissed, reason,
+            plant=cfg.syncrun_plant, match_type=MatchReview.MatchType.PO_MIR,
+        )
         if not match:
             return Response({"error": "Match not found."}, status=404)
         data_stamp.touch(cfg.syncrun_plant)
@@ -1460,7 +1464,10 @@ def make_dismiss_mir_stock_match(cfg: _PlantConfig):
             return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
         dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
-        match = dismiss_match(cfg.mir_stock_match_model, match_id, request.user, dismissed, reason)
+        match = dismiss_match(
+            cfg.mir_stock_match_model, match_id, request.user, dismissed, reason,
+            plant=cfg.syncrun_plant, match_type=MatchReview.MatchType.MIR_STOCK,
+        )
         if not match:
             return Response({"error": "Match not found."}, status=404)
         data_stamp.touch(cfg.syncrun_plant)

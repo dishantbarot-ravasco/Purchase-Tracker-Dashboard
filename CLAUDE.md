@@ -209,6 +209,11 @@ Read the linked section before breaking any of these. Each is there because it w
 - Corrections mutate the real row plus an audit row, re-match on the background worker
   (`rematch.request_rematch()`, never inside the request), and are overwritten by the next sync. Matcher `defaults` never carry `dismissed_*`; only `_save_po_mir_match()` clears it,
   when a line is re-pointed to a different MIR row.
+- Review verdicts and match dismissals are keyed on the pair (`match_pairs.py`: PO line + MIR row, or
+  MIR row + lot), never the match row's id - the matcher recreates rows under new ids.
+  `run_full_match()` restores `MatchDismissal` onto recreated rows; readers still filter on
+  `dismissed_by_override`.
+  [dismiss](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag)
   [inline edit](docs/api-and-features.md#inline-edit-everywhere),
   [dismiss](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag)
 - The licence CSV says which licence was used, not how much; never derive a balance from it.

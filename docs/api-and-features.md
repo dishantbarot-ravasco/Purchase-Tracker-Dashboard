@@ -245,15 +245,22 @@ only measured accuracy statement this app makes. Four things a re-derivation wou
 
 - **`byPlantAndType` materialises all 9 cells, including `n=0` ones.** An unsampled cell is a hole in the
   evidence; the panel renders it as "not sampled yet", never 0%.
-- **A verdict whose match row no longer exists is dropped and counted as `staleVerdicts`** - a later
-  `match_*` run deletes and re-points pairs, so it is a statement about a pair that no longer exists.
+- **A verdict is about a pair, not a match row** (2026-09-29). `MatchReview` stores `left_id` /
+  `right_id` (the PO line and primary MIR row, or the MIR row and lot - `match_pairs.py`) beside the
+  `match_id` it was recorded on. The matcher deletes a row when its line matches nothing and recreates it
+  with a new id, so a verdict keyed on the row id went stale and the pair was served for review again.
+  Verdicts now group, resolve and count by pair everywhere (`latest_verdicts()`, `_match_rows()`,
+  `next_review`, `_progress()`).
+- **A verdict on a pair no match row holds any more is dropped and counted as `staleVerdicts`** - the
+  matcher no longer makes that pairing, so scoring it would be scoring the past. A verdict whose row was
+  already gone when migration `0075` backfilled the pair columns keeps them null and is always stale.
 - **Tiers resolve with one query per (plant, match_type) group**, not one per review (200+ queries at
   the programme's own target).
 - **`precision` ignores "unsure" and `recall` counts it against the total.** `null` (nothing judged)
   renders as an en dash, never 0%.
 
 **Throughput polish, same date.** Keyboard verdicts (`1` / `2` / `3`), `U` to undo, `N` for the next
-batch, and a progress bar against the target counted in **distinct matches** (`_progress()`:
+batch, and a progress bar against the target counted in **distinct pairs** (`_progress()`:
 re-reviewing one is a correction, not progress). Three things are load-bearing:
 
 - **Undo deletes the row, and only ever the caller's own** (`DELETE /api/review/<id>` filters on
@@ -731,8 +738,9 @@ Two mechanisms, because the two things are stored differently.
 
 **Match dismissal.** Every `*POMirMatch` / `*MirStockMatch` has `dismissed_by_override` plus
 `dismissed_by` / `dismissed_at` / `dismissed_reason` (migration `0011`).
-`match_dismiss.dismiss_match(model_cls, match_id, user, dismissed, reason)` is the one implementation
-for every plant and both PO kinds; each router passes its own model class. Endpoints:
+`match_dismiss.dismiss_match(model_cls, match_id, user, dismissed, reason, *, plant, match_type)` is the
+one implementation for every plant and both PO kinds; each router passes its own model class, its
+`SyncRun.Plant` value and the match type. Endpoints:
 `PATCH [<p>/]matches/po-mir/<id>/dismiss`, `[<p>/]matches/mir-stock/<id>/dismiss`, and
 `PATCH imports/matches/po-mir/<plant>/<id>/dismiss`. Body `{"dismissed": true|false, "reason": "..."}`;
 response `{status, matchId, dismissedByOverride, dismissedReason}`, 404 for an unknown id. **Clearing a
@@ -742,9 +750,19 @@ re-match that keeps the same pairing** (`test_dismiss_match.py::test_editor_can_
 A PO↔MIR match row is keyed on its line item, so a run that pairs the line with a **different** MIR row
 updates the same row in place - and `matching_core._save_po_mir_match()` clears the dismissal then,
 since it judged the old receipt and would otherwise hide the new one's flags
-(`test_manual_mir_match.py::test_a_dismissal_survives_a_rematch_but_not_a_repointed_match`). A match
-that is deleted and recreated by a later run is a new row and loses it too. MIR↔Stock rows are keyed
-on the (MIR row, lot) pair, so they cannot be re-pointed.
+(`test_manual_mir_match.py::test_a_dismissal_survives_a_rematch_but_not_a_repointed_match`). MIR↔Stock
+rows are keyed on the (MIR row, lot) pair, so they cannot be re-pointed.
+
+**The decision is also stored on the pair, in `MatchDismissal`** (2026-09-29). A run deletes a match row
+when its line matches nothing and creates a new row (new id) when the same pair matches again, and the
+new row used to come back undismissed. `dismiss_match()` now writes the row's columns and a
+`MatchDismissal` keyed on (plant, match type, left id, right id) in one transaction - left/right are the
+PO line and primary MIR row, or the MIR row and lot (`match_pairs.py`) - and undismissing deletes it.
+`run_full_match()` calls `match_pairs.restore_dismissals()` after writing the PO↔MIR rows and again
+after MIR↔Stock, copying each record back onto whichever row holds its pair. A re-pointed line still
+loses the dismissal (different pair); if a later run pairs it with the original receipt, it comes back.
+Readers still filter on `dismissed_by_override`; nothing reads `MatchDismissal` except the restore.
+`test_match_decisions_follow_pair.py` pins all of this.
 Dismissal also removes the match from the Plant Data Correction email.
 
 **PO-level flag dismissal.** The Quantity / Rate-Value critical flags and Data Quality Flag categories are
@@ -1193,10 +1211,11 @@ The match-accuracy review queue and accuracy report endpoints.
 - **`_pick_one()`**: a random (`order_by("?")`) match from one group excluding reviewed and already-picked
   ids.
 - **`next_review`**: shuffles the caller's readable groups and picks round-robin until 5 or exhausted;
-  `{"done": true}` only when every group is empty. **`submit_review`**: validates plant (400), scope
-  (403), match type, verdict, integer id, match existence (404); creates the row; 201.
-  **`undo_review`**: deletes only the caller's own row. **`_progress()`**: distinct reviewed matches
-  against `REVIEW_TARGET`.
+  `{"done": true}` only when every group is empty; `_reviewed_match_ids()` excludes rows holding an
+  already-reviewed pair. **`submit_review`**: validates plant (400), scope (403), match type, verdict,
+  integer id, match existence (404); creates the row with the match's pair (`match_pairs.pair_of()`);
+  201. **`undo_review`**: deletes only the caller's own row. **`_progress()`**: distinct reviewed pairs
+  (keyed by `verdict_key()`, like the report) against `REVIEW_TARGET`.
 - **`review_stats`** / **`export_review_stats`**: `build_report()` as JSON, and its tables as one CSV
   with a `section` column and a `small_sample` flag (`match-accuracy-<date>.csv`).
 
@@ -1242,19 +1261,30 @@ are documented in [auth-security-email.md](auth-security-email.md).
 
 The single scoring implementation behind `review/stats`, its CSV and `report_match_accuracy`.
 `CONFIGS` (plant → `MATCH_CONFIG`), `PLANT_LABELS`, `MATCH_TYPE_LABELS`, `MIN_SAMPLE = 5`,
-`REVIEW_TARGET = 200`. `model_for(config, match_type)` picks the match model. `latest_verdicts()` keeps
-the most recent verdict per (plant, match type, match id). `scores()`: precision = correct / (correct +
+`REVIEW_TARGET = 200`. `model_for(config, match_type)` picks the match model. `verdict_key(review)` is
+(plant, match type, left id, right id), or (plant, match type, None, match id) for a verdict with no
+recorded pair; `latest_verdicts()` keeps the most recent verdict per key. `scores()`: precision = correct / (correct +
 incorrect), recall = correct / (all three), F1, each `None` when undefined. `_match_rows()` resolves tier
-and `coverage_band()` (`n/a` until a `field_coverage` column exists) with one query per group and drops
-verdicts whose row is gone. `build_report(note_limit=25)` returns overall, `byPlant`, `byMatchType`,
+and `coverage_band()` (`n/a` until a `field_coverage` column exists) with one query per group, via
+`match_pairs.rows_for_pairs()`, and drops verdicts whose pair no row holds. `build_report(note_limit=25)` returns overall, `byPlant`, `byMatchType`,
 `byPlantAndType` (all 9 cells), `byTier`, `byCoverage`, `staleVerdicts`, reviewer counts and recent
 notes. Only reviews of existing matches are ever scored, so this is not recall over missed matches.
 
 ### apps/services/match_dismiss.py
 
-`dismiss_match(model_cls, match_id, user, dismissed, reason)`: sets or clears `dismissed_by_override`
-and its three audit columns on any `*POMirMatch` / `*MirStockMatch`, returning the row or `None`.
-Clearing wipes the audit columns. Does no plant check itself; callers do.
+`dismiss_match(model_cls, match_id, user, dismissed, reason, *, plant, match_type)`: sets or clears
+`dismissed_by_override` and its three audit columns on any `*POMirMatch` / `*ImportPOMirMatch` /
+`*MirStockMatch`, and in the same transaction writes or deletes the pair's `MatchDismissal`. Returns the
+row or `None`. Clearing wipes the audit columns. Does no plant check itself; callers do.
+
+### apps/services/match_pairs.py
+
+The identity of a match for the decisions people record about it. `PAIR_FIELDS` maps each match type to
+its (left, right) id fields: `po_line_item_id` / `mir_entry_id` for both PO kinds, `mir_entry_id` /
+`stock_lot_id` for MIR↔Stock. `pair_of(match_type, match)`; `rows_for_pairs(model, match_type, pairs,
+queryset=None)` returns {pair: row} in one query; `restore_dismissals(config, match_types)` copies this
+plant's `MatchDismissal` records onto undismissed rows holding their pair, called from
+`run_full_match()` inside its transaction.
 
 ### Minor API rules from the 2026-09-25 audit
 

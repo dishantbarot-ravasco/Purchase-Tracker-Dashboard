@@ -58,7 +58,8 @@ from apps.core.models import MatchReview, SyncRun
 from apps.services.match_accuracy import CONFIGS as _CONFIGS
 from apps.services.match_accuracy import MATCH_TYPE_LABELS as _MATCH_TYPE_LABELS
 from apps.services.match_accuracy import PLANT_LABELS as _PLANT_LABELS
-from apps.services.match_accuracy import REVIEW_TARGET, build_report, model_for as _model_for
+from apps.services.match_accuracy import REVIEW_TARGET, build_report, verdict_key, model_for as _model_for
+from apps.services.match_pairs import pair_of, rows_for_pairs
 from apps.services.matching_core import _import_rate_value_inr
 # Every (match_type, plant) combination reviewed from one screen - picked in
 # random order per request so no single group dominates the ~200-review
@@ -305,6 +306,19 @@ def _serialize(config, match_type, match):
 _BATCH_SIZE = 5
 
 
+def _reviewed_match_ids(match_type, plant):
+    """Ids of the match rows that currently hold a reviewed pair. A verdict
+    is about a pair (apps/services/match_pairs.py), so a pair that dropped
+    out of a run and came back on a new row is still reviewed and is not
+    served again."""
+    pairs = set(
+        MatchReview.objects.filter(plant=plant, match_type=match_type, left_id__isnull=False)
+        .values_list("left_id", "right_id")
+    )
+    model = _model_for(_CONFIGS[plant], match_type)
+    return {row.id for row in rows_for_pairs(model, match_type, pairs).values()}
+
+
 def _pick_one(match_type, plant, exclude_ids):
     config = _CONFIGS[plant]
     model = _model_for(config, match_type)
@@ -344,10 +358,7 @@ def next_review(request):
     (no "matches" key) only once every group is genuinely exhausted."""
     groups = [g for g in _GROUPS if _can_review(request.user, g[1])]
     random.shuffle(groups)
-    reviewed_ids_by_group = {
-        (mt, plant): set(MatchReview.objects.filter(plant=plant, match_type=mt).values_list("match_id", flat=True))
-        for mt, plant in groups
-    }
+    reviewed_ids_by_group = {(mt, plant): _reviewed_match_ids(mt, plant) for mt, plant in groups}
     picked_ids_by_group = {g: set() for g in groups}
     picked = []
 
@@ -395,13 +406,17 @@ def submit_review(request):
 
     config = _CONFIGS[plant]
     model = _model_for(config, match_type)
-    if not model.objects.filter(id=match_id).exists():
+    match = model.objects.filter(id=match_id).first()
+    if match is None:
         return Response({"detail": "Match not found."}, status=404)
+    left_id, right_id = pair_of(match_type, match)
 
     review = MatchReview.objects.create(
         plant=plant,
         match_type=match_type,
         match_id=match_id,
+        left_id=left_id,
+        right_id=right_id,
         reviewer=request.user,
         verdict=verdict,
         note=note,
@@ -435,11 +450,11 @@ def undo_review(request, review_id):
 
 def _progress():
     """How much of the programme's ~200-review sample exists, counted in
-    DISTINCT matches rather than MatchReview rows - re-reviewing the same
-    match is a correction, not progress."""
-    reviewed = (
-        MatchReview.objects.values("plant", "match_type", "match_id").distinct().count()
-    )
+    DISTINCT pairs rather than MatchReview rows - re-reviewing the same
+    pair is a correction, not progress. Keyed like latest_verdicts(), so
+    this and the report's sample size always agree."""
+    reviewed = len({verdict_key(review) for review in MatchReview.objects.only(
+        "plant", "match_type", "match_id", "left_id", "right_id")})
     return {"reviewed": reviewed, "target": REVIEW_TARGET}
 
 

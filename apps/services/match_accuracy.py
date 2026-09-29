@@ -26,13 +26,14 @@ A group with fewer than MIN_SAMPLE reviews is reported but flagged - not
 enough sample to trust yet. Read that flag as load-bearing: a single
 "incorrect" in a group of 2 is a precision of 0.500 that means nothing.
 
-Only the most recent verdict per (plant, match_type, match_id) counts, so a
+Only the most recent verdict per (plant, match_type, pair) counts, so a
 reviewer correcting their own earlier call isn't stuck with it.
 """
 
 from collections import defaultdict
 
 from apps.core.models import MatchReview, SyncRun
+from apps.services.match_pairs import rows_for_pairs
 from apps.services.matching import MATCH_CONFIG as _HRS_CONFIG
 from apps.services.matching_achhad import MATCH_CONFIG as _ACHHAD_CONFIG
 from apps.services.matching_vapi import MATCH_CONFIG as _VAPI_CONFIG
@@ -82,13 +83,24 @@ def coverage_band(match):
 
 
 def latest_verdicts():
-    """One verdict per (plant, match_type, match_id) - the most recently
+    """One verdict per (plant, match_type, pair) - the most recently
     reviewed one, so a reviewer's correction of their own earlier call
     wins."""
     latest = {}
     for review in MatchReview.objects.order_by("reviewed_at"):
-        latest[(review.plant, review.match_type, review.match_id)] = review.verdict
+        latest[verdict_key(review)] = review.verdict
     return latest
+
+
+def verdict_key(review):
+    """(plant, match_type, left_id, right_id) - the pair the verdict is
+    about, not the match row's id (apps/services/match_pairs.py). A verdict
+    whose pair was never recorded (its match row was already gone when the
+    pair columns were backfilled) keys on its old match id with left None,
+    so it stays one entry of its own and resolves to nothing - stale."""
+    if review.left_id is None:
+        return (review.plant, review.match_type, None, review.match_id)
+    return (review.plant, review.match_type, review.left_id, review.right_id)
 
 
 def scores(counts):
@@ -102,28 +114,28 @@ def scores(counts):
 
 
 def _match_rows(verdicts):
-    """Resolve every reviewed (plant, match_type, match_id) to its tier and
-    coverage band, ONE QUERY PER (plant, match_type) GROUP rather than one
-    per review. The per-review lookup this replaced was fine at 20 reviews
-    and is 200+ queries at the programme's own target - the same avoidable
+    """Resolve every reviewed (plant, match_type, left_id, right_id) pair to
+    the match row that currently holds it, and that row's tier and coverage
+    band - ONE QUERY PER (plant, match_type) GROUP rather than one per
+    review. The per-review lookup this replaced was fine at 20 reviews and
+    is 200+ queries at the programme's own target - the same avoidable
     shape as the RM Analysis render that had to be memoised later.
 
-    A verdict whose match row no longer exists (the row was deleted or
-    re-pointed by a later `match_*` run) is dropped and counted as stale -
-    it is a verdict about a pair that no longer exists, so scoring it would
-    be scoring the past."""
+    A pair no match row holds any more (the line matches nothing now, or a
+    different receipt) is dropped and counted as stale - it is a verdict
+    about a pairing the matcher no longer makes, so scoring it would be
+    scoring the past. A pair that dropped out and came back resolves again:
+    the verdict follows the pair, not the row id."""
     wanted = defaultdict(set)
-    for plant, match_type, match_id in verdicts:
+    for plant, match_type, left_id, right_id in verdicts:
         if plant in CONFIGS:
-            wanted[(plant, match_type)].add(match_id)
+            wanted[(plant, match_type)].add((left_id, right_id))
 
     resolved = {}
-    for (plant, match_type), ids in wanted.items():
+    for (plant, match_type), pairs in wanted.items():
         model = model_for(CONFIGS[plant], match_type)
-        has_tier = any(f.name == "tier" for f in model._meta.get_fields())
-        fields = ["id", "tier"] if has_tier else ["id"]
-        for row in model.objects.filter(id__in=ids).only(*fields):
-            resolved[(plant, match_type, row.id)] = {
+        for (left_id, right_id), row in rows_for_pairs(model, match_type, pairs).items():
+            resolved[(plant, match_type, left_id, right_id)] = {
                 "tier": (getattr(row, "tier", None) or "n/a"),
                 "coverage": coverage_band(row),
             }
@@ -174,8 +186,9 @@ def build_report(note_limit=25):
     by_coverage = defaultdict(lambda: defaultdict(int))
     stale = 0
 
-    for (plant, match_type, match_id), verdict in verdicts.items():
-        row = resolved.get((plant, match_type, match_id))
+    for key, verdict in verdicts.items():
+        plant, match_type = key[0], key[1]
+        row = resolved.get(key)
         if row is None:
             stale += 1
             continue

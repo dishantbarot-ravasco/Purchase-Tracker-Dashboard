@@ -145,7 +145,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from difflib import SequenceMatcher
 from functools import lru_cache
 
-from apps.services import data_stamp
+from apps.services import data_stamp, match_pairs
 from typing import Callable, NamedTuple, Optional
 
 from django.db import transaction
@@ -4569,6 +4569,11 @@ def run_full_match(config: _MatchConfig, dry_run: bool = False) -> dict:
     # now-inactive entry forever.
     config.mir_stock_match_model.objects.filter(mir_entry__is_active=False).delete()
 
+    # A dismissed pair whose match row this run deleted and re-created
+    # comes back undismissed; put the person's decision back on it. See
+    # MatchDismissal's docstring.
+    match_pairs.restore_dismissals(config, (match_pairs.MatchType.PO_MIR, match_pairs.MatchType.IMPORT_PO_MIR))
+
     mir_matched = 0
     if dry_run:
         return _run_report(po_matched, import_po_matched, mir_matched, pinned_keys, unfilled_pins,
@@ -4593,6 +4598,7 @@ def run_full_match(config: _MatchConfig, dry_run: bool = False) -> dict:
     stale_stock_match_ids = existing_stock_match_ids - kept_stock_match_ids
     if stale_stock_match_ids:
         config.mir_stock_match_model.objects.filter(pk__in=stale_stock_match_ids).delete()
+    match_pairs.restore_dismissals(config, (match_pairs.MatchType.MIR_STOCK,))
 
     # Tells every open dashboard its data moved - see apps/services/data_stamp.py.
     data_stamp.touch(config.syncrun_plant)

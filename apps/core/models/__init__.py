@@ -106,6 +106,7 @@ from .review import (  # noqa: F401
     MaterialCategoryReference,
     DataQualityFlag,
     MatchReview,
+    MatchDismissal,
 )
 from .auth import (  # noqa: F401
     PTUser,
@@ -185,6 +186,7 @@ __all__ = [
     "MaterialCategoryReference",
     "DataQualityFlag",
     "MatchReview",
+    "MatchDismissal",
     "PTUser",
     "OTPCode",
     "RevokedRefreshToken",

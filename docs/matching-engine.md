@@ -1097,7 +1097,10 @@ every matcher's `update_or_create` defaults deliberately never carry `dismissed_
 survives every re-match **while the line still points at the same MIR row**. Every PO↔MIR write goes
 through `_save_po_mir_match()`, which clears the dismissal when a run re-points the line to a
 different receipt - a dismissal judged one pairing, and keeping it would hide the new receipt's
-flags, which nobody has looked at (see [api-and-features.md](api-and-features.md)).
+flags, which nobody has looked at (see [api-and-features.md](api-and-features.md)). A row the run
+deleted and re-created for the same pair gets its dismissal back from `MatchDismissal`:
+`run_full_match()` calls `match_pairs.restore_dismissals()` after the PO↔MIR writes (before the
+`dry_run` return) and after the MIR↔Stock pass.
 
 ---
 

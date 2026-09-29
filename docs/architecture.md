@@ -486,9 +486,17 @@ Cross-plant human decisions and reference data, all with a `plant` column.
 - `DataQualityFlag` - one row per source-sheet arithmetic inconsistency (`source_type` +
   `source_id` generic pointer, `check_name`, `expected`, `actual`), unique on all four keys;
   `data_quality.py` deletes rows that stop mismatching.
-- `MatchReview` - one reviewer verdict (`correct`/`incorrect`/`unsure`) on a match identified by
-  `plant` + `match_type` (`po_mir`/`import_po_mir`/`mir_stock`) + plain `match_id` (not an FK). No
-  unique constraint: latest verdict wins.
+- `MatchReview` - one reviewer verdict (`correct`/`incorrect`/`unsure`) on a pair identified by
+  `plant` + `match_type` (`po_mir`/`import_po_mir`/`mir_stock`) + `left_id` / `right_id` (the PO line
+  and primary MIR row, or the MIR row and lot - `apps/services/match_pairs.py`; plain ids, not FKs,
+  since the targets are per-plant classes). `match_id` is the match row it was recorded on, kept for
+  the notes list only - the matcher recreates rows under new ids. Pair columns are null only for a
+  verdict whose row was gone before migration `0075` backfilled them. No unique constraint: latest
+  verdict wins.
+- `MatchDismissal` - the durable half of a match dismissal: one row per dismissed pair, unique on
+  (`plant`, `match_type`, `left_id`, `right_id`), with `dismissed_by` / `dismissed_reason` /
+  `dismissed_at`. The `dismissed_*` columns on the match rows stay what readers filter on;
+  `run_full_match()` restores them from here onto a recreated row. Written only by `match_dismiss.py`.
 
 ### apps/core/models/auth.py
 

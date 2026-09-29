@@ -460,7 +460,21 @@ class MatchReview(models.Model):
 
     plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
     match_type = models.CharField(max_length=20, choices=MatchType.choices)
+    # The match row this verdict was recorded against - kept for the notes
+    # list only. It is NOT the identity: the matcher deletes a match row
+    # when its line stops matching and creates a new one (new id) when it
+    # matches again, so a verdict keyed on this id was lost every time a
+    # pair dropped out for one run. The pair below is the identity.
     match_id = models.PositiveIntegerField()
+    # The two rows the verdict is about (2026-09-29) - see
+    # apps/services/match_pairs.py. PO<->MIR and import PO<->MIR: the PO
+    # line item and the primary MIR entry. MIR<->Stock: the MIR entry and
+    # the stock lot. Both ids outlive the match row (lines are updated in
+    # place, MIR rows and lots are deactivated, never deleted). Null only
+    # for a verdict whose match row was already gone when this column was
+    # backfilled - that pair cannot be recovered and scores as stale.
+    left_id = models.PositiveIntegerField(null=True, blank=True)
+    right_id = models.PositiveIntegerField(null=True, blank=True)
 
     reviewer = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="match_reviews")
     verdict = models.CharField(max_length=10, choices=Verdict.choices)
@@ -468,7 +482,48 @@ class MatchReview(models.Model):
     reviewed_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        indexes = [models.Index(fields=["plant", "match_type", "match_id"])]
+        indexes = [
+            models.Index(fields=["plant", "match_type", "match_id"]),
+            models.Index(fields=["plant", "match_type", "left_id", "right_id"]),
+        ]
 
     def __str__(self):
-        return f"{self.plant}/{self.match_type}/{self.match_id} -> {self.verdict}"
+        return f"{self.plant}/{self.match_type}/{self.left_id}-{self.right_id} -> {self.verdict}"
+
+
+class MatchDismissal(models.Model):
+    """The durable record of "this flagged pair was reviewed and is fine"
+    (2026-09-29).
+
+    The dismissed_* columns on each *POMirMatch/*ImportPOMirMatch/
+    *MirStockMatch row are what every reader filters on, and they still
+    are - but a match row does not live forever. The matcher deletes it
+    when its line matches nothing on a run and creates a fresh one when the
+    same pair matches again, and the fresh row came back undismissed: a
+    person's decision silently undone by a re-match. This table holds the
+    decision on the pair itself (same left/right ids as MatchReview, see
+    apps/services/match_pairs.py), and run_full_match() copies it back onto
+    whichever row currently holds that pair.
+
+    A dismissal is about one pairing, so a line re-pointed to a different
+    MIR row still loses it (_save_po_mir_match() clears the row); if a later
+    run pairs it with the original receipt again, this record restores it.
+    Written only by apps/services/match_dismiss.py; undismissing deletes the
+    row."""
+
+    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    match_type = models.CharField(max_length=20, choices=MatchReview.MatchType.choices)
+    left_id = models.PositiveIntegerField()
+    right_id = models.PositiveIntegerField()
+
+    dismissed_by = models.ForeignKey("PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="match_dismissals")
+    dismissed_reason = models.TextField(blank=True)
+    dismissed_at = models.DateTimeField()
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plant", "match_type", "left_id", "right_id"], name="uniq_match_dismissal_pair")
+        ]
+
+    def __str__(self):
+        return f"{self.plant}/{self.match_type}/{self.left_id}-{self.right_id} dismissed"
