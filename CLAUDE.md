@@ -374,6 +374,7 @@ Read the linked section before breaking any of these. Each is there because it w
 | Raw Material's in-transit KPIs summing per material (a fuzzy-linked PO line counted once per material it touched), counting the full ordered qty of a part-delivered line, and adding KG to metres | [frontend](docs/frontend.md#frontendjsmaterialsjs) |
 | An aggregate (`annotate(Sum(...))`) query silently dropping `Meta.ordering`, so the MIR register listed oldest first | [api](docs/api-and-features.md#appsapiroutersmir_viewspy) |
 | A `transaction=True` test flushing migration-seeded reference rows, breaking every later test by order | [testing](docs/testing-deployment.md#test-helpers) |
+| A page script re-declaring `let CURRENT_USER` (auth.js's) - a SyntaxError that silently killed the whole MIR page; `test_frontend_global_names.py` now fails on any repeated top-level `let`/`const`/`class` on one page | [frontend](docs/frontend.md#serving-load-order-and-the-one-global-scope) |
 | Stale modal data from a fast row-switch | [frontend](docs/frontend.md#modals-one-shared-shell-and-the-stale-response-guard) |
 | `[hidden]` losing a specificity tie to a `display` rule (now a global `[hidden]{display:none !important}` in `brand.css`) | [frontend](docs/frontend.md#other-traps) |
 | Duplicate CSS custom properties across two stylesheets | [frontend](docs/frontend.md#css-custom-property-collisions) |

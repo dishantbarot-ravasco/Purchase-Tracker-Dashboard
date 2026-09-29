@@ -20,6 +20,12 @@ with `TEMPLATES["DIRS"]` pointing at `frontend/`), which is why `index.html` is 
 WhiteNoise directly from `frontend/` (`WHITENOISE_ROOT`), with plain relative paths and no
 templating. See [architecture.md](architecture.md) for the request flow.
 
+A repeated top-level **function** silently overrides; a repeated top-level `let` / `const` / `class` is a
+SyntaxError that stops the later script entirely - the page loads and does nothing, not even its sign-in
+check. On 2026-09-29 `mir-page.js` declared `let CURRENT_USER`, which `auth.js` owns, and the MIR page went
+dead. `apps/api/tests/test_frontend_global_names.py` reads each page's `<script src>` list and fails on any
+such name declared in two of its scripts.
+
 - `theme-init.js` runs first, synchronously in `<head>`, on every page (theme before first paint).
 - On every protected page `auth.js` is the first body script, then `shared.js`, then the page's own
   scripts. `auth.js` has no dependencies at load time; its page gate is `requireAuth()`, which each

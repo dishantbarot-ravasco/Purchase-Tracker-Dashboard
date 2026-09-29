@@ -41,7 +41,6 @@ const DIFF = {
 (async function () {
   const user = await requireAuth();
   if (!user) return;
-  CURRENT_USER = user;
   renderNavTabs(document.getElementById('navTabs'), 'mir');
   renderUserBadge(document.getElementById('navUser'));
   initThemeToggle();
@@ -58,8 +57,6 @@ const DIFF = {
   refreshMismatchCount();
   offerDraft();
 })();
-
-let CURRENT_USER = null;
 
 /** /api/mir/... fetch wrapper - same shape as review-page.js's apiReview(). */
 async function apiMir(path, opts) {
@@ -838,6 +835,7 @@ async function postMir() {
 const DRAFT_FIELDS = ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount', 'taxType', 'sapGrnNo',
   'challanNo', 'lrNo', 'vehicleNo', 'ewayBillNo', 'gateEntryNo', 'weighbridgeSlipNo', 'remarks'];
 const DRAFT_MAX_AGE_MS = 3 * 24 * 3600 * 1000;
+// CURRENT_USER is auth.js's own (set by requireAuth()); this page must not declare it again.
 function draftKey() { return 'mirDraft:v1:' + ((CURRENT_USER && CURRENT_USER.email) || ''); }
 
 function saveDraft() {
