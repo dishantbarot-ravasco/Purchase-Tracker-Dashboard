@@ -10,8 +10,9 @@ po-sort.js's PO_SORT_COLUMNS, "import_purchases" is import-sort.js's
 IMPORT_SORT_COLUMNS, the Raw Material modal's "material_lots" /
 "material_open_pos" are material-sort.js's MAT_LOTS_SORT_COLUMNS /
 MAT_OPEN_PO_SORT_COLUMNS, and the PO modals' "po_lines" / "po_receipts" are
-po-reconcile.js's PO_LINES_SORT_COLUMNS / PO_RECEIPTS_SORT_COLUMNS - keep
-them in step (test_sort_presets.py checks); a key the frontend offers but
+po-reconcile.js's PO_LINES_SORT_COLUMNS / PO_RECEIPTS_SORT_COLUMNS, and the
+Search PO page's "search_po" / "search_po_items" are search-po-page.js's
+SEARCH_SORT_COLUMNS / SEARCH_ITEMS_SORT_COLUMNS - keep them in step (test_sort_presets.py checks); a key the frontend offers but
 this set lacks makes "Save preset" fail with a 400, never store a column the
 page cannot sort on.
 
@@ -55,6 +56,11 @@ SORT_KEYS_BY_VIEW = {
     SortPreset.View.PO_RECEIPTS: {
         "date", "mirNo", "sheetRow", "invoice", "qty", "rate", "value",
     },
+    SortPreset.View.SEARCH_PO: {
+        "created", "poNumber", "vendor", "material", "category", "subCategory",
+        "plant", "purchaseType", "value", "matched",
+    },
+    SortPreset.View.SEARCH_PO_ITEMS: {"line", "material", "qty", "price", "mirStatus"},
 }
 # The columns a level may pick values on - the frontend's `pick: true` ones.
 PICK_KEYS_BY_VIEW = {
@@ -65,6 +71,8 @@ PICK_KEYS_BY_VIEW = {
     SortPreset.View.MATERIAL_OPEN_POS: {"vendor", "plant"},
     SortPreset.View.PO_LINES: {"material", "category", "subCategory"},
     SortPreset.View.PO_RECEIPTS: set(),
+    SortPreset.View.SEARCH_PO: {"vendor", "material", "category", "subCategory", "plant", "purchaseType"},
+    SortPreset.View.SEARCH_PO_ITEMS: set(),
 }
 MAX_LEVELS = 5
 MAX_NAME_LENGTH = 60

@@ -144,6 +144,8 @@ class TestSaveOver:
     ("material-sort.js", "MAT_OPEN_PO_SORT_COLUMNS", SortPreset.View.MATERIAL_OPEN_POS),
     ("po-reconcile.js", "PO_LINES_SORT_COLUMNS", SortPreset.View.PO_LINES),
     ("po-reconcile.js", "PO_RECEIPTS_SORT_COLUMNS", SortPreset.View.PO_RECEIPTS),
+    ("search-po-page.js", "SEARCH_SORT_COLUMNS", SortPreset.View.SEARCH_PO),
+    ("search-po-page.js", "SEARCH_ITEMS_SORT_COLUMNS", SortPreset.View.SEARCH_PO_ITEMS),
 ])
 def test_frontend_sort_columns_match_the_server_keys(js_file, const, view):
     """Each list offers exactly the columns the server accepts for its view,

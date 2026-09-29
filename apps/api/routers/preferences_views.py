@@ -6,7 +6,7 @@ Endpoints
 GET    /api/sort-presets?view=<view>      the caller's own presets for a view
                                           (materials | purchase_orders | import_purchases |
                                           material_lots | material_open_pos | po_lines |
-                                          po_receipts)
+                                          po_receipts | search_po | search_po_items)
 POST   /api/sort-presets                  {view, name, levels} - create, or save over the
                                           caller's preset of the same name (201 / 200)
 PATCH  /api/sort-presets/<id>             {name?, levels?} - rename / replace levels

@@ -4076,10 +4076,26 @@ def run_full_match(config: _MatchConfig) -> dict:
     #   2. every remaining row joins the line it identifies with best -
     #      material agreement first, since the PO number is equal across the
     #      order's lines - then pair weight, then line id for determinism.
+    #
+    # A PINNED LINE TAKES PART IN STEP 2 (2026-09-29, HRS 3000001167: a 6MPA
+    # line of 40 t and a 7MPA line of 30 t, each received on two MIR numbers).
+    # A pin names one MIR number, so it settles one row; the line's other
+    # receipts citing the same order still belong to it. When a pinned line
+    # sat this stage out, its remaining receipts could only join a sibling
+    # line - pinning 7MPA to one of its two receipts left it "50% short" and
+    # pushed the other 7MPA receipt onto 6MPA, "37.5% over". Now a line that
+    # holds its pinned row (not an empty "leave unmatched" pin, not "Keep
+    # both", which claims nothing) competes in step 2 for the order's other
+    # rows on the same terms as its siblings, keeping the pinned row as its
+    # primary. It skips step 1: it already has its one row.
     po_group_keys: set = set()
+    pin_extendable = {
+        key for key in pinned_keys
+        if key in assigned and key in po_cited and key not in shared_pin_keys and key not in boe_keys
+    }
     lines_by_row: dict[int, dict] = {}  # mir id -> {key: candidate}
     for key, cited in po_cited.items():
-        if key in pinned_keys or key in boe_keys:
+        if (key in pinned_keys and key not in pin_extendable) or key in boe_keys:
             continue
         for candidate in cited:
             if candidate.mir.id not in claimed_mir_ids:
@@ -4096,6 +4112,13 @@ def run_full_match(config: _MatchConfig) -> dict:
             kv[1].material_matched, kv[1].material_score, _pair_weight(kv[1]), -kv[0][1], kv[0][0]))
         rows_by_line.setdefault(key, []).append(candidate)
     for key, cands in rows_by_line.items():
+        if key in pin_extendable:
+            pinned_mir, pinned_score, pinned_coverage, _group = assigned[key]
+            rows = sorted([pinned_mir] + [c.mir for c in cands], key=lambda m: m.id)
+            group = _aggregate_rows(config, items_by_key[key], rows, by_po_number=True)
+            assigned[key] = (pinned_mir, pinned_score, pinned_coverage, group)
+            claimed_mir_ids.update(m.id for m in rows)
+            continue
         rows = sorted((c.mir for c in cands), key=lambda m: m.id)
         found_here = {c.mir.id: c for c in cands}
         primary = _best_by_evidence(found_here, rows)

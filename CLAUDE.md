@@ -197,7 +197,9 @@ Read the linked section before breaking any of these. Each is there because it w
 - Treat every match as a suggestion; never wire an automatic action off one.
   [match accuracy](docs/api-and-features.md#match-accuracy-manual-validation-is-required-not-optional)
 - A manual pin names a MIR number, not a row, and `po_kind` belongs in every pin query. "Keep both"
-  (`shared`) claims nothing; an import pin naming its own BOE's receipt defers to BOE settlement.
+  (`shared`) claims nothing; an import pin naming its own BOE's receipt defers to BOE settlement. A
+  pinned line still collects its other receipts citing the same order (PO-number groups, step two) -
+  never exclude it there, or they land on a sibling line (HRS 3000001167).
   [pins](docs/api-and-features.md#editing-which-mir-a-po-line-matched-2026-09-21)
 - Corrections mutate the real row plus an audit row, re-match on the background worker
   (`rematch.request_rematch()`, never inside the request), and are overwritten by the next sync. Matcher `defaults` never carry `dismissed_*`; only `_save_po_mir_match()` clears it,
@@ -231,7 +233,7 @@ Read the linked section before breaking any of these. Each is there because it w
   over the unfiltered scope; never reintroduce a per-(material x line) loop (it was 1.3M checks).
   [materials.js](docs/frontend.md#frontendjsmaterialsjs)
 - Every sortable list and table (Raw Material list and modal, Purchase Orders, Import Purchases, the
-  PO modals' lines and receipts) shares `list-sort.js`; presets, picked values included, are saved
+  PO modals' lines and receipts, Search PO) shares `list-sort.js`; presets, picked values included, are saved
   per user and per list on the server. Each list's `*_SORT_COLUMNS` keys and `pick: true` columns
   must equal `sort_presets.py`'s `SORT_KEYS_BY_VIEW` / `PICK_KEYS_BY_VIEW` (a test checks). A modal
   table's sort moves its rows (`resortSortedTables()`), never re-renders them - that would reset an

@@ -325,3 +325,52 @@ class TestMultiRowMirDocument:
         match = _match_for(item)
         assert match.mir_entry_id == right_row.id
         assert match.mir_entry_id != wrong_row.id
+
+
+@pytest.mark.django_db
+class TestPinnedLineKeepsItsOtherPoCitedReceipts:
+    """HRS 3000001167 (2026-09-29): a 6MPA line of 40 t and a 7MPA line of
+    30 t, each received on two MIR numbers citing the order. A pin names ONE
+    MIR number; the pinned line's other receipt citing the same order is
+    still its own. Before the fix the pinned line sat out the PO-number
+    sharing, so pinning 7MPA to one receipt left it 50% short and pushed its
+    other receipt onto the 6MPA line, 37.5% over."""
+
+    def _order(self):
+        po = _po(po_number="3000001167", vendor_name="Reclaim Co Pvt Ltd")
+        six = _item(po, description="RECLAIM RUBBER 6MPA", qty=Decimal("40000"), net_price=Decimal("30"), item_id="10")
+        seven = _item(po, description="RECLAIM RUBBER 7MPA", qty=Decimal("30000"), net_price=Decimal("32"), item_id="20")
+        common = dict(party_name="Reclaim Co Pvt Ltd", po_number_raw=po.po_number)
+        _mir("MIR-601", "101", material_description="Reclaim Rubber 6 MPA", qty=Decimal("20000"), rate=Decimal("30"), **common)
+        _mir("MIR-602", "102", material_description="Reclaim Rubber 6 MPA", qty=Decimal("20000"), rate=Decimal("30"), **common)
+        _mir("MIR-701", "103", material_description="Reclaim Rubber 7 MPA", qty=Decimal("15000"), rate=Decimal("32"), **common)
+        _mir("MIR-702", "104", material_description="Reclaim Rubber 7 MPA", qty=Decimal("15000"), rate=Decimal("32"), **common)
+        return po, six, seven
+
+    @staticmethod
+    def _counted(item):
+        match = _match_for(item)
+        rows = list(match.group_entries.all()) or [match.mir_entry]
+        return match, sorted(r.mir_no for r in rows)
+
+    def test_pinning_one_receipt_keeps_the_line_s_other_receipt(self):
+        po, six, seven = self._order()
+        _pin(po.po_number, "1", "MIR-702", item_description="RECLAIM RUBBER 7MPA")
+        run_full_match()
+
+        seven_match, seven_rows = self._counted(seven)
+        assert seven_match.manually_pinned is True
+        assert seven_match.mir_entry.mir_no == "MIR-702", "the pinned receipt stays the line's primary"
+        assert seven_rows == ["MIR-701", "MIR-702"]
+        assert seven_match.qty_diff_pct == Decimal("0.00")
+
+        six_match, six_rows = self._counted(six)
+        assert six_rows == ["MIR-601", "MIR-602"], "the 7MPA receipt must not land on the 6MPA line"
+        assert six_match.qty_diff_pct == Decimal("0.00")
+
+    def test_an_empty_pin_still_leaves_the_line_unmatched(self):
+        """"Leave this line unmatched" must not start collecting rows."""
+        po, six, seven = self._order()
+        _pin(po.po_number, "1", "", item_description="RECLAIM RUBBER 7MPA")
+        run_full_match()
+        assert _match_for(seven) is None

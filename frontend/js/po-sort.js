@@ -48,47 +48,8 @@ const PO_BUILTIN_SORTS = [
 // `_status`.
 const PO_STATUS_RANK = { overdue: 0, pending: 1, partial: 2, unknown: 3, received: 4 };
 
-// A PO's distinct categories (or sub categories), A to Z, joined; null when
-// it has none. "Uncategorized" and blanks count as none, so they sort last.
-function poCategoryText(po, field) {
-  const values = Array.from(new Set((po.materialCategories || [])
-    .map(c => c[field])
-    .filter(v => v && v !== 'Uncategorized')));
-  values.sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
-  return values.length ? values.join(', ') : null;
-}
-
-// The values an order holds for a `pick` column: every line's material, and
-// every category and sub category it orders ("Uncategorized" counts as
-// none). null for the other columns, which hold one value each. Shared with
-// import-sort.js.
-function poPickValues(key, po) {
-  const clean = v => v && v !== 'Uncategorized';
-  if (key === 'material') return Array.from(new Set((po.items || []).map(i => i.description).filter(Boolean)));
-  if (key === 'category') return Array.from(new Set((po.materialCategories || []).map(c => c.category).filter(clean)));
-  if (key === 'subCategory') return Array.from(new Set((po.materialCategories || []).map(c => c.subCategory).filter(clean)));
-  return null;
-}
-
-// The Custom sort editor's choices for a Sub Category or Material level
-// under picked categories / sub categories: only the ones this order holds
-// on a line (or category pair) that sits under those picks. Each line item
-// carries its own category (_domestic_base._categorized_line_item_dict(),
-// the import router likewise). Shared with import-sort.js.
-function poScopedPickValues(key, po, picks) {
-  const clean = v => v && v !== 'Uncategorized';
-  const under = (category, subCategory) => (!picks.category || picks.category.includes(category))
-    && (!picks.subCategory || picks.subCategory.includes(subCategory));
-  if (key === 'subCategory') {
-    return Array.from(new Set((po.materialCategories || [])
-      .filter(c => !picks.category || picks.category.includes(c.category))
-      .map(c => c.subCategory).filter(clean)));
-  }
-  if (key === 'material') {
-    return Array.from(new Set((po.items || []).filter(i => i.description && under(i.category, i.subCategory)).map(i => i.description)));
-  }
-  return null;
-}
+// poCategoryText(), poPickValues() and poScopedPickValues() live in
+// list-sort.js, shared with import-sort.js and the Search PO page.
 
 // The value a PO row sorts on; null sorts last in either direction.
 function poSortValue(key, po) {

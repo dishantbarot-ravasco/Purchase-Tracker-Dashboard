@@ -10,6 +10,114 @@ let IMPORT_POS = [];
 let loadPromise = null;
 let dataReady = false; // true once loadPromise has actually resolved - see runSearch()'s spinner check
 
+// ── Sorting (2026-09-29, project owner: "add the same sorting to the Search
+// PO page too") ── through list-sort.js, like the dashboard's lists: the
+// result cards (SEARCH_SORT) and the detail panel's line items
+// (SEARCH_ITEMS_SORT), each with a Sort by select, Custom sort, picked
+// values and per-user presets. A result row is { po, plantKey, kind }.
+// The column keys and `pick: true` columns must equal
+// apps/services/sort_presets.py's SORT_KEYS_BY_VIEW / PICK_KEYS_BY_VIEW for
+// "search_po" and "search_po_items"; test_sort_presets.py checks.
+const SEARCH_SORT_COLUMNS = [
+  { key: 'created', label: 'Created On', kind: 'date', dir: 'desc' },
+  { key: 'poNumber', label: 'PO Number', kind: 'text', dir: 'asc' },
+  { key: 'vendor', label: 'Vendor', kind: 'text', dir: 'asc', pick: true },
+  { key: 'material', label: 'Material', kind: 'text', dir: 'asc', pick: true, parent: 'subCategory' },
+  { key: 'category', label: 'Category', kind: 'text', dir: 'asc', pick: true },
+  { key: 'subCategory', label: 'Sub Category', kind: 'text', dir: 'asc', pick: true, parent: 'category' },
+  { key: 'plant', label: 'Plant', kind: 'text', dir: 'asc', pick: true },
+  { key: 'purchaseType', label: 'Domestic / Import', kind: 'text', dir: 'asc', pick: true },
+  { key: 'value', label: 'Value', kind: 'num', dir: 'desc' },
+  { key: 'matched', label: 'Lines matched to MIR (%)', kind: 'num', dir: 'asc' },
+];
+const SEARCH_BUILTIN_SORTS = [
+  { id: 'builtin:latest', name: 'Latest first (default)', levels: [{ key: 'created', dir: 'desc' }] },
+  { id: 'builtin:catSub', name: 'Category, then Sub Category, then Material', levels: [{ key: 'category', dir: 'asc' }, { key: 'subCategory', dir: 'asc' }, { key: 'material', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
+  { id: 'builtin:vendor', name: 'Vendor (A to Z)', levels: [{ key: 'vendor', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
+  { id: 'builtin:plant', name: 'Plant, then latest first', levels: [{ key: 'plant', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
+  { id: 'builtin:value', name: 'Highest value first', levels: [{ key: 'value', dir: 'desc' }] },
+  { id: 'builtin:matched', name: 'Least matched to MIR first', levels: [{ key: 'matched', dir: 'asc' }, { key: 'created', dir: 'desc' }] },
+];
+
+function searchSortValue(key, m) {
+  const po = m.po;
+  switch (key) {
+    case 'created': return po.createdDate || null;
+    case 'poNumber': return po.poNumber || null;
+    case 'vendor': return po.vendorName || null;
+    case 'material': { const it = (po.items || []).find(i => i.description); return it ? it.description : null; }
+    case 'category': return poCategoryText(po, 'category');
+    case 'subCategory': return poCategoryText(po, 'subCategory');
+    case 'plant': return PLANTS[m.plantKey] ? PLANTS[m.plantKey].label : null;
+    case 'purchaseType': return m.kind === 'import' ? 'Import' : 'Domestic';
+    case 'value': { const v = poValue(po, m.kind); return v ? v : null; }
+    case 'matched': {
+      const items = po.items || [];
+      return items.length ? items.filter(it => itemIsMatched(it, m.kind)).length / items.length * 100 : null;
+    }
+    default: return null;
+  }
+}
+
+// The filters the results on screen were found with, so a sort change can
+// redraw them without searching again.
+let LAST_SEARCH_FILTERS = null;
+
+const SEARCH_SORT = createListSort({
+  view: 'search_po',
+  idPrefix: 'search',
+  columns: SEARCH_SORT_COLUMNS,
+  builtins: SEARCH_BUILTIN_SORTS,
+  rowValue: searchSortValue,
+  pickValues: (key, m) => poPickValues(key, m.po),
+  scopedPickValues: (key, m, picks) => poScopedPickValues(key, m.po, picks),
+  tieBreak: (a, b) => (b.po.createdDate || '').localeCompare(a.po.createdDate || '')
+    || String(a.po.poNumber || '').localeCompare(String(b.po.poNumber || ''), 'en', { numeric: true }),
+  rerender: () => { if (LAST_SEARCH_FILTERS) renderResults(LAST_SEARCH_FILTERS); },
+});
+
+// The detail panel's line items. A row is { it, index, kind } - `index` the
+// line's position in the PO, the default order.
+const SEARCH_ITEMS_SORT_COLUMNS = [
+  { key: 'line', label: 'Line number', kind: 'num', dir: 'asc' },
+  { key: 'material', label: 'Description', kind: 'text', dir: 'asc' },
+  { key: 'qty', label: 'Qty', kind: 'num', dir: 'desc' },
+  { key: 'price', label: 'Net Price', kind: 'num', dir: 'desc' },
+  { key: 'mirStatus', label: 'MIR Status', kind: 'rank', dir: 'asc' },
+];
+const SEARCH_ITEMS_BUILTIN_SORTS = [
+  { id: 'builtin:line', name: 'Line order (default)', levels: [{ key: 'line', dir: 'asc' }] },
+  { id: 'builtin:unmatched', name: 'Not yet matched first', levels: [{ key: 'mirStatus', dir: 'asc' }, { key: 'line', dir: 'asc' }] },
+  { id: 'builtin:material', name: 'Description (A to Z)', levels: [{ key: 'material', dir: 'asc' }] },
+  { id: 'builtin:qty', name: 'Largest quantity first', levels: [{ key: 'qty', dir: 'desc' }] },
+  { id: 'builtin:price', name: 'Highest price first', levels: [{ key: 'price', dir: 'desc' }] },
+];
+const SEARCH_ITEMS_TABLES = {};
+
+function searchItemSortValue(key, row) {
+  const it = row.it;
+  switch (key) {
+    case 'line': return row.index;
+    case 'material': return it.description || null;
+    case 'qty': { const q = row.kind === 'import' ? it.qtyAsPerPo : it.qty; return q != null ? q : null; }
+    case 'price': return it.netPrice != null ? it.netPrice : null;
+    // Not yet matched first: that is the line a reader is looking for.
+    case 'mirStatus': return itemIsMatched(it, row.kind) ? 1 : 0;
+    default: return null;
+  }
+}
+
+const SEARCH_ITEMS_SORT = createListSort({
+  view: 'search_po_items',
+  idPrefix: 'searchItems',
+  barLabel: 'Sort items by',
+  columns: SEARCH_ITEMS_SORT_COLUMNS,
+  builtins: SEARCH_ITEMS_BUILTIN_SORTS,
+  rowValue: searchItemSortValue,
+  tieBreak: (a, b) => a.index - b.index,
+  rerender: () => resortSortedTables(SEARCH_ITEMS_TABLES, SEARCH_ITEMS_SORT, document.getElementById('detailArea')),
+});
+
 (async function () {
   const user = await requireAuth();
   if (!user) return;
@@ -158,7 +266,9 @@ async function runSearch(opts) {
   if (!dataReady) {
     resultsEl.innerHTML = '<div class="loading-overlay"><div class="spinner"></div><span>Searching&hellip;</span></div>';
   }
-  await ensureLoaded();
+  // The two sorters' saved presets load with the data; those loaders never
+  // throw, so a failed preset load cannot stop a search.
+  await Promise.all([ensureLoaded(), SEARCH_SORT.ensurePresetsLoaded(), SEARCH_ITEMS_SORT.ensurePresetsLoaded()]);
   if (myRequestId !== searchRequestId) return; // a newer search superseded this one
   renderResults(f);
 }
@@ -214,14 +324,21 @@ function renderResults(f) {
     (f.from || f.to) && ('created ' + (f.from ? 'from ' + formatDateIN(f.from) : '') + (f.from && f.to ? ' ' : '') + (f.to ? 'to ' + formatDateIN(f.to) : '')),
   ].filter(Boolean).map(escapeHtml).join(', ');
 
+  LAST_SEARCH_FILTERS = f;
   if (!matches.length) {
     resultsEl.innerHTML = warnHtml + '<div class="search-empty">' + emptyStateHtml('No purchase order matching ' + criteria + ' was found in any plant.') + '</div>';
     return;
   }
 
+  // Sorted before the bar is drawn: sorting records the rows the bar's
+  // value picker offers. "Show only these" can narrow the list further.
+  const sorted = SEARCH_SORT.sortRows(matches);
+  const countText = (SEARCH_SORT.isNarrowing() ? sorted.length + ' of ' : '') + matches.length + ' result' + (matches.length > 1 ? 's' : '');
   resultsEl.innerHTML = warnHtml +
-    '<div class="search-empty pad-b12 text-left fs-12-5">' + matches.length + ' result' + (matches.length > 1 ? 's' : '') + ' for ' + criteria + '</div>' +
-    '<div class="search-results">' + matches.map((m, i) => {
+    '<div class="search-empty pad-b12 text-left fs-12-5">' + countText + ' for ' + criteria + '</div>' +
+    SEARCH_SORT.barHtml() +
+    (sorted.length ? '' : '<div class="search-empty">None of these results holds the values picked in the sort. Use "Show all" to see them all.</div>') +
+    '<div class="search-results">' + sorted.map((m, i) => {
       const po = m.po;
       const matchedCount = (po.items || []).filter(it => itemIsMatched(it, m.kind)).length;
       const value = poValue(po, m.kind);
@@ -254,7 +371,8 @@ function renderResults(f) {
       '</div>';
     }).join('') + '</div>';
 
-  resultsEl.querySelectorAll('[data-idx]').forEach(el => el.onclick = () => showDetail(matches[Number(el.dataset.idx)]));
+  resultsEl.querySelectorAll('[data-idx]').forEach(el => el.onclick = () => showDetail(sorted[Number(el.dataset.idx)]));
+  SEARCH_SORT.wire(resultsEl);
 }
 
 // Deep links into the dashboard (2026-09-19, project owner: "instead of
@@ -305,9 +423,14 @@ function showDetail(match) {
   // in the PO currency, so it is shown as a bare number, never as rupees.
   const qtyOf = it => isImport ? it.qtyAsPerPo : it.qty;
   const priceOf = it => it.netPrice == null ? '-' : (isImport ? escapeHtml(String(it.netPrice)) : formatInr(it.netPrice));
-  const itemsHtml = (po.items || []).length
-    ? '<table class="items-table"><thead><tr><th>Description</th><th>Qty</th><th>UOM</th><th>Net Price' + (isImport ? ' (PO currency)' : '') + '</th><th>MIR Status</th><th>Material</th></tr></thead><tbody>' +
-        po.items.map(it => '<tr><td>' + escapeHtml(it.description || '') + '</td><td>' + (qtyOf(it) != null ? qtyOf(it) : '-') +
+  // Sortable (SEARCH_ITEMS_SORT): list-sort.js's sortedTableHtml(), built
+  // before its bar so the bar's choices come from this PO's lines.
+  Object.keys(SEARCH_ITEMS_TABLES).forEach(k => { delete SEARCH_ITEMS_TABLES[k]; });
+  const itemRows = (po.items || []).map((it, i) => ({ it, index: i + 1, kind: match.kind }));
+  const itemsTable = itemRows.length
+    ? sortedTableHtml(SEARCH_ITEMS_TABLES, 'items', SEARCH_ITEMS_SORT, itemRows, (row, idx) => {
+        const it = row.it;
+        return '<tr data-sort-row="' + idx + '"><td>' + escapeHtml(it.description || '') + '</td><td>' + (qtyOf(it) != null ? qtyOf(it) : '-') +
           '</td><td>' + escapeHtml(it.uom || '') + '</td><td>' + priceOf(it) +
           '</td><td><span class="status-pill ' + (itemIsMatched(it, match.kind) ? 'matched">Matched' : 'unmatched">Not yet matched') + '</span></td>' +
           // Per line item, not once for the PO: a PO can carry several
@@ -315,8 +438,14 @@ function showDetail(match) {
           // material" is the question a reader has while looking at that row.
           '<td>' + (it.description
             ? '<a class="detail-link" href="' + escapeHtml(dashboardMaterialHref(it.description)) + '">Stock &amp; usage &rarr;</a>'
-            : '-') + '</td></tr>').join('') +
-      '</tbody></table>'
+            : '-') + '</td></tr>';
+      }, [
+        { label: 'Description', key: 'material' }, { label: 'Qty', key: 'qty' }, { label: 'UOM' },
+        { label: 'Net Price' + (isImport ? ' (PO currency)' : ''), key: 'price' }, { label: 'MIR Status', key: 'mirStatus' }, { label: 'Material' },
+      ], { wrapClass: 'items-table-wrap', tableClass: 'items-table' })
+    : '';
+  const itemsHtml = itemRows.length
+    ? sortedTableBarHtml(SEARCH_ITEMS_SORT) + itemsTable
     : '<div class="fs-12-5 text-muted">No line items recorded.</div>';
   const remarksHtml = po.remarks
     ? '<div class="detail-block mt-16"><h4>Remarks</h4><div class="line">' + escapeHtml(po.remarks) + '</div></div>'
@@ -351,5 +480,6 @@ function showDetail(match) {
       '<div class="mt-20"><a href="' + escapeHtml(dashboardPoHref(match.plantKey, po.poNumber, match.kind)) + '" class="btn btn-navy">Open this PO in the dashboard &rarr;</a></div>' +
     '</div>';
   document.getElementById('detailCloseBtn').onclick = () => { document.getElementById('detailArea').innerHTML = ''; };
+  SEARCH_ITEMS_SORT.wire(document.getElementById('detailArea'));
   document.getElementById('detailArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }

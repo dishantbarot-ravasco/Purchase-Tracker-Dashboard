@@ -94,7 +94,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `auth/users/<id>/devices` | `users_views.list_user_devices` | IsAdmin | The account's trusted devices |
 | DELETE | `auth/users/<id>/devices/<device_id>` | `users_views.revoke_user_device` | IsAdmin | Revoke one trusted device |
 | POST | `auth/users/<id>/logout-everywhere` | `users_views.admin_logout_everywhere` | IsAdmin, `AdminWriteThrottle` | `revoke_all_sessions()` for another account |
-| GET | `sort-presets?view=<view>` | `preferences_views.presets` | Auth (any role), own rows only | The caller's saved sort presets for a view (`materials`, `material_lots`, `material_open_pos`, `purchase_orders`, `import_purchases`, `po_lines`, `po_receipts`); 400 on an unknown view |
+| GET | `sort-presets?view=<view>` | `preferences_views.presets` | Auth (any role), own rows only | The caller's saved sort presets for a view (`materials`, `material_lots`, `material_open_pos`, `purchase_orders`, `import_purchases`, `po_lines`, `po_receipts`, `search_po`, `search_po_items`); 400 on an unknown view |
 | POST | `sort-presets` | `preferences_views.presets` | Auth (any role) | Save `{view, name, levels}`; 201 new, 200 when it saves over the caller's preset of the same name (case-insensitive) |
 | PATCH / DELETE | `sort-presets/<id>` | `preferences_views.preset` | Auth (any role), own rows only (404 otherwise) | Rename / replace levels, or delete |
 | GET | `auth/admin-overview` | `admin_overview_views.admin_overview` | IsAdmin | Top correctors, top vendors, recent corrections |
@@ -888,9 +888,10 @@ master CSV cannot be received against (the search says to ask purchase to add it
 ### Sort presets (2026-09-28)
 
 Raw Material Analysis (and its modal's Stock by Plant and Open Purchase Orders tables), Domestic
-Purchase Orders, Import Purchases and the PO modals' line cards and MIR receipts sort by any column,
+Purchase Orders, Import Purchases, the PO modals' line cards and MIR receipts, and the Search PO
+page's results and line items sort by any column,
 in up to 5 levels ("Category, then Sub Category, then Material"), and a user can save a sort as a
-named preset **to their account**, kept per list (`view`: `materials`, `material_lots`, `material_open_pos`, `purchase_orders`, `import_purchases`, `po_lines`, `po_receipts`), so it follows them to
+named preset **to their account**, kept per list (`view`: `materials`, `material_lots`, `material_open_pos`, `purchase_orders`, `import_purchases`, `po_lines`, `po_receipts`, `search_po`, `search_po_items`), so it follows them to
 any device (owner's choice over browser-only or shared presets). A level on a pickable column
 (Category, Sub Category, Material, Vendor, Plant, Country) can also **pick values** - those rows
 first, in the picked order - and **"Show only these"**, which narrows the list to them; each level's
@@ -907,7 +908,8 @@ characters; at most 25 presets per user per view. Saving under an existing name 
 Excel-style; the page asks first. The server's key lists must match the frontend's
 (`material-sort.js`'s `MAT_SORT_COLUMNS`, `MAT_LOTS_SORT_COLUMNS` and `MAT_OPEN_PO_SORT_COLUMNS`,
 `po-sort.js`'s `PO_SORT_COLUMNS`, `import-sort.js`'s `IMPORT_SORT_COLUMNS`, `po-reconcile.js`'s
-`PO_LINES_SORT_COLUMNS` and `PO_RECEIPTS_SORT_COLUMNS`), keys and `pick: true` columns both;
+`PO_LINES_SORT_COLUMNS` and `PO_RECEIPTS_SORT_COLUMNS`, `search-po-page.js`'s `SEARCH_SORT_COLUMNS` and
+`SEARCH_ITEMS_SORT_COLUMNS`), keys and `pick: true` columns both;
 `test_sort_presets.py` checks each pair. The frontend side is in [frontend.md](frontend.md#frontendjslist-sortjs).
 
 ### Data export
@@ -1202,7 +1204,8 @@ both filtered on `user=request.user`. Validation is in `apps/services/sort_prese
 to `material-sort.js`'s `MAT_SORT_COLUMNS`, `material_lots` / `material_open_pos` to its
 `MAT_LOTS_SORT_COLUMNS` / `MAT_OPEN_PO_SORT_COLUMNS`, `purchase_orders` to `po-sort.js`'s
 `PO_SORT_COLUMNS`, `import_purchases` to `import-sort.js`'s `IMPORT_SORT_COLUMNS`, `po_lines` /
-`po_receipts` to `po-reconcile.js`'s `PO_LINES_SORT_COLUMNS` / `PO_RECEIPTS_SORT_COLUMNS`) and
+`po_receipts` to `po-reconcile.js`'s `PO_LINES_SORT_COLUMNS` / `PO_RECEIPTS_SORT_COLUMNS`, `search_po` /
+`search_po_items` to `search-po-page.js`'s `SEARCH_SORT_COLUMNS` / `SEARCH_ITEMS_SORT_COLUMNS`) and
 `PICK_KEYS_BY_VIEW` (the `pick: true` columns), `MAX_PICKED_VALUES` / `MAX_PICKED_VALUE_LENGTH`
 (mirrored in list-sort.js), `clean_view()` / `clean_name()` / `clean_levels()` / `_clean_picks()`
 (raise `ValueError`, which becomes a 400), `list_presets()`, `save_preset()` (create or save over the same name; locks the

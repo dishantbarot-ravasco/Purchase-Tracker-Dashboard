@@ -376,7 +376,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | --- | --- | --- | --- |
 | `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `list-sort.js`, `po-list.js`, `po-sort.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `import-sort.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-sort.js`, `material-modal.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
 | `home.html` | WhiteNoise | `brand.css`, `home-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `home-page.js` |
-| `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `search-po-page.js` |
+| `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `list-sort.js`, `search-po-page.js` |
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
 | `admin.html` | WhiteNoise | `brand.css`, `admin-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `admin-page.js` |
 | `mir.html` | WhiteNoise | `brand.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `mir-page.js` |
@@ -904,8 +904,10 @@ into `MATERIALS_BY_PLANT`), `loadAndRenderMaterials()` (also loads domestic and 
 
 The shared sorting and sort-preset engine behind every sortable list and table: Raw Material
 Analysis and its modal's two tables (`material-sort.js`), Domestic Purchase Orders (`po-sort.js`),
-Import Purchases (`import-sort.js`) and the PO modals' line cards and MIR receipts
-(`po-reconcile.js`). Loads after `flags.js`, before every configuration. `createListSort(cfg)`
+Import Purchases (`import-sort.js`), the PO modals' line cards and MIR receipts
+(`po-reconcile.js`) and the Search PO page's results and line items (`search-po-page.js`). It also
+holds the order helpers every PO list shares - `poCategoryText()`, `poPickValues()` and
+`poScopedPickValues()` - since the Search PO page loads this file but not `po-sort.js`. Loads after `flags.js`, before every configuration. `createListSort(cfg)`
 returns one sorter per list; `cfg` names the server `view`, an element `idPrefix`, the `columns`
 (key, label, `kind`, the direction a header click starts with, and `pick` / `parent` below), the
 `builtins` (the first is the default), `rowValue(key, row, extra)`, optional `pickValues` and
@@ -1008,7 +1010,7 @@ Z, joined, "Uncategorized" counting as none. `poPickValues()` gives a PO's value
 every line's material, every category and sub category it orders - so picking one matches a PO
 holding it on any line; `poScopedPickValues()` offers, under picked categories / sub categories, only
 the sub categories and materials on lines that sit under them (each line item carries its own
-category). Both are shared with import-sort.js. Status sorts by `PO_STATUS_RANK` (overdue, on order,
+category). All three helpers live in list-sort.js. Status sorts by `PO_STATUS_RANK` (overdue, on order,
 partial, date unknown, received), `_overdue` winning over `_status`. `PO_BUILTIN_SORTS`: Latest first
 (the default, the list's old fixed order), Category, Sub Category, Category then Sub Category then
 Material, Vendor, Delivery Date soonest, highest Value, most urgent status. Ties go latest first,
@@ -1178,6 +1180,19 @@ the dashboard modal - for an import it shows country of origin and Bill of Ladin
 PO quantity, and net price as a bare number in the PO currency - and links out with
 `dashboardPoHref(plant, po, kind)` (adding `kind=import` for an import order) / per-line
 `dashboardMaterialHref()`.
+
+**Results and line items sort** (2026-09-29, project owner: "add the same sorting to the Search PO
+page too"), through `list-sort.js`: `SEARCH_SORT` (view `search_po`) over the result cards - a row is
+`{po, plantKey, kind}`; `SEARCH_SORT_COLUMNS`: Created On, PO Number, Vendor, Material, Category, Sub
+Category, Plant, Domestic / Import, Value (`poValue()`), Lines matched to MIR (%); Vendor, Material,
+Category, Sub Category, Plant and Domestic / Import pickable through list-sort.js's `poPickValues()`
+/ `poScopedPickValues()`; default latest first - and `SEARCH_ITEMS_SORT` (view `search_po_items`) over
+the detail panel's line items, a list-sort.js `sortedTableHtml()` in `SEARCH_ITEMS_TABLES` (rows `{it,
+index, kind}`; Line number, Description, Qty, Net Price, MIR Status with not-yet-matched first;
+default line order). `renderResults()` sorts before drawing the bar, counts "N of M results" while
+"Show only these" narrows, and keeps `LAST_SEARCH_FILTERS` so a sort change redraws without searching
+again. `runSearch()` awaits both sorters' presets with the data. The sort styles are restated in
+`search-po-page.css` in brand.css's palette, since this page does not load `style.css`.
 
 ### frontend/js/review-page.js
 

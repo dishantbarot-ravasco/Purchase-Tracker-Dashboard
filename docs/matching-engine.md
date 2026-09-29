@@ -29,7 +29,7 @@ trusting a count.
 4. **Settle in order**, all against one `claimed_mir_ids` set shared by domestic and import:
    manual pins first (exclusive ones claim their row; "Keep both" ones claim nothing; one naming its
    own BOE's receipt is deferred to BOE settlement), then BOE settlement, then PO-number groups (one row per line by `_assign_pairs()`, extras to the
-   best-matching line), then rate groups (a group that lost a member is demoted to per-row edges),
+   best-matching line - a pinned line keeps its pinned row and competes for the extras too), then rate groups (a group that lost a member is demoted to per-row edges),
    then the optimal assignment `_assign_pairs()` over everything left, then `_split_shared_rows()`
    for rows a "Keep both" pin shares.
 5. **Write**: delete matches of retired orders; upsert or delete one `*POMirMatch` /
@@ -301,6 +301,14 @@ based on PO numbers only."*
   `_assign_pairs()` first, then every extra receipt to the line it matches best (material matched,
   then material score, then pair weight, then line id). The first version skipped step one and left
   one line of each duplicate-line order empty (2 Achhad, 2 Vapi).
+- **A pinned line takes part in step two** (2026-09-29, HRS 3000001167: a 6MPA line of 40 t and a
+  7MPA line of 30 t, each received on two MIR numbers). A pin names one MIR number, so it settles one
+  row; the line's other receipts citing the same order are still its own. It used to sit this stage
+  out, so pinning 7MPA to one receipt left it "50% short" and sent its other receipt to the 6MPA line
+  ("37.5% over"). Now a line holding its pinned row (`pin_extendable`: not an empty "leave unmatched"
+  pin, not "Keep both", not BOE-settled) skips step one and competes in step two on the same terms as
+  its siblings, the pinned row staying its primary. `test_manual_mir_match.py`'s
+  `TestPinnedLineKeepsItsOtherPoCitedReceipts` pins it.
 - **Short legacy PO numbers form groups too.** `_po_number_group_rows()` calls
   `_cited_po_numbers(..., shape_floor=False)`, dropping the 8-digit floor of
   `is_usable_po_reference()`. With it, HRS's 1-4 digit series ('1074.0') never counted as naming

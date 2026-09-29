@@ -75,6 +75,51 @@ async function sortPresetApi(path, opts) {
   return data;
 }
 
+// ── Order helpers shared by every list of purchase orders ──
+// (po-sort.js, import-sort.js, search-po-page.js - the Search PO page loads
+// this file but not po-sort.js, so they live here.)
+
+// A PO's distinct categories (or sub categories), A to Z, joined; null when
+// it has none. "Uncategorized" and blanks count as none, so they sort last.
+function poCategoryText(po, field) {
+  const values = Array.from(new Set((po.materialCategories || [])
+    .map(c => c[field])
+    .filter(v => v && v !== 'Uncategorized')));
+  values.sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
+  return values.length ? values.join(', ') : null;
+}
+
+// The values an order holds for a `pick` column: every line's material, and
+// every category and sub category it orders ("Uncategorized" counts as
+// none). null for the other columns, which hold one value each.
+function poPickValues(key, po) {
+  const clean = v => v && v !== 'Uncategorized';
+  if (key === 'material') return Array.from(new Set((po.items || []).map(i => i.description).filter(Boolean)));
+  if (key === 'category') return Array.from(new Set((po.materialCategories || []).map(c => c.category).filter(clean)));
+  if (key === 'subCategory') return Array.from(new Set((po.materialCategories || []).map(c => c.subCategory).filter(clean)));
+  return null;
+}
+
+// The Custom sort editor's choices for a Sub Category or Material level
+// under picked categories / sub categories: only the ones this order holds
+// on a line (or category pair) that sits under those picks. Each line item
+// carries its own category (_domestic_base._categorized_line_item_dict(),
+// the import router likewise).
+function poScopedPickValues(key, po, picks) {
+  const clean = v => v && v !== 'Uncategorized';
+  const under = (category, subCategory) => (!picks.category || picks.category.includes(category))
+    && (!picks.subCategory || picks.subCategory.includes(subCategory));
+  if (key === 'subCategory') {
+    return Array.from(new Set((po.materialCategories || [])
+      .filter(c => !picks.category || picks.category.includes(c.category))
+      .map(c => c.subCategory).filter(clean)));
+  }
+  if (key === 'material') {
+    return Array.from(new Set((po.items || []).filter(i => i.description && under(i.category, i.subCategory)).map(i => i.description)));
+  }
+  return null;
+}
+
 function sameSortLevels(a, b) {
   return a.length === b.length && a.every((l, i) => l.key === b[i].key && l.dir === b[i].dir
     && !!l.only === !!b[i].only

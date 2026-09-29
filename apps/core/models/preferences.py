@@ -29,6 +29,8 @@ class SortPreset(models.Model):
         MATERIAL_OPEN_POS = "material_open_pos", "Raw Material modal: Open Purchase Orders"
         PO_LINES = "po_lines", "PO modal: line items"
         PO_RECEIPTS = "po_receipts", "PO modal: MIR receipts"
+        SEARCH_PO = "search_po", "Search PO: results"
+        SEARCH_PO_ITEMS = "search_po_items", "Search PO: line items"
 
     user = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="sort_presets")
     view = models.CharField(max_length=30, choices=View.choices)

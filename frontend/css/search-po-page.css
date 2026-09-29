@@ -48,3 +48,39 @@
    "currently active/selected" emphasis (see brand.css), so it reads as a
    highlight rather than a new, unrelated color introduced just for this. */
 mark.search-hit { background: var(--gold-pale); color: var(--gold-text); border-radius: 3px; padding: 0 2px; font-weight: 700; }
+/* Sorting (list-sort.js, 2026-09-29): the result cards' and the detail
+   panel's Sort by bar, Custom sort editor and picked-value chips. The
+   dashboard styles these in style.css, which this page does not load, so
+   they are restated here in brand.css's own palette (the two palettes stay
+   separate - see brand.css's header comment). */
+.items-table-wrap { overflow-x: auto; }
+.list-sort-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 12px; font-size: 12.5px; }
+.list-sort-label { font-weight: 700; color: var(--text-muted); font-family: var(--font-head); text-transform: uppercase; font-size: 11px; letter-spacing: .05em; }
+.list-sort-select { min-width: 220px; max-width: 100%; }
+.list-sort-bar select, .list-sort-editor select, .list-sort-editor input[type=text] { font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--border-mid); border-radius: 7px; background: var(--bg-input); color: var(--text); }
+.list-sort-summary { color: var(--text-muted); font-size: 12px; }
+.list-sort-bar .page-btn, .list-sort-editor .page-btn, .list-sort-editor .view-all-btn { padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border-mid); background: var(--bg-card); color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; }
+.list-sort-editor .view-all-btn { background: var(--navy-solid); border-color: var(--navy-solid); color: #fff; }
+.list-sort-bar .page-btn:hover:not(:disabled), .list-sort-editor .page-btn:hover:not(:disabled) { border-color: var(--gold-border); background: var(--gold-pale); }
+.list-sort-editor .page-btn:disabled { opacity: .4; cursor: default; }
+.list-sort-editor { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; border: 1px solid var(--border); background: var(--bg-card); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }
+.list-sort-level-wrap { display: flex; flex-direction: column; gap: 6px; }
+.list-sort-level { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.list-sort-level-label { width: 56px; font-size: 12px; font-weight: 700; color: var(--text-muted); }
+.list-sort-picks { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 62px; font-size: 12px; }
+.list-sort-picks select { max-width: 320px; }
+.list-sort-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 9px; border-radius: 99px; background: var(--gold-pale); border: 1px solid var(--gold-border); color: var(--navy); font-weight: 600; }
+.list-sort-chip button { all: unset; cursor: pointer; padding: 0 4px; border-radius: 4px; color: var(--text-dim); line-height: 1.4; }
+.list-sort-chip button:disabled { opacity: .35; cursor: default; }
+.list-sort-chip button:focus-visible { outline: 2px solid var(--gold); }
+.list-sort-only { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--text-dim); cursor: pointer; }
+.list-sort-hint { color: var(--text-muted); }
+.list-sort-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+.list-sort-msg { font-size: 12px; color: var(--text-muted); min-height: 16px; }
+.list-sort-narrowing { all: unset; cursor: pointer; font-size: 11.5px; font-weight: 700; padding: 3px 10px; border-radius: 99px; background: var(--gold-pale); color: var(--gold-text); border: 1px solid var(--gold-border); }
+.list-sort-narrowing:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.sort-header-btn { all: unset; cursor: pointer; font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; display: inline-flex; align-items: center; gap: 3px; }
+.sort-header-btn:hover, .sort-header-btn.active { color: var(--gold-text); }
+.sort-header-btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 3px; }
+.sort-arrow sup { font-size: 8px; margin-left: 1px; }
+@media (max-width: 640px) { .list-sort-picks { margin-left: 0; } }
