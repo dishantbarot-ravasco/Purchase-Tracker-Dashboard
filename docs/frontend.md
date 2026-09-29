@@ -677,9 +677,12 @@ shows `notes` instead - the line's share of the receipt (`receiptShareNote(share
 a pooled line's share of its order's identical lines when `poolLineRefs` is set, a BOE share on tier
 `boe_number`, otherwise a "Keep both" manual match's share; Domestic lines carry it too), and for an exchange-rate difference both rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
 each line at its own ordered value) + one `reconLineHtml()` per line. `reconControlsHtml()` carries the
-confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag, dismiss/reinstate link
-(only when `reconAnyFlag(m, isFlagged)`, whose qty half is `isQtyMismatch()`) and the
-`.mir-change-link` with `data-item-ref`/`data-current-mir`. A line with `qtyWithinTolerance`
+confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag (its title names who set the
+pin), dismiss/reinstate link (only when `reconAnyFlag(m, isFlagged)`, whose qty half is
+`isQtyMismatch()`) and the "edit receipts" `.mir-change-link` with `data-item-ref`/`data-current-mir`.
+`manualNoteText(note, poNumber)` turns a receipt's `manualNote` into "Added by Dishant Barot on
+29/09/2026", "Set by hand by ..." or "Moved here: ... removed it from line 2"; the receipts table
+prints it under the MIR number. Both adapters pass `poNumber`. A line with `qtyWithinTolerance`
 (`reconToleranceFields()`) gets the green `recon-full` status "Qty matched · +7% within tolerance",
 counts as fully received in the summary, shows its qty (and, unless the value still flagged, value)
 difference in the matched colour as "over, within tolerance" (`reconDiffHtml(..., tolerated)`), and
@@ -704,7 +707,7 @@ Category and Sub Category pickable; default line order) re-orders the cards in p
 shared `PO_RECEIPTS_SORT` (view `po_receipts`, `PO_RECEIPTS_SORT_COLUMNS`: Date, MIR No., Sheet row,
 Invoice, Qty - in the PO line's unit where converted - Rate, Value; default oldest first then MIR
 number, the order `_counted_mirs()` sends), so a header click in one re-sorts them all through
-`resortSortedTables()`. Cards and rows are moved, never rebuilt, so the "change MIR" picker, dismiss
+`resortSortedTables()`. Cards and rows are moved, never rebuilt, so the "edit receipts" panel, dismiss
 links and a correction in progress survive a sort. Both adapters pass `deliveryDate`, `category` and
 `subCategory` for sorting. Both modals' openers load the two sorters' presets before their
 `modalRequestId` check and call `wireReconSorting(body)` after rendering.
@@ -720,23 +723,34 @@ The Domestic PO modal and the shared MIR picker.
   only (domestic line items have no stable `item_id`). After any save, pin or dismiss,
   `onDomesticFieldSaved()` nulls that plant's PO cache, refetches, reopens the modal and re-renders the
   list.
-- **MIR picker** (feature: [api-and-features.md](api-and-features.md)): `mirPickerHtml()` renders one
-  `#mirPicker`; `wireMirPicker(container, api, poNumber, onDone)` takes an injected
-  `api = {candidates(q, itemRef), save(body)}` so Domestic (per-plant `<prefix>/purchase-orders/<po>/mir-candidates?q=`
-  and PATCH `.../mir-match`) and Import (`/api/imports/purchase-orders/<plant>/<po>/...`, whose candidates call also sends `itemRef`) share one
-  implementation. `openMirPicker()` moves the panel under the clicked `.recon-line`;
-  `loadMirCandidates()` (search debounced 250 ms); `renderMirCandidates()` shows date, party,
-  material, qty/rate, sheet rows and who currently holds the document (`claimedBy`, via
-  `mirClaimSummary()`, which skips holders marked `sharesReceipt` - this line's Bill of Entry siblings,
-  which keep their share either way). On a collision `chooseMirCandidate()` opens `#mirPickerChoice`
-  (built from DOM nodes, since the claim text carries sheet descriptions) with **Keep both** (focused),
-  **Move it here** and **Cancel**, each explained in a line below the buttons; `applyMirMatch()` sends
-  `{itemRef, mirNo, clear, share, reason}` (`mirNo: ''` = "no MIR", `clear: true` = back to automatic,
-  `share: true` = Keep both). `mirLabel()` prints a MIR number without doubling a "MIR" prefix Vapi's
-  numbers already carry.
-  When the response's `unfilledPins` names this line (every row of that MIR document is already
-  held by a newer pin), it says so instead of "Matched" - in the status line and, because
-  `onDone()` re-renders the modal and takes the status line with it, in a `window.alert()`.
+- **Edit MIR receipts panel** (feature:
+  [api-and-features.md](api-and-features.md#editing-a-lines-receipts-one-at-a-time-2026-09-29)):
+  `mirPickerHtml()` renders one `#mirPicker`; `wireMirPicker(container, api, poNumber, onDone)` takes an
+  injected `api = {plantKey, candidates(q, itemRef), save(body), preview(body), previewStatus(id),
+  changes()}` so Domestic (`apiForPlant()`, `<prefix>/purchase-orders/<po>/...` and
+  `<prefix>/mir-match-previews/<id>`) and Import (`apiImports()`) share one implementation; both send
+  `itemRef` with the candidates call. `openMirPicker()` moves the panel under the clicked `.recon-line`,
+  takes the line's receipts from `PO_RECON_LINES` and fetches `changes()` for its removals.
+  `renderMirPickerCurrent()` lists each counted receipt with its note and a Remove, and "Kept off this
+  line by hand" with an Undo. `loadMirCandidates()` (search debounced 250 ms); `renderMirCandidates()`
+  shows group headings (`MIR_CANDIDATE_GROUPS`), date, party, material, qty/rate, the PO column, sheet
+  rows, the `why` reasons, "counted on this line" (not clickable) and who holds the document
+  (`claimedBy`, via `mirClaimSummary()`, which skips holders marked `sharesReceipt`). On a collision
+  `chooseMirCandidate()` opens `#mirPickerChoice` (built from DOM nodes) with **Keep both** (focused),
+  **Move it here** and **Cancel**. Every change - add, remove, undo, "No MIR - not received", "Back to
+  automatic" - goes through `proposeMirChange()`: `#mirPickerPreview` shows the change in words, polls
+  `runMirPreview()` (1.5 s, 90 s cap, rejects on `stalled`) and renders `mirPreviewHtml()` - each line
+  whose receipts (`+` added, struck-through removed) or received quantity would move - with an
+  optional reason and Save / Cancel. Save works while the preview runs or after it failed.
+  `applyMirMatch()` sends `mirChangeBody()` through `saveMirChange()`, which follows the background
+  re-match (`waitForRematch()`), and names an `unfilledPins` / `unfilledEdits` hit instead of a
+  success - in the status line and a `window.alert()`, since `onDone()` re-renders the modal.
+  `mirLabel()` prints a MIR number without doubling Vapi's "MIR" prefix.
+- **Manual MIR changes** on the Flags & Corrections tab (both modals): `manualChangesSectionHtml()`
+  is the placeholder, `loadManualChanges(body, api, plantKey, onDone, requestId)` fills it after the
+  modal renders (guarded by `modalRequestId`) with each line's decisions - who, when, reason, "not
+  applied - line changed" when stale - and an undo each (confirm, then `saveMirChange()`), plus this
+  order's receipts placed on other orders by hand.
 
 ### frontend/js/import-po.js
 

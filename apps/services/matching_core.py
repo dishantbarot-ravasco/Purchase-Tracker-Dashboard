@@ -264,6 +264,9 @@ class _MatchConfig:
     # below is a no-op, which is also what keeps the existing tests - which
     # build a _MatchConfig by hand - working unchanged.
     manual_match_model: Optional[type] = None
+    # apps.core.models.ManualReceiptEdit (2026-09-29): one receipt added to or
+    # removed from a line by hand. Same injection, same None-is-a-no-op rule.
+    receipt_edit_model: Optional[type] = None
     syncrun_plant: str = ""
 
     stock_rate_field: str = ""  # "basic_rate" (HRS/Vapi) or "rate" (Achhad)
@@ -3159,11 +3162,12 @@ def match_po_mir_line_item(config: _MatchConfig, po_line_item):
             net_value_mismatched=net_value_mismatched,
             taxable_value_mismatched=taxable_value_mismatched,
             final_value_mismatched=final_value_mismatched,
-            # Receipt shares and pools span several lines of the plant, so
-            # only run_full_match() sets them; this single-line path clears
-            # what a previous full run left, as the import path does.
+            # Receipt shares, pools and manual receipts span several lines of
+            # the plant, so only run_full_match() sets them; this single-line
+            # path clears what a previous full run left, as the import path does.
             receipt_share=None,
             pool_line_refs="",
+            receipt_notes=[],
         ),
     )
     match.group_entries.set(group.entries if group is not None else [])
@@ -3238,6 +3242,7 @@ def match_import_po_mir_line_item(config: _MatchConfig, import_line_item):
         # single-line path clears what a previous full run may have left.
         receipt_share=None,
         pool_line_refs="",
+        receipt_notes=[],
         mir_exchange_rate=None,
         exchange_rate_mismatched=False,
     )
@@ -3690,7 +3695,7 @@ def _load_pins(config, positions_by_kind):
     """
     if config.manual_match_model is None or not config.syncrun_plant:
         return {}, []
-    rows = list(config.manual_match_model.objects.filter(plant=config.syncrun_plant))
+    rows = list(config.manual_match_model.objects.filter(plant=config.syncrun_plant).select_related("created_by"))
     if not rows:
         return {}, []
     # Newest first: two pins can name the same single-row MIR document, and
@@ -3717,6 +3722,54 @@ def _load_pins(config, positions_by_kind):
             rank[key] = order[(pin.po_kind, pin.po_number, pin.item_ref)]
     ordered = sorted(pins.items(), key=lambda kv: rank[kv[0]])
     return dict(ordered), stale
+
+
+def _load_receipt_edits(config, positions_by_kind):
+    """This plant's receipts added to or removed from a line by hand
+    (ManualReceiptEdit, 2026-09-29), resolved onto their line items the way
+    _load_pins() resolves pins: by (kind, PO number, position), a line whose
+    description no longer matches the one recorded is stale and its edits
+    are ignored and reported, never applied to whatever sits there now.
+
+    Returns (edits_by_key, stale): each key's edits newest first, so when two
+    lines add the same single-row document the more recent decision wins -
+    the same tie-break pins use."""
+    if config.receipt_edit_model is None or not config.syncrun_plant:
+        return {}, []
+    rows = list(config.receipt_edit_model.objects.filter(plant=config.syncrun_plant).select_related("created_by"))
+    if not rows:
+        return {}, []
+    rows.sort(key=lambda r: (r.updated_at, r.id), reverse=True)
+    by_address: dict = {}
+    for row in rows:
+        by_address.setdefault((row.po_kind, row.po_number, row.item_ref), []).append(row)
+    edits, stale = {}, []
+    for kind, positions in positions_by_kind.items():
+        edit_kind = PIN_KIND_BY_MATCH_KIND[kind]
+        for item_id, (po_number, item_ref, description) in positions.items():
+            for edit in by_address.get((edit_kind, po_number, item_ref), []):
+                if edit.item_description and edit.item_description.strip() != (description or "").strip():
+                    stale.append(edit)
+                    continue
+                edits.setdefault((kind, item_id), []).append(edit)
+    return edits, stale
+
+
+def _manual_note(decision, how: str, mir_no: str, **extra) -> dict:
+    """One entry of a match's receipt_notes: which receipt a person placed
+    (or moved) on this line, who did and when - read from the pin or edit
+    that did it."""
+    return {
+        "mirNo": mir_no,
+        "how": how,
+        "by": decision.created_by_email or "",
+        # The person's name as their account has it, for "added by ..."; the
+        # email above stays for an account since deleted or never named.
+        "byName": (getattr(decision.created_by, "full_name", "") or "") if decision.created_by_id else "",
+        "at": decision.updated_at.isoformat() if decision.updated_at else None,
+        "reason": decision.reason or "",
+        **extra,
+    }
 
 
 def _forced_candidate(config, matchable, mir, po, *, scorer, known_pos):
@@ -3770,7 +3823,7 @@ def _lock_plant_match(config: _MatchConfig) -> None:
 
 
 @transaction.atomic
-def run_full_match(config: _MatchConfig) -> dict:
+def run_full_match(config: _MatchConfig, dry_run: bool = False) -> dict:
     """Re-runs every matching pass for one plant - domestic PO line items
     AND import PO line items (both against the same shared MIR table, so
     fix 2.B's exclusive claiming considers them together), plus MIR<->Stock.
@@ -3798,6 +3851,11 @@ def run_full_match(config: _MatchConfig) -> dict:
     Safe to call repeatedly (idempotent upserts) - intended to run after
     each sync, and synchronously after any "Edit Everywhere" field edit that
     feeds matching.
+
+    `dry_run` is for a caller that rolls the transaction back afterwards
+    (apps/services/receipt_preview.py): it skips the MIR<->Stock pass, which
+    nothing in a PO<->MIR preview reads, and does not touch the data stamp,
+    so no open dashboard reloads for a change that was never saved.
     """
     # One match per plant at a time (2026-09-25). A pin or correction now
     # queues its re-match on the qcluster, which runs two workers, so it can
@@ -3830,10 +3888,24 @@ def run_full_match(config: _MatchConfig) -> dict:
     # Manual MIR pins for this plant, resolved onto the line items they
     # address. Read once per pass, same reasoning as the scorer/known-PO set
     # below - a pin is a property of the plant, not of any one line item.
-    pins, stale_pins = _load_pins(config, {
+    item_positions = {
         "po": line_item_positions(po_items),
         "import": line_item_positions(import_items),
-    })
+    }
+    pins, stale_pins = _load_pins(config, item_positions)
+    # Receipts added to or removed from one line by hand (2026-09-29). A
+    # removed document is dropped from that line's candidates in collect(),
+    # so every stage below simply never offers it; an added one is claimed
+    # right after the pins and merged into the line's own match at the end.
+    receipt_edits, stale_edits = _load_receipt_edits(config, item_positions)
+    removed_by_key: dict[tuple[str, int], dict] = {}  # key -> {mir_no: edit}
+    added_by_key: dict[tuple[str, int], list] = {}
+    for key, key_edits in receipt_edits.items():
+        for edit in key_edits:
+            if edit.action == "remove":
+                removed_by_key.setdefault(key, {})[edit.mir_no.strip()] = edit
+            else:
+                added_by_key.setdefault(key, []).append(edit)
 
     # Same reasoning, for import items - feeds _import_matchable()'s own
     # single-line-item-PO check (only relevant when config.
@@ -3897,6 +3969,10 @@ def run_full_match(config: _MatchConfig) -> dict:
                 if drop:
                     found = {i: c for i, c in found.items() if i not in drop}
                     pool = [c for c in pool if c.id not in drop]
+        removed = removed_by_key.get((kind, item.id))
+        if removed:
+            found = {i: c for i, c in found.items() if (c.mir.mir_no or "").strip() not in removed}
+            pool = [c for c in pool if (c.mir_no or "").strip() not in removed]
         for mir_id, candidate in found.items():
             candidates_by_key[(kind, item.id, mir_id)] = candidate
         group = _shipment_group(config, matchable, pool)
@@ -3946,6 +4022,7 @@ def run_full_match(config: _MatchConfig) -> dict:
     # line item that happen to share a database id are never confused.
     pinned_keys: set = set()
     pinned_mir_no = {p.mir_no.strip() for p in pins.values() if p.mir_no.strip()}
+    pinned_mir_no |= {e.mir_no.strip() for edits in added_by_key.values() for e in edits if e.mir_no.strip()}
     pin_rows_by_no: dict[str, list] = {}
     if pinned_mir_no:
         for row in config.mir_model.objects.filter(is_active=True, mir_no__in=pinned_mir_no):
@@ -4013,6 +4090,49 @@ def run_full_match(config: _MatchConfig) -> dict:
         pinned_keys.add(key)
         if target_no:
             claim_pin(key, pin, item, target_no)
+
+    # ADDED RECEIPTS SETTLE RIGHT AFTER THE PINS (2026-09-29) - a person named
+    # the document, so no automatic stage may take its row first. The line
+    # itself still takes part in every stage below (it is not in
+    # pinned_keys): an added receipt joins what it matches automatically, it
+    # does not replace it. That is the whole difference from a pin, and why
+    # adding 59/09 to HRS 3000001167's 7MPA line no longer costs it 20/09 and
+    # 66/09. The rows are merged into the line's match after the last
+    # automatic stage. A "Keep both" add claims nothing, like a shared pin.
+    added_rows: dict[tuple[str, int], list] = {}  # key -> [_Candidate]
+    added_edit_of: dict[tuple, object] = {}  # (key, mir id) -> the edit
+    shared_add_keys: set = set()
+    unfilled_edits = []
+    for key, key_edits in added_by_key.items():
+        item = items_by_kind_id.get(key)
+        matchable = items_by_key.get(key)
+        if item is None or matchable is None:
+            continue
+        for edit in key_edits:
+            doc_rows = pin_rows_by_no.get(edit.mir_no.strip(), [])
+            # Booked under this import line's own Bill of Entry: BOE
+            # settlement below gives the line its share of it, which is what
+            # the person asked for - claiming it here would take it from the
+            # BOE's other lines. Same rule as _pin_defers_to_boe() for pins.
+            if key[0] == "import" and _pin_defers_to_boe(config, item, doc_rows):
+                continue
+            held = {c.mir.id for c in added_rows.get(key, [])}
+            rows = [r for r in doc_rows if r.id not in held and (edit.shared or r.id not in claimed_mir_ids)]
+            if not rows:
+                unfilled_edits.append(edit)
+                continue
+            best = max(
+                (_forced_candidate(config, matchable, r, item.purchase_order, scorer=scorer, known_pos=known_pos)
+                 for r in rows),
+                key=lambda c: (_pair_weight(c), c.mir.id),
+            )
+            candidates_by_key[(key[0], key[1], best.mir.id)] = best
+            added_rows.setdefault(key, []).append(best)
+            added_edit_of[(key, best.mir.id)] = edit
+            if edit.shared:
+                shared_add_keys.add(key)
+            else:
+                claimed_mir_ids.add(best.mir.id)
 
     # BILL OF ENTRY NUMBERS SETTLE NEXT (2026-09-25) - an import receipt whose
     # MIR invoice_no is a line's BOE number belongs to that line; see
@@ -4188,23 +4308,84 @@ def run_full_match(config: _MatchConfig) -> dict:
         candidate = candidates_by_key[(key[0], key[1], mir_id)]
         assigned[key] = (candidate.mir, candidate.score, candidate.coverage, None)
 
-    # SHARED RECEIPTS ("Keep both" pins) - once everything is assigned, so
-    # the split sees every line that ended up holding the row.
+    # ADDED RECEIPTS JOIN THEIR LINE'S MATCH - after every automatic stage,
+    # so the line keeps whatever it matched on its own and counts the added
+    # rows on top, all compared as one total the way a PO-number group is. A
+    # line that matched nothing automatically takes the added rows alone,
+    # its best one as the primary. A line on a BOE share counts the added
+    # rows in full, so the share no longer applies to it.
+    for key, cands in added_rows.items():
+        extra = [c.mir for c in cands]
+        if key in assigned:
+            mir, score, coverage, group = assigned[key]
+            existing = list(group.entries) if group is not None else [mir]
+            held = {m.id for m in existing}
+            rows = existing + [m for m in extra if m.id not in held]
+            if len(rows) == len(existing):
+                continue
+            boe_share.pop(key, None)
+            assigned[key] = (mir, score, coverage, _aggregate_rows(
+                config, items_by_key[key], sorted(rows, key=lambda m: m.id), by_po_number=True))
+        else:
+            best = max(cands, key=lambda c: (_pair_weight(c), c.mir.id))
+            rows = sorted(extra, key=lambda m: m.id)
+            group = _aggregate_rows(config, items_by_key[key], rows, by_po_number=True) if len(rows) > 1 else None
+            assigned[key] = (best.mir, best.score, best.coverage, group)
+
+    # SHARED RECEIPTS ("Keep both" pins and adds) - once everything is
+    # assigned, so the split sees every line that ended up holding the row.
     receipt_share: dict[tuple[str, int], Decimal] = dict(boe_share)
-    _split_shared_rows(config, assigned, items_by_key, shared_pin_keys, receipt_share)
+    _split_shared_rows(config, assigned, items_by_key, shared_pin_keys | shared_add_keys, receipt_share)
 
     # IDENTICAL LINES OF ONE ORDER POOL THEIR RECEIPTS (2026-09-26) - last, so
     # every stage above has placed its rows first. See _pool_duplicate_lines().
+    # A line with a receipt added or removed by hand stays out of its pool:
+    # pooling would share the added row with its twins, or hand a removed
+    # one back.
     pool_members: dict = {}
     _pool_duplicate_lines(
         config, assigned, items_by_key,
         {key: item.purchase_order_id for key, item in items_by_kind_id.items()},
-        candidates_by_key, pinned_keys | boe_keys | shared_pin_keys, receipt_share, pool_members,
+        candidates_by_key, pinned_keys | boe_keys | shared_pin_keys | set(receipt_edits), receipt_share, pool_members,
     )
-    positions = {
-        "po": line_item_positions(po_items),
-        "import": line_item_positions(import_items),
-    }
+    positions = item_positions
+
+    # WHO PUT EACH RECEIPT HERE (2026-09-29) - saved on the match as
+    # receipt_notes, so the modal can say "added by ..." beside a receipt.
+    # A document removed from one line by hand and now counted by another
+    # is noted on the line that took it: the reader there did nothing, and
+    # would otherwise not know why it moved.
+    notes: dict[tuple[str, int], dict] = {}
+    unfilled_pin_ids = {p.pk for p in unfilled_pins}
+    for key, pin in pins.items():
+        if key in pinned_keys and key in assigned and pin.mir_no.strip() and pin.pk not in unfilled_pin_ids:
+            notes.setdefault(key, {})[pin.mir_no.strip()] = _manual_note(pin, "pinned", pin.mir_no.strip())
+    for (key, _mir_id), edit in added_edit_of.items():
+        notes.setdefault(key, {})[edit.mir_no.strip()] = _manual_note(edit, "added", edit.mir_no.strip())
+    if removed_by_key:
+        holders: dict[int, list] = {}
+        for key, (mir, _score, _cov, group) in assigned.items():
+            for row in (group.entries if group is not None else [mir]):
+                holders.setdefault(row.id, []).append(key)
+        removed_numbers = {no for removed in removed_by_key.values() for no in removed}
+        rows_of_no: dict[str, list] = {}
+        for row in config.mir_model.objects.filter(is_active=True, mir_no__in=removed_numbers):
+            rows_of_no.setdefault((row.mir_no or "").strip(), []).append(row)
+        for key, removed in removed_by_key.items():
+            source = items_by_kind_id.get(key)
+            if source is None:
+                continue
+            for mir_no, edit in removed.items():
+                for row in rows_of_no.get(mir_no, []):
+                    for holder in holders.get(row.id, []):
+                        if holder != key and mir_no not in notes.get(holder, {}):
+                            notes.setdefault(holder, {})[mir_no] = _manual_note(
+                                edit, "moved", mir_no, fromPoNumber=source.purchase_order.po_number,
+                                fromLine=int(positions[key[0]][key[1]][1]) + 1,
+                                fromKind=PIN_KIND_BY_MATCH_KIND[key[0]])
+
+    def receipt_notes(key):
+        return sorted(notes.get(key, {}).values(), key=lambda n: n["mirNo"])
 
     def pool_line_refs(key):
         """The pool's line numbers as the modal shows them (1-based), or ""."""
@@ -4260,6 +4441,7 @@ def run_full_match(config: _MatchConfig) -> dict:
                 # across runs the way dismissed_* is - removing the pin has to
                 # clear the badge on the next run. See ManualMirMatch.
                 manually_pinned=("po", item.id) in pinned_keys,
+                receipt_notes=receipt_notes(("po", item.id)),
                 receipt_share=receipt_share.get(("po", item.id)),
                 pool_line_refs=pool_line_refs(("po", item.id)),
                 tier=tier,
@@ -4335,6 +4517,7 @@ def run_full_match(config: _MatchConfig) -> dict:
             # across runs the way dismissed_* is - removing the pin has to
             # clear the badge. Same as the domestic loop above.
             manually_pinned=key in pinned_keys,
+            receipt_notes=receipt_notes(key),
             receipt_share=receipt_share.get(key),
             pool_line_refs=pool_line_refs(key),
             mir_exchange_rate=mir_fx,
@@ -4387,6 +4570,9 @@ def run_full_match(config: _MatchConfig) -> dict:
     config.mir_stock_match_model.objects.filter(mir_entry__is_active=False).delete()
 
     mir_matched = 0
+    if dry_run:
+        return _run_report(po_matched, import_po_matched, mir_matched, pinned_keys, unfilled_pins,
+                           stale_pins, unfilled_edits, stale_edits)
     # One shared Stock fetch for the whole loop instead of one per MIR entry -
     # this single change removed 473 of this run's queries on HRS alone.
     stock_pool = _StockLotPool(config)
@@ -4411,6 +4597,13 @@ def run_full_match(config: _MatchConfig) -> dict:
     # Tells every open dashboard its data moved - see apps/services/data_stamp.py.
     data_stamp.touch(config.syncrun_plant)
 
+    return _run_report(po_matched, import_po_matched, mir_matched, pinned_keys, unfilled_pins,
+                       stale_pins, unfilled_edits, stale_edits)
+
+
+def _run_report(po_matched, import_po_matched, mir_matched, pinned_keys, unfilled_pins, stale_pins,
+                unfilled_edits, stale_edits) -> dict:
+    """run_full_match()'s return value."""
     return {
         "po_line_items_matched": po_matched,
         "import_po_line_items_matched": import_po_matched,
@@ -4427,6 +4620,18 @@ def run_full_match(config: _MatchConfig) -> dict:
         "manual_pins_unfilled": [
             {"poNumber": p.po_number, "itemRef": p.item_ref, "mirNo": p.mir_no, "poKind": p.po_kind}
             for p in unfilled_pins
+        ],
+        # Receipts added by hand whose document had no free row left (another
+        # pin or add took it), and edits whose line changed underneath them -
+        # reported for the same reason as the pins above.
+        "manual_edits_unfilled": [
+            {"poNumber": e.po_number, "itemRef": e.item_ref, "mirNo": e.mir_no, "poKind": e.po_kind}
+            for e in unfilled_edits
+        ],
+        "manual_edits_stale": [
+            {"poNumber": e.po_number, "itemRef": e.item_ref, "mirNo": e.mir_no, "poKind": e.po_kind,
+             "action": e.action}
+            for e in stale_edits
         ],
         "ran_at": timezone.now(),
     }

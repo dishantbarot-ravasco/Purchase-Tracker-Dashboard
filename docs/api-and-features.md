@@ -27,8 +27,11 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | --- | --- | --- | --- | --- |
 | GET | `[<p>/]purchase-orders` | `purchase_orders` | Auth + plant (403) | Every active PO with line items, match fields, corrections, flag dismissals, data-quality flags |
 | PATCH | `[<p>/]purchase-orders/<po>/fields` | `correct_field` | IsEditor + plant | Inline correction of one PO or line-item field, audit row, re-match if the field feeds matching |
-| GET | `[<p>/]purchase-orders/<po>/mir-candidates` | `mir_candidates` | Auth + plant (403) | MIR documents a line could be pinned to, each with who holds it (`claimedBy`) |
-| PATCH | `[<p>/]purchase-orders/<po>/mir-match` | `set_mir_match` | IsEditor + plant | Set / clear a manual MIR pin, then run `run_full_match()` synchronously |
+| GET | `[<p>/]purchase-orders/<po>/mir-candidates` | `mir_candidates` | Auth + plant (403) | MIR documents a line could be given, each with who holds it (`claimedBy`); with `itemRef`, grouped with `why` |
+| PATCH | `[<p>/]purchase-orders/<po>/mir-match` | `set_mir_match` | IsEditor + plant | One manual change to a line (add / remove a receipt, not received, back to automatic, undo, or the older pin); re-match queued on the worker |
+| POST | `[<p>/]purchase-orders/<po>/mir-match/preview` | `preview_mir_match` | IsEditor + plant | Queue a dry run of that change; returns `previewId` |
+| GET | `[<p>/]mir-match-previews/<id>` | `preview_mir_match_status` | IsEditor + plant | The preview's state and the lines it moves |
+| GET | `[<p>/]purchase-orders/<po>/manual-changes` | `manual_changes` | Auth + plant (403) | The order's manual receipt decisions, who and when, plus its receipts placed on other orders |
 | PATCH | `[<p>/]purchase-orders/<po>/flags/dismiss` | `dismiss_flag` | IsEditor + plant | Dismiss / reinstate a PO-level flag (`FlagDismissal`) |
 | GET | `[<p>/]materials` | `materials` | Auth + plant (403) | Every active Stock lot with consumption, MSL, MIR↔Stock matches, flags |
 | PATCH | `[<p>/]materials/<lot_id>/fields` | `correct_material_field` | IsEditor + plant | Inline correction of one lot field |
@@ -50,7 +53,10 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `imports/purchase-orders/<plant>/<po>` | `purchase_order_detail` | Auth + plant (404) | One PO in detail shape (corrections, flag dismissals, vendor fields) |
 | PATCH | `imports/purchase-orders/<plant>/<po>/fields` | `correct_field` | IsEditor + plant (403) | Inline correction, `ImportPOCorrection` audit row, re-match if relevant |
 | GET | `imports/purchase-orders/<plant>/<po>/mir-candidates` | `mir_candidates` | Auth + plant (404) | Picker candidates; `claimedBy` lists domestic AND import holders |
-| PATCH | `imports/purchase-orders/<plant>/<po>/mir-match` | `set_mir_match` | IsEditor + plant (403) | Set / clear an import pin (`po_kind=import`) |
+| PATCH | `imports/purchase-orders/<plant>/<po>/mir-match` | `set_mir_match` | IsEditor + plant (403) | One manual change to an import line (`po_kind=import`) |
+| POST | `imports/purchase-orders/<plant>/<po>/mir-match/preview` | `preview_mir_match` | IsEditor + plant (403) | Queue a dry run of that change |
+| GET | `imports/mir-match-previews/<plant>/<id>` | `preview_mir_match_status` | IsEditor + plant (403) | The preview's state and result |
+| GET | `imports/purchase-orders/<plant>/<po>/manual-changes` | `manual_changes_view` | Auth + plant (404) | The import order's manual receipt decisions |
 | PATCH | `imports/purchase-orders/<plant>/<po>/flags/dismiss` | `dismiss_flag` | IsEditor + plant | Dismiss an `import_flags.py` flag (`<code>:<item_id>` key) |
 | PATCH | `imports/matches/po-mir/<plant>/<id>/dismiss` | `dismiss_import_po_mir_match` | IsEditor + plant | Dismiss / reinstate an import PO↔MIR match |
 | GET | `imports/sync-status` | `sync_status` | Auth, plants silently narrowed | Latest `IMPORT_PO_CSV` run per plant, plus `rodtepInProgress` / `advanceLicenseInProgress` |
@@ -540,13 +546,17 @@ Results are collapsed to
 MIR number, party or material. The Import picker also sends `itemRef`, so the endpoint can mark a
 holder on the same order and Bill of Entry as the edited line, for a receipt booked under that BOE,
 `sharesReceipt: true` - that line keeps its share whatever is chosen (see "Pins on a shared Bill of
-Entry" below), so the picker does not warn about it. `PATCH .../mir-match` takes
-`{itemRef, mirNo, reason, clear, share}`: a non-empty `mirNo` pins, an empty `mirNo` pins the line as deliberately unmatched, `clear: true` removes
-the pin, and `share: true` (read with `_request_bool()`, stored as `ManualMirMatch.shared`, migration
-`0061`) makes it a "Keep both" pin. An unknown `mirNo` is a 400; a retired PO or unknown `itemRef` a 404. The response carries
-`manualPinsApplied`, `stalePins` and `unfilledPins` from the synchronous `run_full_match()`. The
-pin row is written before that re-match (no `ATOMIC_REQUESTS`), so a request killed mid-match keeps
-the pin and the next scheduled match applies it.
+Entry" below), so the picker does not warn about it. With an `itemRef` both pickers also group and
+explain each receipt - see [Editing a line's receipts one at a time](#editing-a-lines-receipts-one-at-a-time-2026-09-29).
+`PATCH .../mir-match` takes `{itemRef, action, mirNo, reason, share, undoType, undoId}`
+(`_domestic_base.change_from_request()`, shared by both routers). The body with no `action` still
+works as it did: a non-empty `mirNo` pins (`set`), an empty `mirNo` pins the line as deliberately
+unmatched (`notReceived`), `clear: true` removes the pin (`auto`), and `share: true` (read with
+`_request_bool()`, stored as `ManualMirMatch.shared`, migration `0061`) makes it a "Keep both" pin.
+An unknown `mirNo` or action is a 400; a retired PO or unknown `itemRef` a 404. The change is
+written first and the re-match queued on the worker (`rematch.request_rematch()`); the response
+carries `manualPinsApplied`, `stalePins`, `unfilledPins` and `unfilledEdits` once that run has
+finished (always under pytest).
 `unfilledPins` lists pins whose MIR document had no free row left (a newer pin holds it, or the number
 is gone from MIR): the line is left unmatched, never auto-matched, and the picker tells the user
 instead of saying "Matched".
@@ -642,15 +652,78 @@ imports" shape: `manual_match_model` and `syncrun_plant` are injected by the thr
 modules.
 
 **One picker, two routers.** `po-modal.js`'s `wireMirPicker()` takes an `api` object
-(`candidates(q, itemRef)` / `save(body)`), so Domestic (`apiForPlant()`) and Import (`apiImports()`) share one
-panel and collision popup. It is a picker, not a free-text box: typing a number blind is how you pin a
-line to a document that does not exist.
+(`candidates(q, itemRef)`, `save(body)`, `preview(body)`, `previewStatus(id)`, `changes()`), so Domestic
+(`apiForPlant()`) and Import (`apiImports()`) share one panel and collision popup. It is a picker, not a
+free-text box: typing a number blind is how you pin a line to a document that does not exist.
 
 Covered by `apps/services/tests/test_manual_mir_match.py`, `test_manual_mir_match_imports.py` (pipeline)
 and `apps/api/tests/test_manual_mir_match_api.py`, `test_manual_mir_match_imports_api.py` (HTTP:
 permissions, plant scoping, validation, upsert-not-duplicate, retired PO, `claimedBy` / `itemRef` shape,
 import `clear` deleting only the import pin). No test covers the domestic endpoint against a same-numbered
 import pin.
+
+### Editing a line's receipts one at a time (2026-09-29)
+
+HRS 3000001167 (6MPA and 7MPA reclaim rubber, 50 t each): 7MPA counted 20/09 and 66/09, and 59/09 -
+also 7MPA, PO typed `30000001167` - sat on no line. It identifies on vendor and material, but the line
+was already settled by the receipts citing its PO number, and such a line takes nothing more. The only
+tool was a pin, which **replaces** a line's receipts with one document, so adding 59/09 cost the line
+its other two. The panel ("edit receipts" on each line card) now changes one receipt at a time.
+
+**`ManualReceiptEdit`** (`review.py`, migration `0074`): per line and MIR number, `action` **add** or
+**remove**, plus `shared`, `reason`, `created_by`. Addressed exactly like a pin (plant, `po_kind`, PO
+number, `item_ref`, `item_description` as the staleness tripwire), unique on
+`(plant, po_kind, po_number, item_ref, mir_no)`.
+
+- **Add**: the line counts the document's best row **on top of** what it matches automatically. The row
+  is claimed right after the pins (so no automatic stage takes it first), the line itself still takes
+  part in every stage, and the rows are merged into its match at the end, compared as one total.
+  `shared` is "Keep both" and claims nothing. A document with no free row is reported in
+  `manual_edits_unfilled`.
+- **Remove**: the document is dropped from that line's candidates, so no stage offers it there; its
+  rows go to whichever line fits next. A removal promises only that: the line may still be given
+  another receipt citing the order (the one-row-per-line step), which the reader can remove too or
+  answer with "not received".
+
+**`manual_receipts.apply_change()`** is the only writer of pins and edits, for both routers, and keeps
+them consistent: add clears a "not received" pin and a removal of the same document; remove clears an
+add of it and a pin naming it; `notReceived` clears the line's adds; `auto` ("Back to automatic")
+clears every pin and edit on the line; `undo` deletes one pin or edit by id, only on that line.
+
+**Who did it** - every run writes `receipt_notes` on the six `*POMirMatch` models (derived, like
+`manually_pinned`): one `{mirNo, how, by, byName, at, reason}` per receipt a person placed (`pinned`,
+`added`), and `moved` (with `fromPoNumber`, `fromLine`, `fromKind`) on the line that took a document
+someone removed elsewhere. `byName` is the account's `full_name`. Served per receipt as `manualNote`
+(`_counted_mirs()`), shown under the receipt on the card and in the panel.
+
+**`GET .../manual-changes`** (both routers, `manual_receipts.manual_changes()`): each line's pins and
+edits with `type`, `id`, `action`, who, when, reason and `stale`, plus `elsewhere` - pins and adds on
+**other** orders' lines naming a receipt that cites this one. The Flags & Corrections tab lists them
+with an Undo each (the tab's "revert" links undo field corrections only, and used to read as if they
+would undo a pin).
+
+**Preview** (`receipt_preview.py`): `POST .../mir-match/preview` with the PATCH's body queues a dry run
+and returns `previewId`; `GET [<p>/]mir-match-previews/<id>` (Import:
+`imports/mir-match-previews/<plant>/<id>`) returns `{state, lines, unfilled}`. The worker runs the
+plant's `run_full_match(dry_run=True)` twice inside rolled-back transactions - as things stand, then
+with the change applied through `apply_change()` - and lists every line whose receipts or received
+quantity moved, plus every line of the edited order. As-things-stand is a real run, not the match
+tables, because those hold the last run's result, which can predate a deploy or a queued change. A
+preview id belongs to its plant (another plant's endpoint answers 404). The panel's Save works while
+the preview runs and when it fails: the preview informs, it does not gate.
+
+**Candidates** (`order_candidates()`, both routers): with an `itemRef`, entries are grouped `cites` /
+`vendorMaterial` / `vendor` / `other`, newest first in each, with `onThisLine` and `why` - the
+matcher's own evidence (`_forced_candidate()`, the contradiction gate, the date verdict) as sentences:
+"Its PO column says 30000001167, which is not one of our orders - one digit away from 3000001167, so
+probably a typo. Correct it in the MIR sheet and it will match on its own", and "This line already
+counts the receipts that cite its PO number...".
+
+Covered by `apps/services/tests/test_manual_receipt_edits.py` (the 3000001167 shape: add keeps the
+line's receipts, contrast with a pin, move vs keep both, unfilled, stale, removal and its moved note,
+preview rolls back, dry run skips MIR<->Stock) and `apps/api/tests/test_manual_receipts_api.py`
+(every action's writes, undo scoping, permissions, listing, preview endpoints, candidate groups and
+reasons, the Import router).
 
 ### Dismiss / override a flagged match or flag
 
@@ -1029,9 +1102,19 @@ expressed only as config values, never as branches inside this module.
 - **`_sheet_row()`, `_mir_row_dict()`, `_claims_for_mir_numbers()`, `_held_mir_numbers()`,
   `_item_refs_for_pos()`**: the manual-pin picker's building blocks, shared with imports.
   `_held_mir_numbers()` yields each MIR document a match holds once, primary or grouped.
-- **`make_mir_candidates` / `make_set_mir_match`**: the domestic pin endpoints. `set_mir_match`
-  scopes its clear and upsert to `po_kind=domestic` (see
-  [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21)).
+- **`candidate_entries()` / `order_candidates()`**: one picker entry per MIR number, then grouped
+  most-likely first with `group` / `onThisLine` / `why` from `manual_receipts.candidate_insights()`;
+  shared with imports.
+- **`change_from_request()` / `resolve_line()` / `_pin_response()`**: a manual-change body read into
+  `apply_change()`'s terms (the older no-`action` body mapped to `set` / `notReceived` / `auto`), the
+  PO line at an `itemRef`, and the save response; shared with imports.
+- **`make_mir_candidates` / `make_set_mir_match`**: the domestic picker and save endpoints. The save
+  goes through `manual_receipts.apply_change()` with `po_kind=domestic` (see
+  [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21) and
+  [Editing a line's receipts one at a time](#editing-a-lines-receipts-one-at-a-time-2026-09-29)).
+- **`make_manual_changes` / `make_preview_mir_match` / `make_preview_status`**: the line decisions
+  listing, and the preview's queue and status endpoints (editor-only; a preview id answers only on
+  its own plant).
 - **`_request_bool(value, default)`**: reads a request-body flag as a real bool (a string by its
   meaning, missing or null as `default`). Used for every `dismissed` flag, domestic and import.
 
@@ -1091,10 +1174,11 @@ endpoints.
 - **Advance Licence**: `_advance_license_material_dict()`, `_material_rollup()` (authorisation taken once,
   imports summed), `_advance_license_dict()` (usage, validity countdowns, citations, `boeCrossCheck`),
   **`advance_license_ledger`**, **`advance_license_sync_trigger`**.
-- **Pins**: **`mir_candidates`** (404 for unknown or out-of-scope plant; merges domestic claims via
-  `_domestic_cfg_for()` with `_import_claims_for_mir_numbers()`), **`set_mir_match`** (writes and deletes
-  with `po_kind=import`). `_domestic_cfg_for()` imports the plant view modules lazily to avoid a circular
-  import.
+- **Pins and receipt edits**: **`mir_candidates`** (404 for unknown or out-of-scope plant; merges
+  domestic claims via `_domestic_cfg_for()` with `_import_claims_for_mir_numbers()`, then
+  `order_candidates()` against the plant's `match_config`), **`set_mir_match`** (`apply_change()` with
+  `po_kind=import`), **`manual_changes_view`**, **`preview_mir_match`**, **`preview_mir_match_status`**.
+  `_domestic_cfg_for()` imports the plant view modules lazily to avoid a circular import.
 
 ### apps/api/routers/review_views.py
 
@@ -1244,13 +1328,35 @@ a blank never erases. `LEGACY_PO_MODELS` names each plant's CSV mirror model.
 `request_rematch(plant_key)` queues `run_rematch()` on the qcluster (`async_task`), or joins the run
 already queued (`cache.add` on a pending key); `run_rematch()` clears that key FIRST, so a save made
 while a run is under way queues the next one rather than being folded into a run that may have read
-the old data; it records `{state, startedAt, finishedAt, unfilledPins, stalePins, manualPinsApplied}`
+the old data; it records `{state, startedAt, finishedAt, unfilledPins, stalePins, manualPinsApplied,
+unfilledEdits, staleEdits}`
 (or `error`) for `status(plant_key)`, which `sync-status` serves as `rematch`. `status()` also carries
 `queuedAt` and `stalled`: True once a queued run has waited more than `_STALL_SECONDS` (120) without
 the worker starting it - the qcluster is down - so the page stops waiting and says so. `_inline()` runs it in
 process under pytest. Two runs of one plant never overlap: `matching_core.run_full_match()` takes a
 per-plant `pg_advisory_xact_lock` (`_lock_plant_match()`), so a queued re-match and the hourly sync's
 match of the same plant run one after the other.
+
+### apps/services/manual_receipts.py
+
+The one writer of manual receipt decisions (pins and `ManualReceiptEdit`s) for both routers.
+`apply_change()` applies one `add` / `remove` / `notReceived` / `auto` / `undo` / `set` to one line,
+keeping pins and edits consistent, and raises `ValueError` with the reader's message.
+`manual_changes()` lists a PO's decisions plus `elsewhere` (decisions on other orders naming a receipt
+that cites this one, confirmed with `_names_this_po()`). `candidate_insights()` groups each offered
+MIR document and explains, from `_forced_candidate()` evidence, why the matcher is not counting it on
+the line; `_one_edit_apart()` spots a PO number one digit off. See
+[Editing a line's receipts one at a time](#editing-a-lines-receipts-one-at-a-time-2026-09-29).
+
+### apps/services/receipt_preview.py
+
+The preview of a manual change. `request_preview()` stores a `queued` state under a fresh id and
+queues `run_preview()` on the qcluster (inline under pytest, via `rematch._inline()`); `status()` adds
+`stalled` past `rematch._STALL_SECONDS`. `compute()` runs `run_full_match(dry_run=True)` twice inside
+rolled-back transactions (as things stand, then with `apply_change()`), `_snapshot()`s every active
+line's receipts and received quantity (import lines on BOE qty, share-scaled), and returns the lines
+that moved plus the edited order's, with `unfilled` when the run reported the change unfilled. A
+`ValueError` from `apply_change()` becomes `failed` with its message.
 
 ### apps/services/data_stamp.py
 

@@ -1107,7 +1107,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
     '<div class="modal-tab-panel" id="importPoModalOverview"' + (importModalTab !== 'overview' ? ' hidden' : '') + '>' + overviewHtml + '</div>' +
     '<div class="modal-tab-panel" id="importPoModalItems"' + (importModalTab !== 'items' ? ' hidden' : '') + '>' + itemsTabHtml + '</div>' +
     '<div class="modal-tab-panel" id="importPoModalShipment"' + (importModalTab !== 'shipment' ? ' hidden' : '') + '>' + shipmentTabHtml + '</div>' +
-    '<div class="modal-tab-panel" id="importPoModalFlags"' + (importModalTab !== 'flags' ? ' hidden' : '') + '>' + flagsTabHtml + correctionsHtml + correctionBoxHtml + '</div>';
+    '<div class="modal-tab-panel" id="importPoModalFlags"' + (importModalTab !== 'flags' ? ' hidden' : '') + '>' + flagsTabHtml + correctionsHtml + manualChangesSectionHtml() + correctionBoxHtml + '</div>';
 
   body.querySelectorAll('[data-itab]').forEach(tab => tab.onclick = () => {
     importModalTab = tab.dataset.itab;
@@ -1127,16 +1127,23 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   // line items compete for the same MIR table), so the full invalidate+reload
   // is the right refresh here, not a modal-only one.
   const mirBase = '/purchase-orders/' + encodeURIComponent(plantKey) + '/' + encodeURIComponent(poNumber);
-  wireMirPicker(body, {
+  const jsonBody = (method, payload) => ({ method: method, credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const mirApi = {
     plantKey: plantKey,
     // itemRef lets the server mark this line's Bill of Entry siblings, which
-    // share a BOE-booked receipt rather than lose it (sharesReceipt).
+    // share a BOE-booked receipt rather than lose it (sharesReceipt), and
+    // explain each receipt against this line.
     candidates: (q, itemRef) => apiImports(mirBase + '/mir-candidates?itemRef=' + encodeURIComponent(itemRef || '') +
       (q ? '&q=' + encodeURIComponent(q) : '')),
-    save: (payload) => apiImports(mirBase + '/mir-match',
-      { method: 'PATCH', credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
-  }, poNumber, () => onImportFieldSaved(plantKey, poNumber));
+    save: (payload) => apiImports(mirBase + '/mir-match', jsonBody('PATCH', payload)),
+    preview: (payload) => apiImports(mirBase + '/mir-match/preview', jsonBody('POST', payload)),
+    previewStatus: (id) => apiImports('/mir-match-previews/' + encodeURIComponent(plantKey) + '/' + encodeURIComponent(id)),
+    changes: () => apiImports(mirBase + '/manual-changes'),
+  };
+  const onMirChanged = () => onImportFieldSaved(plantKey, poNumber);
+  wireMirPicker(body, mirApi, poNumber, onMirChanged);
+  loadManualChanges(body, mirApi, plantKey, onMirChanged, myModalRequestId);
   wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
   applyDynamicStyles(body); // the reconciliation cards' progress bars
   body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () =>

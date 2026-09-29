@@ -263,6 +263,64 @@ class ManualMirMatch(models.Model):
         return f"{self.plant}/{self.po_kind}/{self.po_number}#{self.item_ref} -> {target}"
 
 
+class ManualReceiptEdit(models.Model):
+    """One receipt ADDED to, or REMOVED from, a PO line by hand, on top of
+    whatever the matcher counts for it (2026-09-29, project owner).
+
+    ManualMirMatch replaces a line's match with one MIR document, so adding a
+    missing receipt to a line that already counted two others took those two
+    away (HRS 3000001167: pinning 59/09 onto 7MPA left 20/09 and 66/09 to
+    fall onto 6MPA). An edit touches exactly one document and leaves the rest
+    of the line to the matcher:
+
+      - ADD: the line counts this document's best row in addition to what it
+        matches automatically. `shared` is "Keep both" - the line that
+        already holds the row keeps it too - otherwise the row is this
+        line's alone, claimed before any automatic stage runs.
+      - REMOVE: this line never counts this document; its rows go to
+        whichever line the matcher gives them to next.
+
+    Addressed exactly like ManualMirMatch - a MIR NUMBER, the line's
+    position (`item_ref`) and `item_description` as the staleness tripwire -
+    for the reasons in that model's docstring. One edit per line and
+    document: adding a document the line had removed replaces the removal.
+    """
+
+    class Action(models.TextChoices):
+        ADD = "add", "Add this receipt to the line"
+        REMOVE = "remove", "Remove this receipt from the line"
+
+    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
+    po_kind = models.CharField(
+        max_length=10, choices=ManualMirMatch.POKind.choices, default=ManualMirMatch.POKind.DOMESTIC)
+    po_number = models.CharField(max_length=100)
+    item_ref = models.CharField(max_length=50)
+    item_description = models.CharField(max_length=500, blank=True)
+    mir_no = models.CharField(max_length=20)
+    action = models.CharField(max_length=10, choices=Action.choices)
+    shared = models.BooleanField(default=False)
+    reason = models.TextField(blank=True)
+
+    created_by = models.ForeignKey(
+        "PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="manual_receipt_edits")
+    created_by_email = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["plant", "po_kind", "po_number", "item_ref", "mir_no"], name="uniq_manual_receipt_edit")
+        ]
+        indexes = [
+            models.Index(fields=["plant", "po_kind", "po_number"]),
+            models.Index(fields=["plant", "mir_no"]),
+        ]
+
+    def __str__(self):
+        return f"{self.plant}/{self.po_kind}/{self.po_number}#{self.item_ref} {self.action} {self.mir_no}"
+
+
 class MaterialCategoryReference(models.Model):
     """Canonical Category/Subcategory lookup, shared across all three plants
     (added 2026-09-08, project owner) - fixes the Raw Material Analysis

@@ -43,13 +43,14 @@ from apps.core.models import (
     MaterialCategoryReference,
     MaterialCorrection,
 )
-from apps.services import data_stamp, rematch
+from apps.services import data_stamp, receipt_preview, rematch
+from apps.services.manual_receipts import GROUP_ORDER, apply_change, candidate_insights, manual_changes
 from apps.services.flag_dismiss import dismiss_po_flag
 from apps.services.match_dismiss import dismiss_match
 # line_item_positions() is the matcher's OWN numbering - imported rather
 # than re-derived so the API and matching_core can never disagree about
 # which line a manual MIR pin addresses.
-from apps.services.matching_core import known_po_numbers, line_item_positions
+from apps.services.matching_core import _names_this_po, known_po_numbers, line_item_positions
 from apps.services.mir_without_po import (
     BUCKET_LABELS,
     BUCKET_ORDER,
@@ -342,7 +343,11 @@ def _counted_mirs(match, po_uom: str = "") -> tuple[list[dict], dict | None]:
     def _scaled(v):
         return v * share if (v is not None and share is not None) else v
 
+    # Who put a receipt on this line by hand, or moved it here by removing it
+    # from another line (matching_core's receipt_notes, 2026-09-29).
+    notes = {n.get("mirNo"): n for n in (getattr(match, "receipt_notes", None) or [])}
     out = [{
+        "manualNote": notes.get(r["mir"].mir_no),
         "mirNo": r["mir"].mir_no,
         "mirDate": r["mir"].mir_date.isoformat() if r["mir"].mir_date else None,
         "invoiceNo": getattr(r["mir"], "invoice_no", "") or "",
@@ -1613,14 +1618,67 @@ def _candidate_rows(mir_model, match_model, po, q):
     return (own + rest)[:max(_CANDIDATE_LIMIT, len(own))]
 
 
+def candidate_entries(rows, claims) -> dict:
+    """{mir_no: entry} - one picker entry per MIR NUMBER, not per row: a pin
+    or an added receipt names the document and the matcher picks the row, so
+    offering rows would promise a precision the feature deliberately does
+    not have. Shared with imports_views.mir_candidates()."""
+    seen: dict = {}
+    for row in rows:
+        if not row.mir_no:
+            continue
+        entry = seen.get(row.mir_no)
+        if entry is None:
+            entry = dict(_mir_row_dict(row))
+            entry["rowCount"] = 0
+            entry["sheetRows"] = []
+            entry["claimedBy"] = claims.get(row.mir_no, [])
+            seen[row.mir_no] = entry
+        entry["rowCount"] += 1
+        if _sheet_row(row) is not None:
+            entry["sheetRows"].append(_sheet_row(row))
+    return seen
+
+
+def order_candidates(seen: dict, config, po, items, item_ref, rows, match_model, *, is_import=False) -> list:
+    """The picker's entries grouped most-likely first - receipts citing this
+    order, then same vendor and material, then same vendor, then the rest,
+    newest first inside each group - each with the reasons the matcher is
+    not already counting it on the line (manual_receipts.candidate_insights()).
+    Without an itemRef there is no line to judge against, and the list keeps
+    _candidate_rows()'s order. Shared with imports_views.mir_candidates()."""
+    positions = line_item_positions(items)
+    item = next((i for i in items if positions[i.id][1] == item_ref), None) if item_ref else None
+    entries = list(seen.values())
+    if item is None:
+        return entries
+    match = match_model.objects.filter(po_line_item=item).select_related("mir_entry").prefetch_related(
+        "group_entries").first()
+    held_rows = (list(match.group_entries.all()) or [match.mir_entry]) if match else []
+    line_cites_po = any(_names_this_po(po.po_number, r.po_number_raw) for r in held_rows)
+    insights = candidate_insights(config, po, item, len(items), rows, is_import=is_import,
+                                  line_cites_po=line_cites_po)
+    held = {r.mir_no for r in held_rows}
+    for entry in entries:
+        info = insights.get(entry["mirNo"], {"group": "other", "why": []})
+        entry["group"] = info["group"]
+        entry["onThisLine"] = entry["mirNo"] in held
+        # A receipt the line already counts needs no explanation.
+        entry["why"] = [] if entry["onThisLine"] else info["why"]
+    entries.sort(key=lambda e: (e["mirDate"] or ""), reverse=True)
+    entries.sort(key=lambda e: GROUP_ORDER.get(e["group"], 9))
+    return entries
+
+
 def make_mir_candidates(cfg: _PlantConfig):
     """GET .../purchase-orders/<po>/mir-candidates?q=<text>&itemRef=<n>
 
-    MIR documents this line could be pinned to, newest first, each with who
-    currently holds it. `q` filters on MIR number, party or material; with
-    no `q` it returns the rows this plant's MIR already associates with this
-    PO number plus the most recent ones, which is what a reader opening the
-    picker most often wants."""
+    MIR documents this line could be given, each with who currently holds
+    it, grouped most-likely first and with the reasons the matcher is not
+    counting it on the line already (see order_candidates()). `q` filters on
+    MIR number, party or material; with no `q` it returns the rows this
+    plant's MIR already associates with this PO number plus the most recent
+    ones, which is what a reader opening the picker most often wants."""
 
     @api_view(["GET"])
     def mir_candidates(request, po_number):
@@ -1631,37 +1689,24 @@ def make_mir_candidates(cfg: _PlantConfig):
             return Response({"error": "Purchase order not found."}, status=404)
 
         q = (request.query_params.get("q") or "").strip()
+        item_ref = (request.query_params.get("itemRef") or "").strip()
         rows = _candidate_rows(cfg.mir_model, cfg.po_mir_match_model, po, q)
-
         claims = _claims_for_mir_numbers(cfg, {r.mir_no for r in rows if r.mir_no})
-        # One entry per MIR NUMBER, not per row - a pin names the document
-        # and the matcher picks the row, so offering rows would promise a
-        # precision the feature deliberately does not have.
-        seen: dict = {}
-        for row in rows:
-            if not row.mir_no:
-                continue
-            entry = seen.get(row.mir_no)
-            if entry is None:
-                entry = dict(_mir_row_dict(row))
-                entry["rowCount"] = 0
-                entry["sheetRows"] = []
-                entry["claimedBy"] = claims.get(row.mir_no, [])
-                seen[row.mir_no] = entry
-            entry["rowCount"] += 1
-            if _sheet_row(row) is not None:
-                entry["sheetRows"].append(_sheet_row(row))
-        return Response({"candidates": list(seen.values())})
+        seen = candidate_entries(rows, claims)
+        items = list(cfg.item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+        entries = order_candidates(seen, cfg.match_config, po, items, item_ref, rows, cfg.po_mir_match_model)
+        return Response({"candidates": entries})
 
     return mir_candidates
 
 
-def _pin_response(item_ref, mir_no, clear, shared, rm) -> dict:
+def _pin_response(item_ref, mir_no, clear, shared, rm, action="") -> dict:
     """The pin endpoints' body, shared with imports_views.set_mir_match()."""
     finished = rm.get("state") == "done" and not rm.get("queued")
     return {
         "status": "ok",
         "itemRef": item_ref,
+        "action": action,
         "mirNo": "" if clear else mir_no,
         "cleared": clear,
         "shared": False if clear else shared,
@@ -1669,74 +1714,139 @@ def _pin_response(item_ref, mir_no, clear, shared, rm) -> dict:
         "manualPinsApplied": rm.get("manualPinsApplied") if finished else None,
         "stalePins": rm.get("stalePins", []) if finished else [],
         "unfilledPins": rm.get("unfilledPins", []) if finished else [],
+        "unfilledEdits": rm.get("unfilledEdits", []) if finished else [],
     }
+
+
+def change_from_request(data) -> dict:
+    """A manual-change body read into manual_receipts.apply_change()'s terms.
+    Shared by the Domestic and Import save and preview endpoints.
+
+    Body: {itemRef, action, mirNo, share, reason, undoType, undoId}, where
+    action is add | remove | notReceived | auto | undo. The older body with
+    no action still works: {clear: true} is "auto", a mirNo alone is the
+    one-document pin ("set"), an empty mirNo is "notReceived"."""
+    mir_no = (data.get("mirNo") or "").strip()
+    action = (data.get("action") or "").strip()
+    if not action:
+        if _request_bool(data.get("clear"), False):
+            action = "auto"
+        else:
+            action = "set" if mir_no else "notReceived"
+    return {
+        "item_ref": str(data.get("itemRef") or "").strip(),
+        "action": action,
+        "mir_no": mir_no,
+        # "Keep both": use the document without taking it from its current
+        # holder - see ManualMirMatch.shared. Meaningless without a mirNo.
+        "shared": _request_bool(data.get("share"), False) and bool(mir_no),
+        "reason": (data.get("reason") or "").strip(),
+        "undo_type": (data.get("undoType") or "").strip(),
+        "undo_id": data.get("undoId"),
+    }
+
+
+def resolve_line(item_model, po, item_ref):
+    """(items, target line item or None) for a PO and a line position."""
+    items = list(item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+    refs = line_item_positions(items)
+    return items, next((i for i in items if refs[i.id][1] == item_ref), None)
 
 
 def make_set_mir_match(cfg: _PlantConfig):
     """PATCH .../purchase-orders/<po>/mir-match
 
-    Body: {itemRef, mirNo, reason, clear}
-      - `mirNo` non-empty  -> pin this line to that MIR document
-      - `mirNo` empty      -> pin it as deliberately UNMATCHED
-      - `clear: true`      -> remove the pin, back to automatic matching
-    """
+    One manual change to one line - see change_from_request() for the body
+    and manual_receipts.apply_change() for what each action writes. The
+    re-match is queued on the background worker."""
 
     @api_view(["PATCH"])
     @permission_classes([IsEditor])
     def set_mir_match(request, po_number):
         if not user_can_edit_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
-
-        item_ref = str(request.data.get("itemRef") or "").strip()
-        mir_no = (request.data.get("mirNo") or "").strip()
-        reason = (request.data.get("reason") or "").strip()
-        clear = _request_bool(request.data.get("clear"), False)
-        # "Keep both": use the document without taking it from its current
-        # holder - see ManualMirMatch.shared. Meaningless without a mirNo.
-        shared = _request_bool(request.data.get("share"), False) and bool(mir_no)
-
+        change = change_from_request(request.data)
         po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
         if not po:
             return Response({"error": "Purchase order not found."}, status=404)
-
-        items = list(cfg.item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
-        refs = line_item_positions(items)
-        target = next((i for i in items if refs[i.id][1] == item_ref), None)
+        _items, target = resolve_line(cfg.item_model, po, change["item_ref"])
         if target is None:
             return Response({"error": "Line item not found on this purchase order."}, status=404)
-
-        if clear:
-            # po_kind is part of the unique key: a PO number can exist as both
-            # a Domestic and an Import order, and this must never touch the
-            # import pin.
-            ManualMirMatch.objects.filter(
-                plant=cfg.syncrun_plant, po_kind=ManualMirMatch.POKind.DOMESTIC,
-                po_number=po_number, item_ref=item_ref).delete()
-        else:
-            if mir_no and not cfg.mir_model.objects.filter(is_active=True, mir_no=mir_no).exists():
-                return Response({"error": f"No active MIR entry numbered {mir_no!r} at this plant."}, status=400)
-            ManualMirMatch.objects.update_or_create(
-                plant=cfg.syncrun_plant,
-                po_kind=ManualMirMatch.POKind.DOMESTIC,
-                po_number=po_number,
-                item_ref=item_ref,
-                defaults=dict(
-                    mir_no=mir_no,
-                    shared=shared,
-                    # Captured now, compared on every later run - see
-                    # ManualMirMatch's docstring on staleness.
-                    item_description=target.description or "",
-                    reason=reason,
-                    created_by=request.user if getattr(request.user, "pk", None) else None,
-                    created_by_email=getattr(request.user, "email", ""),
-                ),
-            )
-
-        # Queued on the background worker (apps/services/rematch.py): the pin
-        # is saved now, and the page follows the re-match through
-        # sync-status's `rematch` block. unfilledPins/stalePins are filled
+        try:
+            apply_change(plant=cfg.syncrun_plant, po_kind=ManualMirMatch.POKind.DOMESTIC, po_number=po_number,
+                         item_description=target.description or "", mir_model=cfg.mir_model,
+                         user=request.user, **change)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=400)
+        # Queued on the background worker (apps/services/rematch.py): the
+        # change is saved now, and the page follows the re-match through
+        # sync-status's `rematch` block. unfilledPins/unfilledEdits are filled
         # only when the run has already finished (always, under pytest).
         rm = rematch.request_rematch(cfg.key)
-        return Response(_pin_response(item_ref, mir_no, clear, shared, rm))
+        return Response(_pin_response(change["item_ref"], change["mir_no"], change["action"] == "auto",
+                                      change["shared"], rm, action=change["action"]))
 
     return set_mir_match
+
+
+def make_manual_changes(cfg: _PlantConfig):
+    """GET .../purchase-orders/<po>/manual-changes
+
+    Every manual receipt decision on this order's lines, with who and when,
+    plus decisions on other orders' lines that took a receipt citing this
+    one - see manual_receipts.manual_changes()."""
+
+    @api_view(["GET"])
+    def manual_changes_view(request, po_number):
+        if not user_can_access_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to view this plant."}, status=403)
+        po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
+        if not po:
+            return Response({"error": "Purchase order not found."}, status=404)
+        items = list(cfg.item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+        return Response(manual_changes(plant=cfg.syncrun_plant, po_kind=ManualMirMatch.POKind.DOMESTIC, po=po,
+                                       items=items, mir_model=cfg.mir_model))
+
+    return manual_changes_view
+
+
+def make_preview_mir_match(cfg: _PlantConfig):
+    """POST .../purchase-orders/<po>/mir-match/preview  (same body as the PATCH)
+
+    Queues a dry run of the change (apps/services/receipt_preview.py) and
+    returns {previewId}; the page polls make_preview_status()'s GET."""
+
+    @api_view(["POST"])
+    @permission_classes([IsEditor])
+    def preview_mir_match(request, po_number):
+        if not user_can_edit_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+        change = change_from_request(request.data)
+        po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
+        if not po:
+            return Response({"error": "Purchase order not found."}, status=404)
+        _items, target = resolve_line(cfg.item_model, po, change["item_ref"])
+        if target is None:
+            return Response({"error": "Line item not found on this purchase order."}, status=404)
+        preview_id = receipt_preview.request_preview(cfg.key, dict(
+            plant=cfg.syncrun_plant, po_kind=ManualMirMatch.POKind.DOMESTIC, po_number=po_number,
+            item_description=target.description or "", **change))
+        return Response({"previewId": preview_id, **(receipt_preview.status(preview_id) or {})})
+
+    return preview_mir_match
+
+
+def make_preview_status(cfg: _PlantConfig):
+    """GET .../mir-match/preview/<id> - the preview's state and result."""
+
+    @api_view(["GET"])
+    @permission_classes([IsEditor])
+    def preview_status(request, preview_id):
+        if not user_can_edit_plant(request.user, cfg.key):
+            return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+        data = receipt_preview.status(preview_id)
+        if data is None or data.get("plantKey") != cfg.key:
+            return Response({"error": "That preview has expired - try again."}, status=404)
+        return Response(data)
+
+    return preview_status

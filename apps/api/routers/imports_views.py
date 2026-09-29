@@ -51,14 +51,16 @@ from apps.api.routers._domestic_base import (
     _category_reference_map,
     _candidate_rows,
     _pin_response,
+    candidate_entries,
+    change_from_request,
+    order_candidates,
+    resolve_line,
     _claims_for_mir_numbers,
     _counted_mirs,
     _held_mir_numbers,
     _match_config_for,
-    _mir_row_dict,
     _po_material_categories,
     _request_bool,
-    _sheet_row,
 )
 # Each plant's own MIR model, for the manual-MIR-match picker. Imports
 # reconcile against the SAME MIR table as that plant's domestic POs (see
@@ -69,7 +71,8 @@ from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
 # API and matching_core can never disagree about what a pin addresses.
 from apps.services.matching_core import _boe_key, _import_rate_value_inr, import_landed_rates, line_item_positions
 from apps.services.parsers.common import normalize_material
-from apps.services import bl_tracking, data_stamp, rematch
+from apps.services import bl_tracking, data_stamp, receipt_preview, rematch
+from apps.services.manual_receipts import apply_change, manual_changes
 from apps.services import import_flags as flags
 from apps.services import license_links
 from apps.services.flag_dismiss import dismiss_po_flag
@@ -1296,21 +1299,10 @@ def mir_candidates(request, plant, po_number):
                 if h.get("isImport") and h["poNumber"] == po.po_number and boe_by_ref.get(h["itemRef"]) == own_boe:
                     h["sharesReceipt"] = True
 
-    seen: dict = {}
-    for row in rows:
-        if not row.mir_no:
-            continue
-        entry = seen.get(row.mir_no)
-        if entry is None:
-            entry = dict(_mir_row_dict(row))
-            entry["rowCount"] = 0
-            entry["sheetRows"] = []
-            entry["claimedBy"] = claims.get(row.mir_no, [])
-            seen[row.mir_no] = entry
-        entry["rowCount"] += 1
-        if _sheet_row(row) is not None:
-            entry["sheetRows"].append(_sheet_row(row))
-    return Response({"candidates": list(seen.values())})
+    seen = candidate_entries(rows, claims)
+    entries = order_candidates(seen, _domestic_cfg_for(plant).match_config, po, items, item_ref, rows,
+                               match_model, is_import=True)
+    return Response({"candidates": entries})
 
 
 def _import_claims_for_mir_numbers(plant, mir_numbers):
@@ -1358,54 +1350,82 @@ def _domestic_cfg_for(plant):
 def set_mir_match(request, plant, po_number):
     """PATCH /api/imports/purchase-orders/<plant>/<po>/mir-match
 
-    Body: {itemRef, mirNo, reason, clear} - identical to the Domestic
-    endpoint's, see _domestic_base.make_set_mir_match()."""
+    One manual change to one import line - the same body and actions as the
+    Domestic endpoint (_domestic_base.change_from_request()), written by the
+    same manual_receipts.apply_change() with po_kind=IMPORT."""
     resolved = _PLANTS.get(plant)
     if not resolved:
         return Response({"error": "Unknown plant."}, status=404)
     if not user_can_edit_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
     po_model, item_model, sr_plant, _label, _match_model = resolved
-
-    item_ref = str(request.data.get("itemRef") or "").strip()
-    mir_no = (request.data.get("mirNo") or "").strip()
-    reason = (request.data.get("reason") or "").strip()
-    clear = _request_bool(request.data.get("clear"), False)
-    # "Keep both": use the document without taking it from its current
-    # holder - see ManualMirMatch.shared. Meaningless without a mirNo.
-    shared = _request_bool(request.data.get("share"), False) and bool(mir_no)
-
+    change = change_from_request(request.data)
     po = po_model.objects.filter(po_number=po_number, is_active=True).first()
     if not po:
         return Response({"error": "Purchase order not found."}, status=404)
-
-    items = list(item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
-    refs = line_item_positions(items)
-    target = next((i for i in items if refs[i.id][1] == item_ref), None)
+    _items, target = resolve_line(item_model, po, change["item_ref"])
     if target is None:
         return Response({"error": "Line item not found on this purchase order."}, status=404)
-
-    if clear:
-        ManualMirMatch.objects.filter(
-            plant=sr_plant, po_kind=ManualMirMatch.POKind.IMPORT,
-            po_number=po_number, item_ref=item_ref).delete()
-    else:
-        if mir_no and not _MIR_MODEL[plant].objects.filter(is_active=True, mir_no=mir_no).exists():
-            return Response({"error": f"No active MIR entry numbered {mir_no!r} at this plant."}, status=400)
-        ManualMirMatch.objects.update_or_create(
-            plant=sr_plant,
-            po_kind=ManualMirMatch.POKind.IMPORT,
-            po_number=po_number,
-            item_ref=item_ref,
-            defaults=dict(
-                mir_no=mir_no,
-                shared=shared,
-                item_description=target.description or "",
-                reason=reason,
-                created_by=request.user if getattr(request.user, "pk", None) else None,
-                created_by_email=getattr(request.user, "email", ""),
-            ),
-        )
-
+    try:
+        apply_change(plant=sr_plant, po_kind=ManualMirMatch.POKind.IMPORT, po_number=po_number,
+                     item_description=target.description or "", mir_model=_MIR_MODEL[plant],
+                     user=request.user, **change)
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=400)
     # On the background worker - see apps/services/rematch.py.
-    return Response(_pin_response(item_ref, mir_no, clear, shared, rematch.request_rematch(plant)))
+    return Response(_pin_response(change["item_ref"], change["mir_no"], change["action"] == "auto",
+                                  change["shared"], rematch.request_rematch(plant), action=change["action"]))
+
+
+@api_view(["GET"])
+def manual_changes_view(request, plant, po_number):
+    """GET /api/imports/purchase-orders/<plant>/<po>/manual-changes - see
+    manual_receipts.manual_changes()."""
+    resolved = _PLANTS.get(plant)
+    if not resolved or not user_can_access_plant(request.user, plant):
+        return Response({"error": "Unknown plant."}, status=404)
+    po_model, item_model, sr_plant, _label, _match_model = resolved
+    po = po_model.objects.filter(po_number=po_number, is_active=True).first()
+    if not po:
+        return Response({"error": "Purchase order not found."}, status=404)
+    items = list(item_model.objects.filter(purchase_order=po).select_related("purchase_order"))
+    return Response(manual_changes(plant=sr_plant, po_kind=ManualMirMatch.POKind.IMPORT, po=po, items=items,
+                                   mir_model=_MIR_MODEL[plant]))
+
+
+@api_view(["POST"])
+@permission_classes([IsEditor])
+def preview_mir_match(request, plant, po_number):
+    """POST /api/imports/purchase-orders/<plant>/<po>/mir-match/preview -
+    see apps/services/receipt_preview.py."""
+    resolved = _PLANTS.get(plant)
+    if not resolved:
+        return Response({"error": "Unknown plant."}, status=404)
+    if not user_can_edit_plant(request.user, plant):
+        return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+    po_model, item_model, sr_plant, _label, _match_model = resolved
+    change = change_from_request(request.data)
+    po = po_model.objects.filter(po_number=po_number, is_active=True).first()
+    if not po:
+        return Response({"error": "Purchase order not found."}, status=404)
+    _items, target = resolve_line(item_model, po, change["item_ref"])
+    if target is None:
+        return Response({"error": "Line item not found on this purchase order."}, status=404)
+    preview_id = receipt_preview.request_preview(plant, dict(
+        plant=sr_plant, po_kind=ManualMirMatch.POKind.IMPORT, po_number=po_number,
+        item_description=target.description or "", **change))
+    return Response({"previewId": preview_id, **(receipt_preview.status(preview_id) or {})})
+
+
+@api_view(["GET"])
+@permission_classes([IsEditor])
+def preview_mir_match_status(request, plant, preview_id):
+    """GET /api/imports/mir-match-previews/<plant>/<id>."""
+    if plant not in _PLANTS:
+        return Response({"error": "Unknown plant."}, status=404)
+    if not user_can_edit_plant(request.user, plant):
+        return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
+    data = receipt_preview.status(preview_id)
+    if data is None or data.get("plantKey") != plant:
+        return Response({"error": "That preview has expired - try again."}, status=404)
+    return Response(data)

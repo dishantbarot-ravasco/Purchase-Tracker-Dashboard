@@ -85,6 +85,25 @@ function reconStatus(line) {
   return { cls: 'recon-over', text: 'Over-received · ' + pct.toLocaleString('en-IN', { maximumFractionDigits: 1 }) + '%', pct };
 }
 
+// Who put a receipt on a line by hand, as the card and the edit panel say it
+// (matching_core's receipt_notes, served per receipt as `manualNote`,
+// 2026-09-29): "Added by Dishant Barot on 29 Sep 2026", or for a receipt
+// that landed here because someone removed it from another line, "Moved here
+// ... removed from line 2". The name is the account's full name, else email.
+function manualNoteText(n, poNumber) {
+  if (!n) return '';
+  const who = n.byName || n.by || 'someone';
+  const when = n.at ? ' on ' + formatDateIN(localDateOf(n.at)) : '';
+  if (n.how === 'added') return 'Added by ' + who + when;
+  if (n.how === 'pinned') return 'Set by hand by ' + who + when;
+  if (n.how === 'moved') {
+    const from = n.fromPoNumber === poNumber
+      ? 'line ' + n.fromLine : (n.fromKind === 'import' ? 'Import ' : '') + 'PO ' + n.fromPoNumber + ', line ' + n.fromLine;
+    return 'Moved here: ' + who + ' removed it from ' + from + when;
+  }
+  return '';
+}
+
 // Confidence, manual-pin tag, "change" link and dismiss/reinstate - the
 // controls matchStatusHtml() used to carry, minus the Δ% badges the table
 // below now replaces with real numbers. Dismiss still appears only when the
@@ -98,7 +117,11 @@ function reconControlsHtml(line, plantKey) {
       (line.score != null ? ' (score ' + line.score.toFixed(2) + ')' : '');
     out += '<span class="conf-badge conf-' + conf + '" title="' + escapeHtml(confTitle) + '">' + conf + '</span>';
   }
-  if (line.pinned) out += ' <span class="pinned-tag" title="This MIR match was set by hand and is not re-decided by the matcher.">manual</span>';
+  if (line.pinned) {
+    const pinNote = (line.mirs || []).map(m => m.manualNote).find(n => n && n.how === 'pinned');
+    const byText = pinNote ? ' ' + manualNoteText(pinNote, line.poNumber) + '.' : '';
+    out += ' <span class="pinned-tag" title="' + escapeHtml('This MIR match was set by hand and is not re-decided by the matcher.' + byText) + '">manual</span>';
+  }
   if (line.flagged) {
     if (line.dismissed) {
       out += ' <span class="dismissed-tag" title="' + escapeHtml('Dismissed' + (line.dismissedBy ? ' by ' + line.dismissedBy : '') + (line.dismissedReason ? ': ' + line.dismissedReason : '')) + '">flags dismissed</span>';
@@ -112,7 +135,7 @@ function reconControlsHtml(line, plantKey) {
       ' data-item-ref="' + escapeHtml(String(line.itemRef)) + '"' +
       ' data-description="' + escapeHtml(line.description || '') + '"' +
       ' data-current-mir="' + escapeHtml(line.currentMirNo || '') + '"' +
-      ' data-pinned="' + (line.pinned ? '1' : '0') + '">change MIR</span>';
+      ' data-pinned="' + (line.pinned ? '1' : '0') + '">edit receipts</span>';
   }
   return out;
 }
@@ -137,7 +160,8 @@ function reconReceiptsHtml(line) {
     { label: 'Qty', key: 'qty', attrs: num },
   ].concat(unitsDiffer ? [{ label: 'Qty (' + (line.uom || 'PO unit') + ')', attrs: num }] : [])
     .concat([{ label: 'Rate', key: 'rate', attrs: num }, { label: 'Value', key: 'value', attrs: num }]);
-  const rowHtml = (m, idx) => '<tr data-sort-row="' + idx + '"><td class="mono fw-700">' + escapeHtml(m.mirNo || '-') + '</td>' +
+  const rowHtml = (m, idx) => '<tr data-sort-row="' + idx + '"><td class="mono fw-700">' + escapeHtml(m.mirNo || '-') +
+      (m.manualNote ? '<div class="recon-manual-note">' + escapeHtml(manualNoteText(m.manualNote, line.poNumber)) + '</div>' : '') + '</td>' +
     '<td class="num mono">' + (m.sheetRow != null ? escapeHtml(String(m.sheetRow)) : '-') + '</td>' +
     '<td>' + escapeHtml(formatDateIN(m.mirDate)) + '</td>' +
     '<td>' + escapeHtml(m.invoiceNo || '-') + '</td>' +
@@ -445,7 +469,7 @@ function receiptShareNote(share, tier, poolRefs) {
 
 function domesticReconLine(it, index, po, plantKey) {
   return {
-    index, description: it.description, uom: it.uom,
+    index, description: it.description, uom: it.uom, poNumber: po.poNumber,
     // For sorting the cards (PO_LINES_SORT) - not shown as figures.
     deliveryDate: it.deliveryDate || null, category: it.category || '', subCategory: it.subCategory || '',
     chips: [{ label: 'Delivery', value: it.deliveryDate ? formatDateIN(it.deliveryDate) : '' }],
@@ -470,7 +494,7 @@ function importReconLine(it, index, po, plantKey) {
     ? currency + ' ' + Number(it.netPrice).toLocaleString('en-IN', { maximumFractionDigits: 4 }) + ' × ' + it.exchangeRate
     : '';
   return {
-    index, description: it.description, uom: it.uom,
+    index, description: it.description, uom: it.uom, poNumber: po.poNumber,
     // For sorting the cards (PO_LINES_SORT) - not shown as figures.
     deliveryDate: it.deliveryDate || null, category: it.category || '', subCategory: it.subCategory || '',
     chips: [

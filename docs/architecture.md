@@ -469,6 +469,11 @@ Cross-plant human decisions and reference data, all with a `plant` column.
 - `FlagDismissal` - current dismissed state (upserted, not a log) for read-time-computed PO flags;
   unique on `(plant, po_number, flag_key)`. `flag_key` is opaque: a domestic flag label, or
   `<code>:<item_id>` for import flags.
+- `ManualReceiptEdit` (migration `0074`) - one MIR document added to or removed from one PO line by
+  hand, on top of what the matcher counts; addressed like `ManualMirMatch` and unique on
+  `(plant, po_kind, po_number, item_ref, mir_no)`. The same migration adds `receipt_notes` (JSON,
+  derived every run) to the six `*POMirMatch` models: who placed or moved each receipt. See
+  [api-and-features.md](api-and-features.md#editing-a-lines-receipts-one-at-a-time-2026-09-29).
 - `ManualMirMatch` - a human pin of a PO line to a MIR **number** (blank means "leave unmatched");
   unique on `(plant, po_kind, po_number, item_ref)`. `po_kind` (`domestic`/`import`) is in the key
   because one PO number can exist in both tables. `item_ref` is the line's zero-based position by

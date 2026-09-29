@@ -30,6 +30,7 @@ from apps.core.models import (
     RTPVapiPOMirMatch,
     RTPVapiRMLot,
     ManualMirMatch,
+    ManualReceiptEdit,
     SyncRun,
 )
 from apps.services import matching_core
@@ -104,6 +105,7 @@ MATCH_CONFIG = _MatchConfig(
     # value, injected rather than imported inside matching_core so that
     # module keeps its "no model imports" shape. See ManualMirMatch.
     manual_match_model=ManualMirMatch,
+    receipt_edit_model=ManualReceiptEdit,
     syncrun_plant=SyncRun.Plant.RTP_VAPI,
     stock_rate_field="basic_rate",
     stock_vendor_field="supplier_name",
@@ -207,8 +209,8 @@ MATCH_CONFIG = _MatchConfig(
 )
 
 
-def run_full_match() -> dict:
-    return matching_core.run_full_match(MATCH_CONFIG)
+def run_full_match(dry_run: bool = False) -> dict:
+    return matching_core.run_full_match(MATCH_CONFIG, dry_run=dry_run)
 
 
 def match_po_mir_line_item(po_line_item):

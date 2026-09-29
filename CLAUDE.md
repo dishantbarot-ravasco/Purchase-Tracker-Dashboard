@@ -196,6 +196,11 @@ Read the linked section before breaking any of these. Each is there because it w
 - Every CSV export uses `SafeCsvWriter`. [data export](docs/api-and-features.md#data-export)
 - Treat every match as a suggestion; never wire an automatic action off one.
   [match accuracy](docs/api-and-features.md#match-accuracy-manual-validation-is-required-not-optional)
+- Manual receipt decisions (pins and `ManualReceiptEdit` add/remove) are written only by
+  `manual_receipts.apply_change()`, and every change in the panel is previewed through
+  `receipt_preview.py` on the worker, never in the request. An added receipt joins the line's automatic
+  receipts; only a pin replaces them.
+  [receipts](docs/api-and-features.md#editing-a-lines-receipts-one-at-a-time-2026-09-29)
 - A manual pin names a MIR number, not a row, and `po_kind` belongs in every pin query. "Keep both"
   (`shared`) claims nothing; an import pin naming its own BOE's receipt defers to BOE settlement. A
   pinned line still collects its other receipts citing the same order (PO-number groups, step two) -

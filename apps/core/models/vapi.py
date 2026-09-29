@@ -430,6 +430,11 @@ class RTPVapiPOMirMatch(models.Model):
     # rather than preserved like dismissed_* - it is derived from whether a
     # pin currently exists, so removing the pin must clear the badge.
     manually_pinned = models.BooleanField(default=False)
+    # Receipts on this match placed or moved by a person (2026-09-29): one
+    # {mirNo, how: pinned|added|moved, by, at, reason, fromPoNumber, fromLine}
+    # per document, so the modal can say who put a receipt here. Derived and
+    # rewritten every run_full_match(), like manually_pinned.
+    receipt_notes = models.JSONField(default=list, blank=True)
     # Set when a "Keep both" pin shares this line's MIR row with another
     # line: each counts the row's qty and value times its share of the
     # holders' ordered quantity. NULL for an ordinary match. Same meaning as
@@ -732,6 +737,11 @@ class RTPVapiImportPOMirMatch(models.Model):
     # HRSPOMirMatch.manually_pinned. Recomputed on every run_full_match()
     # rather than preserved like dismissed_*.
     manually_pinned = models.BooleanField(default=False)
+    # Receipts on this match placed or moved by a person (2026-09-29): one
+    # {mirNo, how: pinned|added|moved, by, at, reason, fromPoNumber, fromLine}
+    # per document, so the modal can say who put a receipt here. Derived and
+    # rewritten every run_full_match(), like manually_pinned.
+    receipt_notes = models.JSONField(default=list, blank=True)
     # This line's share of a receipt that covers several lines of one Bill
     # of Entry (2026-09-25) - e.g. a 2,000 KG and a 14,000 KG line booked in
     # MIR as one 16,000 KG row. Each line counts the row's quantity and value

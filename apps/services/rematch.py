@@ -91,6 +91,8 @@ def run_rematch(plant_key: str) -> None:
         "unfilledPins": result.get("manual_pins_unfilled", []),
         "stalePins": result.get("manual_pins_stale", []),
         "manualPinsApplied": result.get("manual_pins_applied"),
+        "unfilledEdits": result.get("manual_edits_unfilled", []),
+        "staleEdits": result.get("manual_edits_stale", []),
     }, None)
 
 

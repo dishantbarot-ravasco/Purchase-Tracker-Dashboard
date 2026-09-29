@@ -982,6 +982,29 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 /* Amber, not red: a document already being used is a real consequence to
    read before clicking, but it is a legitimate choice, not an error. */
 .mir-cand-claim { margin-top:4px; padding:4px 8px; border-radius:6px; background:var(--amber-soft); color:var(--amber-text); font-weight:600; }
+/* Edit MIR receipts (2026-09-29): what the line counts, the grouped search
+   with its "why not already here" reasons, and the preview of a change. */
+.mir-picker-sec { margin-top:10px; }
+.mir-picker-sec-title { font-size:11px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; margin-bottom:6px; }
+.mir-picker-sub { font-size:11px; color:var(--slate-soft); font-weight:700; margin:8px 0 4px; }
+.mir-cur-row { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:6px 10px; border:1px solid var(--border-soft); border-radius:8px; margin-bottom:6px; font-size:12.5px; }
+.mir-cur-removed { background:var(--gray-soft); }
+.mir-note, .recon-manual-note { font-size:11px; font-weight:600; color:var(--indigo-text); font-family:inherit; margin-top:2px; white-space:normal; }
+.mir-cand-group { position:sticky; top:0; z-index:1; padding:5px 12px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); background:var(--gray-soft); border-bottom:1px solid var(--border-soft); }
+.mir-cand-here { cursor:default; opacity:0.7; }
+.mir-cand-here:hover { background:transparent; }
+.mir-cand-why { margin:4px 0 0; padding-left:18px; color:var(--slate); }
+.mir-cand-why li { margin-top:2px; }
+.mir-preview { margin-top:10px; padding:12px 14px; border:1px solid var(--gold-accent-border); border-radius:8px; background:var(--gold-accent-soft); font-size:12.5px; }
+.mir-preview[hidden] { display:none !important; }
+.mir-preview-title { font-weight:700; color:var(--slate); margin-bottom:8px; }
+.mir-preview .mir-choice-primary { background:var(--navy-solid); color:var(--on-accent); border-color:var(--navy-solid); }
+.mir-preview-reason { flex:1; min-width:180px; padding:7px 10px; border:1px solid var(--border-strong); border-radius:7px; font-size:12.5px; font-family:inherit; }
+.mir-prev-table { background:var(--card); }
+.mir-prev-edited td { font-weight:700; }
+.mir-prev-add { color:var(--green-text); font-weight:700; }
+.mir-prev-drop { color:var(--red-text); font-weight:700; text-decoration:line-through; }
+.mir-prev-same { color:var(--slate-soft); }
 
 .mat-toolbar { display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
 .mat-search { flex:1; min-width:220px; padding:9px 13px; border:1px solid var(--border-strong); border-radius:9px; font-size:13px; }

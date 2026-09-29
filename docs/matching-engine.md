@@ -309,6 +309,20 @@ based on PO numbers only."*
   pin, not "Keep both", not BOE-settled) skips step one and competes in step two on the same terms as
   its siblings, the pinned row staying its primary. `test_manual_mir_match.py`'s
   `TestPinnedLineKeepsItsOtherPoCitedReceipts` pins it.
+- **A line settled by its PO-number receipts takes nothing more automatically.** A receipt that
+  identifies on vendor and material but does not cite the order (HRS 59/09, PO typed `30000001167`)
+  is not added on top - a mistyped number that names no order we hold is no evidence either way, and
+  the line is out of the ungrouped assignment. The picker says so for such a receipt, and a person can
+  add it by hand.
+- **Receipts added or removed by hand** (`ManualReceiptEdit`, 2026-09-29). `_load_receipt_edits()`
+  resolves them like pins. A removed document is dropped from that line's candidates in `collect()`,
+  before any stage. An added one is claimed right after the pins (not for "Keep both", nor for an
+  import line's own BOE receipt, which BOE settlement shares) while the line stays in every automatic
+  stage, and is merged into the line's match after the last one (dropping a BOE share, since the line
+  now counts the rows in full). Lines with an edit stay out of pooling. Unplaceable adds are
+  `manual_edits_unfilled`, stale ones `manual_edits_stale`. Every run writes `receipt_notes` (who
+  pinned, added or - on the line that took it - removed each receipt). See
+  [api-and-features](api-and-features.md#editing-a-lines-receipts-one-at-a-time-2026-09-29).
 - **Short legacy PO numbers form groups too.** `_po_number_group_rows()` calls
   `_cited_po_numbers(..., shape_floor=False)`, dropping the 8-digit floor of
   `is_usable_po_reference()`. With it, HRS's 1-4 digit series ('1074.0') never counted as naming
@@ -1103,7 +1117,7 @@ below); trust the code.
   `mir_model`, three match models, `stock_lot_model`); `match_threshold`, `flag_diff_pct`,
   `value_flag_epsilon`; financial weights; `material_match_threshold`; `mir_value` /
   `mir_taxable_value` / `mir_final_value` accessors; `plant_key`; `manual_match_model` /
-  `syncrun_plant` (empty means no pins); `stock_rate_field`, `stock_vendor_field` (None = no vendor
+  `receipt_edit_model` / `syncrun_plant` (empty means no pins or receipt edits); `stock_rate_field`, `stock_vendor_field` (None = no vendor
   gate), `stock_code_field` / `stock_uom_field` (display only, for `review_views.py`);
   `stock_material_threshold` (0 = equality only), `stock_date_rate_path`,
   `stock_rate_identity_tolerance_pct`; `import_extended_fields`, `stock_extended_fields` (write the
@@ -1259,6 +1273,10 @@ below); trust the code.
 - `_load_pins(config, positions_by_kind)` - resolves pins for both kinds in one pass, newest decision
   first, and splits off stale pins (description at that position changed). Returns
   `(ordered pins, stale)`.
+- `_load_receipt_edits(config, positions_by_kind)` - the same for `ManualReceiptEdit`s: each line's
+  adds and removes, newest first, and the stale ones. `_manual_note()` builds one `receipt_notes`
+  entry from the pin or edit behind it (`by`, `byName` from the account's `full_name`, `at`,
+  `reason`).
 - `_forced_candidate(...)` - a pinned pair's `_Candidate`, skipping identification but measuring
   everything; an impossible date is zeroed, not a veto; ranked at tier 4.
 - In `run_full_match()`, `claim_pin()` applies one pin: an exclusive pin takes a free row of its
@@ -1286,9 +1304,12 @@ below); trust the code.
   clashing is "no".
 - `_rebuild_group_links(model, links)` - wipes and bulk-inserts one match model's `group_entries`
   through table.
-- `run_full_match(config)` - the pipeline in [Overview](#overview-what-run_full_match-does). Its
-  docstring still describes greedy claiming by score; the code uses pins → PO-number groups → rate
-  groups → `_assign_pairs()`.
+- `run_full_match(config, dry_run=False)` - the pipeline in
+  [Overview](#overview-what-run_full_match-does). Its docstring still describes greedy claiming by
+  score; the code uses pins → added receipts → BOE settlement → PO-number groups → rate groups →
+  `_assign_pairs()` → added receipts merged → shared split → pooling. `dry_run` (for
+  `receipt_preview.py`, which rolls the transaction back) skips the MIR↔Stock pass and the data stamp.
+  `_run_report()` builds its return value, including `manual_edits_unfilled` / `manual_edits_stale`.
 
 ### apps/services/matching.py
 

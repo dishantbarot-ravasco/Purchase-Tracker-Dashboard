@@ -66,6 +66,10 @@ correct_field = _base.make_correct_field(_CONFIG)
 # Manual MIR pin (2026-09-21) - see _domestic_base.make_set_mir_match().
 mir_candidates = _base.make_mir_candidates(_CONFIG)
 set_mir_match = _base.make_set_mir_match(_CONFIG)
+# Manual receipt changes and their preview (2026-09-29) - see _domestic_base.
+manual_changes = _base.make_manual_changes(_CONFIG)
+preview_mir_match = _base.make_preview_mir_match(_CONFIG)
+preview_mir_match_status = _base.make_preview_status(_CONFIG)
 materials = _base.make_materials(_CONFIG)
 correct_material_field = _base.make_correct_material_field(_CONFIG)
 stock_trend = _base.make_stock_trend(_CONFIG)
