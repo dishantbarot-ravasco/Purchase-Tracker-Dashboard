@@ -121,7 +121,7 @@ def meta(request):
 @api_view(["GET"])
 @permission_classes([IsEditor])
 def open_pos(request):
-    """Open POs at every plant whose number or vendor contains ?q=."""
+    """Open POs at every plant whose PO number contains ?q=."""
     results = []
     for po in mir_service.search_open_pos(request.query_params.get("q", "")):
         lines = mir_service.po_lines_with_state(po)

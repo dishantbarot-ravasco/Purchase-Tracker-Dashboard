@@ -85,9 +85,19 @@ class TestFindingPOs:
         _po(plant="vapi", number="1000009001")
         _po(plant="achhad", number="1100009001")
         client = _client(plants=["hrs"])
-        found = client.get("/api/mir/open-pos?q=Prime").json()["purchaseOrders"]
+        found = client.get("/api/mir/open-pos?q=9001").json()["purchaseOrders"]
         assert {p["plant"]["code"] for p in found} == {"vapi", "achhad"}
         assert found[0]["gstRate"] == "18" and found[0]["openLines"] == 1
+
+    def test_the_search_takes_the_po_number_only(self):
+        """A vendor name or GSTIN finds nothing: a vendor search offered every
+        open order of that vendor, which is how a receipt lands on the wrong
+        PO."""
+        po = _po()
+        client = _client()
+        assert client.get("/api/mir/open-pos?q=Prime").json()["purchaseOrders"] == []
+        assert client.get(f"/api/mir/open-pos?q={po.vendor.gstin}").json()["purchaseOrders"] == []
+        assert [p["poNumber"] for p in client.get("/api/mir/open-pos?q=1000009001").json()["purchaseOrders"]] == ["1000009001"]
 
     def test_a_received_po_is_no_longer_open(self):
         po = _po()
@@ -96,7 +106,7 @@ class TestFindingPOs:
         assert client.get("/api/mir/open-pos?q=1000009001").json()["purchaseOrders"] == []
 
     def test_a_viewer_cannot_search_pos(self):
-        assert _client(role="viewer").get("/api/mir/open-pos?q=Prime").status_code == 403
+        assert _client(role="viewer").get("/api/mir/open-pos?q=1000").status_code == 403
 
     def test_po_detail_carries_each_lines_open_quantity(self):
         po = _po()

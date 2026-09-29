@@ -1,6 +1,6 @@
 """
-MIR entry (2026-09-28, project owner): the clerk finds an open PO by number or
-vendor - at ANY plant, since one plant's store may receive another plant's
+MIR entry (2026-09-28, project owner): the clerk finds an open PO by its
+number - at ANY plant, since one plant's store may receive another plant's
 order - picks its lines, types the invoice and, per line, the quantity and
 rate; everything else is computed here.
 
@@ -107,7 +107,12 @@ def line_state(line, accepted: Decimal) -> dict:
 
 def search_open_pos(query: str, limit: int = 25) -> list:
     """Active POs at every plant with at least one line still open, whose
-    number or vendor contains `query` (case-insensitive). Newest first."""
+    PO number contains `query` (case-insensitive). Newest first.
+
+    PO number only (project owner, 2026-09-29): the clerk has the PO number
+    in hand from the delivery papers, and a vendor-name search offered every
+    open order of that vendor, which is how a receipt lands on the wrong
+    one."""
     from apps.core.models import PurchaseOrder, PurchaseOrderLine
 
     query = (query or "").strip()
@@ -118,7 +123,7 @@ def search_open_pos(query: str, limit: int = 25) -> list:
                  .annotate(acc=_accepted_annotation()).filter(acc__lt=F("qty_ordered")))
     return list(
         PurchaseOrder.objects.filter(is_active=True, lines__in=open_line)
-        .filter(Q(po_number__icontains=query) | Q(vendor__name__icontains=query) | Q(vendor__gstin__iexact=query))
+        .filter(po_number__icontains=query)
         .select_related("plant", "vendor").distinct().order_by("-po_date", "-id")[:limit]
     )
 

@@ -928,7 +928,9 @@ source. The Drive MIR files and the existing matching keep running untouched: MI
 separate records (`Mir` / `MirLine`, [architecture.md](architecture.md#appscoremodelsprocurementpy)),
 so nothing is counted twice while both exist.
 
-**The flow.** The clerk picks the receiving plant and searches open POs by number or vendor. **Every
+**The flow.** The clerk picks the receiving plant and searches open POs by **PO number only** (owner,
+2026-09-29 - a vendor-name search offered every open order of that vendor, which is how a receipt lands
+on the wrong one). **Every
 plant's open POs are offered** (owner rule: any plant's store may receive any plant's PO), then lines
 of one or several POs of **one vendor** (one MIR is one vendor's invoice). Per MIR they type the
 invoice number, date and total, TCS, and transport details; per line the quantity received and
@@ -1335,7 +1337,7 @@ line closure in one transaction; the MIR number comes from `_next_seq()` (row-lo
 `IntegrityError` on the invoice constraint becomes a duplicate-invoice error. `cancel_mir()`,
 `resolve_mismatch()`, `close_po_line()`, `reopen_po_line()`, `clear_line_review()` - the other writes,
 each row-locked and requiring a reason or note. `accepted_by_line()` / `line_state()` - received so far
-and whether a line can take a receipt. `search_open_pos()` - open POs by number, vendor or GSTIN.
+and whether a line can take a receipt. `search_open_pos()` - open POs whose PO number contains the query.
 `MirValidationError.errors` is `[{field, message}]`, the field in the payload's own terms
 (`lines.0.qty_reason`).
 
