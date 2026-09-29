@@ -24,6 +24,7 @@ from django.utils import timezone
 
 from apps.core.models import MaterialCategoryReference
 from apps.services.parsers.material_category_reference import HeaderMismatch, parse_material_category_reference_csv
+from apps.services.materials import sync_from_reference
 from apps.services.sync_utils import unchanged
 
 _FIELDS = ["description", "category", "subcategory", "subcategory_code", "hsn_code", "uom", "sap_item_code"]
@@ -69,8 +70,12 @@ class Command(BaseCommand):
                 )
                 rows_changed += 1
 
+            # The material master follows the list (apps/services/materials.py).
+            materials_changed = sync_from_reference()
+
         summary = (
-            f"load_material_category_reference: {len(rows)} rows seen, {rows_changed} created/updated "
+            f"load_material_category_reference: {len(rows)} rows seen, {rows_changed} created/updated, "
+            f"{materials_changed} material(s) re-filed "
             f"({time.monotonic() - t0:.1f}s)"
         )
         if duplicates:

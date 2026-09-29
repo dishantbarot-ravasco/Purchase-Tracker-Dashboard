@@ -937,9 +937,10 @@ as the purchase team raised it (PO date, payment terms, incoterms, currency, tax
 Bill To, Ship To, vendor address, remarks) above its lines. Per MIR the clerk types the invoice number,
 date and total, TCS, the tax type, an optional SAP GRN number and optional transport details; per line
 the quantity received and rejected (in the PO line's own unit), the invoice rate (in the PO's currency
-per that unit), discount, GST %, the **material category** (required) and sub-category (optional) from
-`MaterialCategoryReference`'s list - prefilled by `mir_service.suggested_categories()`, the PO line's
-item code against the list's SAP item code first, then its description - and department use. Required
+per that unit), discount, GST %, the **material category** and department use. The category belongs to
+the **material master** (`Material`, see below), not to the receipt: a filed material's category is shown
+read-only ("From the material master"), and only a material's first MIR asks for one (required, from
+`MaterialCategoryReference`'s list), which posting then files on the material for every later receipt. Required
 fields carry a red asterisk, each figure has a one-line hint, optional fields (SAP GRN, transport,
 remarks) are folded into one section, and a sticky save bar lists what is still missing. Freight/packing, rolls and batch are not on the form (owner, 2026-09-29);
 their `MirLine` columns stay, at 0 / blank. The page sends the form to `preview` on every change and
@@ -989,8 +990,37 @@ returns the material, then marks it resolved with a note saying what was done.
 future or before a line's PO date; an invoice date after the MIR date; a PO line that is retired,
 dropped from the sheet, closed, waiting for review, without a quantity or rate, or already received in
 full; the same line twice; two vendors on one MIR; a PO with no vendor and none chosen; a GST rate off
-the slabs; a discount above the line's value; a line with no material category, or a category or
-sub-category not on the reference list (when the list has any rows).
+the slabs; a discount above the line's value; a line whose material has no category and none is
+picked, or a category or sub-category not on the reference list (when the list has any rows).
+
+**The material master** (2026-09-29). A material exists once, company-wide (`Material`), and holds its
+category. Identity is `material_identity.material_key()` - `normalize_material()` of the description, with
+a fabric roll's length, roll count and total weight dropped, because the Madura POs describe each roll
+("EE-160 fabric roll, width 148cm, GSM 590, length 512m, 1 roll, total weight 447.078"); measured on the
+local data that turns 565 roll-level names into 248 materials. NOT the SAP item code: the PO sheets reuse
+one code for two grades (22001840 is both Reclaim Rubber 6 MPA and 7 MPA on HRS 3000001167). A new
+material is filed from `MaterialCategoryReference` by name, or by SAP item code when exactly one reference
+row carries it; otherwise its first MIR files it (`materials.set_category()`, which never overwrites).
+Reloading the reference list (`load_material_category_reference`) re-files every material it names - the
+list wins. Migration `0077` built the master: 522 materials on the local PO lines, 223 filed.
+
+**Editing a posted MIR is limited** (owner, 2026-09-29). What a receipt means - quantities received,
+rates, GST, discounts, the tax type, the invoice total, which PO lines - is never edited: those figures fed
+the PO's open quantity and the mismatches, so a wrong one means cancelling and re-entering (a new
+number). What can change, each with a reason, each kept in `MirChange` (old and new value, who, when) and
+shown as the MIR's change history:
+
+| What | Until | How |
+| --- | --- | --- |
+| Invoice number and date (date not after the MIR date), vehicle, challan, LR, e-way bill, gate entry, weighbridge slip, remarks; a line's department use and remarks | `EDIT_WINDOW_DAYS` (7) after entry | `mir_service.edit_mir()`, `POST mir/entries/<id>/edit` |
+| SAP GRN number | any time while posted | same |
+| A rejection found after posting (the QC report) | `REJECTION_WINDOW_DAYS` (30) after the MIR date | `mir_service.record_rejection()`, `POST mir/entries/<id>/lines/<n>/reject` |
+
+A later rejection takes the line's new TOTAL rejected - only upwards, never past the quantity received,
+with a `REJECTION` reason. The accepted quantity and the PO balance follow at once (both are summed from
+received - rejected); the invoice's amounts stay as billed; the line's `QTY_REJECTED` mismatch is created,
+or updated and re-opened if one exists, for the debit note or replacement. Returns and debit notes are not
+documents of their own: the purchase team records what was done when resolving that mismatch.
 
 **Received so far is never stored.** It is summed from posted MIR lines, so cancelling a MIR returns
 its quantity at once, voids its open mismatches and reopens any line it closed. Posting locks the PO
@@ -1357,11 +1387,12 @@ name the user already has).
 
 `evaluate(payload, lock=False)` - the one check-and-price of a MIR (header, vendor, earlier MIRs of the
 same invoice as `notices`, tax type, lines, categories, mismatches, invoice total); returns errors,
-notices and figures, never saves. `category_options()` - {category: [sub-categories]} from
-`MaterialCategoryReference`; `suggested_categories(po_lines)` - each line's (category, sub-category) by
-item code, then by `normalize_material(description)`.
+notices and figures, never saves; a line's category is its material's when filed. `category_options()` -
+{category: [sub-categories]} from `MaterialCategoryReference`. `edit_window(mir)`, `edit_mir()`,
+`record_rejection()` - the limited edits above (`EDIT_WINDOW_DAYS`, `REJECTION_WINDOW_DAYS`,
+`EDITABLE_HEADER`, `ANYTIME_HEADER`, `EDITABLE_LINE`), each row-locked and logged to `MirChange`.
 `post_mir(payload, user)` - `evaluate(lock=True)` then saves `Mir`, `MirLine`s, `MirMismatch`es and any
-line closure in one transaction; the MIR number comes from `_next_seq()` (row-locked `MirSequence`), so
+line closure in one transaction, and files an unfiled material with the category picked; the MIR number comes from `_next_seq()` (row-locked `MirSequence`), so
 two MIRs posted at once at one plant get consecutive numbers. `cancel_mir()`,
 `resolve_mismatch()`, `close_po_line()`, `reopen_po_line()`, `clear_line_review()` - the other writes,
 each row-locked and requiring a reason or note. `accepted_by_line()` / `line_state()` - received so far
@@ -1377,10 +1408,22 @@ an unknown unit kept and flagged), `clean_gstin()` / `gstin_state()`, `canonical
 `mir_number()`, `invoice_key()`, `vendor_name_key()`, `line_amounts()`, `rate_differs()`, `pct_of()`,
 `INVOICE_ROUNDING_TOLERANCE` (Rs 1).
 
+### apps/services/materials.py
+
+The material master's writes: `material_for(description, item_code, uom, hsn)` (find or create, filed
+from the reference list by name or by a unique SAP item code), `set_category(material, category,
+subcategory, user)` (files an unfiled material once), `sync_from_reference()` (re-files every material
+the reference list names; run by `load_material_category_reference`).
+
+### apps/services/material_identity.py
+
+Dependency-free (migration `0077` imports it): `material_name(description)` drops a fabric roll's
+length / roll count / total weight parts; `material_key()` is `normalize_material()` of that.
+
 ### apps/services/procurement_sync.py
 
 `project_plant_orders(plant_code)` - see [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28).
-`upsert_vendor()` - one `Vendor` per GSTIN (or cleaned name without one); the newest PO's details win,
+Each projected line is linked to its `Material` (`materials.material_for()`). `upsert_vendor()` - one `Vendor` per GSTIN (or cleaned name without one); the newest PO's details win,
 a blank never erases. `LEGACY_PO_MODELS` names each plant's CSV mirror model.
 
 ### apps/services/rematch.py

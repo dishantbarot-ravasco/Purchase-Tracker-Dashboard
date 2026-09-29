@@ -1251,10 +1251,15 @@ the server's suggestion; steps 3, 4 and the save bar appear via `showEntrySectio
 (three labelled groups per line - what came in, what the invoice charges, classification - with a
 "Full open qty" button that fills the open quantity, and a hint under each figure; unit and currency
 labels from the PO line;
-`categoryControl()` / `subcategoryControl()` pickers from `META.categories`, the sub-category list
-rebuilt in place when the category changes), `renderVendor()`, `postMir()`, `resetForm()`. Register:
-`loadRegister()`, `loadDetail()` (category, GRN and every transport field shown; cancel with a reason
-when the caller may receive at that plant). Mismatches: `loadMismatches()` (status and plant filters)
+a filed material's category shown read-only from the master, otherwise the `categoryControl()` /
+`subcategoryControl()` pickers from `META.categories`, the sub-category list rebuilt in place when the
+category changes), `renderVendor()`, `postMir()`, `resetForm()`. Register:
+`loadRegister()`, `loadDetail()` (the header as a `factsTableHtml()` label/value table - short facts two
+to a row, addresses and remarks across it, the same table as "More PO details"; the lines with their
+material's category; the change history; cancel with a reason). The detail says what can still change and
+until when (`editUntil`, `rejectUntil` from the server): `openEdit()` offers only the fields
+`edit_mir()` accepts (just the SAP GRN number once the edit window has closed) plus a required reason;
+`openReject()` records a later rejection on one line (new total, a rejection reason, a note). Mismatches: `loadMismatches()` (status and plant filters)
 and `mismatchListHtml()` cards with inline resolve; `refreshMismatchCount()` keeps the tab's count.
 Money is shown exact in the PO's currency (`money(value, currency)` through `Intl`, "₹5,42,800.00"
 for INR), never the dashboard's rounded `formatInr()`.

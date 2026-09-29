@@ -22,8 +22,10 @@ What a posting checks (each failure is a message on the field it concerns):
             waiting for review, not already received in full), appears once,
             and has a positive quantity, a rejected quantity within it, a
             non-negative rate/discount, a GST rate on a slab, and a material
-            category from the reference list (sub-category optional, but of
-            that category).
+            category: the material master's own (apps/services/materials.py)
+            when the material is filed, otherwise one picked from the
+            reference list, which posting then files on the material for
+            good (sub-category optional, but of that category).
   reasons - accepted quantity short of or over the open quantity, any
             rejected quantity, a rate different from the PO's, a GST rate
             other than the one the PO's totals imply, an invoice total more
@@ -48,6 +50,7 @@ from django.db.models import DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
+from apps.services import materials
 from apps.services import procurement_rules as rules
 
 MAX_LINES = 50
@@ -146,24 +149,6 @@ def category_options() -> dict:
             if (sub or "").strip():
                 out[category].add(sub.strip())
     return {c: sorted(subs) for c, subs in sorted(out.items())}
-
-
-def suggested_categories(po_lines) -> dict:
-    """{po line id: (category, sub-category)} from MaterialCategoryReference:
-    the PO line's item code against the list's SAP item code first, then
-    its description the same way the dashboard files a stock lot
-    (normalize_material()). ("", "") when the list does not know it."""
-    from apps.core.models import MaterialCategoryReference
-    from apps.services.parsers.common import normalize_material
-
-    refs = list(MaterialCategoryReference.objects.all())
-    by_code = {r.sap_item_code.strip(): r for r in refs if (r.sap_item_code or "").strip()}
-    by_desc = {r.normalized_description: r for r in refs}
-    out = {}
-    for line in po_lines:
-        ref = by_code.get((line.item_code or "").strip()) or by_desc.get(normalize_material(line.description))
-        out[line.id] = (ref.category, ref.subcategory) if ref else ("", "")
-    return out
 
 
 def po_lines_with_state(po) -> list:
@@ -277,7 +262,7 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
             errors.append({"field": f"lines.{i}.po_line_id", "message": "Not a PO line."})
             ids.append(None)
     wanted = [x for x in ids if x is not None]
-    qs = PurchaseOrderLine.objects.select_related("purchase_order__plant", "purchase_order__vendor")
+    qs = PurchaseOrderLine.objects.select_related("purchase_order__plant", "purchase_order__vendor", "material")
     if lock:
         # Plain FOR UPDATE on the lines only (the joined tables are not
         # locked), in id order so two posts never deadlock.
@@ -375,14 +360,22 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         if gst is not None and not rules.is_gst_slab(gst):
             errors.append({"field": f"{f}.gst_rate", "message": "Not a GST rate (0, 0.1, 0.25, 1.5, 3, 5, 12, 18, 28, 40)."})
             gst = None
-        category = _text(raw.get("material_category"), 200)
-        subcategory = _text(raw.get("material_subcategory"), 200)
-        if not category:
-            errors.append({"field": f"{f}.material_category", "message": "Required."})
-        elif categories and category not in categories:
-            errors.append({"field": f"{f}.material_category", "message": "Choose a category from the list."})
-        elif subcategory and categories and subcategory not in categories[category]:
-            errors.append({"field": f"{f}.material_subcategory", "message": f"Not a sub-category of {category}."})
+        # A filed material's category is the material master's, whatever the
+        # form sends; an unfiled one takes the clerk's pick (checked here,
+        # filed on the material when the MIR is posted).
+        material = line.material
+        from_master = bool(material and material.category)
+        if from_master:
+            category, subcategory = material.category, material.subcategory
+        else:
+            category = _text(raw.get("material_category"), 200)
+            subcategory = _text(raw.get("material_subcategory"), 200)
+            if not category:
+                errors.append({"field": f"{f}.material_category", "message": "Required."})
+            elif categories and category not in categories:
+                errors.append({"field": f"{f}.material_category", "message": "Choose a category from the list."})
+            elif subcategory and categories and subcategory not in categories[category]:
+                errors.append({"field": f"{f}.material_subcategory", "message": f"Not a sub-category of {category}."})
         rolls = raw.get("rolls")
         if rolls not in (None, ""):
             try:
@@ -398,7 +391,7 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         out = {"index": i, "po_line": line, "state": state, "qty_received": qty, "qty_rejected": rejected, "rate": rate,
                "discount": discount, "other_charges": other, "gst_rate": gst, "rolls": rolls,
                "batch_no": _text(raw.get("batch_no"), 60), "dept_use": _text(raw.get("dept_use"), 60),
-               "material_category": category, "material_subcategory": subcategory,
+               "material_category": category, "material_subcategory": subcategory, "category_from_master": from_master,
                "remarks": _text(raw.get("remarks"), 2000), "amounts": None}
         ready = None not in (qty, rejected, rate, discount, other, gst) and discount >= 0 and other >= 0
         if ready:
@@ -499,9 +492,10 @@ def post_mir(payload: dict, user):
                 open_qty_before=ln["state"]["open_qty"], discount=ln["discount"], other_charges=ln["other_charges"],
                 gst_rate=ln["gst_rate"], gross=a["gross"], taxable=a["taxable"], igst=a["igst"], cgst=a["cgst"],
                 sgst=a["sgst"], line_total=a["total"], rolls=ln["rolls"], batch_no=ln["batch_no"],
-                dept_use=ln["dept_use"], material_category=ln["material_category"],
-                material_subcategory=ln["material_subcategory"], remarks=ln["remarks"],
+                dept_use=ln["dept_use"], remarks=ln["remarks"],
             )
+            if not ln["category_from_master"]:
+                materials.set_category(ln["po_line"].material, ln["material_category"], ln["material_subcategory"], user)
         now = timezone.now()
         for mm in result["mismatches"]:
             mir_line = saved[mm["line"]] if mm["line"] is not None else None
@@ -609,3 +603,173 @@ def clear_line_review(line, user, note: str):
         line.needs_review, line.review_note = False, ""
         line.save(update_fields=["needs_review", "review_note"])
     return line
+
+
+# ── Editing a posted MIR (2026-09-29) ─────────────────────────────────────
+#
+# Deliberately narrow. What a receipt MEANS - quantities received, rates,
+# GST, discounts, the tax type, the invoice total, which PO lines - is never
+# edited: those figures fed the PO's open quantity and the mismatches, so a
+# wrong one is fixed by cancelling the MIR and entering it again (a new
+# number). What can change is paperwork and a rejection found later, each
+# with a reason, each kept in MirChange.
+
+EDIT_WINDOW_DAYS = 7          # paperwork fields and a line's department/remarks
+REJECTION_WINDOW_DAYS = 30    # a rejection found after posting (QC report)
+
+# Header fields, and how many characters each takes. The SAP GRN number is
+# usually known only days later, so it may be filled in any time.
+EDITABLE_HEADER = {
+    "invoice_no": 60, "invoice_date": None, "challan_no": 60, "lr_no": 60, "vehicle_no": 30,
+    "eway_bill_no": 30, "gate_entry_no": 40, "weighbridge_slip_no": 40, "remarks": 2000, "sap_grn_number": 50,
+}
+ANYTIME_HEADER = {"sap_grn_number"}
+EDITABLE_LINE = {"dept_use": 60, "remarks": 2000}
+
+
+def edit_window(mir) -> dict:
+    """What may still be edited on this MIR, and until when."""
+    posted = timezone.localdate(mir.created_at)
+    today = timezone.localdate()
+    edit_until = posted + datetime.timedelta(days=EDIT_WINDOW_DAYS)
+    reject_until = mir.mir_date + datetime.timedelta(days=REJECTION_WINDOW_DAYS)
+    live = mir.status == "POSTED"
+    return {"edit_until": edit_until, "reject_until": reject_until,
+            "can_edit": live and today <= edit_until, "can_edit_grn": live,
+            "can_reject": live and today <= reject_until}
+
+
+def _log(mir, line, field, old, new, reason, user):
+    from apps.core.models import MirChange
+
+    MirChange.objects.create(mir=mir, mir_line=line, field=field, old_value="" if old is None else str(old),
+                             new_value="" if new is None else str(new), reason=reason, changed_by=user,
+                             changed_by_email=getattr(user, "email", ""))
+
+
+def edit_mir(mir, user, header: dict, lines: dict, reason: str):
+    """Change a posted MIR's paperwork. `header` is {field: value} for
+    EDITABLE_HEADER fields, `lines` {line_no: {field: value}} for
+    EDITABLE_LINE fields; anything else is refused. Returns the number of
+    fields changed (0 is refused: nothing to save)."""
+    from apps.core.models import Mir
+
+    reason = (reason or "").strip()
+    errors: list[dict] = []
+    if not reason:
+        errors.append({"field": "reason", "message": "Say why the MIR is being changed."})
+    for key in list(header) + [k for fields in lines.values() for k in fields]:
+        if key not in EDITABLE_HEADER and key not in EDITABLE_LINE:
+            errors.append({"field": key, "message": "This cannot be edited. Cancel the MIR and enter it again."})
+    if errors:
+        raise MirValidationError(errors)
+    changed = 0
+    with transaction.atomic():
+        mir = Mir.objects.select_for_update().get(pk=mir.pk)
+        window = edit_window(mir)
+        if mir.status != "POSTED":
+            raise MirValidationError([{"field": "status", "message": "A cancelled MIR cannot be edited."}])
+        needs_window = [k for k in header if k not in ANYTIME_HEADER] + [k for f in lines.values() for k in f]
+        if needs_window and not window["can_edit"]:
+            raise MirValidationError([{"field": "status", "message": (
+                f"The edit window closed on {window['edit_until']:%d-%m-%Y} ({EDIT_WINDOW_DAYS} days after entry). "
+                "Only the SAP GRN number can still be filled in; anything else means cancelling and re-entering.")}])
+        update = []
+        for key, raw in header.items():
+            if key == "invoice_date":
+                errs: list[dict] = []
+                value = _date(raw, key, errs)
+                if errs or value is None:
+                    raise MirValidationError(errs or [{"field": key, "message": "Required."}])
+                if value > mir.mir_date:
+                    raise MirValidationError([{"field": key, "message": "The invoice date cannot be after the MIR date."}])
+            else:
+                value = _text(raw, EDITABLE_HEADER[key])
+                if key == "invoice_no" and not rules.invoice_key(value):
+                    raise MirValidationError([{"field": key, "message": "Required."}])
+            old = getattr(mir, key)
+            if old == value:
+                continue
+            _log(mir, None, key, old, value, reason, user)
+            setattr(mir, key, value)
+            update.append(key)
+            if key == "invoice_no":
+                mir.invoice_key = rules.invoice_key(value)
+                update.append("invoice_key")
+            if key == "invoice_date":
+                mir.invoice_fy = rules.financial_year(value)
+                update.append("invoice_fy")
+            changed += 1
+        if update:
+            mir.save(update_fields=update)
+        by_no = {ln.line_no: ln for ln in mir.lines.all()}
+        for line_no, fields in lines.items():
+            ln = by_no.get(int(line_no))
+            if ln is None:
+                raise MirValidationError([{"field": "lines", "message": f"This MIR has no line {line_no}."}])
+            line_update = []
+            for key, raw in fields.items():
+                value = _text(raw, EDITABLE_LINE[key])
+                if getattr(ln, key) == value:
+                    continue
+                _log(mir, ln, key, getattr(ln, key), value, reason, user)
+                setattr(ln, key, value)
+                line_update.append(key)
+                changed += 1
+            if line_update:
+                ln.save(update_fields=line_update)
+    if not changed:
+        raise MirValidationError([{"field": "", "message": "Nothing was changed."}])
+    return changed
+
+
+def record_rejection(mir_line, user, qty_rejected, reason_code: str, note: str):
+    """A rejection found after posting - typically the QC report, days after
+    the gate. Raises the line's rejected quantity (never lowers it: a
+    rejection wrongly recorded means cancelling and re-entering), within
+    REJECTION_WINDOW_DAYS of the MIR date and up to the quantity received.
+    The accepted quantity, and so the PO line's open quantity, follow at
+    once (both are summed from qty_received - qty_rejected); the invoice's
+    amounts stay as billed, and the rejection opens (or re-opens) a
+    QTY_REJECTED mismatch for the purchase team's debit note or
+    replacement."""
+    from apps.core.models import Mir, MirLine, MirMismatch, MirReasonCode
+
+    errors: list[dict] = []
+    new_total = _dec(qty_rejected, "qty_rejected", errors, places=3)
+    reasons = {r.code: r for r in MirReasonCode.objects.filter(kind="REJECTION")}
+    reason = _reason(reason_code, "REJECTION", "reason", note, errors, reasons)
+    if errors:
+        raise MirValidationError(errors)
+    with transaction.atomic():
+        mir = Mir.objects.select_for_update().get(pk=mir_line.mir_id)
+        line = MirLine.objects.select_for_update().get(pk=mir_line.pk)
+        window = edit_window(mir)
+        if mir.status != "POSTED":
+            raise MirValidationError([{"field": "status", "message": "A cancelled MIR cannot be changed."}])
+        if not window["can_reject"]:
+            raise MirValidationError([{"field": "status", "message": (
+                f"Rejections can be recorded up to {window['reject_until']:%d-%m-%Y} "
+                f"({REJECTION_WINDOW_DAYS} days after the MIR date).")}])
+        if new_total <= line.qty_rejected:
+            raise MirValidationError([{"field": "qty_rejected", "message": (
+                f"Enter the new total rejected, more than the {line.qty_rejected.normalize():f} already recorded. "
+                "A rejection cannot be reduced here.")}])
+        if new_total > line.qty_received:
+            raise MirValidationError([{"field": "qty_rejected", "message": "Cannot be more than the quantity received."}])
+        note = _text(note, 2000)
+        _log(mir, line, "qty_rejected", f"{line.qty_rejected.normalize():f}", f"{new_total.normalize():f}",
+             f"{reason.label}. {note}".strip(), user)
+        line.qty_rejected = new_total
+        line.save(update_fields=["qty_rejected"])
+        pct = rules.pct_of(new_total, line.qty_received)
+        mm = MirMismatch.objects.filter(mir_line=line, kind="QTY_REJECTED").first()
+        if mm is None:
+            MirMismatch.objects.create(mir=mir, mir_line=line, kind="QTY_REJECTED", expected=Decimal("0"), actual=new_total,
+                                       difference_pct=pct, reason=reason, note=note)
+        else:
+            mm.actual, mm.difference_pct, mm.reason, mm.note = new_total, pct, reason, note
+            mm.status, mm.resolved_by, mm.resolved_by_email, mm.resolved_at, mm.resolution_note = "OPEN", None, "", None, ""
+            mm.save()
+    return line
+

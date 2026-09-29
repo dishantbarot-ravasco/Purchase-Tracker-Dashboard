@@ -156,7 +156,7 @@ class TestMismatchesAndLines:
         data = _client().get(f"/api/mir/purchase-orders/{po.id}").json()
         assert (data["billingAddress"], data["shipTo"], data["paymentTerms"]) == ("Bill here", "Ship there", "45 days")
         line = data["lines"][0]
-        assert line["currency"] == "INR" and line["poGstRate"] == "18" and line["suggestedCategory"] == ""
+        assert line["currency"] == "INR" and line["poGstRate"] == "18" and line["materialCategory"] == ""
 
     def test_meta_lists_the_categories(self):
         from apps.core.models import MaterialCategoryReference

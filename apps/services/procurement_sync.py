@@ -29,6 +29,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
+from apps.services import materials
 from apps.services import procurement_rules as rules
 
 # The per-plant CSV mirrors, read-only here.
@@ -103,6 +104,7 @@ def _line_values(item) -> dict:
         "rate": item.net_price,
         "net_value": item.net_value,
         "delivery_date": item.delivery_date,
+        "material": materials.material_for(item.description, item.item_id, uom, item.hsn),
     }
 
 

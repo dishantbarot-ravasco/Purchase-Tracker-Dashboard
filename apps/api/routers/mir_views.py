@@ -71,8 +71,9 @@ def _plant(p):
     return {"code": p.code, "name": p.name}
 
 
-def _po_line(line, state, suggested=("", "")):
+def _po_line(line, state):
     po = line.purchase_order
+    material = line.material
     return {
         "id": line.id, "lineNo": line.line_no, "itemCode": line.item_code, "description": line.description,
         "hsn": line.hsn, "uom": line.uom, "uomKnown": line.uom in rules.KNOWN_UOMS, "qtyOrdered": _s(line.qty_ordered),
@@ -81,7 +82,11 @@ def _po_line(line, state, suggested=("", "")):
         "blockedReason": state["blocked_reason"], "needsReview": line.needs_review, "reviewNote": line.review_note,
         "closeNote": line.close_note, "poId": po.id, "poNumber": po.po_number, "plant": po.plant.code,
         "currency": po.currency, "poGstRate": _s(rules.po_gst_rate(po.total_value, po.total_inclusive_value)),
-        "suggestedCategory": suggested[0], "suggestedSubcategory": suggested[1],
+        # The material master's category, when the material is filed; the
+        # form then shows it read-only (apps/services/materials.py).
+        "materialId": material.id if material else None,
+        "materialCategory": material.category if material else "",
+        "materialSubcategory": material.subcategory if material else "",
     }
 
 
@@ -150,9 +155,8 @@ def open_pos(request):
 def purchase_order(request, po_id):
     po = get_object_or_404(PurchaseOrder.objects.select_related("plant", "vendor"), pk=po_id)
     lines = mir_service.po_lines_with_state(po)
-    suggested = mir_service.suggested_categories([line for line, _st in lines])
     return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active,
-                     "lines": [_po_line(line, st, suggested[line.id]) for line, st in lines]})
+                     "lines": [_po_line(line, st) for line, st in lines]})
 
 
 @api_view(["GET"])
@@ -227,7 +231,8 @@ def _mir_row(mir, total):
 
 def _mir_detail(mir):
     mir = Mir.objects.select_related("plant", "vendor").get(pk=mir.pk)
-    lines = list(mir.lines.select_related("po_line__purchase_order__plant").order_by("line_no"))
+    lines = list(mir.lines.select_related("po_line__purchase_order__plant", "po_line__material").order_by("line_no"))
+    window = mir_service.edit_window(mir)
     total = sum((ln.line_total for ln in lines), Decimal("0")) + mir.tcs_amount
     return {
         **_mir_row(mir, total), "taxType": mir.tax_type, "taxTypeExpected": mir.tax_type_expected,
@@ -235,6 +240,11 @@ def _mir_detail(mir):
         "ewayBillNo": mir.eway_bill_no, "gateEntryNo": mir.gate_entry_no, "weighbridgeSlipNo": mir.weighbridge_slip_no,
         "sapGrnNumber": mir.sap_grn_number, "remarks": mir.remarks, "cancelledBy": mir.cancelled_by_email, "cancelledAt": mir.cancelled_at.isoformat() if mir.cancelled_at else None,
         "cancelReason": mir.cancel_reason,
+        "editUntil": _d(window["edit_until"]), "rejectUntil": _d(window["reject_until"]),
+        "canEdit": window["can_edit"], "canEditGrn": window["can_edit_grn"], "canReject": window["can_reject"],
+        "history": [{"field": c.field, "lineNo": c.mir_line.line_no if c.mir_line else None, "oldValue": c.old_value,
+                     "newValue": c.new_value, "reason": c.reason, "by": c.changed_by_email, "at": c.changed_at.isoformat()}
+                    for c in mir.changes.select_related("mir_line").all()],
         "lines": [{
             "lineNo": ln.line_no, "poNumber": ln.po_line.purchase_order.po_number, "poPlant": ln.po_line.purchase_order.plant.code,
             "poLineNo": ln.po_line.line_no, "description": ln.po_line.description, "itemCode": ln.po_line.item_code,
@@ -243,7 +253,8 @@ def _mir_detail(mir):
             "otherCharges": _s(ln.other_charges), "gstRate": _s(ln.gst_rate), "taxable": _s(ln.taxable), "igst": _s(ln.igst),
             "cgst": _s(ln.cgst), "sgst": _s(ln.sgst), "lineTotal": _s(ln.line_total), "rolls": ln.rolls,
             "batchNo": ln.batch_no, "deptUse": ln.dept_use, "remarks": ln.remarks,
-            "materialCategory": ln.material_category, "materialSubcategory": ln.material_subcategory,
+            "materialCategory": ln.po_line.material.category if ln.po_line.material else "",
+            "materialSubcategory": ln.po_line.material.subcategory if ln.po_line.material else "",
             "currency": ln.po_line.purchase_order.currency,
         } for ln in lines],
         "mismatches": [_mismatch(m) for m in mir.mismatches.select_related("reason", "mir_line").all()],
@@ -304,6 +315,50 @@ def cancel_entry(request, mir_id):
         return _forbidden()
     try:
         mir_service.cancel_mir(mir, request.user, (request.data or {}).get("reason"))
+    except mir_service.MirValidationError as exc:
+        return _bad(exc)
+    return Response(_mir_detail(mir))
+
+
+def _editable_mir(request, mir_id):
+    mir = get_object_or_404(Mir.objects.select_related("plant"), pk=mir_id)
+    return mir, user_can_edit_plant(request.user, mir.plant.code)
+
+
+@api_view(["POST"])
+@permission_classes([IsEditor])
+def edit_entry(request, mir_id):
+    """Change a posted MIR's paperwork, within mir_service's limits.
+    Body: {"header": {field: value}, "lines": {lineNo: {field: value}},
+    "reason": "..."}. Figures are never editable here."""
+    mir, allowed = _editable_mir(request, mir_id)
+    if not allowed:
+        return _forbidden()
+    data = request.data or {}
+    header, lines = data.get("header") or {}, data.get("lines") or {}
+    if not isinstance(header, dict) or not isinstance(lines, dict) or not all(isinstance(v, dict) for v in lines.values()):
+        return Response({"error": "header and lines must be objects."}, status=http.HTTP_400_BAD_REQUEST)
+    try:
+        mir_service.edit_mir(mir, request.user, header, lines, data.get("reason"))
+    except (mir_service.MirValidationError, ValueError) as exc:
+        if isinstance(exc, ValueError):
+            return Response({"error": "A line number is not a number."}, status=http.HTTP_400_BAD_REQUEST)
+        return _bad(exc)
+    return Response(_mir_detail(mir))
+
+
+@api_view(["POST"])
+@permission_classes([IsEditor])
+def reject_line(request, mir_id, line_no):
+    """Record a rejection found after posting. Body: {"qtyRejected": new
+    total, "reason": code, "note": "..."}."""
+    mir, allowed = _editable_mir(request, mir_id)
+    if not allowed:
+        return _forbidden()
+    line = get_object_or_404(mir.lines, line_no=line_no)
+    data = request.data or {}
+    try:
+        mir_service.record_rejection(line, request.user, data.get("qtyRejected"), data.get("reason"), data.get("note"))
     except mir_service.MirValidationError as exc:
         return _bad(exc)
     return Response(_mir_detail(mir))

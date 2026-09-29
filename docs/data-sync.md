@@ -813,7 +813,9 @@ identification.
 
 Manual, not scheduled: `--file` is required (read as `utf-8-sig`, so an Excel BOM is fine). Upserts
 `MaterialCategoryReference` on `normalized_description` with `unchanged()`, in one transaction; a
-repeated description in the file keeps its first occurrence and is reported. No `SyncRun` row.
+repeated description in the file keeps its first occurrence and is reported. Then, in the same
+transaction, `materials.sync_from_reference()` re-files the material master from the list (the list wins
+over a category a clerk picked at MIR entry). No `SyncRun` row.
 
 ### [apps/core/management/commands/create_pt_user.py](../apps/core/management/commands/create_pt_user.py)
 

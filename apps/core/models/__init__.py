@@ -131,6 +131,7 @@ from .consumption import (  # noqa: F401
 from .procurement import (  # noqa: F401
     Plant,
     Vendor,
+    Material,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderLineChange,
@@ -139,6 +140,7 @@ from .procurement import (  # noqa: F401
     Mir,
     MirLine,
     MirMismatch,
+    MirChange,
 )
 from .preferences import (  # noqa: F401
     SortPreset,
@@ -201,6 +203,7 @@ __all__ = [
     "ConsumptionCoverage",
     "Plant",
     "Vendor",
+    "Material",
     "PurchaseOrder",
     "PurchaseOrderLine",
     "PurchaseOrderLineChange",
@@ -210,4 +213,5 @@ __all__ = [
     "Mir",
     "MirLine",
     "MirMismatch",
+    "MirChange",
 ]

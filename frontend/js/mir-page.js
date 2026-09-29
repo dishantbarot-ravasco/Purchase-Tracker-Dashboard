@@ -221,20 +221,43 @@ function poResultHtml(po) {
     '</div><div class="mir-po-lines"></div></div>';
 }
 
+/** Label/value facts as a table: short facts two to a row, a long one
+    (an address, remarks) across the full width. Empty values are left out. */
+function factsTableHtml(rows) {
+  const filled = rows.filter(r => r[1]);
+  if (!filled.length) return '';
+  const cell = (k, v) => '<th scope="row">' + escapeHtml(k) + '</th><td>' + escapeHtml(v) + '</td>';
+  let html = '', pending = null;
+  filled.forEach(([k, v, long]) => {
+    if (long) {
+      if (pending) { html += '<tr>' + cell(pending[0], pending[1]) + '<td colspan="2"></td></tr>'; pending = null; }
+      html += '<tr>' + '<th scope="row">' + escapeHtml(k) + '</th><td colspan="3">' + escapeHtml(v) + '</td></tr>';
+    } else if (pending) {
+      html += '<tr>' + cell(pending[0], pending[1]) + cell(k, v) + '</tr>'; pending = null;
+    } else {
+      pending = [k, v];
+    }
+  });
+  if (pending) html += '<tr>' + cell(pending[0], pending[1]) + '<td colspan="2"></td></tr>';
+  return '<table class="mir-facts-table"><tbody>' + html + '</tbody></table>';
+}
+
 function poHeaderHtml(po) {
-  const item = (k, v) => v ? '<div class="mir-kv-item"><span class="mir-kv-k">' + escapeHtml(k) + '</span><span class="mir-kv-v">' + escapeHtml(v) + '</span></div>' : '';
   const tax = META.taxTypes.find(t => t.code === po.taxType);
   const chip = (k, v) => v ? '<span class="mir-po-chip"><span class="mir-kv-k">' + escapeHtml(k) + '</span> ' + escapeHtml(v) + '</span>' : '';
-  const more = item('Payment terms', po.paymentTerms) + item('Incoterms', po.incoterms) +
-    item('Value (excl. GST)', po.totalValue ? money(po.totalValue, po.currency) : '') +
-    item('Bill to', po.billingAddress) + item('Ship to', po.shipTo) + item('Vendor address', po.vendorAddress) +
-    item('PO remarks', po.remarks);
+  const more = factsTableHtml([
+    ['Payment terms', po.paymentTerms], ['Incoterms', po.incoterms],
+    ['Value (excl. GST)', po.totalValue ? money(po.totalValue, po.currency) : ''],
+    ['Value (incl. GST)', po.totalInclusiveValue ? money(po.totalInclusiveValue, po.currency) : ''],
+    ['Bill to', po.billingAddress, true], ['Ship to', po.shipTo, true], ['Vendor address', po.vendorAddress, true],
+    ['PO remarks', po.remarks, true],
+  ]);
   return '<div class="mir-po-summary">' +
       chip('PO date', dateIN(po.poDate)) + chip('Tax', tax ? tax.label : po.taxTypeRaw) +
       chip('GST', po.gstRate ? Number(po.gstRate) + '%' : '') + chip('Currency', po.currency) +
       chip('Value incl. GST', po.totalInclusiveValue ? money(po.totalInclusiveValue, po.currency) : '') +
     '</div>' +
-    (more ? '<details class="mir-po-more"><summary>More PO details (terms, addresses, remarks)</summary><div class="mir-po-facts">' + more + '</div></details>' : '');
+    (more ? '<details class="mir-po-more"><summary>More PO details (terms, addresses, remarks)</summary>' + more + '</details>' : '');
 }
 
 async function openPo(poId, el) {
@@ -284,7 +307,7 @@ function addLines(po, lines) {
     S.lines.push({ line, po, v: {
       qty_received: '', qty_rejected: '', rate: trimZeros(line.rate), discount: '',
       gst_rate: line.poGstRate ? trimZeros(line.poGstRate) : '', dept_use: '',
-      material_category: line.suggestedCategory || '', material_subcategory: line.suggestedSubcategory || '',
+      material_category: line.materialCategory || '', material_subcategory: line.materialSubcategory || '',
       qty_reason: '', qty_note: '', rate_reason: '', rate_note: '', reject_reason: '', reject_note: '', gst_reason: '', gst_note: '',
     } });
   });
@@ -390,9 +413,13 @@ function renderLines() {
         field('GST %' + req(), gstSelect + (l.poGstRate ? '<span class="mir-hint">The PO implies ' + Number(l.poGstRate) + '%.</span>' : '')) +
       '</div></div>' +
       '<div class="mir-line-group"><div class="mir-line-group-title">3. Classification</div><div class="mir-line-grid">' +
-        field('Material category' + req(), categoryControl(i, ln) +
-          (l.suggestedCategory ? '<span class="mir-hint">Suggested from the material list.</span>' : '')) +
-        field('Sub-category', subcategoryControl(i, ln)) +
+        (l.materialCategory
+          ? field('Material category', '<div class="mir-readonly">' + escapeHtml(l.materialCategory) + '</div>' +
+              '<span class="mir-hint">From the material master - the same on every receipt of this material.</span>') +
+            field('Sub-category', '<div class="mir-readonly">' + escapeHtml(l.materialSubcategory || '-') + '</div>')
+          : field('Material category' + req(), categoryControl(i, ln) +
+              '<span class="mir-hint">First receipt of this material: the category you pick is saved on the material for every future receipt.</span>') +
+            field('Sub-category', subcategoryControl(i, ln))) +
         field('Department use', '<input class="form-control" data-idx="' + i + '" data-key="dept_use" maxlength="60" value="' + escapeHtml(ln.v.dept_use) + '" placeholder="e.g. Mixing, Calendering">') +
       '</div></div>' +
       '<div class="mir-line-figures" id="fig-' + i + '"></div>' +
@@ -763,36 +790,56 @@ async function loadDetail(id) {
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
   let m;
   try { m = await apiMir('/entries/' + id); } catch (e) { area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>'; return; }
-  const canCancel = m.status === 'POSTED' && (META.plants.find(p => p.code === m.plant.code) || {}).canReceive;
+  const mayWrite = m.status === 'POSTED' && (META.plants.find(p => p.code === m.plant.code) || {}).canReceive;
   const tax = META.taxTypes.find(t => t.code === m.taxType);
   const cur = m.lines.length ? m.lines[0].currency : 'INR';
-  const item = (k, v) => v ? '<div class="mir-kv-item"><span class="mir-kv-k">' + escapeHtml(k) + '</span><span class="mir-kv-v">' + escapeHtml(v) + '</span></div>' : '';
+  const facts = factsTableHtml([
+    ['Plant', m.plant.name], ['MIR date', dateIN(m.mirDate)],
+    ['Vendor', m.vendor.name + (m.vendor.gstin ? ' (' + m.vendor.gstin + ')' : '')], ['Invoice', m.invoiceNo + ', ' + dateIN(m.invoiceDate)],
+    ['Invoice total', money(m.invoiceTotal, cur)], ['Computed total', money(m.computedTotal, cur)],
+    ['Tax type', tax ? tax.label : m.taxType], ['TCS', Number(m.tcsAmount) ? money(m.tcsAmount, cur) : ''],
+    ['SAP GRN number', m.sapGrnNumber], ['Vehicle', m.vehicleNo], ['Challan', m.challanNo], ['LR', m.lrNo],
+    ['E-way bill', m.ewayBillNo], ['Gate entry', m.gateEntryNo], ['Weighbridge slip', m.weighbridgeSlipNo],
+    ['Entered by', m.createdBy + ', ' + new Date(m.createdAt).toLocaleString('en-IN')],
+    ['Remarks', m.remarks, true], ['Cancelled', m.cancelReason ? m.cancelledBy + ': ' + m.cancelReason : '', true],
+  ]);
+  const canReject = mayWrite && m.canReject;
   area.innerHTML = '<section class="mir-panel mir-detail">' +
     '<div class="mir-detail-head"><h3 class="mir-panel-title">' + escapeHtml(m.mirNo) + '</h3>' +
-      statusPill(m.status === 'POSTED' ? 'Posted' : 'Cancelled', MIR_STATUS_TONE[m.status]) + '</div>' +
-    '<div class="mir-po-facts">' +
-      item('Plant', m.plant.name) + item('MIR date', dateIN(m.mirDate)) + item('Vendor', m.vendor.name + (m.vendor.gstin ? ' (' + m.vendor.gstin + ')' : '')) +
-      item('Invoice', m.invoiceNo + ', ' + dateIN(m.invoiceDate)) + item('Invoice total', money(m.invoiceTotal, cur)) + item('Computed total', money(m.computedTotal, cur)) +
-      item('Tax type', tax ? tax.label : m.taxType) + item('TCS', Number(m.tcsAmount) ? money(m.tcsAmount, cur) : '') +
-      item('SAP GRN number', m.sapGrnNumber) + item('Vehicle', m.vehicleNo) + item('Challan', m.challanNo) + item('LR', m.lrNo) +
-      item('E-way bill', m.ewayBillNo) + item('Gate entry', m.gateEntryNo) + item('Weighbridge slip', m.weighbridgeSlipNo) +
-      item('Remarks', m.remarks) + item('Entered by', m.createdBy + ', ' + new Date(m.createdAt).toLocaleString('en-IN')) +
-      (m.cancelReason ? item('Cancelled', m.cancelledBy + ': ' + m.cancelReason) : '') +
+      statusPill(m.status === 'POSTED' ? 'Posted' : 'Cancelled', MIR_STATUS_TONE[m.status]) +
+      (mayWrite && (m.canEdit || m.canEditGrn) ? '<button type="button" class="btn btn-navy btn-small" id="editBtn">' + (m.canEdit ? 'Edit details' : 'Add SAP GRN number') + '</button>' : '') +
     '</div>' +
+    (mayWrite ? '<p class="mir-help">' + (m.canEdit
+      ? 'Paperwork (invoice number and date, SAP GRN, transport, remarks, department) can be corrected until ' + dateIN(m.editUntil) + '. '
+      : 'The edit window closed on ' + dateIN(m.editUntil) + '; the SAP GRN number can still be added. ') +
+      (m.canReject ? 'A rejection found later can be recorded until ' + dateIN(m.rejectUntil) + '. ' : '') +
+      'Quantities, rates, GST and totals are never edited: if one is wrong, cancel this MIR and enter it again.</p>' : '') +
+    facts +
+    '<div id="editArea"></div>' +
     '<div class="table-wrap"><table><thead><tr><th>#</th><th>PO / line</th><th>Material</th><th>Category</th><th class="num">Received</th><th class="num">Rejected</th>' +
-      '<th class="num">Rate</th><th class="num">PO rate</th><th class="num">GST %</th><th class="num">Taxable</th><th class="num">Total</th></tr></thead><tbody>' +
+      '<th class="num">Rate</th><th class="num">PO rate</th><th class="num">GST %</th><th class="num">Taxable</th><th class="num">Total</th>' + (canReject ? '<th></th>' : '') + '</tr></thead><tbody>' +
       m.lines.map(l => '<tr><td>' + l.lineNo + '</td><td>' + escapeHtml(l.poNumber) + ' #' + l.poLineNo + '<div class="mir-muted">' + escapeHtml(plantName(l.poPlant)) + '</div></td>' +
-        '<td>' + escapeHtml(l.description) + (l.deptUse ? '<div class="mir-muted">For ' + escapeHtml(l.deptUse) + '</div>' : '') + '</td>' +
+        '<td>' + escapeHtml(l.description) + (l.deptUse ? '<div class="mir-muted">For ' + escapeHtml(l.deptUse) + '</div>' : '') + (l.remarks ? '<div class="mir-muted">' + escapeHtml(l.remarks) + '</div>' : '') + '</td>' +
         '<td>' + escapeHtml(l.materialCategory || '-') + (l.materialSubcategory ? '<div class="mir-muted">' + escapeHtml(l.materialSubcategory) + '</div>' : '') + '</td>' +
         '<td class="num">' + qty(l.qtyReceived) + ' ' + escapeHtml(l.uom) + '</td><td class="num">' + (Number(l.qtyRejected) ? qty(l.qtyRejected) + ' ' + escapeHtml(l.uom) : '-') + '</td>' +
         '<td class="num">' + money(l.rate, l.currency) + '</td><td class="num">' + money(l.poRate, l.currency) + '</td><td class="num">' + Number(l.gstRate) + '%</td>' +
-        '<td class="num">' + money(l.taxable, l.currency) + '</td><td class="num">' + money(l.lineTotal, l.currency) + '</td></tr>').join('') +
+        '<td class="num">' + money(l.taxable, l.currency) + '</td><td class="num">' + money(l.lineTotal, l.currency) + '</td>' +
+        (canReject ? '<td><button type="button" class="mir-link" data-reject="' + l.lineNo + '">Record rejection</button></td>' : '') + '</tr>' +
+        (canReject ? '<tr class="mir-reject-row" data-reject-row="' + l.lineNo + '" hidden><td colspan="12"></td></tr>' : '')).join('') +
     '</tbody></table></div>' +
     (m.mismatches.length ? '<h4 class="mir-subtitle">Differences recorded</h4>' + mismatchListHtml(m.mismatches.map(x => Object.assign({ currency: cur }, x)), false) : '') +
-    (canCancel ? '<div class="mir-cancel"><input class="form-control" id="cancelReason" maxlength="500" placeholder="Why is this MIR being cancelled?" aria-label="Cancel reason">' +
+    (m.history.length ? '<h4 class="mir-subtitle">Change history</h4><div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>' +
+      m.history.map(h => '<tr><td class="nowrap">' + escapeHtml(new Date(h.at).toLocaleString('en-IN')) + '</td><td>' + escapeHtml(h.by) + '</td>' +
+        '<td>' + escapeHtml((HISTORY_LABELS[h.field] || h.field) + (h.lineNo ? ', line ' + h.lineNo : '')) + '</td>' +
+        '<td>' + escapeHtml(h.oldValue || '-') + '</td><td>' + escapeHtml(h.newValue || '-') + '</td><td>' + escapeHtml(h.reason) + '</td></tr>').join('') +
+      '</tbody></table></div>' : '') +
+    (mayWrite ? '<div class="mir-cancel"><input class="form-control" id="cancelReason" maxlength="500" placeholder="Why is this MIR being cancelled?" aria-label="Cancel reason">' +
       '<button type="button" class="btn btn-navy" id="cancelBtn">Cancel this MIR</button></div><div class="mir-error-text" id="cancelErr"></div>' : '') +
   '</section>';
   area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const editBtn = document.getElementById('editBtn');
+  if (editBtn) editBtn.onclick = () => openEdit(m);
+  area.querySelectorAll('[data-reject]').forEach(b => { b.onclick = () => openReject(m, Number(b.dataset.reject)); });
   const btn = document.getElementById('cancelBtn');
   if (btn) btn.onclick = async () => {
     const reason = document.getElementById('cancelReason').value.trim();
@@ -804,6 +851,84 @@ async function loadDetail(id) {
       loadRegister();
       refreshMismatchCount();
     } catch (e) { document.getElementById('cancelErr').textContent = e.message; }
+  };
+}
+
+const HISTORY_LABELS = {
+  invoice_no: 'Invoice number', invoice_date: 'Invoice date', sap_grn_number: 'SAP GRN number', challan_no: 'Challan no.',
+  lr_no: 'LR no.', vehicle_no: 'Vehicle no.', eway_bill_no: 'E-way bill no.', gate_entry_no: 'Gate entry no.',
+  weighbridge_slip_no: 'Weighbridge slip no.', remarks: 'Remarks', dept_use: 'Department use', qty_rejected: 'Qty rejected',
+};
+
+/** The limited edit form: only what edit_mir() accepts, everything else is
+    shown read-only in the table above. After the edit window only the SAP
+    GRN number is open. */
+function openEdit(m) {
+  const area = document.getElementById('editArea');
+  const full = m.canEdit;
+  const input = (key, value, attrs) => '<input class="form-control" data-edit="' + key + '" value="' + escapeHtml(value || '') + '" ' + (attrs || '') + '>';
+  const header = [
+    ['sap_grn_number', 'SAP GRN number', m.sapGrnNumber, 'maxlength="50"', true],
+    ['invoice_no', 'Invoice number', m.invoiceNo, 'maxlength="60"'], ['invoice_date', 'Invoice date', m.invoiceDate, 'type="date" max="' + m.mirDate + '"'],
+    ['vehicle_no', 'Vehicle no.', m.vehicleNo, 'maxlength="30"'], ['challan_no', 'Challan no.', m.challanNo, 'maxlength="60"'],
+    ['lr_no', 'LR no.', m.lrNo, 'maxlength="60"'], ['eway_bill_no', 'E-way bill no.', m.ewayBillNo, 'maxlength="30"'],
+    ['gate_entry_no', 'Gate entry no.', m.gateEntryNo, 'maxlength="40"'], ['weighbridge_slip_no', 'Weighbridge slip no.', m.weighbridgeSlipNo, 'maxlength="40"'],
+  ].filter(f => full || f[4]);
+  area.innerHTML = '<div class="mir-edit">' +
+    '<div class="mir-line-group-title">' + (full ? 'Edit details' : 'Add the SAP GRN number') + '</div>' +
+    '<div class="mir-grid">' + header.map(f => field(escapeHtml(f[1]), input(f[0], f[2], f[3]))).join('') + '</div>' +
+    (full ? field('Remarks', '<textarea class="form-control" data-edit="remarks" rows="2" maxlength="2000">' + escapeHtml(m.remarks || '') + '</textarea>') +
+      '<div class="mir-grid">' + m.lines.map(l => field('Line ' + l.lineNo + ' - department use', '<input class="form-control" data-edit-line="' + l.lineNo + '" data-edit-key="dept_use" maxlength="60" value="' + escapeHtml(l.deptUse || '') + '">')).join('') + '</div>' : '') +
+    field('Why is this being changed?' + req(), '<input class="form-control" id="editReason" maxlength="500" placeholder="e.g. Invoice number typed wrongly">') +
+    '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" id="saveEdit">Save changes</button>' +
+      '<button type="button" class="mir-link" id="closeEdit">Close</button><span class="mir-error-text" id="editErr"></span></div>' +
+  '</div>';
+  document.getElementById('closeEdit').onclick = () => { area.innerHTML = ''; };
+  document.getElementById('saveEdit').onclick = async () => {
+    const header = {}, lines = {};
+    area.querySelectorAll('[data-edit]').forEach(el => {
+      const was = el.dataset.edit === 'remarks' ? (m.remarks || '') : String((m[{ sap_grn_number: 'sapGrnNumber', invoice_no: 'invoiceNo', invoice_date: 'invoiceDate',
+        vehicle_no: 'vehicleNo', challan_no: 'challanNo', lr_no: 'lrNo', eway_bill_no: 'ewayBillNo', gate_entry_no: 'gateEntryNo',
+        weighbridge_slip_no: 'weighbridgeSlipNo' }[el.dataset.edit]]) || '');
+      if (el.value !== was) header[el.dataset.edit] = el.value;
+    });
+    area.querySelectorAll('[data-edit-line]').forEach(el => {
+      const l = m.lines.find(x => String(x.lineNo) === el.dataset.editLine);
+      if (el.value !== (l.deptUse || '')) (lines[el.dataset.editLine] = lines[el.dataset.editLine] || {})[el.dataset.editKey] = el.value;
+    });
+    try {
+      await apiMir('/entries/' + m.id + '/edit', { method: 'POST', body: { header, lines, reason: document.getElementById('editReason').value } });
+      loadDetail(m.id);
+      loadRegister();
+    } catch (e) { document.getElementById('editErr').textContent = e.message; }
+  };
+}
+
+/** A rejection found after posting (the QC report): the new TOTAL rejected
+    on the line, a rejection reason and a note. */
+function openReject(m, lineNo) {
+  const l = m.lines.find(x => x.lineNo === lineNo);
+  const row = document.querySelector('[data-reject-row="' + lineNo + '"]');
+  row.hidden = false;
+  row.firstElementChild.innerHTML = '<div class="mir-edit">' +
+    '<div class="mir-line-group-title">Record a rejection on line ' + lineNo + ' - ' + escapeHtml(l.description) + '</div>' +
+    '<p class="mir-help">Received ' + escapeHtml(qty(l.qtyReceived) + ' ' + l.uom) + ', rejected so far ' + escapeHtml(qty(l.qtyRejected) + ' ' + l.uom) +
+      '. Enter the new total rejected; the accepted quantity and the PO balance update at once, and the rejection goes to Open mismatches for the debit note or replacement.</p>' +
+    '<div class="mir-grid">' +
+      field('Total rejected (' + escapeHtml(l.uom) + ')' + req(), '<input class="form-control" id="rejQty" inputmode="decimal" autocomplete="off">') +
+      field('Reason' + req(), reasonSelectHtml('REJECTION', '', 'id="rejReason"')) +
+      field('Note', '<input class="form-control" id="rejNote" maxlength="2000" placeholder="e.g. QC report no.">') +
+    '</div>' +
+    '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" id="saveRej">Record rejection</button>' +
+      '<button type="button" class="mir-link" id="closeRej">Close</button><span class="mir-error-text" id="rejErr"></span></div></div>';
+  document.getElementById('closeRej').onclick = () => { row.hidden = true; };
+  document.getElementById('saveRej').onclick = async () => {
+    try {
+      await apiMir('/entries/' + m.id + '/lines/' + lineNo + '/reject', { method: 'POST', body: {
+        qtyRejected: document.getElementById('rejQty').value, reason: document.getElementById('rejReason').value, note: document.getElementById('rejNote').value } });
+      loadDetail(m.id);
+      refreshMismatchCount();
+    } catch (e) { document.getElementById('rejErr').textContent = e.message; }
   };
 }
 

@@ -19,7 +19,7 @@ from django.utils import timezone
 
 from apps.api.tests.factories import make_user
 from apps.core.models import Mir, MirMismatch, MirSequence, Plant, PurchaseOrder, PurchaseOrderLine, Vendor
-from apps.services import mir_service
+from apps.services import materials, mir_service
 from apps.services.mir_service import MirValidationError
 
 MH = "27AAACP5506B1ZW"  # Maharashtra vendor
@@ -40,7 +40,7 @@ def _po(plant="vapi", number="1000009001", vendor="default", lines=((Decimal("10
                                       po_date=po_date or TODAY - datetime.timedelta(days=30), tax_type=tax_type)
     for n, (qty, rate) in enumerate(lines, start=1):
         PurchaseOrderLine.objects.create(purchase_order=po, line_no=n, description=f"Material {n}", uom="KG",
-                                         qty_ordered=qty, rate=rate)
+                                         qty_ordered=qty, rate=rate, material=materials.material_for(f"Material {n}"))
     return po
 
 
@@ -544,42 +544,38 @@ class TestGstRate:
 
 @pytest.mark.django_db
 class TestMaterialCategory:
+    """The category lives on the material master: an unfiled material takes
+    the clerk's pick at its first MIR, and every later receipt reads it from
+    the master, whatever the form sends."""
+
     def _reference(self):
         from apps.core.models import MaterialCategoryReference
-        MaterialCategoryReference.objects.create(description="Material 1", normalized_description="material 1",
-                                                 category="Carbon Black", subcategory="N330", sap_item_code="")
         MaterialCategoryReference.objects.create(description="Zinc", normalized_description="zinc",
-                                                 category="Rubber Chemicals & Additives", subcategory="Activator",
-                                                 sap_item_code="RM0001")
+                                                 category="Carbon Black", subcategory="N330", sap_item_code="")
 
-    def test_category_is_required(self, user):
+    def test_category_is_required_for_an_unfiled_material(self, user):
         with pytest.raises(MirValidationError) as exc:
             mir_service.post_mir(_payload([_ln(_line(_po()), material_category="")], invoice_total="1"), user)
         assert "lines.0.material_category" in _fields(exc)
 
-    def test_the_category_and_sub_category_must_come_from_the_list(self, user):
+    def test_the_first_mir_files_the_material_and_later_ones_read_it(self, user):
         self._reference()
-        line = _line(_po())
+        line = _line(_po(lines=((Decimal("100"), Decimal("50")),)))
         with pytest.raises(MirValidationError) as exc:
-            mir_service.post_mir(_payload([_ln(line, material_category="Carbon")], invoice_total="1"), user)
+            mir_service.post_mir(_payload([_ln(line, qty="50", material_category="Carbon")], invoice_total="1"), user)
         assert "lines.0.material_category" in _fields(exc)
         with pytest.raises(MirValidationError) as exc:
-            mir_service.post_mir(_payload([_ln(line, material_subcategory="Activator")], invoice_total="1"), user)
+            mir_service.post_mir(_payload([_ln(line, qty="50", material_subcategory="Nope")], invoice_total="1"), user)
         assert "lines.0.material_subcategory" in _fields(exc)
-        mir = mir_service.post_mir(_payload([_ln(line, material_subcategory="N330")]), user)
-        saved = mir.lines.get()
-        assert (saved.material_category, saved.material_subcategory) == ("Carbon Black", "N330")
-
-    def test_suggestions_by_item_code_then_description(self, user):
-        self._reference()
-        po = _po(lines=((Decimal("1"), Decimal("1")), (Decimal("1"), Decimal("1")), (Decimal("1"), Decimal("1"))))
-        first, second, third = (_line(po, n) for n in (1, 2, 3))
-        second.item_code = "RM0001"
-        second.save()
-        got = mir_service.suggested_categories([first, second, third])
-        assert got[first.id] == ("Carbon Black", "N330")
-        assert got[second.id] == ("Rubber Chemicals & Additives", "Activator")
-        assert got[third.id] == ("", "")
+        mir_service.post_mir(_payload([_ln(line, qty="50", qty_reason="PARTIAL_BALANCE_DUE", material_subcategory="N330")]), user)
+        line.material.refresh_from_db()
+        assert (line.material.category, line.material.subcategory) == ("Carbon Black", "N330")
+        assert line.material.category_set_by_email == user.email
+        # A second receipt sends another category: the master's stands.
+        preview = mir_service.evaluate(_payload([_ln(line, qty="50", material_category="Something else")], invoice_no="INV-2"))
+        assert not any(e["field"].endswith("material_category") for e in preview["errors"])
+        assert preview["lines"][0]["material_category"] == "Carbon Black"
+        assert preview["lines"][0]["category_from_master"] is True
 
 
 @pytest.mark.django_db

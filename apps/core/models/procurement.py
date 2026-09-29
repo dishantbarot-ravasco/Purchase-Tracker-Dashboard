@@ -15,6 +15,10 @@ depends on a spreadsheet's layout.
   Vendor            one row per GSTIN (a vendor with none is keyed on its
                     cleaned name). PO and MIR point at it; vendor details
                     are never copied onto either.
+  Material          one row per material, company-wide: its name, SAP item
+                    code, unit, HSN and - the reason it exists - its category
+                    and sub-category, held once. PO lines point at it, and a
+                    MIR line reads its category through its PO line.
   PurchaseOrder,    projected from each plant's PO master CSV by
   PurchaseOrderLine apps/services/procurement_sync.py. A line is identified
                     by its position in the order and is never deleted: a
@@ -28,6 +32,8 @@ depends on a spreadsheet's layout.
   MirMismatch       every quantity, rate, invoice-total or tax-type
                     difference found at posting, with its reason and whether
                     a purchase manager has resolved it.
+  MirChange         every edit made to a posted MIR: the field, old and new
+                    value, the reason given, who and when.
 
 "Received so far" and "open quantity" are never stored: they are summed from
 posted MIR lines (apps/services/mir_service.py), so a cancelled MIR can never
@@ -84,6 +90,41 @@ class Vendor(models.Model):
         return self.name
 
 
+class Material(models.Model):
+    """The material master (2026-09-29): a material exists once, company-wide,
+    and its category lives here - not on each receipt, where the same
+    material could be filed two ways.
+
+    Identity is `name_key` (normalize_material() of the name), not the SAP
+    item code: the PO sheets reuse one item code for different grades (HRS
+    3000001167 lists 22001840 for both Reclaim Rubber 6 MPA and 7 MPA), so a
+    code-keyed master would merge them. `item_code` is kept for reference.
+    Seeded from MaterialCategoryReference; a material the list does not know
+    starts without a category, and the first MIR against it sets one
+    (apps/services/materials.py)."""
+
+    name = models.CharField(max_length=500)
+    name_key = models.CharField(max_length=500, unique=True)
+    item_code = models.CharField(max_length=50, blank=True, default="", db_index=True)
+    uom = models.CharField(max_length=20, blank=True, default="")
+    hsn = models.CharField(max_length=20, blank=True, default="")
+    category = models.CharField(max_length=200, blank=True, default="")
+    subcategory = models.CharField(max_length=200, blank=True, default="")
+    # Who filed it, when a clerk set the category at MIR entry rather than
+    # the reference list; blank for a reference-list category.
+    category_set_by_email = models.CharField(max_length=255, blank=True, default="")
+    category_set_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=~Q(name_key=""), name="material_name_key_not_blank")]
+        indexes = [models.Index(fields=["category"])]
+
+    def __str__(self):
+        return self.name
+
+
 class TaxTypeChoice(models.TextChoices):
     IGST = "IGST", "IGST"
     CGST_SGST = "CGST_SGST", "CGST + SGST"
@@ -131,6 +172,9 @@ class PurchaseOrder(models.Model):
 
 class PurchaseOrderLine(models.Model):
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name="lines")
+    # The material this line orders (materials.material_for()); null only
+    # for a line whose description is blank.
+    material = models.ForeignKey(Material, on_delete=models.PROTECT, null=True, blank=True, related_name="po_lines")
     # 1-based position in the order - the line's identity (see module docstring).
     line_no = models.PositiveSmallIntegerField()
     item_code = models.CharField(max_length=50, blank=True, default="")
@@ -310,11 +354,6 @@ class MirLine(models.Model):
     rolls = models.PositiveIntegerField(null=True, blank=True)
     batch_no = models.CharField(max_length=60, blank=True, default="")
     dept_use = models.CharField(max_length=60, blank=True, default="")
-    # Chosen from MaterialCategoryReference's list, prefilled from the PO
-    # line's material. The same material can be filed differently on two
-    # receipts only if a clerk changes it; there is no material master yet.
-    material_category = models.CharField(max_length=200, blank=True, default="")
-    material_subcategory = models.CharField(max_length=200, blank=True, default="")
     remarks = models.TextField(blank=True, default="")
 
     class Meta:
@@ -376,3 +415,27 @@ class MirMismatch(models.Model):
         ]
         indexes = [models.Index(fields=["status", "kind"])]
         ordering = ["id"]
+
+
+class MirChange(models.Model):
+    """One edit to a posted MIR (2026-09-29). Editing is deliberately narrow
+    (apps/services/mir_service.py's edit_mir() / record_rejection()): the
+    paperwork fields, a line's department and remarks, and a rejection
+    found after posting. Quantities received, rates, GST, discounts, the tax
+    type and the invoice total are never edited - a wrong figure means
+    cancelling the MIR and entering it again, which gives a new number.
+    Every edit needs a reason and is kept here, old and new value."""
+
+    mir = models.ForeignKey(Mir, on_delete=models.CASCADE, related_name="changes")
+    mir_line = models.ForeignKey(MirLine, on_delete=models.CASCADE, null=True, blank=True, related_name="changes")
+    field = models.CharField(max_length=40)
+    old_value = models.TextField(blank=True, default="")
+    new_value = models.TextField(blank=True, default="")
+    reason = models.TextField()
+    changed_by = models.ForeignKey("core.PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    changed_by_email = models.CharField(max_length=255)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
+        constraints = [models.CheckConstraint(condition=~Q(reason=""), name="mir_change_has_reason")]

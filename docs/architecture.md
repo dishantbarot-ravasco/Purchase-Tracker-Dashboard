@@ -47,7 +47,7 @@ Several model comments and docstrings still cite those old paths (`apps/core/par
 
 Several modules are **deliberately dependency-free** (no Django imports at all), so they unit-test
 as plain Python and are safe to import from a migration's `RunPython`: `parsers/common.py`,
-`validation.py`, `stock_identity.py` (imports only `parsers/common.py`), `arithmetic_checks.py`,
+`validation.py`, `stock_identity.py` and `material_identity.py` (each imports only `parsers/common.py`), `arithmetic_checks.py`,
 `consumption_engine.py`. Migration `0023` really does import `stock_identity` from `RunPython`.
 Keep them that way - the DB-touching counterpart lives in its own module (e.g. `data_quality.py`
 is the DB layer over `arithmetic_checks.py`). `stock_consumption.py` (superseded, dead code) is
@@ -554,7 +554,8 @@ in [consumption.md](consumption.md).
 
 Normalized POs and MIRs (migrations `0067`; `0068` seeding the plants and reasons; `0076` adding the
 form fields below, the `REJECTION` / `GST_RATE` kinds, re-running `0068`'s seed and backfilling Bill To
-from the mirrors). See
+from the mirrors; `0077` the material master - seeded from the reference list, every PO line linked,
+categories already chosen on MIR lines moved onto their materials - and `MirChange`). See
 [The app's own records are normalized](#the-apps-own-records-are-normalized---procurement-2026-09-28).
 
 - `Plant` - `code` (the lowercase key `PTUser.plants` uses), `state_code` (GSTIN state: HRS 26, Achhad
@@ -566,7 +567,11 @@ from the mirrors). See
   `billing_address`, `ship_to`, `total_value`, `total_inclusive_value`, `remarks`; `tax_type` canonical
   or blank, `tax_type_raw` as typed; `is_active`; `source_hash` (the mirror's hash, for
   skip-if-unchanged). The vendor's name, address, GSTIN, email and code are on `Vendor`, once.
-- `PurchaseOrderLine` - unique `(purchase_order, line_no)`, `line_no` being the line's position; `uom`
+- `Material` - the material master: `name`, unique `name_key` (`material_identity.material_key()`),
+  `item_code` (reference only - PO sheets reuse a code across grades), `uom`, `hsn`, `category`,
+  `subcategory`, and who filed it at MIR entry (`category_set_by_email`, `category_set_at`; blank when
+  the reference list did).
+- `PurchaseOrderLine` - `material` (`PROTECT`); unique `(purchase_order, line_no)`, `line_no` being the line's position; `uom`
   canonical plus `uom_raw`; `item_code`, `description`, `hsn`, `qty_ordered`, `rate`, `net_value`,
   `delivery_date`; `is_active` (never deleted); `needs_review` / `review_note`; short-close
   fields (`closed_at`, `closed_by`, `closed_reason`, `close_note`, `closed_by_mir_line`).
@@ -584,13 +589,15 @@ from the mirrors). See
 - `MirLine` - `po_line` (`PROTECT`), received and rejected quantity (rejected within received,
   received above zero), invoice `rate`, the `po_rate` and `open_qty_before` snapshots, discount, other
   charges (0 from the form), `gst_rate` (0-40), computed gross/taxable/igst/cgst/sgst/line_total,
-  `material_category` / `material_subcategory` (from the reference list), dept, and rolls / batch
-  (blank from the form).
+  dept, remarks, and rolls / batch (blank from the form). No category of its own: it reads its PO line's
+  `Material`. `qty_rejected` can rise after posting (`record_rejection()`); nothing else figure-wise changes.
   Unique `(mir, line_no)` and `(mir, po_line)`.
 - `MirMismatch` - `kind` one of `QTY_SHORT`, `QTY_OVER`, `QTY_REJECTED`, `RATE_HIGH`, `RATE_LOW`,
   `GST_RATE`, `INVOICE_TOTAL`, `TAX_TYPE`; one per `(mir_line, kind)` (or `(mir, kind)` for the invoice-level kinds), expected
   and actual, `difference_pct`, `reason`, `note`, `status` OPEN/RESOLVED/VOID; a RESOLVED one carries
   `resolved_at` and a `resolution_note`.
+- `MirChange` - one edit to a posted MIR: `mir`, `mir_line` (null for a header field), `field`,
+  `old_value`, `new_value`, `reason` (never blank), who and when.
 
 ### apps/core/models/preferences.py
 

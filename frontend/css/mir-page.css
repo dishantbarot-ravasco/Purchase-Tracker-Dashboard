@@ -77,13 +77,7 @@
 .mir-po-vendor { font-weight: 600; color: var(--slate); }
 .mir-po-head .btn { margin-left: auto; }
 .mir-po-lines:not(:empty) { margin-top: 12px; }
-.mir-po-facts {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 16px;
-  background: var(--gray-soft); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px;
-}
-.mir-kv-item { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .mir-kv-k { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--slate-soft); }
-.mir-kv-v { font-size: 12.5px; color: var(--slate); overflow-wrap: anywhere; }
 .mir-table-wrap { max-height: none; }
 .table-wrap .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .table-wrap tr.is-disabled td { color: var(--gray); }
@@ -246,3 +240,30 @@ html, body { overflow-x: clip; }
   .mir-savebar-action { margin-left: 0; width: 100%; }
   .mir-savebar-action .btn { width: 100%; }
 }
+
+/* Facts as a label/value table (PO details, a MIR's header): labels in the
+   narrow shaded column, values beside them, long ones across the row. */
+.mir-facts-table { width: 100%; border-collapse: collapse; margin: 4px 0 14px; font-size: 12.5px; background: var(--card); }
+.mir-facts-table th, .mir-facts-table td { border: 1px solid var(--border-soft); padding: 7px 10px; vertical-align: top; text-align: left; }
+.mir-facts-table th {
+  width: 150px; background: var(--gray-soft); color: var(--slate-soft); font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .04em; white-space: nowrap;
+}
+.mir-facts-table td { color: var(--slate); overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .mir-facts-table tr { display: grid; grid-template-columns: 1fr; }
+  .mir-facts-table th { width: auto; }
+  .mir-facts-table td:empty { display: none; }
+}
+
+/* A category the material master already holds: shown, not asked. */
+.mir-readonly {
+  padding: 10px 13px; border: 1px dashed var(--border-strong); border-radius: var(--radius); background: var(--gray-soft);
+  color: var(--slate); font-size: 13px; min-height: 40px;
+}
+
+/* The limited edit and late-rejection panels in a MIR's detail. */
+.mir-edit { background: var(--gray-soft); border-radius: 10px; padding: 12px 14px; margin: 4px 0 14px; }
+.mir-edit .form-group { margin-bottom: 10px; }
+tr.mir-reject-row > td { background: var(--card); }
+.mir-detail-head .btn { margin-left: auto; }

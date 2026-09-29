@@ -105,7 +105,7 @@ Read the linked section before breaking any of these. Each is there because it w
 - Import models from `apps.core.models`; a new model goes in its plant/concern file and into
   `__init__.py`'s imports and `__all__`. Business logic lives in `apps.services`, never `apps.core`.
   [layering](docs/architecture.md#layering)
-- Keep `parsers/common.py`, `validation.py`, `stock_identity.py`, `arithmetic_checks.py`, and
+- Keep `parsers/common.py`, `validation.py`, `stock_identity.py`, `material_identity.py`, `arithmetic_checks.py`, and
   `consumption_engine.py` free of Django imports - migrations import them.
   [layering](docs/architecture.md#layering)
 - Per-plant model classes are deliberate for the **Drive mirrors**; never merge them into one table
@@ -261,6 +261,11 @@ Read the linked section before breaking any of these. Each is there because it w
   deliveries, so earlier MIRs of it come back as a notice, never an error - don't add a uniqueness
   check. Any plant may receive any plant's open PO (the PO lookups are cross-plant on purpose, and search
   by PO number only); posting is scoped to the receiving plant.
+- A posted MIR's figures (qty received, rates, GST, discount, tax type, invoice total, lines) are never
+  edited - cancel and re-enter. `edit_mir()` takes paperwork within 7 days (the SAP GRN any time) and
+  `record_rejection()` raises a rejection within 30 days; both need a reason and log to `MirChange`.
+- A material's category lives on `Material`, keyed on `material_identity.material_key()` - never the SAP
+  item code (reused across grades). A MIR line has no category of its own.
 - MIR reasons live only in migration `0068`'s `REASONS`; a new reason goes there plus a migration that
   re-runs its `seed()` (as `0076` does). Never delete a reason.
 - Reference rows (plants, MIR reasons) come from migration `0068`; a `transaction=True` test flushes
