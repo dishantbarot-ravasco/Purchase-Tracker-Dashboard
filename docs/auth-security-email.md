@@ -106,9 +106,9 @@ Roles: **`admin`** (full access + user management), **`editor`** (full dashboard
 overriding flags + inline corrections + manual MIR pins), **`viewer`** (read-only).
 
 On the dashboard, the **Raw Material Analysis** tab is shown to admins only (2026-09-29); editors and
-viewers get the Inventory, On Order and Stock Planner tabs instead. That is a view choice, not a data
+viewers get the Inventory, On Order and Stock & Orders tabs instead. That is a view choice, not a data
 boundary - the endpoints behind both are readable by every role - see
-[frontend.md](frontend.md#plant-stock-tabs---inventory-on-order-stock-planner-2026-09-29).
+[frontend.md](frontend.md#plant-stock-tabs---inventory-on-order-stock--orders-2026-09-29).
 
 Read endpoints are plain `IsAuthenticated` on *role* - any role can read, by design - **but they also
 narrow by `PTUser.plants`** via `permissions.user_can_access_plant()`, the same underlying check

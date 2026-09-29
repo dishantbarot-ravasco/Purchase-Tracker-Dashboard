@@ -1062,7 +1062,8 @@ function applyColFilters(recs) {
 // search "reloading" on every keystroke. Domestic PO was the only one that
 // ever worked, which is why the bug survived in the two files that copied
 // this call without owning the helper.
-const FILTER_ATTRS = ['data-cf', 'data-icf', 'data-mcf'];
+// data-psf: the plant stock tabs' header filters (plant-stock.js).
+const FILTER_ATTRS = ['data-cf', 'data-icf', 'data-mcf', 'data-psf'];
 function preserveFocus(container, renderFn) {
   const active = document.activeElement;
   const attr = active && active.getAttribute ? FILTER_ATTRS.find(a => active.hasAttribute(a)) : null;

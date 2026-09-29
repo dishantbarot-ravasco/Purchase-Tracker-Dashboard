@@ -249,11 +249,13 @@ Read the linked section before breaking any of these. Each is there because it w
   table's sort moves its rows (`resortSortedTables()`), never re-renders them - that would reset an
   in-progress correction. A list must sort before it draws its sort bar.
   [list-sort.js](docs/frontend.md#frontendjslist-sortjs)
-- Raw Material Analysis is admin-only; every role gets Inventory / On Order / Stock Planner
-  (`plant-stock.js`). Those tabs reuse materials.js's helpers for every figure - never re-derive stock,
-  open qty or Days Left there - and the Planner compares dates, never stock + order quantities (Achhad
-  lots have no unit). Material links go through `openMaterialLink()`, which routes by role.
-  [plant tabs](docs/frontend.md#plant-stock-tabs---inventory-on-order-stock-planner-2026-09-29)
+- Raw Material Analysis is admin-only; every role gets Inventory / On Order / Stock & Orders
+  (`plant-stock.js`), built from Raw Material Analysis's own classes and layout. Those tabs reuse
+  materials.js's helpers for every figure - never re-derive stock, open qty or Days Left there - and
+  never add stock to ordered quantity (Achhad lots have no unit). Material links go through
+  `openMaterialLink()`, which routes by role. `vendorContains()` matches identical names at any length
+  first, like `_vendor_matches()` - never let the 4-character floor apply to equal names.
+  [plant tabs](docs/frontend.md#plant-stock-tabs---inventory-on-order-stock--orders-2026-09-29)
 
 ### MIR entry
 - MIR entry has **no fuzzy matching and no tolerance**: quantity (accepted = received - rejected) and
@@ -380,6 +382,7 @@ Read the linked section before breaking any of these. Each is there because it w
 | An aggregate (`annotate(Sum(...))`) query silently dropping `Meta.ordering`, so the MIR register listed oldest first | [api](docs/api-and-features.md#appsapiroutersmir_viewspy) |
 | A `transaction=True` test flushing migration-seeded reference rows, breaking every later test by order | [testing](docs/testing-deployment.md#test-helpers) |
 | A page script re-declaring `let CURRENT_USER` (auth.js's) - a SyntaxError that silently killed the whole MIR page; `test_frontend_global_names.py` now fails on any repeated top-level `let`/`const`/`class` on one page | [frontend](docs/frontend.md#serving-load-order-and-the-one-global-scope) |
+| `vendorContains()` applying its 4-character floor to identical names, so every SRF and GRP order linked to no material (Rs 1.72 cr missing from Value in Transit) - the backend had fixed it, the browser port had not | [frontend](docs/frontend.md#frontendjssharedjs) |
 | Stale modal data from a fast row-switch | [frontend](docs/frontend.md#modals-one-shared-shell-and-the-stale-response-guard) |
 | `[hidden]` losing a specificity tie to a `display` rule (now a global `[hidden]{display:none !important}` in `brand.css`) | [frontend](docs/frontend.md#other-traps) |
 | Duplicate CSS custom properties across two stylesheets | [frontend](docs/frontend.md#css-custom-property-collisions) |

@@ -33,7 +33,7 @@ class SortPreset(models.Model):
         SEARCH_PO_ITEMS = "search_po_items", "Search PO: line items"
         PLANT_INVENTORY = "plant_inventory", "Inventory"
         PLANT_ON_ORDER = "plant_on_order", "On Order"
-        STOCK_PLANNER = "stock_planner", "Stock Planner"
+        PLANT_COMBINED = "plant_combined", "Stock & Orders"
 
     user = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="sort_presets")
     view = models.CharField(max_length=30, choices=View.choices)

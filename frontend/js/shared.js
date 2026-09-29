@@ -217,11 +217,16 @@ function normalizeVendor(name) {
   n = n.replace(/[^a-z0-9]+/g, '');
   return n.trim();
 }
-// Containment, not equality - same reasoning as matching.py's _vendor_matches
-// (e.g. Stock sheets sometimes append a city suffix PO/MIR data doesn't
-// carry). A length floor avoids a short/empty normalized name trivially
-// matching everything.
+// Containment, not equality - same reasoning as matching_core.py's
+// _vendor_matches (e.g. Stock sheets sometimes append a city suffix PO/MIR
+// data doesn't carry). A length floor avoids a short/empty normalized name
+// trivially matching everything - but, as in _vendor_matches' rule 1, two
+// IDENTICAL names pass at any length first: "SRF Ltd" and "GRP Limited"
+// normalize to "srf" / "grp", and the floor alone kept every SRF and GRP
+// order from linking even to its own material (2026-09-29: 24 open lines,
+// Rs 1.72 cr, missing from Raw Material Analysis's Value in Transit).
 function vendorContains(a, b) {
+  if (a && a === b) return true;
   if (!a || !b || a.length < 4 || b.length < 4) return false;
   const shorter = a.length <= b.length ? a : b;
   const longer = a.length <= b.length ? b : a;

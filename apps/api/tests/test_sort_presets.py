@@ -148,7 +148,7 @@ class TestSaveOver:
     ("search-po-page.js", "SEARCH_ITEMS_SORT_COLUMNS", SortPreset.View.SEARCH_PO_ITEMS),
     ("plant-stock-sort.js", "INV_SORT_COLUMNS", SortPreset.View.PLANT_INVENTORY),
     ("plant-stock-sort.js", "ORD_SORT_COLUMNS", SortPreset.View.PLANT_ON_ORDER),
-    ("plant-stock-sort.js", "PLAN_SORT_COLUMNS", SortPreset.View.STOCK_PLANNER),
+    ("plant-stock-sort.js", "COMB_SORT_COLUMNS", SortPreset.View.PLANT_COMBINED),
 ])
 def test_frontend_sort_columns_match_the_server_keys(js_file, const, view):
     """Each list offers exactly the columns the server accepts for its view,

@@ -4,7 +4,7 @@
  */
 //
 // Navigation hierarchy (top to bottom): Purchase Orders / Raw Material
-// Analysis (admins only) / Inventory / On Order / Stock Planner (level 1 -
+// Analysis (admins only) / Inventory / On Order / Stock & Orders (level 1 -
 // see viewTabOptions(); the last three are plant-stock.js) -> plant (level
 // 2) -> Domestic / Import Purchases (level 3, Purchase Orders only).
 // Originally ported to match the "Purchase
@@ -144,7 +144,7 @@ let IMPORT_PO_CACHE = null;
 let IMPORT_PO_DETAIL_CACHE = {}; // "plant|poNumber" -> full detail payload (Items/Shipment/Flags tabs)
 let state = {
   // 'po' | 'materials' (Raw Material Analysis, admins only) | the plant
-  // stock tabs 'inventory' / 'onorder' / 'planner' (plant-stock.js, every
+  // stock tabs 'inventory' / 'onorder' / 'combined' (plant-stock.js, every
   // role) - see viewTabOptions().
   view: 'po',
   // 'all' ("All Plants") is valid for both views - see plantTabOptions().
@@ -867,7 +867,7 @@ async function _pollSyncUntilDone(btn, targetKeys, baseline, opts) {
 // ── Level 1: Purchase Orders / Raw Material Analysis / plant stock tabs ─
 // Raw Material Analysis is for admins only (project owner, 2026-09-29): its
 // match confidence, mismatch flags and corrections are reconciliation work.
-// Plant staff get Inventory, On Order and Stock Planner instead
+// Plant staff get Inventory, On Order and Stock & Orders instead
 // (plant-stock.js), which read the same stock and order data. This hides a
 // view, it does not guard data - every role may read the endpoints both
 // views are built from.

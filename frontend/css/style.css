@@ -1029,24 +1029,26 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
   .mat-kpi-grid .kpi-card .val { font-size:20px; }
 }
 
-/* Plant stock tabs - Inventory, On Order, Stock Planner (plant-stock.js,
-   2026-09-29). The KPI row is Raw Material Analysis's grid with six cards:
-   six across on a wide screen, three on a laptop, two on a phone. These
-   rules come after .mat-kpi-grid's, at the same specificity, so they win. */
+/* Plant stock tabs - Inventory, On Order, Stock & Orders (plant-stock.js,
+   2026-09-29). They are built from Raw Material Analysis's own classes (KPI
+   grid, filter bar, chart row, top-5 cards, fixed table); only what differs
+   lives here. The KPI row holds six cards: six across on a wide screen,
+   three on a laptop, two on a phone - after .mat-kpi-grid's rules, at the
+   same specificity, so these win. Column track widths are set from JS
+   (wirePlantListRegion()), since the plant columns vary with the plant tab. */
 .kpi-grid.ps-kpi-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 @media (max-width: 1499px) { .kpi-grid.ps-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 640px) { .kpi-grid.ps-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.list-header-row.ps-grid, .top5-row.ps-grid { align-items:start; }
+.list-header-row.ps-grid:not(.col-filter-row-grid) { align-items:end; }
+.list-header-row.ps-grid.col-filter-row-grid { align-items:center; }
 /* A material or PO name is a real <button> (keyboard reachable) that looks
    like the other lists' .row-link text. */
 .ps-link { background:none; border:0; padding:0; margin:0; text-align:left; cursor:pointer; font-family:inherit; line-height:inherit; }
 .ps-link:focus-visible { outline:2px solid var(--gold-accent); outline-offset:2px; border-radius:3px; }
-.filter-row .ps-check { display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600; text-transform:none; letter-spacing:0; color:var(--slate); cursor:pointer; }
-.filter-row .ps-search { min-width:220px; }
-.ps-table { min-width:980px; }
-.ps-table td { vertical-align:top; }
 .ps-empty { text-align:center; padding:18px; color:var(--slate-soft); font-size:12.5px; }
-.ps-why { max-width:230px; white-space:normal; }
-.ps-panel-heading { margin:18px 0 8px; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--slate-soft); font-weight:700; }
+.mat-tag.ps-tag-late { background:var(--red-soft); color:var(--red-text); }
+.ps-total-row td { font-weight:700; color:var(--navy); border-top:2px solid var(--border-strong); }
 
 /* Raw Material Analysis list (materials.js's MAT_LIST_COLUMNS), 2026-09-28
    layout pass. Its eleven columns (Category and Sub Category separate) get their own track widths rather than the

@@ -155,7 +155,8 @@ the obvious one:
   two views nothing re-focused the rebuilt input - the caret was gone after the first character and
   the next keystroke went nowhere. Domestic PO was the only view where it worked, which is exactly
   why the bug survived in the two files that call the helper without owning it. It now matches on
-  all three attributes (`FILTER_ATTRS`), the same set `applyAccessibleNames()` reads.
+  all three attributes (`FILTER_ATTRS`), the same set `applyAccessibleNames()` reads - plus the plant
+  stock tabs' `data-psf` since 2026-09-29.
 - **Every keystroke rebuilt the entire view.** A text filter is table-only - it narrows `tableRecs`,
   never `filtered` - yet the `input` handler re-ran the whole render: KPI cards restarting their
   count-up animations from 0, `destroyPageCharts()` plus fresh `new Chart(...)` for every canvas,
@@ -333,31 +334,42 @@ toggle can force either theme. `--navy` flips light (it is text colour); `--navy
   lakh/crore; reconciliation cards (`reconMoney()`) and review cards (`formatMoneyExact()`) use full
   precision on purpose.
 
-#### Plant stock tabs - Inventory, On Order, Stock Planner (2026-09-29)
+#### Plant stock tabs - Inventory, On Order, Stock & Orders (2026-09-29)
 
-The project owner asked for three raw-material tabs for plant staff - what is in the store, what is on
-order, and the two together - with **Raw Material Analysis for admins only**. `main.js`'s
+The project owner asked for three raw-material tabs that **replace Raw Material Analysis for everyone
+but admins**: Inventory (the material in the store at each plant), On Order (the material on order for
+each plant, plus what to reorder soon) and Stock & Orders (the two together). `main.js`'s
 `viewTabOptions()` shows Purchase Orders and the three plant tabs to every role, and Raw Material
 Analysis (between them) to admins. It hides a view; it is not a data boundary - every role may read the
 `/materials` and `/purchase-orders` endpoints both views are built from. A consequence worth knowing:
 the stock-lot Category and Rate pencils live in Raw Material Analysis's material modal, so editors no
 longer reach them from the UI (`correct_material_field` still accepts an editor).
 
+**Same layout as Raw Material Analysis, from the same classes** (project owner: "design each of these
+tabs with our current design schema, theme and fonts"). Each tab is that view's stack: KPI cards
+(`.kpi-grid.mat-kpi-grid`, six of them - `.ps-kpi-grid`), the "Filter by" bar (Category, Sub Category,
+Status), a `.chart-row` (a category bar chart and a status doughnut whose legend filters like the
+cards), then the list - top-5 `.top5-row` cards with "View all" opening the `.fixed-table` with its
+header filter row - and the shared modal shell for a material. So fonts, colours and dark mode come
+from the existing tokens. The one thing set from JS is the column track widths, because **on All Plants
+Inventory and On Order add a column per plant** (stock held there / still to come for it), and those
+columns come and go with the plant tab.
+
 **Same figures, not a second copy.** `plant-stock.js` computes nothing Raw Material Analysis does not
 already compute: materials come from `materialScope()` (one row per name, summed across vendor
-lots), their PO links from `computeMaterialPoLinkage()`, what is still to come from `openQtyOfLine()` /
+lots), their PO lines from `computeMaterialPoLinkage()`, what is still to come from `openQtyOfLine()` /
 `openValueOfLine()`, whether a line is open from `isOpenPoLine()`, low stock from
 `isMaterialLowStock()`, and Days Left from the consumption ledger. Checked against live data on
-2026-09-29: On Order's 497 lines and Rs 65.02 cr equal those helpers' own totals. What the plant tabs
-leave out is the reconciliation layer (match confidence, mismatch flags, corrections).
+2026-09-29: On Order's Value Still to Come, Raw Material Analysis's Value in Transit and the sum over
+every open line all read Rs 65.02 cr (497 lines), with no open line left out of a material row. What
+the plant tabs leave out is the reconciliation layer (match confidence, mismatch flags, corrections).
 
-**The Stock Planner compares dates, not quantities.** Whether an order arrives in time is run-out date
-(today + Days Left) against the next open line's due date. Adding stock to what is on order would need
-one unit on both sides, and Achhad's stock lots carry no unit at all.
+**Reorder soon** is Raw Material Analysis's Low Stock (under 15 days left, or at Achhad's minimum stock
+level) plus a material out of stock while still in use - with nothing on order. On Order lists those
+rows beside the materials on order; Stock & Orders calls them "Low, nothing on order".
 
 **On All Plants, Days Left is the plant that runs out first** (`aggregateMaterialsByName()`'s rule), so
-a material can read "0 d" beside thousands of KG held at another plant. Both tabs say so in their
-subtitle.
+a material can read "0 d" beside thousands of KG held at another plant. The tabs say so.
 
 **Material links route by role.** `openMaterialLink(key)` (the PO modals' material names and Search
 PO's `?material=` deep link) opens `openMaterialModal()` for an admin and `openPlantMaterialPanel()`
@@ -489,8 +501,11 @@ few module-level variables for the correction box and modal a11y.
   refresh to check* rather than inviting a blind retry (see
   [api-and-features.md](api-and-features.md#endpoint-conventions-worth-knowing-before-adding-one)).
 - **Client ports of backend normalizers:** `normalizeMaterial`, `tokenizeMaterial`, `normalizeVendor`,
-  `vendorContains` (containment with a 4-character floor). Kept in sync by hand with
-  `parsers/common.py` / the matcher.
+  `vendorContains` (identical names match at any length, then containment with a 4-character floor -
+  `matching_core._vendor_matches()`'s rules 1 and 2). Kept in sync by hand with `parsers/common.py` /
+  the matcher. The equality rule reached the browser only on 2026-09-29: until then "SRF Ltd" and "GRP
+  Limited" (`srf` / `grp`) failed the floor even against themselves, and 24 open lines (Rs 1.72 cr)
+  linked to no material, missing from Raw Material Analysis's Value in Transit.
 - **Formatting:** `escapeHtml`, `formatInr` (display only, rounds and abbreviates L/Cr),
   `formatDateIN` (ISO -> dd/mm/yyyy), `emptyStateHtml(message, tone)`, `infoTooltipHtml(tip)`.
 - **`applyDynamicStyles(root)`** - consumes `data-dot-color`/`data-bg-color`, `data-text-color`,
@@ -1121,44 +1136,57 @@ outside the moved rows, so it stays put.
 
 ### frontend/js/plant-stock.js
 
-The three plant tabs (see [Plant stock tabs](#plant-stock-tabs---inventory-on-order-stock-planner-2026-09-29)).
-Globals: `PLANT_STOCK_TABS` / `PLANT_STOCK_VIEW_KEYS`, `isAdminUser()`, `PS_STATE` (per-tab filters:
-status, category, search, showAll, page, and On Order's `kind`) with `psDefaultState()` /
-`resetPlantViewFilters()`, `PS_LIST_CTX`.
+The three plant tabs (see [Plant stock tabs](#plant-stock-tabs---inventory-on-order-stock--orders-2026-09-29)).
+Globals: `PLANT_STOCK_TABS` / `PLANT_STOCK_VIEW_KEYS`, `isAdminUser()`, `PS_PLANT_COLORS`,
+`PS_STATE` (per tab: category and subCategory, which narrow everything; status, search and page, which
+narrow the list only; showAll for "View all") with `psDefaultState()` / `resetPlantViewFilters()`,
+`PS_VIEWS` (each tab's row builder, statuses, page parts and columns), `PS_LIST_CTX`.
 
 - `loadAndRenderPlantView()` loads stock, both order books and the tab's sort presets for the selected
   plants, then renders unless the reader switched view or plant meanwhile. `renderPlantView()` builds
-  the scope once (`psBuildScope()`: `materialScope()` + `computeMaterialPoLinkage()`) and calls
-  `renderInventoryView()`, `renderOnOrderView()` or `renderPlannerView()`: six KPI cards
-  (`psKpiRowHtml()`, a card with a filter toggles it), the filter bar (`psFilterBarHtml()`: search,
-  category, status, On Order's purchase type, a show-all box, an always-present Clear), and
-  `#psListRegion`.
-- Rows: `psInventoryRows()` (`INV_STATUS`: low / below zero / out / in stock / not used lately),
-  `psOrderRows()` (one per open line, domestic and import via `materialOrders()`; `ORD_STATUS` from the
-  LINE's own delivery date: overdue / due within `ORD_DUE_SOON_DAYS` / on order / no date; `partial` when
-  something has arrived), `psPlannerRows()` with `psPlanDecision()` (`PLAN_STATUS`: reorder now,
-  delivery late, on the way, on order with none in stock, check stock sheet, no usage data, enough stock,
-  not used lately, nothing held - each with the reason shown under its pill). Out-of-stock (Inventory)
-  and nothing-held (Planner) rows are hidden unless picked or "include" is ticked.
-- `plantListRegionHtml()` / `renderPlantListRegion()` / `wirePlantListRegion()` - sort
-  (`psSorter()`), filter, page (`LIST_PAGE_SIZE`) and draw the table; a search keystroke re-renders this
-  region only (the box sits outside it), a KPI, select or box change re-renders the view
-  (`wirePlantViewChrome()`). Material names and PO numbers are `<button class="row-link ps-link">`s:
-  a PO opens `openPoModal()` / `openImportPoModal()`.
-- `openPlantMaterialPanel(norm)` - the plant staff's material detail in the shared modal shell,
-  `modalRequestId`-guarded: at-a-glance figures, every stock lot at the plants the user can read, and
-  the open orders linked to it. `openMaterialLink(key)` routes a material link by role.
-- Date helpers `psToday()`, `psDaysFromToday()`, `psIsoInDays()`, `psDueText()`; a last-received date
-  after today is shown and labelled "date is in the future" (a sheet error).
+  the scope once (`psBuildScope()`: `materialScope()` + `computeMaterialPoLinkage()`), applies the
+  category filters, and lays out the tab's parts (`psInventoryParts()` / `psOnOrderParts()` /
+  `psCombinedParts()`: title, subtitle, disclaimer, six cards, status options, two charts).
+- Rows, each carrying `sv` (its sort values): `psInventoryRows()` (every stock material;
+  `PS_STOCK_STATUS`: low / below zero / out / in stock / not used lately; out-of-stock rows hidden until
+  picked), `psOrderRows()` (every material with an open line, plus the reorder-soon ones;
+  `PS_ORDER_STATUS` from each LINE's own delivery date via `psDelivery()`: overdue / reorder soon / due
+  within `PS_DUE_SOON_DAYS` / on order / no due date) and `psCombinedRows()` (`PS_POSITION`: low with
+  nothing on order / in stock and on order / on order only / in stock / nothing held, the last hidden
+  until picked; an overdue order is a tag and a filter). `psOrderFigures()` adds up ordered, received
+  and still to come per unit family and per plant; `psDistinctOpenLinks()` counts each line once for
+  the KPI totals and charts.
+- Charts: `psCategoryBars()` (top `PS_CHART_TOP_N` categories; stacked per plant on All Plants, or
+  stock value beside value to come; a bar click filters the category), `psDueChart()` (value still to
+  come by due month, with Overdue and No date buckets that filter), `psStatusDoughnut()` (with
+  `psCenterText()`; slice and legend clicks filter like the cards).
+- Columns: `psInventoryColumns()` / `psOnOrderColumns()` / `psCombinedColumns()` - label, sort key,
+  header filter, track width `w: [min px, fr]`, cell. `plantListRegionHtml()` draws the top-5 cards or
+  the paged table; `wirePlantListRegion()` sets the track widths (`psGridTemplate()`,
+  `psMinWidth()`; `<col>` widths on the table) and wires paging, "View all", sorting and the header
+  filters - search re-renders the list only, debounced, keeping focus through `preserveFocus()`'s
+  `data-psf`; Category, Sub Category and Status re-render the page. `wirePlantViewChrome()` wires the
+  cards and the "Filter by" bar.
+- `openPlantMaterialPanel(norm)` - the material detail in the shared modal shell, `modalRequestId`-
+  guarded, with the material modal's tab strip: Overview (in the store per plant, daily use, days
+  left, on order, vendors), Stock by Plant (every lot at the plants the user can read, with a total)
+  and Open Orders (PO numbers open the PO modals). `openMaterialLink(key)` routes a material link by
+  role.
+- Helpers: `psToday()`, `psDaysFromToday()`, `psIsoInDays()`, `psDueText()`, `psIsLow()`,
+  `psPlantColumnKeys()`, `psLotsByPlant()`, `psNextDueCellHtml()`, `psToComeCellHtml()`. A
+  last-received date after today is shown in red with a tooltip (a sheet error, often day and month
+  swapped).
 
 ### frontend/js/plant-stock-sort.js
 
 list-sort.js configuration for the three plant tabs: `INV_SORT` (view `plant_inventory`; default
-needs attention first, then fewest Days Left), `ORD_SORT` (`plant_on_order`; default due date soonest
-first, undated last) and `PLAN_SORT` (`stock_planner`; default most urgent first). Rows arrive with
-their figures worked out, so each `rowValue` only reads fields. **`INV_SORT_COLUMNS`,
-`ORD_SORT_COLUMNS` and `PLAN_SORT_COLUMNS` must equal `sort_presets.py`'s `SORT_KEYS_BY_VIEW` for their
-view, and their `pick: true` columns `PICK_KEYS_BY_VIEW`** (`test_sort_presets.py` checks).
+needs attention first, then fewest Days Left), `ORD_SORT` (`plant_on_order`; default most urgent first,
+then next due) and `COMB_SORT` (`plant_combined`; default needs attention first). Rows carry their sort
+values in `sv`, so `psSortValue()` only reads them; the per-plant columns (`hrsStock`,
+`achhadToCome`, ...) are listed for every plant and are simply empty for a plant not in view.
+**`INV_SORT_COLUMNS`, `ORD_SORT_COLUMNS` and `COMB_SORT_COLUMNS` must equal `sort_presets.py`'s
+`SORT_KEYS_BY_VIEW` for their view, and their `pick: true` columns `PICK_KEYS_BY_VIEW`**
+(`test_sort_presets.py` checks).
 
 ### frontend/js/export-panel.js
 
