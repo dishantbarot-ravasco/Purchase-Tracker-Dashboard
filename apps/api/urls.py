@@ -69,6 +69,7 @@ urlpatterns = [
     path("mir/mismatches", mir_views.mismatches, name="mir-mismatches"),
     path("mir/mismatches/<int:mismatch_id>/resolve", mir_views.resolve, name="mir-resolve"),
     path("mir/po-lines/<int:line_id>/close", mir_views.close_line, name="mir-close-line"),
+    path("mir/materials/<int:material_id>/category", mir_views.material_category, name="mir-material-category"),
     path("mir/po-lines/<int:line_id>/reopen", mir_views.reopen_line, name="mir-reopen-line"),
     path("mir/po-lines/<int:line_id>/review", mir_views.review_line, name="mir-review-line"),
     path("purchase-orders", hrs_views.purchase_orders, name="hrs-purchase-orders"),

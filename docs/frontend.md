@@ -1259,7 +1259,16 @@ to a row, addresses and remarks across it, the same table as "More PO details"; 
 material's category; the change history; cancel with a reason). The detail says what can still change and
 until when (`editUntil`, `rejectUntil` from the server): `openEdit()` offers only the fields
 `edit_mir()` accepts (just the SAP GRN number once the edit window has closed) plus a required reason;
-`openReject()` records a later rejection on one line (new total, a rejection reason, a note). Mismatches: `loadMismatches()` (status and plant filters)
+`openReject()` records a later rejection on one line (new total, a rejection reason, a note).
+Purchase-manager line actions: when the PO says `canManage`, `openPo()` adds a column of
+`lineActionsHtml()` buttons (Review change / Reopen / Short-close) and `openLineAction()` opens the
+matching panel under the line and POSTs to `po-lines/<id>/<action>`, then reloads the PO. Category
+correction: a filed material's read-only category has a "Wrong? Correct it" link, `openCategoryFix()`,
+which POSTs `materials/<id>/category` and updates every line of that material. Drafts: `saveDraft()` /
+`scheduleDraft()` (on every form input and every preview) write the form to localStorage under
+`draftKey()` (per user; wrapped in try/catch, so a blocked store only means no draft); `offerDraft()`
+shows `#draftBanner` at load; `restoreDraft()` re-reads each PO and keeps only lines still receivable;
+`clearDraft()` on save and on a cleared form (`resetForm(true)` keeps it, for the restore itself). Mismatches: `loadMismatches()` (status and plant filters)
 and `mismatchListHtml()` cards with inline resolve; `refreshMismatchCount()` keeps the tab's count.
 Money is shown exact in the PO's currency (`money(value, currency)` through `Intl`, "₹5,42,800.00"
 for INR), never the dashboard's rounded `formatInr()`.

@@ -125,6 +125,26 @@ class Material(models.Model):
         return self.name
 
 
+class MaterialChange(models.Model):
+    """A change to a material's master data made in the app (2026-09-29) -
+    today only its category, corrected by a purchase manager
+    (materials.change_category()). A reference-list reload is not logged
+    here: the list is its own record."""
+
+    material = models.ForeignKey(Material, on_delete=models.CASCADE, related_name="changes")
+    field = models.CharField(max_length=40)
+    old_value = models.TextField(blank=True, default="")
+    new_value = models.TextField(blank=True, default="")
+    reason = models.TextField()
+    changed_by = models.ForeignKey("core.PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    changed_by_email = models.CharField(max_length=255)
+    changed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-changed_at", "-id"]
+        constraints = [models.CheckConstraint(condition=~Q(reason=""), name="material_change_has_reason")]
+
+
 class TaxTypeChoice(models.TextChoices):
     IGST = "IGST", "IGST"
     CGST_SGST = "CGST_SGST", "CGST + SGST"

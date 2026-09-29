@@ -229,3 +229,76 @@ class TestEditApi:
         data = self._client(email="h@ravasco.com", role="editor").get(f"/api/mir/entries/{mir.id}").json()
         assert data["canEdit"] and data["canEditGrn"] and data["canReject"]
         assert data["editUntil"] == (timezone.localdate() + datetime.timedelta(days=mir_service.EDIT_WINDOW_DAYS)).isoformat()
+
+
+@pytest.mark.django_db
+class TestPurchaseManagerLineActions:
+    """A short-closed or review-flagged line must stay findable, or nobody
+    can reach the Reopen / Review buttons for it."""
+
+    def test_a_po_whose_only_line_is_closed_is_still_found(self, user):
+        line = _line(_po())
+        mir_service.close_po_line(line, user, "VENDOR_SHORT_CLOSE", "")
+        found = mir_service.search_open_pos("1000009001")
+        assert [po.po_number for po in found] == ["1000009001"]
+        state = mir_service.po_lines_with_state(found[0])[0][1]
+        assert state["receivable"] is False and "reopen" in state["blocked_reason"]
+        mir_service.reopen_po_line(line)
+        assert mir_service.po_lines_with_state(found[0])[0][1]["receivable"] is True
+
+    def test_a_review_flagged_line_is_found_and_confirmed(self, user):
+        line = _line(_po())
+        type(line).objects.filter(pk=line.pk).update(needs_review=True, review_note="Rate changed")
+        assert mir_service.search_open_pos("1000009001")
+        line.refresh_from_db()
+        mir_service.clear_line_review(line, user, "Checked the MIRs")
+        line.refresh_from_db()
+        assert line.needs_review is False
+
+    def test_the_po_payload_says_who_may_act(self, user):
+        po = _po()
+        editor = APIClient()
+        editor.force_authenticate(user=make_user(email="pm@ravasco.com", role="editor", plants=["vapi"]))
+        other = APIClient()
+        other.force_authenticate(user=make_user(email="hrs@ravasco.com", role="editor", plants=["hrs"]))
+        assert editor.get(f"/api/mir/purchase-orders/{po.id}").json()["canManage"] is True
+        assert other.get(f"/api/mir/purchase-orders/{po.id}").json()["canManage"] is False
+
+
+@pytest.mark.django_db
+class TestCategoryCorrection:
+    def _setup(self):
+        MaterialCategoryReference.objects.create(description="x", normalized_description="x", category="Carbon Black", subcategory="N330")
+        MaterialCategoryReference.objects.create(description="y", normalized_description="y", category="Fillers", subcategory="Clay")
+        m = materials.material_for("Unknown thing")
+        m.category, m.subcategory = "Carbon Black", "N330"
+        m.save()
+        return m
+
+    def test_it_changes_the_master_with_a_reason_and_logs_it(self, user):
+        m = self._setup()
+        materials.change_category(m, "Fillers", "Clay", "It is a filler", user)
+        m.refresh_from_db()
+        assert (m.category, m.subcategory, m.category_set_by_email) == ("Fillers", "Clay", user.email)
+        assert {(c.field, c.old_value, c.new_value) for c in m.changes.all()} == {("category", "Carbon Black", "Fillers"), ("subcategory", "N330", "Clay")}
+
+    @pytest.mark.parametrize("category, sub, reason", [
+        ("Fillers", "Clay", ""), ("Nope", "", "x"), ("Fillers", "N330", "x"), ("Carbon Black", "N330", "same"),
+    ])
+    def test_it_refuses_a_bad_change(self, user, category, sub, reason):
+        m = self._setup()
+        with pytest.raises(materials.MaterialError):
+            materials.change_category(m, category, sub, reason, user)
+        assert not m.changes.exists()
+
+    def test_the_endpoint_is_editor_only(self, user):
+        m = self._setup()
+        body = {"category": "Fillers", "subcategory": "Clay", "reason": "filler"}
+        viewer = APIClient()
+        viewer.force_authenticate(user=make_user(email="v@ravasco.com", role="viewer"))
+        assert viewer.post(f"/api/mir/materials/{m.id}/category", body, format="json").status_code == 403
+        editor = APIClient()
+        editor.force_authenticate(user=make_user(email="e@ravasco.com", role="editor"))
+        res = editor.post(f"/api/mir/materials/{m.id}/category", body, format="json")
+        assert res.status_code == 200 and res.json()["category"] == "Fillers" and len(res.json()["history"]) == 2
+        assert editor.post(f"/api/mir/materials/{m.id}/category", body, format="json").status_code == 400

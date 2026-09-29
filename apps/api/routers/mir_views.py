@@ -32,6 +32,7 @@ from rest_framework.response import Response
 
 from apps.api.permissions import IsEditor, user_can_access_plant, user_can_edit_plant
 from apps.core.models import (
+    Material,
     Mir,
     MirMismatch,
     MirReasonCode,
@@ -40,7 +41,7 @@ from apps.core.models import (
     PurchaseOrderLine,
     Vendor,
 )
-from apps.services import mir_service
+from apps.services import materials, mir_service
 from apps.services import procurement_rules as rules
 
 
@@ -80,7 +81,10 @@ def _po_line(line, state):
         "rate": _s(line.rate), "deliveryDate": _d(line.delivery_date), "accepted": _s(state["accepted"]),
         "openQty": _s(state["open_qty"]), "status": state["status"], "receivable": state["receivable"],
         "blockedReason": state["blocked_reason"], "needsReview": line.needs_review, "reviewNote": line.review_note,
-        "closeNote": line.close_note, "poId": po.id, "poNumber": po.po_number, "plant": po.plant.code,
+        "closeNote": line.close_note, "closed": line.closed_at is not None,
+        "closedAt": line.closed_at.isoformat() if line.closed_at else None,
+        "closedReason": line.closed_reason.label if line.closed_reason_id else "",
+        "closedByMir": line.closed_by_mir_line_id is not None, "poId": po.id, "poNumber": po.po_number, "plant": po.plant.code,
         "currency": po.currency, "poGstRate": _s(rules.po_gst_rate(po.total_value, po.total_inclusive_value)),
         # The material master's category, when the material is filed; the
         # form then shows it read-only (apps/services/materials.py).
@@ -155,7 +159,11 @@ def open_pos(request):
 def purchase_order(request, po_id):
     po = get_object_or_404(PurchaseOrder.objects.select_related("plant", "vendor"), pk=po_id)
     lines = mir_service.po_lines_with_state(po)
-    return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active,
+    # Short-close / reopen / confirm are for an Editor or Admin at the PO's
+    # own plant (close_line and friends check the same); the page offers
+    # the buttons only when this is true.
+    can_manage = getattr(request.user, "role", "") in ("admin", "editor") and user_can_edit_plant(request.user, po.plant.code)
+    return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active, "canManage": can_manage,
                      "lines": [_po_line(line, st) for line, st in lines]})
 
 
@@ -318,6 +326,24 @@ def cancel_entry(request, mir_id):
     except mir_service.MirValidationError as exc:
         return _bad(exc)
     return Response(_mir_detail(mir))
+
+
+@api_view(["POST"])
+@permission_classes([IsEditor])
+def material_category(request, material_id):
+    """Correct a material's category. Body: {"category", "subcategory",
+    "reason"}. Materials are company-wide, so any Editor or Admin may; the
+    change is logged with its reason (materials.change_category())."""
+    material = get_object_or_404(Material, pk=material_id)
+    data = request.data or {}
+    try:
+        materials.change_category(material, data.get("category"), data.get("subcategory"), data.get("reason"), request.user)
+    except materials.MaterialError as exc:
+        return Response({"error": str(exc)}, status=http.HTTP_400_BAD_REQUEST)
+    material.refresh_from_db()
+    return Response({"id": material.id, "category": material.category, "subcategory": material.subcategory,
+                     "history": [{"field": c.field, "oldValue": c.old_value, "newValue": c.new_value, "reason": c.reason,
+                                  "by": c.changed_by_email, "at": c.changed_at.isoformat()} for c in material.changes.all()]})
 
 
 def _editable_mir(request, mir_id):

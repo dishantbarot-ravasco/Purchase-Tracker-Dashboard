@@ -47,6 +47,8 @@
   display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap;
 }
 .mir-banner-warn { background: var(--amber-soft); border: 1px solid var(--amber-border); color: var(--amber-text); }
+.mir-banner-info { background: var(--blue-soft); border: 1px solid var(--border); color: var(--blue-text); }
+.mir-banner .mir-actions { margin-top: 0; }
 .mir-error-text { color: var(--dash-red); font-size: 12.5px; }
 .mir-errors { color: var(--dash-red); font-size: 12.5px; margin: 12px 0 0; padding-left: 18px; }
 .mir-errors:empty { display: none; }
@@ -266,3 +268,6 @@ html, body { overflow-x: clip; }
 .mir-edit .form-group { margin-bottom: 10px; }
 tr.mir-reject-row > td { background: var(--card); }
 .mir-detail-head .btn { margin-left: auto; }
+
+/* Purchase-manager action panel under a PO line (review / reopen / short-close). */
+tr.mir-action-row > td { background: var(--card); }

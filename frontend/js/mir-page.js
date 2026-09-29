@@ -40,6 +40,7 @@ const DIFF = {
 (async function () {
   const user = await requireAuth();
   if (!user) return;
+  CURRENT_USER = user;
   renderNavTabs(document.getElementById('navTabs'), 'mir');
   renderUserBadge(document.getElementById('navUser'));
   initThemeToggle();
@@ -54,7 +55,10 @@ const DIFF = {
   initRegister();
   initMismatches();
   refreshMismatchCount();
+  offerDraft();
 })();
+
+let CURRENT_USER = null;
 
 /** /api/mir/... fetch wrapper - same shape as review-page.js's apiReview(). */
 async function apiMir(path, opts) {
@@ -155,6 +159,9 @@ function initNewMir() {
     document.getElementById(id).addEventListener('input', schedule));
   document.getElementById('taxType').addEventListener('change', () => { S.taxTouched = true; schedule(); });
   document.getElementById('mirForm').addEventListener('submit', e => { e.preventDefault(); postMir(); });
+  // Every change, including the transport fields no preview needs.
+  document.getElementById('mirForm').addEventListener('input', () => scheduleDraft());
+  document.getElementById('mirForm').addEventListener('change', () => scheduleDraft());
   document.querySelectorAll('[data-goto]').forEach(b => {
     b.onclick = () => {
       const target = document.getElementById(b.dataset.goto);
@@ -267,7 +274,7 @@ async function openPo(poId, el) {
     const picked = new Set(S.lines.map(l => l.line.id));
     target.innerHTML = poHeaderHtml(po) +
       '<div class="table-wrap mir-table-wrap"><table><thead><tr><th></th><th>#</th><th>Material</th><th>HSN</th><th>Unit</th><th class="num">Ordered</th>' +
-      '<th class="num">Received</th><th class="num">Open</th><th class="num">PO rate</th><th>Delivery</th></tr></thead><tbody>' +
+      '<th class="num">Received</th><th class="num">Open</th><th class="num">PO rate</th><th>Delivery</th>' + (po.canManage ? '<th>Purchase manager</th>' : '') + '</tr></thead><tbody>' +
       po.lines.map(l => {
         const late = l.deliveryDate && l.deliveryDate < META.today && l.receivable;
         return '<tr class="' + (l.receivable ? '' : 'is-disabled') + '">' +
@@ -279,7 +286,9 @@ async function openPo(poId, el) {
           '<td>' + escapeHtml(l.uom || '-') + (l.uomKnown ? '' : ' <span class="mir-flag" title="Unit not recognised on the PO sheet">?</span>') + '</td>' +
           '<td class="num">' + qty(l.qtyOrdered) + '</td><td class="num">' + qty(l.accepted) + '</td>' +
           '<td class="num"><b>' + qty(l.openQty) + '</b></td><td class="num">' + money(l.rate, l.currency) + '</td>' +
-          '<td>' + dateIN(l.deliveryDate) + (late ? ' ' + statusPill('late', 'bad') : '') + '</td></tr>';
+          '<td>' + dateIN(l.deliveryDate) + (late ? ' ' + statusPill('late', 'bad') : '') + '</td>' +
+          (po.canManage ? '<td class="nowrap">' + lineActionsHtml(l) + '</td>' : '') + '</tr>' +
+          (po.canManage ? '<tr class="mir-action-row" data-action-row="' + l.id + '" hidden><td colspan="11"></td></tr>' : '');
       }).join('') + '</tbody></table></div>' +
       '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" data-add>Add ticked lines to this MIR</button></div>';
     target.querySelector('[data-add]').onclick = () => {
@@ -287,9 +296,59 @@ async function openPo(poId, el) {
       addLines(po, po.lines.filter(l => ids.includes(l.id)));
       openPo(poId, el);
     };
+    target.querySelectorAll('[data-line-action]').forEach(b => { b.onclick = () => {
+      const line = po.lines.find(x => x.id === Number(b.dataset.line));
+      openLineAction(b.dataset.lineAction, line, target, () => openPo(poId, el));
+    }; });
   } catch (e) {
     target.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
   }
+}
+
+/** What a purchase manager can do to one PO line: confirm a line the CSV
+    changed after receipts, reopen a short-closed one, or short-close an
+    open one when no balance is coming. The server re-checks each. */
+function lineActionsHtml(l) {
+  const btn = (action, label) => '<button type="button" class="mir-link" data-line-action="' + action + '" data-line="' + l.id + '">' + label + '</button>';
+  if (l.needsReview) return btn('review', 'Review change');
+  if (l.closed) return btn('reopen', 'Reopen');
+  if (l.status !== 'received' && l.receivable) return btn('close', 'Short-close');
+  return '';
+}
+
+function openLineAction(action, line, container, done) {
+  const row = container.querySelector('[data-action-row="' + line.id + '"]');
+  row.hidden = false;
+  const cell = row.firstElementChild;
+  const closeReasons = META.reasons.filter(r => r.kind === 'QTY_SHORT' && r.closesLine);
+  const intro = {
+    review: 'The PO sheet changed this line after receipts were posted against it' + (line.reviewNote ? ': ' + line.reviewNote : '.') +
+      ' Check the MIRs on it still belong to this line, then confirm. Receipts are blocked until then.',
+    reopen: 'Short-closed' + (line.closedReason ? ' (' + line.closedReason + ')' : '') + (line.closeNote ? ': ' + line.closeNote : '') +
+      '. Reopen it if the balance (or a replacement for rejected material) is coming after all.',
+    close: 'Close this line if the balance of ' + qty(line.openQty) + ' ' + (line.uom || '') + ' is not coming. It stops taking receipts; it can be reopened.',
+  }[action];
+  cell.innerHTML = '<div class="mir-edit">' +
+    '<div class="mir-line-group-title">' + escapeHtml({ review: 'Review a changed line', reopen: 'Reopen a closed line', close: 'Short-close a line' }[action]) +
+      ' - line ' + line.lineNo + ', ' + escapeHtml(line.description) + '</div>' +
+    '<p class="mir-help">' + escapeHtml(intro) + '</p>' +
+    '<div class="mir-grid">' +
+      (action === 'close' ? field('Reason' + req(), '<select class="form-control" data-act="reason"><option value="">Choose a reason</option>' +
+        closeReasons.map(r => '<option value="' + r.code + '">' + escapeHtml(r.label) + '</option>').join('') + '</select>') : '') +
+      (action !== 'reopen' ? field(action === 'review' ? 'What was checked' + req() : 'Note', '<input class="form-control" data-act="note" maxlength="2000">') : '') +
+    '</div>' +
+    '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" data-act-go>' +
+      escapeHtml({ review: 'Confirm the line', reopen: 'Reopen the line', close: 'Short-close the line' }[action]) + '</button>' +
+      '<button type="button" class="mir-link" data-act-cancel>Cancel</button><span class="mir-error-text" data-act-err></span></div></div>';
+  cell.querySelector('[data-act-cancel]').onclick = () => { row.hidden = true; };
+  cell.querySelector('[data-act-go]').onclick = async () => {
+    const val = k => { const el = cell.querySelector('[data-act="' + k + '"]'); return el ? el.value : ''; };
+    try {
+      await apiMir('/po-lines/' + line.id + '/' + action, { method: 'POST', body: { reason: val('reason'), note: val('note') } });
+      mirToast({ review: 'Line confirmed - it can take receipts again.', reopen: 'Line reopened.', close: 'Line short-closed.' }[action]);
+      done();
+    } catch (e) { cell.querySelector('[data-act-err]').textContent = e.message; }
+  };
 }
 
 function addLines(po, lines) {
@@ -414,7 +473,9 @@ function renderLines() {
       '<div class="mir-line-group"><div class="mir-line-group-title">3. Classification</div><div class="mir-line-grid">' +
         (l.materialCategory
           ? field('Material category', '<div class="mir-readonly">' + escapeHtml(l.materialCategory) + '</div>' +
-              '<span class="mir-hint">From the material master - the same on every receipt of this material.</span>') +
+              '<span class="mir-hint">From the material master - the same on every receipt of this material. ' +
+              (l.materialId ? '<button type="button" class="mir-link" data-fix-category="' + i + '">Wrong? Correct it</button>' : '') + '</span>' +
+              '<div data-fix-box="' + i + '"></div>') +
             field('Sub-category', '<div class="mir-readonly">' + escapeHtml(l.materialSubcategory || '-') + '</div>')
           : field('Material category' + req(), categoryControl(i, ln) +
               '<span class="mir-hint">First receipt of this material: the category you pick is saved on the material for every future receipt.</span>') +
@@ -436,6 +497,7 @@ function renderLines() {
       schedulePreview();
     });
   });
+  area.querySelectorAll('[data-fix-category]').forEach(b => { b.onclick = () => openCategoryFix(Number(b.dataset.fixCategory)); });
   area.querySelectorAll('[data-fill]').forEach(b => { b.onclick = () => {
     const i = Number(b.dataset.fill);
     const ln = S.lines[i];
@@ -453,6 +515,36 @@ function renderLines() {
     schedulePreview();
     updateProgress(S.preview);
   }; });
+}
+
+/** Correct a filed material's category from the MIR form: the material
+    master changes for every receipt of it, with a reason, logged. */
+function openCategoryFix(i) {
+  const ln = S.lines[i];
+  const box = document.querySelector('[data-fix-box="' + i + '"]');
+  const draft = { v: { material_category: ln.line.materialCategory, material_subcategory: ln.line.materialSubcategory } };
+  box.innerHTML = '<div class="mir-edit">' +
+    '<p class="mir-help">This changes the category of <b>' + escapeHtml(ln.line.description) + '</b> everywhere, for every receipt. ' +
+      'If the plant manager\'s reference list has it wrong, fix the list too - it wins the next time it is loaded.</p>' +
+    field('Category' + req(), categoryControl('fix' + i, draft)) + field('Sub-category', subcategoryControl('fix' + i, draft)) +
+    field('Why?' + req(), '<input class="form-control" data-fix-reason maxlength="500" placeholder="e.g. This is a filler, not carbon black">') +
+    '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" data-fix-go>Save the category</button>' +
+      '<button type="button" class="mir-link" data-fix-cancel>Cancel</button><span class="mir-error-text" data-fix-err></span></div></div>';
+  const cat = box.querySelector('[data-key="material_category"]');
+  const sub = box.querySelector('[data-key="material_subcategory"]');
+  cat.addEventListener('change', () => { draft.v.material_category = cat.value; if (sub.tagName === 'SELECT') sub.innerHTML = subcategoryOptions(draft); });
+  sub.addEventListener('change', () => { draft.v.material_subcategory = sub.value; });
+  box.querySelector('[data-fix-cancel]').onclick = () => { box.innerHTML = ''; };
+  box.querySelector('[data-fix-go]').onclick = async () => {
+    try {
+      const m = await apiMir('/materials/' + ln.line.materialId + '/category', { method: 'POST', body: {
+        category: cat.value, subcategory: sub.value, reason: box.querySelector('[data-fix-reason]').value } });
+      S.lines.forEach(x => { if (x.line.materialId === m.id) { x.line.materialCategory = m.category; x.line.materialSubcategory = m.subcategory; } });
+      mirToast('Category saved on the material master.');
+      renderLines();
+      schedulePreview();
+    } catch (e) { box.querySelector('[data-fix-err]').textContent = e.message; }
+  };
 }
 
 /** Steps 3 and 4 and the save bar appear once a PO line is picked. */
@@ -486,6 +578,7 @@ function payload() {
 }
 
 async function runPreview() {
+  scheduleDraft();
   if (!S.lines.length) return;
   const seq = ++S.previewSeq;
   let result;
@@ -718,6 +811,7 @@ async function postMir() {
     // is confirmed in a toast that fades, and stays findable in the register.
     mirToast(mir.mirNo + ' saved - ' + mir.vendor.name + ', invoice ' + mir.invoiceNo + ', ' + money(mir.computedTotal, mirCurrency()) +
       (n ? '. ' + n + ' difference' + (n === 1 ? '' : 's') + ' sent to Open mismatches.' : '.'));
+    clearDraft();
     resetForm();
     refreshMismatchCount();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -726,6 +820,96 @@ async function postMir() {
     await runPreview();
     showErrors(e.errors && e.errors.length ? e.errors : [{ field: '', message: e.message }]);
   }
+}
+
+// A draft of the form in this browser only (localStorage), per user, so a
+// sign-in that expires mid-entry - apiMir() then sends the page to the
+// login screen - or a closed tab does not lose what was typed. Saved on
+// every change, removed when the MIR is saved or the form is cleared, and
+// offered back (never restored silently) when the page opens. Restoring
+// re-reads each PO from the server, so a line closed or received meanwhile
+// is dropped rather than resurrected.
+const DRAFT_FIELDS = ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount', 'taxType', 'sapGrnNo',
+  'challanNo', 'lrNo', 'vehicleNo', 'ewayBillNo', 'gateEntryNo', 'weighbridgeSlipNo', 'remarks'];
+const DRAFT_MAX_AGE_MS = 3 * 24 * 3600 * 1000;
+function draftKey() { return 'mirDraft:v1:' + ((CURRENT_USER && CURRENT_USER.email) || ''); }
+
+function saveDraft() {
+  try {
+    if (!S.lines.length) { localStorage.removeItem(draftKey()); return; }
+    const fields = {};
+    DRAFT_FIELDS.forEach(id => { fields[id] = document.getElementById(id).value; });
+    localStorage.setItem(draftKey(), JSON.stringify({
+      savedAt: Date.now(), fields, taxTouched: S.taxTouched, header: S.header,
+      vendor: S.vendor, vendorFromPo: S.vendorFromPo,
+      lines: S.lines.map(ln => ({ poId: ln.po.id, lineId: ln.line.id, poNumber: ln.line.poNumber, v: ln.v })),
+    }));
+  } catch (e) { /* storage full or blocked: the form still works, just without a draft */ }
+}
+const scheduleDraft = debounce(saveDraft, 500);
+
+function clearDraft() {
+  try { localStorage.removeItem(draftKey()); } catch (e) { /* nothing to clear */ }
+}
+
+function readDraft() {
+  try {
+    const d = JSON.parse(localStorage.getItem(draftKey()) || 'null');
+    if (!d || !Array.isArray(d.lines) || !d.lines.length) return null;
+    if (Date.now() - d.savedAt > DRAFT_MAX_AGE_MS) { clearDraft(); return null; }
+    return d;
+  } catch (e) { return null; }
+}
+
+function offerDraft() {
+  const d = readDraft();
+  const box = document.getElementById('draftBanner');
+  if (!d || !box || document.getElementById('mirForm').hidden) return;
+  const pos = [...new Set(d.lines.map(l => l.poNumber))].join(', ');
+  box.innerHTML = '<div>You have an unsaved MIR from ' + escapeHtml(new Date(d.savedAt).toLocaleString('en-IN')) + ' - ' +
+    d.lines.length + ' line' + (d.lines.length === 1 ? '' : 's') + ' of PO ' + escapeHtml(pos) +
+    (d.fields.invoiceNo ? ', invoice ' + escapeHtml(d.fields.invoiceNo) : '') + '.</div>' +
+    '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" id="draftRestore">Continue it</button>' +
+    '<button type="button" class="mir-link" id="draftDiscard">Discard</button></div>';
+  box.hidden = false;
+  document.getElementById('draftDiscard').onclick = () => { clearDraft(); box.hidden = true; };
+  document.getElementById('draftRestore').onclick = async () => {
+    box.innerHTML = '<div class="mir-muted">Restoring...</div>';
+    try {
+      const dropped = await restoreDraft(d);
+      box.hidden = true;
+      mirToast('Your unsaved MIR is back' + (dropped ? '; ' + dropped + ' line' + (dropped === 1 ? ' is' : 's are') + ' no longer receivable and were left out.' : '.'));
+    } catch (e) {
+      box.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
+    }
+  };
+}
+
+async function restoreDraft(d) {
+  resetForm(true);
+  DRAFT_FIELDS.forEach(id => { if (d.fields[id] !== undefined) document.getElementById(id).value = d.fields[id]; });
+  S.taxTouched = !!d.taxTouched;
+  S.header = d.header || {};
+  const pos = {};
+  for (const poId of [...new Set(d.lines.map(l => l.poId))]) pos[poId] = await apiMir('/purchase-orders/' + poId);
+  let dropped = 0;
+  d.lines.forEach(saved => {
+    const po = pos[saved.poId];
+    const line = po && po.lines.find(l => l.id === saved.lineId);
+    if (!line || !line.receivable) { dropped += 1; return; }
+    S.lines.push({ line, po, v: saved.v });
+  });
+  if (S.lines.length) {
+    S.vendor = d.vendor || S.lines[0].po.vendor;
+    S.vendorFromPo = !!d.vendorFromPo;
+    showEntrySections(true);
+    document.querySelectorAll('[data-currency]').forEach(el => { el.textContent = mirCurrency(); });
+    renderVendor();
+    renderLines();
+    schedulePreview();
+  }
+  saveDraft();
+  return dropped;
 }
 
 function mirToast(text) {
@@ -744,7 +928,7 @@ function mirToast(text) {
   setTimeout(() => el.remove(), 8000);
 }
 
-function resetForm() {
+function resetForm(keepDraft) {
   S.lines = []; S.vendor = null; S.vendorFromPo = false; S.taxTouched = false; S.header = {}; S.preview = null; S.triedToPost = false;
   // The receiving plant is kept: a store entering several MIRs is at one plant.
   const plant = document.getElementById('plantSel').value;
@@ -757,6 +941,7 @@ function resetForm() {
   document.getElementById('mirForm').hidden = false;
   document.getElementById('postBtn').disabled = false;
   updateProgress(null);
+  if (!keepDraft) clearDraft();
   document.getElementById('poSearch').focus();
 }
 

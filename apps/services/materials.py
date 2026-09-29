@@ -97,3 +97,41 @@ def sync_from_reference() -> int:
             material.save(update_fields=["category", "subcategory", "category_set_by_email", "category_set_at", "updated_at"])
             changed += 1
     return changed
+
+
+class MaterialError(ValueError):
+    pass
+
+
+def change_category(material, category: str, subcategory: str, reason: str, user) -> None:
+    """Correct a filed material's category (a wrong first pick, or a
+    reference-list mistake). From the reference list's categories only,
+    with a reason, logged in MaterialChange. The list still wins on its next
+    reload, so a list that is itself wrong must be fixed there too."""
+    from django.db import transaction
+
+    from apps.core.models import Material, MaterialChange
+    from apps.services.mir_service import category_options
+
+    category, subcategory, reason = (category or "").strip(), (subcategory or "").strip(), (reason or "").strip()
+    options = category_options()
+    if not reason:
+        raise MaterialError("Say why the category is being changed.")
+    if not category or (options and category not in options):
+        raise MaterialError("Choose a category from the list.")
+    if subcategory and options and subcategory not in options[category]:
+        raise MaterialError(f"Not a sub-category of {category}.")
+    with transaction.atomic():
+        material = Material.objects.select_for_update().get(pk=material.pk)
+        if (material.category, material.subcategory) == (category, subcategory):
+            raise MaterialError("That is already this material's category.")
+        for field, new in (("category", category), ("subcategory", subcategory)):
+            old = getattr(material, field)
+            if old != new:
+                MaterialChange.objects.create(material=material, field=field, old_value=old, new_value=new,
+                                              reason=reason, changed_by=user, changed_by_email=getattr(user, "email", ""))
+        material.category, material.subcategory = category, subcategory
+        material.category_set_by_email = getattr(user, "email", "")
+        material.category_set_at = timezone.now()
+        material.save(update_fields=["category", "subcategory", "category_set_by_email", "category_set_at", "updated_at"])
+

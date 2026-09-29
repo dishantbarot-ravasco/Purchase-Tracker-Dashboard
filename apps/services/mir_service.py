@@ -95,7 +95,7 @@ def line_state(line, accepted: Decimal) -> dict:
     elif line.needs_review:
         blocked = "The PO sheet changed this line after receipts - a purchase manager must review it first."
     elif line.closed_at is not None:
-        blocked = "This line was closed."
+        blocked = "Short-closed" + (f": {line.close_note}" if line.close_note else "") + " - a purchase manager can reopen it."
     elif ordered is None or ordered <= 0:
         blocked = "The PO sheet gives no quantity for this line."
     elif line.rate is None:
@@ -114,8 +114,12 @@ def line_state(line, accepted: Decimal) -> dict:
 
 
 def search_open_pos(query: str, limit: int = 25) -> list:
-    """Active POs at every plant with at least one line still open, whose
-    PO number contains `query` (case-insensitive). Newest first.
+    """Active POs at every plant with at least one line not yet received in
+    full - open, short-closed or waiting for a purchase manager's review -
+    whose PO number contains `query` (case-insensitive). Newest first.
+    Closed and review-flagged lines are included so a purchase manager can
+    find the PO to reopen or confirm them; they still take no receipt
+    (line_state()).
 
     PO number only (project owner, 2026-09-29): the clerk has the PO number
     in hand from the delivery papers, and a vendor-name search offered every
@@ -126,8 +130,7 @@ def search_open_pos(query: str, limit: int = 25) -> list:
     query = (query or "").strip()
     if len(query) < 2:
         return []
-    open_line = (PurchaseOrderLine.objects.filter(is_active=True, needs_review=False, closed_at__isnull=True,
-                                                  qty_ordered__gt=0, rate__isnull=False)
+    open_line = (PurchaseOrderLine.objects.filter(is_active=True, qty_ordered__gt=0, rate__isnull=False)
                  .annotate(acc=_accepted_annotation()).filter(acc__lt=F("qty_ordered")))
     return list(
         PurchaseOrder.objects.filter(is_active=True, lines__in=open_line)
@@ -152,7 +155,7 @@ def category_options() -> dict:
 
 
 def po_lines_with_state(po) -> list:
-    lines = list(po.lines.select_related("purchase_order").order_by("line_no"))
+    lines = list(po.lines.select_related("purchase_order__plant", "material", "closed_reason").order_by("line_no"))
     accepted = accepted_by_line(line.id for line in lines)
     return [(line, line_state(line, accepted.get(line.id, Decimal("0")))) for line in lines]
 

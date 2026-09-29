@@ -571,6 +571,8 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   `item_code` (reference only - PO sheets reuse a code across grades), `uom`, `hsn`, `category`,
   `subcategory`, and who filed it at MIR entry (`category_set_by_email`, `category_set_at`; blank when
   the reference list did).
+- `MaterialChange` - a category correction made in the app (`materials.change_category()`): `field`,
+  `old_value`, `new_value`, `reason` (never blank), who and when. Migration `0078`.
 - `PurchaseOrderLine` - `material` (`PROTECT`); unique `(purchase_order, line_no)`, `line_no` being the line's position; `uom`
   canonical plus `uom_raw`; `item_code`, `description`, `hsn`, `qty_ordered`, `rate`, `net_value`,
   `delivery_date`; `is_active` (never deleted); `needs_review` / `review_note`; short-close

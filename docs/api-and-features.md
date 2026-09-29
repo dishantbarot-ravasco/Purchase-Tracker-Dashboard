@@ -1022,6 +1022,27 @@ received - rejected); the invoice's amounts stay as billed; the line's `QTY_REJE
 or updated and re-opened if one exists, for the debit note or replacement. Returns and debit notes are not
 documents of their own: the purchase team records what was done when resolving that mismatch.
 
+**Purchase-manager line actions on the PO** (2026-09-29). An Editor or Admin at the PO's own plant
+(`canManage` on `GET mir/purchase-orders/<id>`) sees a column of actions beside the PO's lines:
+**Review change** on a line the CSV changed after receipts (a note of what was checked; receipts are
+blocked until then), **Reopen** on a short-closed line (a balance or a replacement for rejected
+material is coming after all), and **Short-close** on an open line (a "close the line" reason, optional
+note). They call the existing `mir/po-lines/<id>/review|reopen|close` endpoints. For these to be
+reachable, the PO search (`search_open_pos()`) returns a PO with any line not yet received in full -
+including closed and review-flagged lines, which still take no receipt.
+
+**Correcting a material's category** (2026-09-29). A filed category shows read-only on the MIR form with
+a "Wrong? Correct it" link: a category from the reference list and a reason, `POST
+mir/materials/<id>/category` (IsEditor - materials are company-wide), `materials.change_category()`,
+logged in `MaterialChange`. It changes the material everywhere; a reference-list reload still wins, so
+a list that is itself wrong must be fixed there too.
+
+**Drafts** (2026-09-29). The form is saved as a draft in the browser (localStorage, per user) on every
+change, so an expired sign-in or a closed tab loses nothing. The page offers it back ("Continue it /
+Discard"), never silently; restoring re-reads each PO from the server and leaves out a line that was
+closed or received meanwhile. Saving the MIR or clearing the form removes the draft; a draft older than
+3 days is dropped.
+
 **Received so far is never stored.** It is summed from posted MIR lines, so cancelling a MIR returns
 its quantity at once, voids its open mismatches and reopens any line it closed. Posting locks the PO
 lines first (`select_for_update`, id order), so two receipts of one line cannot both count the same
@@ -1414,6 +1435,9 @@ The material master's writes: `material_for(description, item_code, uom, hsn)` (
 from the reference list by name or by a unique SAP item code), `set_category(material, category,
 subcategory, user)` (files an unfiled material once), `sync_from_reference()` (re-files every material
 the reference list names; run by `load_material_category_reference`).
+
+`change_category(material, category, subcategory, reason, user)` corrects a filed material from the
+reference list's categories, with a reason, logged in `MaterialChange`; `MaterialError` for a refusal.
 
 ### apps/services/material_identity.py
 
