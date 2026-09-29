@@ -1253,7 +1253,7 @@ the server's suggestion; steps 3, 4 and the save bar appear via `showEntrySectio
 labels from the PO line;
 a filed material's category shown read-only from the master, otherwise the `categoryControl()` /
 `subcategoryControl()` pickers from `META.categories`, the sub-category list rebuilt in place when the
-category changes), `renderVendor()`, `postMir()`, `resetForm()`. Register:
+category changes), `renderVendor()`, `postMir()` (a saved MIR is confirmed in a `mirToast()` that fades after 8 s, and the page goes straight back to an empty form - no banner of the last MIR), `resetForm()` (keeps the receiving plant, since a store enters its MIRs at one plant). Register:
 `loadRegister()`, `loadDetail()` (the header as a `factsTableHtml()` label/value table - short facts two
 to a row, addresses and remarks across it, the same table as "More PO details"; the lines with their
 material's category; the change history; cancel with a reason). The detail says what can still change and

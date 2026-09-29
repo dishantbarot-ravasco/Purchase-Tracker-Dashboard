@@ -155,7 +155,6 @@ function initNewMir() {
     document.getElementById(id).addEventListener('input', schedule));
   document.getElementById('taxType').addEventListener('change', () => { S.taxTouched = true; schedule(); });
   document.getElementById('mirForm').addEventListener('submit', e => { e.preventDefault(); postMir(); });
-  document.getElementById('newAnotherBtn').onclick = resetForm;
   document.querySelectorAll('[data-goto]').forEach(b => {
     b.onclick = () => {
       const target = document.getElementById(b.dataset.goto);
@@ -715,12 +714,11 @@ async function postMir() {
   try {
     const mir = await apiMir('/entries/new', { method: 'POST', body: payload() });
     const n = mir.mismatches.length;
-    document.getElementById('postedNo').textContent = mir.mirNo;
-    document.getElementById('postedDetail').textContent = mir.vendor.name + ', invoice ' + mir.invoiceNo + ', ' + money(mir.computedTotal, mirCurrency()) +
-      (n ? ' - ' + n + ' difference' + (n === 1 ? '' : 's') + ' sent to Open mismatches.' : '.');
-    document.getElementById('postedBanner').hidden = false;
-    document.getElementById('mirForm').hidden = true;
-    document.getElementById('mirProgress').hidden = true;
+    // Straight back to an empty form for the next delivery; the saved MIR
+    // is confirmed in a toast that fades, and stays findable in the register.
+    mirToast(mir.mirNo + ' saved - ' + mir.vendor.name + ', invoice ' + mir.invoiceNo + ', ' + money(mir.computedTotal, mirCurrency()) +
+      (n ? '. ' + n + ' difference' + (n === 1 ? '' : 's') + ' sent to Open mismatches.' : '.'));
+    resetForm();
     refreshMismatchCount();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (e) {
@@ -730,16 +728,33 @@ async function postMir() {
   }
 }
 
+function mirToast(text) {
+  let stack = document.getElementById('mirToasts');
+  if (!stack) {
+    stack = document.createElement('div');
+    stack.id = 'mirToasts';
+    stack.className = 'toast-stack';
+    stack.setAttribute('role', 'status');
+    document.body.appendChild(stack);
+  }
+  const el = document.createElement('div');
+  el.className = 'toast success';
+  el.textContent = text;
+  stack.appendChild(el);
+  setTimeout(() => el.remove(), 8000);
+}
+
 function resetForm() {
   S.lines = []; S.vendor = null; S.vendorFromPo = false; S.taxTouched = false; S.header = {}; S.preview = null; S.triedToPost = false;
+  // The receiving plant is kept: a store entering several MIRs is at one plant.
+  const plant = document.getElementById('plantSel').value;
   document.getElementById('mirForm').reset();
+  document.getElementById('plantSel').value = plant;
   document.getElementById('mirDate').value = META.today;
   ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox', 'noticeBox', 'todoBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
   ['taxReasonRow', 'totalReasonRow'].forEach(id => { const r = document.getElementById(id); r.hidden = true; r.innerHTML = ''; r.dataset.sig = ''; });
   showEntrySections(false);
-  document.getElementById('postedBanner').hidden = true;
   document.getElementById('mirForm').hidden = false;
-  document.getElementById('mirProgress').hidden = false;
   document.getElementById('postBtn').disabled = false;
   updateProgress(null);
   document.getElementById('poSearch').focus();
