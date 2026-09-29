@@ -585,3 +585,45 @@ class TestSapGrnNumber:
         assert mir_service.post_mir(_payload([_ln(line, qty="50", qty_reason="PARTIAL_BALANCE_DUE")]), user).sap_grn_number == ""
         mir = mir_service.post_mir(_payload([_ln(line, qty="50")], invoice_no="INV-43", sap_grn_number="5000123456"), user)
         assert mir.sap_grn_number == "5000123456"
+
+
+@pytest.mark.django_db
+class TestInvoiceBeforePo:
+    """An invoice dated before its PO (owner, 2026-09-29) needs a reason
+    rather than being refused: in the Drive MIRs 22 of 430 Vapi receipts
+    with a known PO do this (verbal orders, advance billing)."""
+
+    def test_it_needs_a_reason_and_is_recorded_in_days(self, user):
+        po = _po(po_date=TODAY - datetime.timedelta(days=10))
+        early = (TODAY - datetime.timedelta(days=16)).isoformat()
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(_line(po))], invoice_date=early), user)
+        assert "invoice_date_reason" in _fields(exc)
+        mir = mir_service.post_mir(_payload([_ln(_line(po))], invoice_date=early, invoice_date_reason="VERBAL_ORDER_PO_LATER"), user)
+        mm = mir.mismatches.get()
+        assert (mm.kind, mm.actual, mm.reason.code, mm.status) == ("INVOICE_BEFORE_PO", Decimal("6"), "VERBAL_ORDER_PO_LATER", "OPEN")
+
+    def test_on_or_after_the_po_date_is_no_difference(self, user):
+        po = _po(po_date=TODAY - datetime.timedelta(days=10))
+        mir = mir_service.post_mir(_payload([_ln(_line(po))], invoice_date=(TODAY - datetime.timedelta(days=10)).isoformat()), user)
+        assert not mir.mismatches.exists()
+
+    def test_the_latest_po_on_the_mir_is_the_one_compared(self, user):
+        a = _line(_po(number="1000009001", po_date=TODAY - datetime.timedelta(days=30)))
+        b = _line(_po(number="1000009002", po_date=TODAY - datetime.timedelta(days=5)))
+        preview = mir_service.evaluate(_payload([_ln(a), _ln(b)], invoice_date=(TODAY - datetime.timedelta(days=8)).isoformat()))
+        assert [m["actual"] for m in preview["mismatches"] if m["kind"] == "INVOICE_BEFORE_PO"] == [Decimal("3")]
+
+    def test_goods_received_before_the_po_are_still_refused(self, user):
+        po = _po(po_date=TODAY)
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(_line(po))], mir_date=(TODAY - datetime.timedelta(days=1)).isoformat(),
+                                          invoice_date=(TODAY - datetime.timedelta(days=1)).isoformat(), invoice_total="1"), user)
+        assert "mir_date" in _fields(exc)
+
+    def test_an_edit_cannot_move_the_invoice_before_the_po(self, user):
+        po = _po(po_date=TODAY - datetime.timedelta(days=10))
+        mir = mir_service.post_mir(_payload([_ln(_line(po))]), user)
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.edit_mir(mir, user, {"invoice_date": (TODAY - datetime.timedelta(days=12)).isoformat()}, {}, "typo")
+        assert "before the PO date" in exc.value.errors[0]["message"]

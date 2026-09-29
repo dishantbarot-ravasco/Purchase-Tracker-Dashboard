@@ -250,6 +250,7 @@ class MirReasonCode(models.Model):
         TAX_TYPE = "TAX_TYPE", "Tax type differs"
         REJECTION = "REJECTION", "Quantity rejected"
         GST_RATE = "GST_RATE", "GST rate differs"
+        INVOICE_DATE = "INVOICE_DATE", "Invoice dated before the PO"
 
     code = models.CharField(max_length=40, unique=True)
     kind = models.CharField(max_length=20, choices=Kind.choices)
@@ -402,6 +403,8 @@ class MirMismatch(models.Model):
         TAX_TYPE = "TAX_TYPE", "Tax type differs"
         QTY_REJECTED = "QTY_REJECTED", "Quantity rejected"
         GST_RATE = "GST_RATE", "GST rate differs from PO"
+        # `actual` is how many days before the (latest) PO date the invoice is.
+        INVOICE_BEFORE_PO = "INVOICE_BEFORE_PO", "Invoice dated before the PO"
 
     class Status(models.TextChoices):
         OPEN = "OPEN", "Open"

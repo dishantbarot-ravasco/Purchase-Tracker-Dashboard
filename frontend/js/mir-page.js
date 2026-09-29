@@ -35,6 +35,7 @@ const DIFF = {
   GST_RATE: { reasonKind: 'GST_RATE', key: 'gst', title: 'GST rate differs from the PO' },
   INVOICE_TOTAL: { reasonKind: 'INVOICE_TOTAL', key: 'invoice_total', title: 'Invoice total does not add up' },
   TAX_TYPE: { reasonKind: 'TAX_TYPE', key: 'tax_type', title: 'Tax type differs' },
+  INVOICE_BEFORE_PO: { reasonKind: 'INVOICE_DATE', key: 'invoice_date', title: 'Invoice dated before the PO' },
 };
 
 (async function () {
@@ -570,6 +571,7 @@ function payload() {
     gate_entry_no: val('gateEntryNo'), weighbridge_slip_no: val('weighbridgeSlipNo'), remarks: val('remarks'),
     tax_type_reason: S.header.tax_type_reason || '', tax_type_note: S.header.tax_type_note || '',
     invoice_total_reason: S.header.invoice_total_reason || '', invoice_total_note: S.header.invoice_total_note || '',
+    invoice_date_reason: S.header.invoice_date_reason || '', invoice_date_note: S.header.invoice_date_note || '',
     lines: S.lines.map(ln => Object.assign({ po_line_id: ln.line.id }, ln.v)),
   };
   if (S.taxTouched) body.tax_type = val('taxType');
@@ -623,6 +625,7 @@ function paintPreview(p) {
   const expected = META.taxTypes.find(t => t.code === p.taxTypeExpected);
   document.getElementById('taxTypeHint').textContent = expected ? 'Expected from the vendor\'s and plant\'s states: ' + expected.label : 'Vendor state unknown - choose the tax type on the invoice.';
   headerDiff('TAX_TYPE', 'taxReasonRow', p);
+  headerDiff('INVOICE_BEFORE_PO', 'invoiceDateReasonRow', p);
   headerDiff('INVOICE_TOTAL', 'totalReasonRow', p);
   // The same invoice on earlier MIRs: allowed, but said.
   document.getElementById('noticeBox').innerHTML = (p.notices || []).map(n =>
@@ -659,6 +662,8 @@ function diffText(m, ln) {
     case 'RATE_LOW': return 'Invoice rate ' + money(m.actual, cur) + ' is below the PO rate ' + money(m.expected, cur) + pct + '.';
     case 'GST_RATE': return 'GST ' + Number(m.actual) + '% on the invoice; the PO\'s totals imply ' + Number(m.expected) + '%.';
     case 'INVOICE_TOTAL': return 'The invoice says ' + money(m.actual, cur) + ' but the lines add up to ' + money(m.expected, cur) + pct + '.';
+    case 'INVOICE_BEFORE_PO': return 'The invoice is dated ' + m.actualText + ', ' + Number(m.actual) + ' day' + (Number(m.actual) === 1 ? '' : 's') +
+      ' before the PO date ' + m.expectedText + '. Check the invoice date; if it is right, say why the vendor billed before the PO.';
     case 'TAX_TYPE': return 'The invoice charges ' + m.actualText + '; the vendor\'s and plant\'s states imply ' + m.expectedText + '.';
     default: return m.kind;
   }
@@ -733,6 +738,7 @@ const FIELD_LABELS = {
   sap_grn_number: 'the SAP GRN number',
   tax_type_reason: 'the tax type difference', tax_type_note: 'the note on the tax type difference',
   invoice_total_reason: 'the invoice total difference', invoice_total_note: 'the note on the invoice total difference',
+  invoice_date_reason: 'the invoice dated before the PO', invoice_date_note: 'the note on the invoice date',
   qty_received: 'the qty received', qty_rejected: 'the qty rejected', rate: 'the invoice rate', discount: 'the discount',
   gst_rate: 'the GST %', po_line_id: 'PO line', material_category: 'the material category', material_subcategory: 'the sub-category',
   qty_reason: 'the quantity difference', qty_note: 'the note on the quantity difference',
@@ -936,7 +942,7 @@ function resetForm(keepDraft) {
   document.getElementById('plantSel').value = plant;
   document.getElementById('mirDate').value = META.today;
   ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox', 'noticeBox', 'todoBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
-  ['taxReasonRow', 'totalReasonRow'].forEach(id => { const r = document.getElementById(id); r.hidden = true; r.innerHTML = ''; r.dataset.sig = ''; });
+  ['taxReasonRow', 'totalReasonRow', 'invoiceDateReasonRow'].forEach(id => { const r = document.getElementById(id); r.hidden = true; r.innerHTML = ''; r.dataset.sig = ''; });
   showEntrySections(false);
   document.getElementById('mirForm').hidden = false;
   document.getElementById('postBtn').disabled = false;
@@ -1154,7 +1160,7 @@ function mismatchListHtml(list, withMir) {
   return '<div class="mir-mm-list">' + list.map(x => {
     const cur = x.currency || 'INR';
     const fig = v => v === null || v === undefined ? '-' : ((x.kind.startsWith('RATE') || x.kind === 'INVOICE_TOTAL') ? money(v, cur) : (x.kind === 'GST_RATE' ? Number(v) + '%' : qty(v)));
-    const figures = x.kind === 'TAX_TYPE' ? '' : '<span>Expected <b>' + fig(x.expected) + '</b></span><span>Actual <b>' + fig(x.actual) + '</b></span>' +
+    const figures = x.kind === 'TAX_TYPE' ? '' : x.kind === 'INVOICE_BEFORE_PO' ? '<span>Invoice <b>' + Number(x.actual) + ' days</b> before the PO date</span>' : '<span>Expected <b>' + fig(x.expected) + '</b></span><span>Actual <b>' + fig(x.actual) + '</b></span>' +
       (x.differencePct ? '<span>' + (Number(x.differencePct) > 0 ? '+' : '') + Number(x.differencePct) + '%</span>' : '');
     return '<div class="mir-mm is-' + x.status.toLowerCase() + '">' +
       '<div class="mir-mm-head">' +

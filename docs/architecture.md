@@ -579,7 +579,7 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   fields (`closed_at`, `closed_by`, `closed_reason`, `close_note`, `closed_by_mir_line`).
 - `PurchaseOrderLineChange` - every value the CSV changed on a line, old and new.
 - `MirReasonCode` - `code`, `kind` (`QTY_SHORT`, `QTY_OVER`, `REJECTION`, `RATE`, `GST_RATE`,
-  `INVOICE_TOTAL`, `TAX_TYPE`),
+  `INVOICE_DATE`, `INVOICE_TOTAL`, `TAX_TYPE`),
   `closes_line` (only a shortfall may), `note_required`.
 - `MirSequence` - unique `(plant, fy)` counter, row-locked when a MIR number is issued.
 - `Mir` - receiving `plant`, `fy`/`seq`/unique `mir_no`, `vendor`, invoice fields with `invoice_key`
@@ -595,7 +595,7 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   `Material`. `qty_rejected` can rise after posting (`record_rejection()`); nothing else figure-wise changes.
   Unique `(mir, line_no)` and `(mir, po_line)`.
 - `MirMismatch` - `kind` one of `QTY_SHORT`, `QTY_OVER`, `QTY_REJECTED`, `RATE_HIGH`, `RATE_LOW`,
-  `GST_RATE`, `INVOICE_TOTAL`, `TAX_TYPE`; one per `(mir_line, kind)` (or `(mir, kind)` for the invoice-level kinds), expected
+  `GST_RATE`, `INVOICE_BEFORE_PO` (`actual` = days before the PO date), `INVOICE_TOTAL`, `TAX_TYPE`; one per `(mir_line, kind)` (or `(mir, kind)` for the invoice-level kinds), expected
   and actual, `difference_pct`, `reason`, `note`, `status` OPEN/RESOLVED/VOID; a RESOLVED one carries
   `resolved_at` and a `resolution_note`.
 - `MirChange` - one edit to a posted MIR: `mir`, `mir_line` (null for a header field), `field`,

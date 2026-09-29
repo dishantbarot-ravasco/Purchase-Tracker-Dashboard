@@ -971,15 +971,24 @@ imply when it lands on a slab.
 | Any rejected quantity | above zero | `QTY_REJECTED` (reasons of kind `REJECTION`) | recorded, for the return / replacement / debit note |
 | Invoice rate different from the PO rate | at 4 decimals | `RATE_HIGH` / `RATE_LOW` | recorded |
 | GST % different from the one the PO's totals imply | only when the PO's two totals land on one slab (`po_gst_rate()`) | `GST_RATE` | recorded |
+| Invoice dated before the PO | against the latest PO date on the MIR; `actual` = days early | `INVOICE_BEFORE_PO` (reasons of kind `INVOICE_DATE`) | recorded |
 | Invoice total more than Rs 1 from the computed total | the rupee an invoice rounds to | `INVOICE_TOTAL` | recorded |
 | Tax type other than the states imply | | `TAX_TYPE` | recorded |
 
 Each becomes a `MirMismatch` that stays `OPEN` until a purchase manager resolves it with a note. A
 rejection with a shortfall asks two questions, so it carries two differences: why the goods were
 rejected (`QTY_REJECTED`) and whether the balance is still coming (`QTY_SHORT`). The reason list lives
-in one place, migration `0068`'s `REASONS` (41 reasons across the seven kinds); migration `0076`
-re-runs its `seed()` so a database that already applied `0068` gets the new ones, and a reason is never
+in one place, migration `0068`'s `REASONS` (45 reasons across the eight kinds); migrations `0076` and
+`0079` re-run its `seed()` so a database that already applied `0068` gets the new ones, and a reason is never
 deleted (a posted mismatch points at it with `PROTECT`).
+
+**An invoice dated before its PO needs a reason; it is not refused** (owner rule, 2026-09-29, measured
+the same day). In the local Drive MIRs 22 of 430 Vapi receipts with a known PO (5%) carry an invoice
+dated before the PO - median 26 days, up to 146 - and all but one received the goods after the PO date:
+verbal orders and advance billing, real deliveries. Refusing them would stop 1 in 20 Vapi receipts, so
+it is a difference with its own reasons instead. Goods received (the MIR date) before the PO date stay
+refused outright, and `edit_mir()` refuses moving an invoice date before the PO date (that needs a
+reason, so cancel and re-enter).
 
 **Open mismatches is the purchase team's follow-up list.** The store never has to wait on it: a MIR
 with differences is saved with the reasons chosen, and each difference sits in the Open mismatches

@@ -13,7 +13,8 @@ What a posting checks (each failure is a message on the field it concerns):
 
   header  - the receiving plant exists; the MIR date is not in the future and
             not before any line's PO date; the invoice number and date are
-            entered and the invoice date is not after the MIR date; one
+            entered and the invoice date is not after the MIR date (an
+            invoice dated before a line's PO is allowed but needs a reason); one
             vendor across every line; a tax type is known. The invoice
             number is NOT unique (owner, 2026-09-29): one invoice can arrive
             as several deliveries, each its own MIR, so earlier MIRs of the
@@ -429,6 +430,21 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
                                "reason": reason, "note": _text(raw.get("rate_note"), 2000)})
         lines_out.append(out)
 
+    # ── Invoice dated before its PO (owner, 2026-09-29). Not refused: in the
+    # Drive MIRs 22 of 430 Vapi receipts with a known PO carry an invoice
+    # dated before the PO (a verbal order, advance billing), almost all with
+    # the goods arriving after it. So it needs a reason and goes to Open
+    # mismatches; receiving goods before the PO date stays refused above.
+    po_dates = [po_lines[x].purchase_order.po_date for x in wanted if x in po_lines and po_lines[x].purchase_order.po_date]
+    if invoice_date and po_dates and invoice_date < max(po_dates):
+        latest = max(po_dates)
+        reason = _reason(payload.get("invoice_date_reason"), "INVOICE_DATE", "invoice_date_reason",
+                         payload.get("invoice_date_note"), errors, reasons)
+        mismatches.append({"line": None, "kind": "INVOICE_BEFORE_PO", "expected": Decimal("0"),
+                           "actual": Decimal((latest - invoice_date).days), "difference_pct": None,
+                           "expected_text": f"{latest:%d-%m-%Y}", "actual_text": f"{invoice_date:%d-%m-%Y}",
+                           "reason": reason, "note": _text(payload.get("invoice_date_note"), 2000)})
+
     # ── Invoice total.
     priced = [ln["amounts"] for ln in lines_out if ln["amounts"]]
     computed_total = None
@@ -686,6 +702,11 @@ def edit_mir(mir, user, header: dict, lines: dict, reason: str):
                     raise MirValidationError(errs or [{"field": key, "message": "Required."}])
                 if value > mir.mir_date:
                     raise MirValidationError([{"field": key, "message": "The invoice date cannot be after the MIR date."}])
+                latest_po = max((d for d in mir.lines.values_list("po_line__purchase_order__po_date", flat=True) if d), default=None)
+                if latest_po and value < latest_po and mir.invoice_date >= latest_po:
+                    raise MirValidationError([{"field": key, "message": (
+                        f"That is before the PO date ({latest_po:%d-%m-%Y}), which needs a reason at entry - "
+                        "cancel this MIR and enter it again with the right date.")}])
             else:
                 value = _text(raw, EDITABLE_HEADER[key])
                 if key == "invoice_no" and not rules.invoice_key(value):

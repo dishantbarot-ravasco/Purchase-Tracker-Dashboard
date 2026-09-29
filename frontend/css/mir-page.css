@@ -128,7 +128,7 @@
 /* Difference cards: neutral card, amber while a reason is missing, green
    once one is recorded. */
 .mir-diffs:not(:empty) { margin-top: 12px; display: flex; flex-direction: column; gap: 10px; }
-#taxReasonRow:not([hidden]), #totalReasonRow:not([hidden]) { margin: 4px 0 12px; }
+#taxReasonRow:not([hidden]), #totalReasonRow:not([hidden]), #invoiceDateReasonRow:not([hidden]) { margin: 4px 0 12px; }
 .mir-diff { border: 1px solid var(--border); border-left: 4px solid var(--amber); border-radius: 10px; padding: 12px 14px; background: var(--card); }
 .mir-diff.is-done { border-left-color: var(--dash-green); }
 .mir-diff-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
