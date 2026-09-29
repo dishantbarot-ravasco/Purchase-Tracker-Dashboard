@@ -333,6 +333,36 @@ toggle can force either theme. `--navy` flips light (it is text colour); `--navy
   lakh/crore; reconciliation cards (`reconMoney()`) and review cards (`formatMoneyExact()`) use full
   precision on purpose.
 
+#### Plant stock tabs - Inventory, On Order, Stock Planner (2026-09-29)
+
+The project owner asked for three raw-material tabs for plant staff - what is in the store, what is on
+order, and the two together - with **Raw Material Analysis for admins only**. `main.js`'s
+`viewTabOptions()` shows Purchase Orders and the three plant tabs to every role, and Raw Material
+Analysis (between them) to admins. It hides a view; it is not a data boundary - every role may read the
+`/materials` and `/purchase-orders` endpoints both views are built from. A consequence worth knowing:
+the stock-lot Category and Rate pencils live in Raw Material Analysis's material modal, so editors no
+longer reach them from the UI (`correct_material_field` still accepts an editor).
+
+**Same figures, not a second copy.** `plant-stock.js` computes nothing Raw Material Analysis does not
+already compute: materials come from `materialScope()` (one row per name, summed across vendor
+lots), their PO links from `computeMaterialPoLinkage()`, what is still to come from `openQtyOfLine()` /
+`openValueOfLine()`, whether a line is open from `isOpenPoLine()`, low stock from
+`isMaterialLowStock()`, and Days Left from the consumption ledger. Checked against live data on
+2026-09-29: On Order's 497 lines and Rs 65.02 cr equal those helpers' own totals. What the plant tabs
+leave out is the reconciliation layer (match confidence, mismatch flags, corrections).
+
+**The Stock Planner compares dates, not quantities.** Whether an order arrives in time is run-out date
+(today + Days Left) against the next open line's due date. Adding stock to what is on order would need
+one unit on both sides, and Achhad's stock lots carry no unit at all.
+
+**On All Plants, Days Left is the plant that runs out first** (`aggregateMaterialsByName()`'s rule), so
+a material can read "0 d" beside thousands of KG held at another plant. Both tabs say so in their
+subtitle.
+
+**Material links route by role.** `openMaterialLink(key)` (the PO modals' material names and Search
+PO's `?material=` deep link) opens `openMaterialModal()` for an admin and `openPlantMaterialPanel()`
+for everyone else; a non-admin deep link lands on Inventory.
+
 ### Accessibility conventions
 
 The app had none of the four basics before a dedicated pass: no `aria-live` regions in an app built on
@@ -380,7 +410,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 
 | Page | Served | Styles | Scripts (in order) |
 | --- | --- | --- | --- |
-| `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `list-sort.js`, `po-list.js`, `po-sort.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `import-sort.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-sort.js`, `material-modal.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
+| `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `list-sort.js`, `po-list.js`, `po-sort.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `import-sort.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-sort.js`, `material-modal.js`, `plant-stock.js`, `plant-stock-sort.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
 | `home.html` | WhiteNoise | `brand.css`, `home-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `home-page.js` |
 | `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `list-sort.js`, `search-po-page.js` |
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
@@ -1089,6 +1119,47 @@ them: the rows carry edit pencils, dismiss links and PO links, and re-running `w
 a correction the reader may be part-way through. The correction box anchors after the table wrapper,
 outside the moved rows, so it stays put.
 
+### frontend/js/plant-stock.js
+
+The three plant tabs (see [Plant stock tabs](#plant-stock-tabs---inventory-on-order-stock-planner-2026-09-29)).
+Globals: `PLANT_STOCK_TABS` / `PLANT_STOCK_VIEW_KEYS`, `isAdminUser()`, `PS_STATE` (per-tab filters:
+status, category, search, showAll, page, and On Order's `kind`) with `psDefaultState()` /
+`resetPlantViewFilters()`, `PS_LIST_CTX`.
+
+- `loadAndRenderPlantView()` loads stock, both order books and the tab's sort presets for the selected
+  plants, then renders unless the reader switched view or plant meanwhile. `renderPlantView()` builds
+  the scope once (`psBuildScope()`: `materialScope()` + `computeMaterialPoLinkage()`) and calls
+  `renderInventoryView()`, `renderOnOrderView()` or `renderPlannerView()`: six KPI cards
+  (`psKpiRowHtml()`, a card with a filter toggles it), the filter bar (`psFilterBarHtml()`: search,
+  category, status, On Order's purchase type, a show-all box, an always-present Clear), and
+  `#psListRegion`.
+- Rows: `psInventoryRows()` (`INV_STATUS`: low / below zero / out / in stock / not used lately),
+  `psOrderRows()` (one per open line, domestic and import via `materialOrders()`; `ORD_STATUS` from the
+  LINE's own delivery date: overdue / due within `ORD_DUE_SOON_DAYS` / on order / no date; `partial` when
+  something has arrived), `psPlannerRows()` with `psPlanDecision()` (`PLAN_STATUS`: reorder now,
+  delivery late, on the way, on order with none in stock, check stock sheet, no usage data, enough stock,
+  not used lately, nothing held - each with the reason shown under its pill). Out-of-stock (Inventory)
+  and nothing-held (Planner) rows are hidden unless picked or "include" is ticked.
+- `plantListRegionHtml()` / `renderPlantListRegion()` / `wirePlantListRegion()` - sort
+  (`psSorter()`), filter, page (`LIST_PAGE_SIZE`) and draw the table; a search keystroke re-renders this
+  region only (the box sits outside it), a KPI, select or box change re-renders the view
+  (`wirePlantViewChrome()`). Material names and PO numbers are `<button class="row-link ps-link">`s:
+  a PO opens `openPoModal()` / `openImportPoModal()`.
+- `openPlantMaterialPanel(norm)` - the plant staff's material detail in the shared modal shell,
+  `modalRequestId`-guarded: at-a-glance figures, every stock lot at the plants the user can read, and
+  the open orders linked to it. `openMaterialLink(key)` routes a material link by role.
+- Date helpers `psToday()`, `psDaysFromToday()`, `psIsoInDays()`, `psDueText()`; a last-received date
+  after today is shown and labelled "date is in the future" (a sheet error).
+
+### frontend/js/plant-stock-sort.js
+
+list-sort.js configuration for the three plant tabs: `INV_SORT` (view `plant_inventory`; default
+needs attention first, then fewest Days Left), `ORD_SORT` (`plant_on_order`; default due date soonest
+first, undated last) and `PLAN_SORT` (`stock_planner`; default most urgent first). Rows arrive with
+their figures worked out, so each `rowValue` only reads fields. **`INV_SORT_COLUMNS`,
+`ORD_SORT_COLUMNS` and `PLAN_SORT_COLUMNS` must equal `sort_presets.py`'s `SORT_KEYS_BY_VIEW` for their
+view, and their `pick: true` columns `PICK_KEYS_BY_VIEW`** (`test_sort_presets.py` checks).
+
 ### frontend/js/export-panel.js
 
 `openExportPanel()` - the "Export Data" panel (button shown only when `PLANT_KEYS.some(canEditField)`;
@@ -1145,8 +1216,9 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   rows, `#viewContent`), first `loadAndRender()`, deep-link open, `startFreshnessWatch()`,
   `resumeSyncIfRunning()`. Refresh Data for an admin runs `triggerRealSyncAndRefresh()`; for anyone
   else it clears caches and re-reads the DB.
-- Tabs: `renderViewTabs()` (`.view-tab`; also re-reads sync status because some badges are
-  view-specific), `renderPlantTabs()` (`.plant-tab`, All Plants first), `renderPurchaseTypeTabs()`
+- Tabs: `viewTabOptions()` (Purchase Orders, Raw Material Analysis for admins only, then
+  plant-stock.js's `PLANT_STOCK_TABS`), `renderViewTabs()` (`.view-tab`; a view the role lacks falls back to
+  Inventory; also re-reads sync status because some badges are view-specific), `renderPlantTabs()` (`.plant-tab`, All Plants first), `renderPurchaseTypeTabs()`
   (`.sub-tab`, Purchase Orders only), whose clicks go through **`switchPurchaseType(ptype, opts)`**:
   resets every list filter, loads whichever side is missing (Import on first visit; Domestic too
   when the page opened on an Import deep link), renders, and returns `false` on a failed load or if
@@ -1166,11 +1238,15 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   timeout it reports "still running" and leaves the rest to the freshness watcher. Status text:
   `setRefreshStatus()`, `syncOutcome()`, `stepName()`, `clockTime()`, `latestSyncTime()`,
   `elapsedLabel()`, `DOMESTIC_SYNC_STEPS`, `SYNC_STEP_LABELS`, `DRIVE_SYNC_STEPS`.
-- `loadAndRender()` -> `loadDashboard()` or `loadAndRenderMaterials()`, then refreshes `DATA_STAMP`. `loadDashboard()` reloads itself when the reader switched Domestic/Import while it was fetching - that switch found no `#content` yet, and the Import list was drawn from an empty cache as "No import purchase orders synced yet";
+- `loadAndRender()` -> `loadDashboard()`, `loadAndRenderMaterials()` (admins) or plant-stock.js's
+  `loadAndRenderPlantView()`, then refreshes `DATA_STAMP`. `loadDashboard()` reloads itself when the reader switched Domestic/Import while it was fetching - that switch found no `#content` yet, and the Import list was drawn from an empty cache as "No import purchase orders synced yet";
   resolves `false` when the view showed its own error.
 - Freshness: `currentDataStamp()`, `checkFreshness()`, `startFreshnessWatch()`.
 - Deep links: `readDeepLinkParams()`, `applyDeepLinkToState()`, `clearDeepLinkParams()`,
-  `showDeepLinkMiss()`, `openDeepLinkTarget()`.
+  `showDeepLinkMiss()`, `openDeepLinkTarget()`. A `?material=` link opens through `openMaterialLink()`:
+  an admin lands on Raw Material Analysis, anyone else on Inventory with the plant material panel
+  (which also covers a material that is only on order).
+- `resetFilters()` also calls plant-stock.js's `resetPlantViewFilters()`.
 
 Some of this file's header comments predate later work (for example that Import has "no
 MIR-equivalent reconciliation" or that Vapi imports are unparsed); the code, not those comments, is

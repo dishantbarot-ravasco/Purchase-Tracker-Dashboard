@@ -1148,7 +1148,7 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
   applyDynamicStyles(body); // the reconciliation cards' progress bars
   body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () =>
     trackBlNumber(el2.dataset.trackBl, () => openImportPoModal(plantKey + '::' + poNumber)));
-  body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialModal(el2.dataset.materialLink));
+  body.querySelectorAll('[data-material-link]').forEach(el2 => el2.onclick = () => openMaterialLink(el2.dataset.materialLink));
   wireReconSorting(body); // Items tab's line and receipt sorting (po-reconcile.js)
 }
 

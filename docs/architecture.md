@@ -604,7 +604,8 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
 ### apps/core/models/preferences.py
 
 `SortPreset` - a user's named, multi-level sort for one list view (`view`: `materials`, `material_lots`, `material_open_pos`, `purchase_orders`,
-`import_purchases`, `po_lines`, `po_receipts`, `search_po` or `search_po_items`), `levels` a JSON list of `{key, dir, values?,
+`import_purchases`, `po_lines`, `po_receipts`, `search_po`, `search_po_items`, or the plant stock tabs'
+`plant_inventory`, `plant_on_order` and `stock_planner` - added by migration `0080`), `levels` a JSON list of `{key, dir, values?,
 only?}` (`values` picked to come first, `only` to show just those), unique on (user, view, name), deleted with its user. It holds
 no plant data, so it has no plant scope; it is read and written only as its owner
 (`preferences_views.py`), and `apps/services/sort_presets.py` validates every level.

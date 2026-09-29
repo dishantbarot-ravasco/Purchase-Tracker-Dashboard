@@ -31,6 +31,9 @@ class SortPreset(models.Model):
         PO_RECEIPTS = "po_receipts", "PO modal: MIR receipts"
         SEARCH_PO = "search_po", "Search PO: results"
         SEARCH_PO_ITEMS = "search_po_items", "Search PO: line items"
+        PLANT_INVENTORY = "plant_inventory", "Inventory"
+        PLANT_ON_ORDER = "plant_on_order", "On Order"
+        STOCK_PLANNER = "stock_planner", "Stock Planner"
 
     user = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="sort_presets")
     view = models.CharField(max_length=30, choices=View.choices)

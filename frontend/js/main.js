@@ -4,8 +4,10 @@
  */
 //
 // Navigation hierarchy (top to bottom): Purchase Orders / Raw Material
-// Analysis (level 1) -> plant (level 2) -> Domestic / Import Purchases
-// (level 3, Purchase Orders only). Originally ported to match the "Purchase
+// Analysis (admins only) / Inventory / On Order / Stock Planner (level 1 -
+// see viewTabOptions(); the last three are plant-stock.js) -> plant (level
+// 2) -> Domestic / Import Purchases (level 3, Purchase Orders only).
+// Originally ported to match the "Purchase
 // Tracker" Claude Artifact prototype's structure exactly (see CLAUDE.md's
 // "Artifact-parity decisions" section for that history), with one
 // deliberate deviation from the artifact requested directly by the project
@@ -141,7 +143,10 @@ let MATERIALS_BY_PLANT = {};
 let IMPORT_PO_CACHE = null;
 let IMPORT_PO_DETAIL_CACHE = {}; // "plant|poNumber" -> full detail payload (Items/Shipment/Flags tabs)
 let state = {
-  view: 'po',            // 'po' | 'materials'
+  // 'po' | 'materials' (Raw Material Analysis, admins only) | the plant
+  // stock tabs 'inventory' / 'onorder' / 'planner' (plant-stock.js, every
+  // role) - see viewTabOptions().
+  view: 'po',
   // 'all' ("All Plants") is valid for both views - see plantTabOptions().
   // Defaults to 'all' so the dashboard lands on Purchase Orders / Domestic /
   // All Plants on first paint (project owner request, 2026-09-04).
@@ -241,6 +246,7 @@ function resetFilters() {
   state.matColFilters = { material: '', progress: '' };
   state.matChartLevel = 'category'; state.matChartCategory = null; state.matChartSubcategory = null;
   resetImportFilters();
+  resetPlantViewFilters();
 }
 
 // ── Deep links: "/?plant=<key>&po=<number>" / "?material=<description>" ──
@@ -289,7 +295,9 @@ function readDeepLinkParams() {
 function applyDeepLinkToState(link) {
   state.plant = link.plant || 'all';
   if (link.material) {
-    state.view = 'materials';
+    // Raw Material Analysis is admin-only; everyone else lands on Inventory,
+    // with the plant material panel opened over it (openMaterialLink()).
+    state.view = isAdminUser() ? 'materials' : 'inventory';
   } else {
     state.view = 'po';
     // ?po= alone is a Domestic PO number; Search PO adds kind=import for an
@@ -377,11 +385,18 @@ async function openDeepLinkTarget(link) {
       const fuzzy = findMaterialLotsFor(link.material, null, searchOrder);
       if (fuzzy.length) hit = fuzzy[0];
     }
+    if (!hit && !isAdminUser()) {
+      // The plant material panel also covers a material that is only on
+      // order, and says so itself when it is neither in stock nor on order.
+      await openPlantMaterialPanel(wanted);
+      return;
+    }
     if (!hit) {
       showDeepLinkMiss('No stock lot matching "' + link.material + '" was found at any plant, so there is no material analysis to open for it yet.');
       return;
     }
-    await openMaterialModal(hit.plantKey + '::' + hit.lot.lotId);
+    // Raw Material Analysis's modal for an admin, the plant panel otherwise.
+    await openMaterialLink(hit.plantKey + '::' + hit.lot.lotId);
   } catch (e) {
     // Never take the dashboard down over a link: the page behind it is
     // already rendered and correct, the reader just doesn't get the modal.
@@ -849,12 +864,28 @@ async function _pollSyncUntilDone(btn, targetKeys, baseline, opts) {
   if (typeof announce === 'function') announce(slow);
 }
 
-// ── Level 1: Purchase Orders / Raw Material Analysis ───────────────────
+// ── Level 1: Purchase Orders / Raw Material Analysis / plant stock tabs ─
+// Raw Material Analysis is for admins only (project owner, 2026-09-29): its
+// match confidence, mismatch flags and corrections are reconciliation work.
+// Plant staff get Inventory, On Order and Stock Planner instead
+// (plant-stock.js), which read the same stock and order data. This hides a
+// view, it does not guard data - every role may read the endpoints both
+// views are built from.
+function viewTabOptions() {
+  const tabs = [{ key: 'po', label: 'Purchase Orders' }];
+  if (isAdminUser()) tabs.push({ key: 'materials', label: 'Raw Material Analysis' });
+  return tabs.concat(PLANT_STOCK_TABS);
+}
+
 function renderViewTabs() {
   const el = document.getElementById('viewTabs');
-  el.innerHTML =
-    '<div class="view-tab ' + (state.view === 'po' ? 'active' : '') + '" data-view="po" tabindex="0" role="tab" aria-selected="' + (state.view === 'po') + '">Purchase Orders</div>' +
-    '<div class="view-tab ' + (state.view === 'materials' ? 'active' : '') + '" data-view="materials" tabindex="0" role="tab" aria-selected="' + (state.view === 'materials') + '">Raw Material Analysis</div>';
+  const tabs = viewTabOptions();
+  // A view this role does not have (a non-admin on 'materials') falls back
+  // to the first plant stock tab rather than rendering nothing selected.
+  if (!tabs.some(t => t.key === state.view)) state.view = PLANT_STOCK_TABS[0].key;
+  el.innerHTML = tabs.map(t =>
+    '<div class="view-tab ' + (state.view === t.key ? 'active' : '') + '" data-view="' + t.key + '" tabindex="0" role="tab" aria-selected="' + (state.view === t.key) + '">' + escapeHtml(t.label) + '</div>'
+  ).join('');
   el.querySelectorAll('[data-view]').forEach(t => t.onclick = async () => {
     if (t.dataset.view === state.view) return;
     state.view = t.dataset.view;
@@ -1163,7 +1194,10 @@ async function loadSyncStatus() {
 // has already shown its own error panel) - so a caller never reports
 // "refreshed" over an error message.
 async function loadAndRender() {
-  const ok = state.view === 'po' ? await loadDashboard() : await loadAndRenderMaterials();
+  let ok;
+  if (state.view === 'po') ok = await loadDashboard();
+  else if (state.view === 'materials' && isAdminUser()) ok = await loadAndRenderMaterials();
+  else ok = await loadAndRenderPlantView();
   // Record what this render is based on, so the freshness watcher below can
   // tell "same data" from "the database moved under us".
   DATA_STAMP = await currentDataStamp().catch(() => DATA_STAMP);

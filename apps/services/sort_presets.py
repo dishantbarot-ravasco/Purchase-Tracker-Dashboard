@@ -12,7 +12,10 @@ IMPORT_SORT_COLUMNS, the Raw Material modal's "material_lots" /
 MAT_OPEN_PO_SORT_COLUMNS, and the PO modals' "po_lines" / "po_receipts" are
 po-reconcile.js's PO_LINES_SORT_COLUMNS / PO_RECEIPTS_SORT_COLUMNS, and the
 Search PO page's "search_po" / "search_po_items" are search-po-page.js's
-SEARCH_SORT_COLUMNS / SEARCH_ITEMS_SORT_COLUMNS - keep them in step (test_sort_presets.py checks); a key the frontend offers but
+SEARCH_SORT_COLUMNS / SEARCH_ITEMS_SORT_COLUMNS, and the three plant stock
+tabs' "plant_inventory" / "plant_on_order" / "stock_planner" are
+plant-stock-sort.js's INV_SORT_COLUMNS / ORD_SORT_COLUMNS / PLAN_SORT_COLUMNS
+- keep them in step (test_sort_presets.py checks); a key the frontend offers but
 this set lacks makes "Save preset" fail with a 400, never store a column the
 page cannot sort on.
 
@@ -61,6 +64,18 @@ SORT_KEYS_BY_VIEW = {
         "plant", "purchaseType", "value", "matched",
     },
     SortPreset.View.SEARCH_PO_ITEMS: {"line", "material", "qty", "price", "mirStatus"},
+    SortPreset.View.PLANT_INVENTORY: {
+        "material", "category", "subCategory", "stock", "value", "dailyUse",
+        "daysLeft", "received", "status",
+    },
+    SortPreset.View.PLANT_ON_ORDER: {
+        "due", "created", "poNumber", "vendor", "material", "category", "plant",
+        "toComeValue", "status",
+    },
+    SortPreset.View.STOCK_PLANNER: {
+        "material", "category", "subCategory", "daysLeft", "nextDelivery",
+        "toComeValue", "status",
+    },
 }
 # The columns a level may pick values on - the frontend's `pick: true` ones.
 PICK_KEYS_BY_VIEW = {
@@ -73,6 +88,9 @@ PICK_KEYS_BY_VIEW = {
     SortPreset.View.PO_RECEIPTS: set(),
     SortPreset.View.SEARCH_PO: {"vendor", "material", "category", "subCategory", "plant", "purchaseType"},
     SortPreset.View.SEARCH_PO_ITEMS: set(),
+    SortPreset.View.PLANT_INVENTORY: {"material", "category", "subCategory"},
+    SortPreset.View.PLANT_ON_ORDER: {"vendor", "material", "category", "plant"},
+    SortPreset.View.STOCK_PLANNER: {"material", "category", "subCategory"},
 }
 MAX_LEVELS = 5
 MAX_NAME_LENGTH = 60

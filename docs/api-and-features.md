@@ -1087,7 +1087,8 @@ Excel-style; the page asks first. The server's key lists must match the frontend
 (`material-sort.js`'s `MAT_SORT_COLUMNS`, `MAT_LOTS_SORT_COLUMNS` and `MAT_OPEN_PO_SORT_COLUMNS`,
 `po-sort.js`'s `PO_SORT_COLUMNS`, `import-sort.js`'s `IMPORT_SORT_COLUMNS`, `po-reconcile.js`'s
 `PO_LINES_SORT_COLUMNS` and `PO_RECEIPTS_SORT_COLUMNS`, `search-po-page.js`'s `SEARCH_SORT_COLUMNS` and
-`SEARCH_ITEMS_SORT_COLUMNS`), keys and `pick: true` columns both;
+`SEARCH_ITEMS_SORT_COLUMNS`, `plant-stock-sort.js`'s `INV_SORT_COLUMNS`, `ORD_SORT_COLUMNS` and
+`PLAN_SORT_COLUMNS`), keys and `pick: true` columns both;
 `test_sort_presets.py` checks each pair. The frontend side is in [frontend.md](frontend.md#frontendjslist-sortjs).
 
 ### Data export
@@ -1406,7 +1407,9 @@ to `material-sort.js`'s `MAT_SORT_COLUMNS`, `material_lots` / `material_open_pos
 `MAT_LOTS_SORT_COLUMNS` / `MAT_OPEN_PO_SORT_COLUMNS`, `purchase_orders` to `po-sort.js`'s
 `PO_SORT_COLUMNS`, `import_purchases` to `import-sort.js`'s `IMPORT_SORT_COLUMNS`, `po_lines` /
 `po_receipts` to `po-reconcile.js`'s `PO_LINES_SORT_COLUMNS` / `PO_RECEIPTS_SORT_COLUMNS`, `search_po` /
-`search_po_items` to `search-po-page.js`'s `SEARCH_SORT_COLUMNS` / `SEARCH_ITEMS_SORT_COLUMNS`) and
+`search_po_items` to `search-po-page.js`'s `SEARCH_SORT_COLUMNS` / `SEARCH_ITEMS_SORT_COLUMNS`,
+`plant_inventory` / `plant_on_order` / `stock_planner` to `plant-stock-sort.js`'s `INV_SORT_COLUMNS` /
+`ORD_SORT_COLUMNS` / `PLAN_SORT_COLUMNS`) and
 `PICK_KEYS_BY_VIEW` (the `pick: true` columns), `MAX_PICKED_VALUES` / `MAX_PICKED_VALUE_LENGTH`
 (mirrored in list-sort.js), `clean_view()` / `clean_name()` / `clean_levels()` / `_clean_picks()`
 (raise `ValueError`, which becomes a 400), `list_presets()`, `save_preset()` (create or save over the same name; locks the
