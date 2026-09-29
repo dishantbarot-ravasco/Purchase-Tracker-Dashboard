@@ -115,7 +115,14 @@
 .mir-line-facts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .mir-fact { display: flex; flex-direction: column; gap: 1px; background: var(--gray-soft); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
 .mir-fact.is-strong { background: var(--blue-soft); color: var(--blue-text); }
-.mir-line-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px 14px; }
+.mir-line-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px 14px; }
+.mir-line-group { border-top: 1px solid var(--border-soft); padding-top: 10px; margin-top: 12px; }
+.mir-line-group-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; color: var(--navy); margin-bottom: 8px; }
+.mir-fill {
+  align-self: flex-start; margin-top: 2px; background: none; border: 1px dashed var(--border-strong); border-radius: 99px;
+  padding: 3px 10px; font-size: 11.5px; color: var(--dash-blue); cursor: pointer;
+}
+.mir-fill:hover { border-style: solid; background: var(--blue-soft); }
 .mir-line-figures {
   display: flex; gap: 8px 20px; flex-wrap: wrap; align-items: baseline; font-size: 12.5px; margin-top: 12px;
   padding-top: 10px; border-top: 1px dashed var(--border); color: var(--slate-soft);
@@ -147,7 +154,7 @@
 @media (max-width: 760px) { .mir-diff-inputs, .mir-diff-text, .mir-diff-foot { grid-template-columns: 1fr; margin-left: 0; } }
 
 /* Totals: small tiles like the dashboard's KPI cards. */
-.mir-totals { display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; padding-top: 14px; margin-top: 4px; border-top: 1px solid var(--border-soft); }
+.mir-totals { display: flex; gap: 12px; flex-wrap: wrap; }
 .mir-totals:empty { display: none; }
 .mir-total-tile { display: flex; flex-direction: column; gap: 3px; min-width: 170px; background: var(--card); border: 1px solid var(--border); border-left: 4px solid var(--border-strong); border-radius: 10px; padding: 10px 14px; }
 .mir-total-tile.is-ok { border-left-color: var(--dash-green); }
@@ -183,4 +190,59 @@
   .mir-line-total { margin-left: 0; }
   .mir-totals { justify-content: stretch; }
   .mir-total-tile { flex: 1 1 140px; min-width: 0; }
+}
+
+/* Progress strip: where the clerk is in the four steps. */
+.mir-progress { display: flex; gap: 8px; list-style: none; padding: 0; margin: 0 0 16px; flex-wrap: wrap; }
+.mir-progress li { flex: 1 1 150px; }
+.mir-progress button {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 9px 12px; border-radius: 10px; cursor: pointer;
+  background: var(--card); border: 1px solid var(--border); color: var(--slate-soft); font-size: 12.5px; font-weight: 700; text-align: left;
+}
+.mir-progress-dot {
+  flex: none; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--gray-soft); color: var(--slate-soft); font-size: 11px; font-weight: 800;
+}
+.mir-progress li.is-current button { border-color: var(--navy-solid); color: var(--navy); box-shadow: var(--dash-shadow); }
+.mir-progress li.is-current .mir-progress-dot { background: var(--navy-solid); color: var(--on-accent); }
+.mir-progress li.is-done button { color: var(--green-text); }
+.mir-progress li.is-done .mir-progress-dot { background: var(--green-soft); color: var(--green-text); font-size: 0; }
+.mir-progress li.is-done .mir-progress-dot::after { content: '\2713'; font-size: 12px; }
+.mir-grid-2 { grid-template-columns: repeat(auto-fill, minmax(260px, 340px)); }
+
+/* PO: the facts a clerk checks, then the rest folded away. */
+.mir-po-summary { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.mir-po-chip { background: var(--gray-soft); border-radius: 8px; padding: 5px 10px; font-size: 12.5px; color: var(--slate); }
+.mir-po-chip .mir-kv-k { margin-right: 4px; }
+.mir-po-more { margin-bottom: 10px; }
+.mir-po-more summary { cursor: pointer; font-size: 12.5px; color: var(--dash-blue); margin-bottom: 8px; }
+
+/* Save bar: stays at the bottom of the screen while the form is long.
+   style.css gives html/body overflow-x:hidden, which makes body a scroll
+   container that never scrolls, so position:sticky never engaged; clip
+   hides sideways overflow the same way without that side effect. */
+html, body { overflow-x: clip; }
+.mir-savebar {
+  position: sticky; bottom: 0; z-index: 20; margin: 0 0 16px; padding: 12px 18px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 13px; box-shadow: 0 -6px 18px rgba(15, 23, 42, .10);
+}
+.mir-savebar-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.mir-savebar-action { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-left: auto; }
+.mir-savebar .mir-total-tile { min-width: 150px; padding: 7px 12px; }
+.mir-savebar .mir-total-val { font-size: 14.5px; }
+.mir-todo:not(:empty) { margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--border-soft); max-height: 96px; overflow-y: auto; }
+.mir-todo-head { font-size: 11.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; color: var(--amber-text); margin-bottom: 4px; }
+.mir-todo-head.is-bad { color: var(--dash-red); }
+.mir-todo-head.is-ok { color: var(--green-text); margin: 0; }
+.mir-todo ul { margin: 0; padding-left: 18px; display: flex; flex-wrap: wrap; gap: 2px 22px; }
+.mir-todo li { font-size: 12.5px; }
+.mir-todo-item { background: none; border: 0; padding: 0; color: var(--slate); cursor: pointer; text-align: left; font-size: 12.5px; }
+.mir-todo-item:hover { color: var(--dash-blue); text-decoration: underline; }
+
+/* A phone has no room for a sticky bar: it sits at the end of the form. */
+@media (max-width: 700px) {
+  .mir-savebar { position: static; box-shadow: var(--dash-shadow); }
+  .mir-todo:not(:empty) { max-height: none; }
+  .mir-savebar-action { margin-left: 0; width: 100%; }
+  .mir-savebar-action .btn { width: 100%; }
 }

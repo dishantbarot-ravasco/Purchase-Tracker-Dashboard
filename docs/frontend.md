@@ -1234,15 +1234,23 @@ decides a mismatch**: every input change runs the debounced `schedulePreview` ->
 never re-rendered while typing; `paintPreview()` repaints only the computed figures (`#fig-<i>`), the
 difference cards (`#reasons-<i>`, rebuilt only when the difference or its chosen reason changes, so
 focus survives), the header difference cards (`headerDiff()` for tax type and invoice total), the
-invoice notices (`#noticeBox`), the total tiles and the error list. `showErrors()` hides "Required." /
-"Choose a reason." until the first Save attempt. `DIFF` maps each server difference kind to its reason
+invoice notices (`#noticeBox`), the total tiles, the "Still to do" checklist and the progress strip.
+**Save is never greyed out** (a disabled button gave a first-time user no way to find out why): the
+sticky `#saveBar` always lists what is still missing (`showErrors()` -> `todoText()`, each item a button
+that `focusField()`s its field, opening a folded section if needed), and `postMir()` on an incomplete
+form sends nothing - it marks the missing fields red and jumps to the first. Fields turn red only after
+that first Save attempt. `updateProgress()` ticks the four steps (receipt, purchase order, invoice,
+what arrived) from the latest preview, so it never disagrees with Save. `DIFF` maps each server difference kind to its reason
 kind and payload key (`qty`, `reject`, `rate`, `gst`, `tax_type`, `invoice_total`); `diffCardHtml()` draws
 one card - amber "Needs a reason" until a reason (and a required note) is there, green "Reason
 recorded" after - and `diffText()` says what differs in plain words. New MIR: `runSearch()` (GET
-`open-pos`), `openPo()` (GET `purchase-orders/<id>`: `poHeaderHtml()` shows the PO's header facts, then
-the lines, a line that cannot take a receipt greyed with the server's reason, "late" when past its
+`open-pos`), `openPo()` (GET `purchase-orders/<id>`: `poHeaderHtml()` shows five chips - PO date, tax,
+GST, currency, value - and folds terms, addresses and PO remarks under "More PO details", then the lines, a line that cannot take a receipt greyed with the server's reason, "late" when past its
 delivery date), `addLines()` (one vendor per MIR; the GST % and category start from the PO's rate and
-the server's suggestion), `renderLines()` (unit and currency labels from the PO line;
+the server's suggestion; steps 3, 4 and the save bar appear via `showEntrySections()`), `renderLines()`
+(three labelled groups per line - what came in, what the invoice charges, classification - with a
+"Full open qty" button that fills the open quantity, and a hint under each figure; unit and currency
+labels from the PO line;
 `categoryControl()` / `subcategoryControl()` pickers from `META.categories`, the sub-category list
 rebuilt in place when the category changes), `renderVendor()`, `postMir()`, `resetForm()`. Register:
 `loadRegister()`, `loadDetail()` (category, GRN and every transport field shown; cancel with a reason
@@ -1321,7 +1329,10 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   rows use tabular figures and lift on hover; `.status-pill` never wraps.
 - **`mir-page.css`** (`mir.html`) - on top of `brand.css` and `style.css`, using their tokens and
   defining no custom property: panels in the dashboard's `.chart-panel` look (`.mir-panel`, gold title
-  bar), PO facts, line cards and fact chips, difference cards (`.mir-diff.is-todo` / `.is-done`), total
+  bar), the progress strip (`.mir-progress`), PO chips and folded facts, line cards with their three
+  groups (`.mir-line-group`) and fact chips, the sticky save bar (`.mir-savebar`, static under 700px;
+  it sets `html, body { overflow-x: clip }` because `style.css`'s `overflow-x: hidden` makes body a
+  scroll container that never scrolls, and sticky then never engages), difference cards (`.mir-diff.is-todo` / `.is-done`), total
   tiles, invoice notices, mismatch cards (`.mir-mm.is-open` / `.is-resolved` / `.is-void`), and
   `.mir-pill-*` tones on the dashboard's `.status-pill`. Typed figures are left-aligned; only computed
   table figures align right.

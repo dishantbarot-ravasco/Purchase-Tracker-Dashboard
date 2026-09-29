@@ -156,6 +156,34 @@ function initNewMir() {
   document.getElementById('taxType').addEventListener('change', () => { S.taxTouched = true; schedule(); });
   document.getElementById('mirForm').addEventListener('submit', e => { e.preventDefault(); postMir(); });
   document.getElementById('newAnotherBtn').onclick = resetForm;
+  document.querySelectorAll('[data-goto]').forEach(b => {
+    b.onclick = () => {
+      const target = document.getElementById(b.dataset.goto);
+      if (target && !target.hidden) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+  });
+  updateProgress(null);
+}
+
+/** The four-step strip above the form: done, current, or still to come.
+    Worked out from the latest preview, so it never disagrees with Save. */
+function updateProgress(p) {
+  const errs = p ? p.errors : [];
+  const has = prefix => errs.some(e => (e.field || '').startsWith(prefix));
+  const receipt = !has('plant') && !has('mir_date') && !!document.getElementById('mirDate').value;
+  const po = S.lines.length > 0;
+  const invoice = po && !!p && !['invoice_no', 'invoice_date', 'invoice_total', 'tcs_amount', 'tax_type', 'vendor_id']
+    .some(f => errs.some(e => e.field === f || e.field === f + '_reason' || e.field === f + '_note'));
+  const lines = po && !!p && !has('lines');
+  const done = { 1: receipt, 2: po, 3: invoice, 4: lines };
+  let currentSet = false;
+  document.querySelectorAll('#mirProgress li').forEach(li => {
+    const n = Number(li.dataset.step);
+    li.classList.toggle('is-done', !!done[n]);
+    const current = !done[n] && !currentSet;
+    if (current) currentSet = true;
+    li.classList.toggle('is-current', current);
+  });
 }
 
 async function runSearch() {
@@ -196,15 +224,17 @@ function poResultHtml(po) {
 function poHeaderHtml(po) {
   const item = (k, v) => v ? '<div class="mir-kv-item"><span class="mir-kv-k">' + escapeHtml(k) + '</span><span class="mir-kv-v">' + escapeHtml(v) + '</span></div>' : '';
   const tax = META.taxTypes.find(t => t.code === po.taxType);
-  return '<div class="mir-po-facts">' +
-    item('PO date', dateIN(po.poDate)) + item('Payment terms', po.paymentTerms) + item('Incoterms', po.incoterms) +
-    item('Currency', po.currency) + item('Tax type', tax ? tax.label : po.taxTypeRaw) +
-    item('GST on the PO', po.gstRate ? Number(po.gstRate) + '%' : '') +
+  const chip = (k, v) => v ? '<span class="mir-po-chip"><span class="mir-kv-k">' + escapeHtml(k) + '</span> ' + escapeHtml(v) + '</span>' : '';
+  const more = item('Payment terms', po.paymentTerms) + item('Incoterms', po.incoterms) +
     item('Value (excl. GST)', po.totalValue ? money(po.totalValue, po.currency) : '') +
-    item('Value (incl. GST)', po.totalInclusiveValue ? money(po.totalInclusiveValue, po.currency) : '') +
-    item('Bill to', po.billingAddress) + item('Ship to', po.shipTo) +
-    item('Vendor address', po.vendorAddress) + item('Remarks', po.remarks) +
-  '</div>';
+    item('Bill to', po.billingAddress) + item('Ship to', po.shipTo) + item('Vendor address', po.vendorAddress) +
+    item('PO remarks', po.remarks);
+  return '<div class="mir-po-summary">' +
+      chip('PO date', dateIN(po.poDate)) + chip('Tax', tax ? tax.label : po.taxTypeRaw) +
+      chip('GST', po.gstRate ? Number(po.gstRate) + '%' : '') + chip('Currency', po.currency) +
+      chip('Value incl. GST', po.totalInclusiveValue ? money(po.totalInclusiveValue, po.currency) : '') +
+    '</div>' +
+    (more ? '<details class="mir-po-more"><summary>More PO details (terms, addresses, remarks)</summary><div class="mir-po-facts">' + more + '</div></details>' : '');
 }
 
 async function openPo(poId, el) {
@@ -258,12 +288,15 @@ function addLines(po, lines) {
       qty_reason: '', qty_note: '', rate_reason: '', rate_note: '', reject_reason: '', reject_note: '', gst_reason: '', gst_note: '',
     } });
   });
-  document.getElementById('invoiceCard').hidden = false;
-  document.getElementById('linesCard').hidden = false;
+  showEntrySections(true);
   document.querySelectorAll('[data-currency]').forEach(el => { el.textContent = mirCurrency(); });
   renderVendor();
   renderLines();
   schedulePreview();
+  updateProgress(S.preview);
+  const first = document.querySelector('[data-idx="0"][data-key="qty_received"]');
+  document.getElementById('invoiceCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if (first && !first.value) setTimeout(() => document.getElementById('invoiceNo').focus({ preventScroll: true }), 400);
 }
 
 function renderVendor() {
@@ -328,6 +361,8 @@ function renderLines() {
     const unit = l.uom || 'unit';
     const cur = l.currency || 'INR';
     const input = (key, attrs) => '<input class="form-control" data-idx="' + i + '" data-key="' + key + '" value="' + escapeHtml(ln.v[key]) + '" ' + (attrs || '') + '>';
+    const gstSelect = '<select class="form-control" data-idx="' + i + '" data-key="gst_rate"><option value="">Choose</option>' +
+      slabs.map(s => '<option value="' + s + '"' + (ln.v.gst_rate !== '' && String(Number(ln.v.gst_rate)) === String(Number(s)) ? ' selected' : '') + '>' + s + '%</option>').join('') + '</select>';
     return '<div class="mir-line" data-line="' + i + '">' +
       '<div class="mir-line-head">' +
         '<div class="mir-line-title"><span class="mir-line-no">' + (i + 1) + '</span><div>' +
@@ -338,20 +373,28 @@ function renderLines() {
       '</div>' +
       '<div class="mir-line-facts">' +
         fact('Ordered', qty(l.qtyOrdered) + ' ' + unit) + fact('Received so far', qty(l.accepted) + ' ' + unit) +
-        fact('Open', '<b>' + qty(l.openQty) + ' ' + escapeHtml(unit) + '</b>', true) + fact('PO rate', money(l.rate, cur) + ' / ' + unit) +
+        fact('Still open', '<b>' + qty(l.openQty) + ' ' + escapeHtml(unit) + '</b>', true) + fact('PO rate', money(l.rate, cur) + ' / ' + unit) +
         (l.poGstRate ? fact('PO GST', Number(l.poGstRate) + '%') : '') + (l.deliveryDate ? fact('Due', dateIN(l.deliveryDate)) : '') +
       '</div>' +
-      '<div class="mir-line-grid">' +
-        field('Qty received (' + escapeHtml(unit) + ')' + req(), input('qty_received', 'inputmode="decimal" autocomplete="off"')) +
-        field('Qty rejected (' + escapeHtml(unit) + ')', input('qty_rejected', 'inputmode="decimal" placeholder="0" autocomplete="off"')) +
-        field('Rate on invoice (' + escapeHtml(cur) + ' / ' + escapeHtml(unit) + ')' + req(), input('rate', 'inputmode="decimal" autocomplete="off"')) +
-        field('Discount (' + escapeHtml(cur) + ')', input('discount', 'inputmode="decimal" placeholder="0" autocomplete="off"')) +
-        field('GST %' + req(), '<select class="form-control" data-idx="' + i + '" data-key="gst_rate"><option value="">Choose</option>' +
-          slabs.map(s => '<option value="' + s + '"' + (ln.v.gst_rate !== '' && String(Number(ln.v.gst_rate)) === String(Number(s)) ? ' selected' : '') + '>' + s + '%</option>').join('') + '</select>') +
-        field('Material category' + req(), categoryControl(i, ln)) +
+      '<div class="mir-line-group"><div class="mir-line-group-title">1. What came in</div><div class="mir-line-grid">' +
+        field('Qty received (' + escapeHtml(unit) + ')' + req(), input('qty_received', 'inputmode="decimal" autocomplete="off" placeholder="As weighed / counted"') +
+          '<button type="button" class="mir-fill" data-fill="' + i + '">Full open qty: ' + escapeHtml(qty(l.openQty)) + ' ' + escapeHtml(unit) + '</button>') +
+        field('Qty rejected (' + escapeHtml(unit) + ')', input('qty_rejected', 'inputmode="decimal" placeholder="0" autocomplete="off"') +
+          '<span class="mir-hint">Leave 0 if nothing was rejected.</span>') +
+      '</div></div>' +
+      '<div class="mir-line-group"><div class="mir-line-group-title">2. What the invoice charges</div><div class="mir-line-grid">' +
+        field('Rate (' + escapeHtml(cur) + ' / ' + escapeHtml(unit) + ')' + req(), input('rate', 'inputmode="decimal" autocomplete="off"') +
+          '<span class="mir-hint">Filled from the PO: ' + escapeHtml(money(l.rate, cur)) + '. Change it if the invoice differs.</span>') +
+        field('Discount (' + escapeHtml(cur) + ')', input('discount', 'inputmode="decimal" placeholder="0" autocomplete="off"') +
+          '<span class="mir-hint">Amount off this line, if any.</span>') +
+        field('GST %' + req(), gstSelect + (l.poGstRate ? '<span class="mir-hint">The PO implies ' + Number(l.poGstRate) + '%.</span>' : '')) +
+      '</div></div>' +
+      '<div class="mir-line-group"><div class="mir-line-group-title">3. Classification</div><div class="mir-line-grid">' +
+        field('Material category' + req(), categoryControl(i, ln) +
+          (l.suggestedCategory ? '<span class="mir-hint">Suggested from the material list.</span>' : '')) +
         field('Sub-category', subcategoryControl(i, ln)) +
-        field('Department use', '<input class="form-control" data-idx="' + i + '" data-key="dept_use" maxlength="60" value="' + escapeHtml(ln.v.dept_use) + '">') +
-      '</div>' +
+        field('Department use', '<input class="form-control" data-idx="' + i + '" data-key="dept_use" maxlength="60" value="' + escapeHtml(ln.v.dept_use) + '" placeholder="e.g. Mixing, Calendering">') +
+      '</div></div>' +
       '<div class="mir-line-figures" id="fig-' + i + '"></div>' +
       '<div class="mir-diffs" id="reasons-' + i + '"></div>' +
     '</div>';
@@ -367,13 +410,28 @@ function renderLines() {
       schedulePreview();
     });
   });
+  area.querySelectorAll('[data-fill]').forEach(b => { b.onclick = () => {
+    const i = Number(b.dataset.fill);
+    const ln = S.lines[i];
+    ln.v.qty_received = trimZeros(ln.line.openQty);
+    const input = area.querySelector('[data-idx="' + i + '"][data-key="qty_received"]');
+    input.value = ln.v.qty_received;
+    input.focus();
+    schedulePreview();
+  }; });
   area.querySelectorAll('[data-remove]').forEach(b => { b.onclick = () => {
     S.lines.splice(Number(b.dataset.remove), 1);
-    if (!S.lines.length) { S.vendor = null; S.vendorFromPo = false; document.getElementById('invoiceCard').hidden = true; document.getElementById('linesCard').hidden = true; }
+    if (!S.lines.length) { S.vendor = null; S.vendorFromPo = false; showEntrySections(false); }
     renderVendor();
     renderLines();
     schedulePreview();
+    updateProgress(S.preview);
   }; });
+}
+
+/** Steps 3 and 4 and the save bar appear once a PO line is picked. */
+function showEntrySections(on) {
+  ['invoiceCard', 'linesCard', 'saveBar'].forEach(id => { document.getElementById(id).hidden = !on; });
 }
 
 function fact(label, valueHtml, strong) {
@@ -458,7 +516,7 @@ function paintPreview(p) {
     tile('Invoice total', money(p.invoiceTotal, cur), '') +
     (diff !== null ? tile('Difference', money(diff.toFixed(2), cur), off ? 'is-bad' : 'is-ok') : '');
   showErrors(p.errors);
-  document.getElementById('postBtn').disabled = !p.ok;
+  updateProgress(p);
   const open = p.mismatches.length;
   document.getElementById('postHint').textContent = p.ok
     ? (open ? open + ' difference' + (open === 1 ? '' : 's') + ' will be saved with the reasons chosen, for the purchase team to follow up.' : 'Everything agrees with the PO.')
@@ -551,45 +609,81 @@ function headerDiff(kind, rowId, p) {
 }
 
 const FIELD_LABELS = {
-  plant: 'Receiving plant', mir_date: 'MIR date', invoice_no: 'Invoice number', invoice_date: 'Invoice date',
-  invoice_total: 'Invoice total', tcs_amount: 'TCS', tax_type: 'Tax type', vendor_id: 'Vendor', lines: 'Lines',
-  sap_grn_number: 'SAP GRN number',
-  tax_type_reason: 'Tax type reason', tax_type_note: 'Tax type note', invoice_total_reason: 'Invoice total reason',
-  invoice_total_note: 'Invoice total note',
-  qty_received: 'qty received', qty_rejected: 'qty rejected', rate: 'rate', discount: 'discount',
-  gst_rate: 'GST %', po_line_id: 'PO line', material_category: 'material category', material_subcategory: 'sub-category',
-  qty_reason: 'quantity reason', qty_note: 'quantity note', rate_reason: 'rate reason', rate_note: 'rate note',
-  reject_reason: 'rejection reason', reject_note: 'rejection note', gst_reason: 'GST reason', gst_note: 'GST note',
+  plant: 'the receiving plant', mir_date: 'the MIR date', invoice_no: 'the invoice number', invoice_date: 'the invoice date',
+  invoice_total: 'the invoice grand total', tcs_amount: 'TCS', tax_type: 'the tax type', vendor_id: 'the vendor', lines: 'Lines',
+  sap_grn_number: 'the SAP GRN number',
+  tax_type_reason: 'the tax type difference', tax_type_note: 'the note on the tax type difference',
+  invoice_total_reason: 'the invoice total difference', invoice_total_note: 'the note on the invoice total difference',
+  qty_received: 'the qty received', qty_rejected: 'the qty rejected', rate: 'the invoice rate', discount: 'the discount',
+  gst_rate: 'the GST %', po_line_id: 'PO line', material_category: 'the material category', material_subcategory: 'the sub-category',
+  qty_reason: 'the quantity difference', qty_note: 'the note on the quantity difference',
+  rate_reason: 'the rate difference', rate_note: 'the note on the rate difference',
+  reject_reason: 'the rejected quantity', reject_note: 'the note on the rejected quantity',
+  gst_reason: 'the GST difference', gst_note: 'the note on the GST difference',
 };
 
 function fieldLabel(field) {
   const m = /^lines\.(\d+)\.(\w+)$/.exec(field);
   if (m) {
     const ln = S.lines[Number(m[1])];
-    return 'Line ' + (Number(m[1]) + 1) + (ln ? ' (PO ' + ln.line.poNumber + ' #' + ln.line.lineNo + ')' : '') + ', ' + (FIELD_LABELS[m[2]] || m[2]);
+    const what = FIELD_LABELS[m[2]] || m[2];
+    return what + ' on line ' + (Number(m[1]) + 1) + (ln ? ' (' + ln.line.description.slice(0, 40) + ')' : '');
   }
-  return FIELD_LABELS[field] || field;
+  return (FIELD_LABELS[field] || field).toLowerCase();
 }
 
 function showErrors(errors) {
   document.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
-  // Before the first Save, "Required." on an untouched field is noise, not news.
-  const quiet = e => e.message === 'Required.' || e.message === 'Choose a reason.';
-  const shown = S.triedToPost ? errors : errors.filter(e => !quiet(e));
-  document.getElementById('formErrors').innerHTML = shown.map(e =>
-    '<li>' + (e.field ? '<b>' + escapeHtml(fieldLabel(e.field)) + ':</b> ' : '') + escapeHtml(e.message) + '</li>').join('');
-  errors.forEach(e => {
-    const m = /^lines\.(\d+)\.(\w+)$/.exec(e.field || '');
-    const el = m
-      ? document.querySelector('[data-idx="' + m[1] + '"][data-key="' + m[2] + '"], [data-reason-idx="' + m[1] + '"][data-reason-key="' + m[2] + '"]')
-      : document.querySelector('[data-field="' + e.field + '"], [data-h="' + e.field + '"]');
-    if (el && (S.triedToPost || !quiet(e))) el.classList.add('is-invalid');
-  });
+  // "Still to do" is always shown, as a plain checklist, so a first-time
+  // user can see why Save will not go through yet. Fields turn red only
+  // after the first Save attempt - before that an empty field is not a
+  // mistake, just not done yet.
+  const box = document.getElementById('todoBox');
+  box.innerHTML = errors.length
+    ? '<div class="mir-todo-head' + (S.triedToPost ? ' is-bad' : '') + '">Still to do before saving (' + errors.length + ')</div><ul>' +
+      errors.map((e, n) => '<li><button type="button" class="mir-todo-item" data-todo="' + n + '">' + escapeHtml(todoText(e)) + '</button></li>').join('') + '</ul>'
+    : '<div class="mir-todo-head is-ok">Everything needed is filled in. Check the figures and save.</div>';
+  box.querySelectorAll('[data-todo]').forEach(b => { b.onclick = () => focusField(errors[Number(b.dataset.todo)]); });
+  document.getElementById('formErrors').innerHTML = '';
+  if (S.triedToPost) errors.forEach(e => { const el = fieldEl(e); if (el) el.classList.add('is-invalid'); });
+}
+
+function todoText(e) {
+  const label = fieldLabel(e.field || '');
+  if (e.message === 'Required.') return 'Enter ' + label;
+  if (e.message === 'Choose a reason.') return 'Pick a reason for ' + label;
+  if (e.message === 'This reason needs a note.') return 'Write ' + label + ' (the reason chosen needs one)';
+  return (e.field ? label + ': ' : '') + e.message;
+}
+
+function fieldEl(e) {
+  const m = /^lines\.(\d+)\.(\w+)$/.exec(e.field || '');
+  return m
+    ? document.querySelector('[data-idx="' + m[1] + '"][data-key="' + m[2] + '"], [data-reason-idx="' + m[1] + '"][data-reason-key="' + m[2] + '"]')
+    : document.querySelector('[data-field="' + e.field + '"], [data-h="' + e.field + '"]');
+}
+
+function focusField(e) {
+  const el = fieldEl(e);
+  if (!el) return;
+  const details = el.closest('details');
+  if (details) details.open = true;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(() => el.focus({ preventScroll: true }), 300);
 }
 
 async function postMir() {
   S.triedToPost = true;
   const btn = document.getElementById('postBtn');
+  if (!S.preview || !S.preview.ok) {
+    // Not ready: say what is missing and go to the first thing, rather than
+    // a greyed-out button that gives no reason.
+    if (S.preview) {
+      showErrors(S.preview.errors);
+      if (S.preview.errors.length) focusField(S.preview.errors[0]);
+    }
+    return;
+  }
   btn.disabled = true;
   try {
     const mir = await apiMir('/entries/new', { method: 'POST', body: payload() });
@@ -599,12 +693,13 @@ async function postMir() {
       (n ? ' - ' + n + ' difference' + (n === 1 ? '' : 's') + ' sent to Open mismatches.' : '.');
     document.getElementById('postedBanner').hidden = false;
     document.getElementById('mirForm').hidden = true;
+    document.getElementById('mirProgress').hidden = true;
     refreshMismatchCount();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (e) {
-    showErrors(e.errors && e.errors.length ? e.errors : [{ field: '', message: e.message }]);
     btn.disabled = false;
     await runPreview();
+    showErrors(e.errors && e.errors.length ? e.errors : [{ field: '', message: e.message }]);
   }
 }
 
@@ -612,13 +707,14 @@ function resetForm() {
   S.lines = []; S.vendor = null; S.vendorFromPo = false; S.taxTouched = false; S.header = {}; S.preview = null; S.triedToPost = false;
   document.getElementById('mirForm').reset();
   document.getElementById('mirDate').value = META.today;
-  ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox', 'noticeBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
+  ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox', 'noticeBox', 'todoBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
   ['taxReasonRow', 'totalReasonRow'].forEach(id => { const r = document.getElementById(id); r.hidden = true; r.innerHTML = ''; r.dataset.sig = ''; });
-  document.getElementById('invoiceCard').hidden = true;
-  document.getElementById('linesCard').hidden = true;
+  showEntrySections(false);
   document.getElementById('postedBanner').hidden = true;
   document.getElementById('mirForm').hidden = false;
-  document.getElementById('postBtn').disabled = true;
+  document.getElementById('mirProgress').hidden = false;
+  document.getElementById('postBtn').disabled = false;
+  updateProgress(null);
   document.getElementById('poSearch').focus();
 }
 

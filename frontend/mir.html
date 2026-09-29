@@ -63,10 +63,18 @@
         <button type="button" class="btn btn-navy" id="newAnotherBtn">Enter another MIR</button>
       </div>
 
+      <ol class="mir-progress" id="mirProgress" aria-label="Progress">
+        <li data-step="1"><button type="button" data-goto="stepReceipt"><span class="mir-progress-dot">1</span><span>Receipt</span></button></li>
+        <li data-step="2"><button type="button" data-goto="stepPo"><span class="mir-progress-dot">2</span><span>Purchase order</span></button></li>
+        <li data-step="3"><button type="button" data-goto="invoiceCard"><span class="mir-progress-dot">3</span><span>Invoice</span></button></li>
+        <li data-step="4"><button type="button" data-goto="linesCard"><span class="mir-progress-dot">4</span><span>What arrived</span></button></li>
+      </ol>
+
       <form id="mirForm" novalidate>
-        <section class="mir-panel">
+        <section class="mir-panel" id="stepReceipt">
           <h3 class="mir-panel-title"><span class="mir-step">1</span> Receipt</h3>
-          <div class="mir-grid">
+          <p class="mir-help">Where the goods were received and on which day. Both are filled in for you; change them only if needed.</p>
+          <div class="mir-grid mir-grid-2">
             <div class="form-group">
               <label class="form-label" for="plantSel">Receiving plant <span class="req-mark">*</span></label>
               <select class="form-control" id="plantSel" data-field="plant"></select>
@@ -74,14 +82,15 @@
             <div class="form-group">
               <label class="form-label" for="mirDate">MIR date <span class="req-mark">*</span></label>
               <input class="form-control" type="date" id="mirDate" data-field="mir_date">
+              <span class="mir-hint">The day the material came in. Cannot be a future date.</span>
             </div>
           </div>
         </section>
 
-        <section class="mir-panel">
-          <h3 class="mir-panel-title"><span class="mir-step">2</span> Find the PO</h3>
-          <p class="mir-help">Type the PO number. Open POs of every plant are listed; open one and tick the lines this delivery covers.
-            One MIR is one vendor's invoice, so lines can come from several POs of the same vendor.</p>
+        <section class="mir-panel" id="stepPo">
+          <h3 class="mir-panel-title"><span class="mir-step">2</span> Purchase order</h3>
+          <p class="mir-help">Type the PO number printed on the delivery papers, open the PO and tick the lines that arrived.
+            Lines from several POs can go on one MIR only if they are from the same vendor.</p>
           <div class="mir-search">
             <input class="form-control" type="search" id="poSearch" placeholder="PO number, e.g. 3000001104" autocomplete="off" inputmode="numeric" aria-label="Search open POs by PO number">
           </div>
@@ -90,23 +99,21 @@
 
         <section class="mir-panel" id="invoiceCard" hidden>
           <h3 class="mir-panel-title"><span class="mir-step">3</span> Invoice</h3>
+          <p class="mir-help">Copy these from the vendor's invoice, exactly as printed.</p>
           <div class="mir-vendor" id="vendorBox"></div>
           <div class="mir-grid">
             <div class="form-group">
               <label class="form-label" for="invoiceNo">Invoice number <span class="req-mark">*</span></label>
-              <input class="form-control" id="invoiceNo" data-field="invoice_no" maxlength="60" autocomplete="off">
+              <input class="form-control" id="invoiceNo" data-field="invoice_no" maxlength="60" autocomplete="off" placeholder="e.g. GST/26-27/0421">
             </div>
             <div class="form-group">
               <label class="form-label" for="invoiceDate">Invoice date <span class="req-mark">*</span></label>
               <input class="form-control" type="date" id="invoiceDate" data-field="invoice_date">
             </div>
             <div class="form-group">
-              <label class="form-label" for="invoiceTotal">Invoice total, incl. GST (<span data-currency>INR</span>) <span class="req-mark">*</span></label>
-              <input class="form-control" id="invoiceTotal" data-field="invoice_total" inputmode="decimal" autocomplete="off">
-            </div>
-            <div class="form-group">
-              <label class="form-label" for="tcsAmount">TCS (<span data-currency>INR</span>)</label>
-              <input class="form-control" id="tcsAmount" data-field="tcs_amount" inputmode="decimal" placeholder="0">
+              <label class="form-label" for="invoiceTotal">Invoice grand total (<span data-currency>INR</span>) <span class="req-mark">*</span></label>
+              <input class="form-control" id="invoiceTotal" data-field="invoice_total" inputmode="decimal" autocomplete="off" placeholder="e.g. 283200.00">
+              <span class="mir-hint">The final amount payable, including GST and TCS.</span>
             </div>
             <div class="form-group">
               <label class="form-label" for="taxType">Tax type <span class="req-mark">*</span></label>
@@ -114,18 +121,20 @@
               <span class="mir-hint" id="taxTypeHint"></span>
             </div>
             <div class="form-group">
-              <label class="form-label" for="sapGrnNo">SAP GRN number</label>
-              <input class="form-control" id="sapGrnNo" data-field="sap_grn_number" maxlength="50" autocomplete="off" placeholder="Once booked in SAP">
+              <label class="form-label" for="tcsAmount">TCS (<span data-currency>INR</span>)</label>
+              <input class="form-control" id="tcsAmount" data-field="tcs_amount" inputmode="decimal" placeholder="0">
+              <span class="mir-hint">Only if the invoice shows TCS.</span>
             </div>
           </div>
           <div id="noticeBox" class="mir-notices" aria-live="polite"></div>
           <div id="taxReasonRow" hidden></div>
           <details class="mir-more">
-            <summary>Transport and gate details (optional)</summary>
+            <summary>Optional details: SAP GRN, vehicle, challan, e-way bill, remarks</summary>
             <div class="mir-grid">
+              <div class="form-group"><label class="form-label" for="sapGrnNo">SAP GRN number</label><input class="form-control" id="sapGrnNo" data-field="sap_grn_number" maxlength="50" autocomplete="off" placeholder="Once booked in SAP"></div>
+              <div class="form-group"><label class="form-label" for="vehicleNo">Vehicle no.</label><input class="form-control" id="vehicleNo" maxlength="30" placeholder="e.g. DN09 AB 1234"></div>
               <div class="form-group"><label class="form-label" for="challanNo">Challan no.</label><input class="form-control" id="challanNo" maxlength="60"></div>
               <div class="form-group"><label class="form-label" for="lrNo">LR no.</label><input class="form-control" id="lrNo" maxlength="60"></div>
-              <div class="form-group"><label class="form-label" for="vehicleNo">Vehicle no.</label><input class="form-control" id="vehicleNo" maxlength="30"></div>
               <div class="form-group"><label class="form-label" for="ewayBillNo">E-way bill no.</label><input class="form-control" id="ewayBillNo" maxlength="30"></div>
               <div class="form-group"><label class="form-label" for="gateEntryNo">Gate entry no.</label><input class="form-control" id="gateEntryNo" maxlength="40"></div>
               <div class="form-group"><label class="form-label" for="weighbridgeSlipNo">Weighbridge slip no.</label><input class="form-control" id="weighbridgeSlipNo" maxlength="40"></div>
@@ -135,17 +144,24 @@
         </section>
 
         <section class="mir-panel" id="linesCard" hidden>
-          <h3 class="mir-panel-title"><span class="mir-step">4</span> Lines received</h3>
-          <p class="mir-help">Quantities are in each PO line's own unit. Where a figure differs from the PO, a box appears under the line asking why; pick the closest reason.</p>
+          <h3 class="mir-panel-title"><span class="mir-step">4</span> What arrived</h3>
+          <p class="mir-help">For each line, enter what came in and what the invoice charges. Quantities are in the PO line's own unit.
+            If a figure differs from the PO, a box opens under the line - pick the closest reason and the MIR can still be saved.</p>
           <div id="linesArea"></div>
           <div id="totalReasonRow" hidden></div>
-          <div class="mir-totals" id="totalsBox"></div>
-          <ul class="mir-errors" id="formErrors" role="alert"></ul>
-          <div class="mir-actions">
-            <button type="submit" class="btn btn-primary" id="postBtn" disabled>Save MIR</button>
-            <span class="mir-hint" id="postHint"></span>
-          </div>
         </section>
+
+        <div class="mir-savebar" id="saveBar" hidden>
+          <div class="mir-todo" id="todoBox" aria-live="polite"></div>
+          <div class="mir-savebar-row">
+            <div class="mir-totals" id="totalsBox"></div>
+            <div class="mir-savebar-action">
+              <button type="submit" class="btn btn-primary" id="postBtn">Save MIR</button>
+              <span class="mir-hint" id="postHint"></span>
+            </div>
+          </div>
+          <ul class="mir-errors" id="formErrors" role="alert"></ul>
+        </div>
       </form>
     </div>
 

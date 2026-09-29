@@ -940,7 +940,8 @@ the quantity received and rejected (in the PO line's own unit), the invoice rate
 per that unit), discount, GST %, the **material category** (required) and sub-category (optional) from
 `MaterialCategoryReference`'s list - prefilled by `mir_service.suggested_categories()`, the PO line's
 item code against the list's SAP item code first, then its description - and department use. Required
-fields carry a red asterisk. Freight/packing, rolls and batch are not on the form (owner, 2026-09-29);
+fields carry a red asterisk, each figure has a one-line hint, optional fields (SAP GRN, transport,
+remarks) are folded into one section, and a sticky save bar lists what is still missing. Freight/packing, rolls and batch are not on the form (owner, 2026-09-29);
 their `MirLine` columns stay, at 0 / blank. The page sends the form to `preview` on every change and
 paints what comes back; it never computes a figure itself. Saving runs the same check again inside the
 transaction.
