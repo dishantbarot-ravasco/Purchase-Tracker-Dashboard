@@ -3,7 +3,8 @@ apps/services/mir_service.py - MIR entry's rules, on real Postgres.
 
 Each class is one rule of the design (2026-09-28): the quantity and rate
 mismatches that need a reason, partial and split deliveries, rejected
-quantity, the cross-plant duplicate-invoice refusal, receiving another
+quantity and its reason, an invoice number that may repeat (with a notice), the
+GST rate against the PO's, the material category, receiving another
 plant's PO, one vendor per MIR, the date and number checks, numbering,
 cancelling, and two clerks posting at the same moment.
 """
@@ -59,7 +60,8 @@ def _payload(lines, *, plant="hrs", invoice_no="INV-42", invoice_total=None, **e
 
 
 def _ln(line, qty="100", rate=None, gst="18", **extra):
-    return {"po_line_id": line.id, "qty_received": qty, "rate": str(rate if rate is not None else line.rate), "gst_rate": gst, **extra}
+    return {"po_line_id": line.id, "qty_received": qty, "rate": str(rate if rate is not None else line.rate), "gst_rate": gst,
+            "material_category": "Carbon Black", **extra}
 
 
 def _fields(exc):
@@ -168,14 +170,28 @@ class TestQuantity:
 
     def test_rejected_quantity_does_not_count_as_received(self, user):
         line = _line(_po())
-        mir = mir_service.post_mir(_payload([_ln(line, qty="100", qty_rejected="10", qty_reason="QC_REJECTED")]), user)
-        assert mir.mismatches.get().actual == Decimal("90")
+        mir = mir_service.post_mir(_payload([_ln(line, qty="100", qty_rejected="10", qty_reason="QC_REJECTED",
+                                                 reject_reason="REJ_QUALITY")]), user)
+        assert mir.mismatches.get(kind="QTY_SHORT").actual == Decimal("90")
+        rejected = mir.mismatches.get(kind="QTY_REJECTED")
+        assert rejected.actual == Decimal("10") and rejected.reason.code == "REJ_QUALITY" and rejected.status == "OPEN"
         assert mir_service.accepted_by_line([line.id])[line.id] == Decimal("90")
 
     def test_nothing_accepted_is_still_a_receipt(self, user):
         line = _line(_po())
-        mir_service.post_mir(_payload([_ln(line, qty="100", qty_rejected="100", qty_reason="QC_REJECTED")]), user)
+        mir_service.post_mir(_payload([_ln(line, qty="100", qty_rejected="100", qty_reason="QC_REJECTED",
+                                          reject_reason="REJ_DAMAGED")]), user)
         assert mir_service.accepted_by_line([line.id])[line.id] == Decimal("0")
+
+    def test_a_rejected_quantity_needs_a_rejection_reason(self, user):
+        line = _line(_po())
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line, qty="100", qty_rejected="10", qty_reason="QC_REJECTED")]), user)
+        assert "lines.0.reject_reason" in _fields(exc)
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line, qty="100", qty_rejected="10", qty_reason="QC_REJECTED",
+                                               reject_reason="PARTIAL_BALANCE_DUE")]), user)
+        assert "lines.0.reject_reason" in _fields(exc)
 
     @pytest.mark.parametrize("qty, rejected, field", [
         ("0", None, "qty_received"), ("-5", None, "qty_received"), ("abc", None, "qty_received"),
@@ -239,15 +255,27 @@ class TestInvoiceTotal:
 
 
 @pytest.mark.django_db
-class TestDuplicateInvoice:
-    def test_the_same_invoice_is_refused_at_any_plant_naming_where_it_is(self, user):
+class TestRepeatedInvoice:
+    """The invoice number is required but not unique (owner, 2026-09-29):
+    one invoice can arrive as several deliveries, each its own MIR, as the
+    Drive MIR files show (one BST invoice on five HRS MIRs)."""
+
+    def test_the_same_invoice_is_saved_again_with_a_notice_naming_the_earlier_mir(self, user):
         line_a = _line(_po(number="1000009001"))
         line_b = _line(_po(plant="achhad", number="1100009001", vendor=Vendor.objects.get(gstin=MH)))
         first = mir_service.post_mir(_payload([_ln(line_a)], invoice_no="INV-0042"), user)
+        body = _payload([_ln(line_b)], plant="vapi", invoice_no="inv - 42")
+        preview = mir_service.evaluate(body)
+        assert preview["ok"] is True
+        assert len(preview["notices"]) == 1 and first.mir_no in preview["notices"][0]
+        second = mir_service.post_mir(body, user)
+        assert second.mir_no != first.mir_no
+
+    def test_the_invoice_number_is_required(self, user):
+        line = _line(_po())
         with pytest.raises(MirValidationError) as exc:
-            mir_service.post_mir(_payload([_ln(line_b)], plant="vapi", invoice_no="inv - 42"), user)
-        message = next(e["message"] for e in exc.value.errors if e["field"] == "invoice_no")
-        assert "MIR already created at HRS" in message and first.mir_no in message
+            mir_service.post_mir(_payload([_ln(line)], invoice_no="  ", invoice_total="1"), user)
+        assert "invoice_no" in _fields(exc)
 
     def test_another_vendor_may_use_the_same_invoice_number(self, user):
         line_a = _line(_po(number="1000009001"))
@@ -467,17 +495,15 @@ def _in_parallel(fn_a, fn_b):
 
 @pytest.mark.django_db(transaction=True)
 class TestConcurrentPosting:
-    def test_one_invoice_posted_twice_at_once_is_saved_once(self):
+    def test_two_mirs_posted_at_once_at_one_plant_get_different_numbers(self):
         user = make_user(email="c1@ravasco.com", role="editor")
         line = _line(_po(lines=((Decimal("100"), Decimal("50")), (Decimal("100"), Decimal("50")))))
         po = line.purchase_order
         a = _payload([_ln(_line(po, 1))])
-        b = _payload([_ln(_line(po, 2))], plant="vapi")
+        b = _payload([_ln(_line(po, 2))])
         results = _in_parallel(lambda: mir_service.post_mir(a, user), lambda: mir_service.post_mir(b, user))
-        saved = [r for r in results if isinstance(r, Mir)]
-        refused = [r for r in results if isinstance(r, MirValidationError)]
-        assert len(saved) == 1 and len(refused) == 1, results
-        assert Mir.objects.count() == 1
+        assert all(isinstance(r, Mir) for r in results), results
+        assert sorted(r.seq for r in results) == [1, 2]
 
     def test_one_line_received_in_full_twice_at_once_is_received_once(self):
         user = make_user(email="c2@ravasco.com", role="editor")
@@ -488,3 +514,78 @@ class TestConcurrentPosting:
         assert sum(isinstance(r, Mir) for r in results) == 1, results
         assert mir_service.accepted_by_line([line.id])[line.id] == Decimal("100")
         assert not MirMismatch.objects.exists()
+
+
+@pytest.mark.django_db
+class TestGstRate:
+    def _po_at_18(self):
+        po = _po()
+        po.total_value, po.total_inclusive_value = Decimal("5000"), Decimal("5900")
+        po.save()
+        return _line(po)
+
+    def test_a_gst_rate_other_than_the_pos_needs_a_reason(self, user):
+        line = self._po_at_18()
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line, gst="12")]), user)
+        assert "lines.0.gst_reason" in _fields(exc)
+        mir = mir_service.post_mir(_payload([_ln(line, gst="12", gst_reason="GST_HSN_DIFFERENT")]), user)
+        mm = mir.mismatches.get()
+        assert (mm.kind, mm.expected, mm.actual) == ("GST_RATE", Decimal("18"), Decimal("12"))
+
+    def test_the_pos_own_rate_is_no_mismatch(self, user):
+        mir = mir_service.post_mir(_payload([_ln(self._po_at_18(), gst="18")]), user)
+        assert not mir.mismatches.exists()
+
+    def test_a_po_without_both_totals_is_not_compared(self, user):
+        mir = mir_service.post_mir(_payload([_ln(_line(_po()), gst="5")]), user)
+        assert not mir.mismatches.exists()
+
+
+@pytest.mark.django_db
+class TestMaterialCategory:
+    def _reference(self):
+        from apps.core.models import MaterialCategoryReference
+        MaterialCategoryReference.objects.create(description="Material 1", normalized_description="material 1",
+                                                 category="Carbon Black", subcategory="N330", sap_item_code="")
+        MaterialCategoryReference.objects.create(description="Zinc", normalized_description="zinc",
+                                                 category="Rubber Chemicals & Additives", subcategory="Activator",
+                                                 sap_item_code="RM0001")
+
+    def test_category_is_required(self, user):
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(_line(_po()), material_category="")], invoice_total="1"), user)
+        assert "lines.0.material_category" in _fields(exc)
+
+    def test_the_category_and_sub_category_must_come_from_the_list(self, user):
+        self._reference()
+        line = _line(_po())
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line, material_category="Carbon")], invoice_total="1"), user)
+        assert "lines.0.material_category" in _fields(exc)
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line, material_subcategory="Activator")], invoice_total="1"), user)
+        assert "lines.0.material_subcategory" in _fields(exc)
+        mir = mir_service.post_mir(_payload([_ln(line, material_subcategory="N330")]), user)
+        saved = mir.lines.get()
+        assert (saved.material_category, saved.material_subcategory) == ("Carbon Black", "N330")
+
+    def test_suggestions_by_item_code_then_description(self, user):
+        self._reference()
+        po = _po(lines=((Decimal("1"), Decimal("1")), (Decimal("1"), Decimal("1")), (Decimal("1"), Decimal("1"))))
+        first, second, third = (_line(po, n) for n in (1, 2, 3))
+        second.item_code = "RM0001"
+        second.save()
+        got = mir_service.suggested_categories([first, second, third])
+        assert got[first.id] == ("Carbon Black", "N330")
+        assert got[second.id] == ("Rubber Chemicals & Additives", "Activator")
+        assert got[third.id] == ("", "")
+
+
+@pytest.mark.django_db
+class TestSapGrnNumber:
+    def test_it_is_optional_and_stored(self, user):
+        line = _line(_po())
+        assert mir_service.post_mir(_payload([_ln(line, qty="50", qty_reason="PARTIAL_BALANCE_DUE")]), user).sap_grn_number == ""
+        mir = mir_service.post_mir(_payload([_ln(line, qty="50")], invoice_no="INV-43", sap_grn_number="5000123456"), user)
+        assert mir.sap_grn_number == "5000123456"

@@ -118,6 +118,14 @@ class TestProjection:
         assert po.vendor.gstin == "27AAACP5506B1ZW" and po.tax_type == "IGST" and po.is_active
         assert [(ln.line_no, ln.uom, ln.uom_raw) for ln in _lines()] == [(1, "KG", "Kgs"), (2, "L", "Ltr")]
 
+    def test_every_po_field_the_mir_form_shows_is_projected(self, tmp_path):
+        _sync(tmp_path, [_row("1", "SBR 1502", 1000, 100, **{"Billing Address": "HRS, Silvassa", "ShipTo": "Vapi store"})])
+        po = PurchaseOrder.objects.get(plant__code="hrs", po_number="3000009001")
+        assert (po.billing_address, po.ship_to, po.payment_terms, po.incoterms) == ("HRS, Silvassa", "Vapi store", "60 Days", "DDP")
+        assert (po.vendor.address, po.vendor.email, po.vendor.vendor_code) == ("Mumbai", "a@prime.example", "300001620")
+        line = _lines()[0]
+        assert (line.item_code, line.hsn, line.uom, line.rate, line.delivery_date.isoformat()) == ("1", "4002", "KG", Decimal("100"), "2026-05-15")
+
     def test_a_second_run_writes_nothing(self, tmp_path):
         _sync(tmp_path, _three_lines())
         result = project_plant_orders("hrs")

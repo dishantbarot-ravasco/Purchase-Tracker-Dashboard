@@ -257,8 +257,12 @@ Read the linked section before breaking any of these. Each is there because it w
   [MIR entry](docs/api-and-features.md#mir-entry-2026-09-28)
 - `mir_service.evaluate()` is the only place a MIR is checked and priced; the page previews through it
   and never computes a figure. Received-so-far is summed from POSTED lines, never stored.
-- One posted MIR per vendor invoice at ANY plant (DB constraint too); any plant may receive any
-  plant's open PO (the PO lookups are cross-plant on purpose); posting is scoped to the receiving plant.
+- The invoice number is required but NOT unique (owner, 2026-09-29): one invoice can be several
+  deliveries, so earlier MIRs of it come back as a notice, never an error - don't add a uniqueness
+  check. Any plant may receive any plant's open PO (the PO lookups are cross-plant on purpose, and search
+  by PO number only); posting is scoped to the receiving plant.
+- MIR reasons live only in migration `0068`'s `REASONS`; a new reason goes there plus a migration that
+  re-runs its `seed()` (as `0076` does). Never delete a reason.
 - Reference rows (plants, MIR reasons) come from migration `0068`; a `transaction=True` test flushes
   them, so the root `conftest.py` re-seeds them for every database test. Never make a test depend on
   migration data without it. [helpers](docs/testing-deployment.md#test-helpers)

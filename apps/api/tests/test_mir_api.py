@@ -37,7 +37,7 @@ def _po(plant="vapi", number="1000009001"):
 def _body(po, plant="hrs", qty="100", **extra):
     body = {"plant": plant, "mir_date": TODAY.isoformat(), "invoice_no": "INV-1", "invoice_date": TODAY.isoformat(),
             "invoice_total": "5900.00", "lines": [{"po_line_id": po.lines.get().id, "qty_received": qty,
-                                                    "rate": "50", "gst_rate": "18"}]}
+                                                    "rate": "50", "gst_rate": "18", "material_category": "Carbon Black"}]}
     body.update(extra)
     return body
 
@@ -149,11 +149,27 @@ class TestRegisterScoping:
 
 @pytest.mark.django_db
 class TestMismatchesAndLines:
+    def test_the_po_shows_its_header_and_line_suggestions(self):
+        po = _po()
+        po.billing_address, po.ship_to, po.payment_terms = "Bill here", "Ship there", "45 days"
+        po.save()
+        data = _client().get(f"/api/mir/purchase-orders/{po.id}").json()
+        assert (data["billingAddress"], data["shipTo"], data["paymentTerms"]) == ("Bill here", "Ship there", "45 days")
+        line = data["lines"][0]
+        assert line["currency"] == "INR" and line["poGstRate"] == "18" and line["suggestedCategory"] == ""
+
+    def test_meta_lists_the_categories(self):
+        from apps.core.models import MaterialCategoryReference
+        MaterialCategoryReference.objects.create(description="N330", normalized_description="n330",
+                                                 category="Carbon Black", subcategory="N330")
+        cats = _client().get("/api/mir/meta").json()["categories"]
+        assert cats == [{"name": "Carbon Black", "subcategories": ["N330"]}]
+
     def test_open_mismatches_are_listed_and_resolved(self):
         client, po = _client(), _po()
         client.post("/api/mir/entries/new", _body(po, qty="60", lines=[{
             "po_line_id": po.lines.get().id, "qty_received": "60", "rate": "50", "gst_rate": "18",
-            "qty_reason": "PARTIAL_BALANCE_DUE"}], invoice_total="3540.00"), format="json")
+            "qty_reason": "PARTIAL_BALANCE_DUE", "material_category": "Carbon Black"}], invoice_total="3540.00"), format="json")
         listed = client.get("/api/mir/mismatches").json()["mismatches"]
         assert len(listed) == 1 and listed[0]["poNumber"] == "1000009001"
         mm_id = listed[0]["id"]

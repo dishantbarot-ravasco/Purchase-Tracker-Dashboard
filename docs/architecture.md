@@ -552,7 +552,9 @@ in [consumption.md](consumption.md).
 
 ### apps/core/models/procurement.py
 
-Normalized POs and MIRs (migrations `0067`, and `0068` seeding the plants and reasons). See
+Normalized POs and MIRs (migrations `0067`; `0068` seeding the plants and reasons; `0076` adding the
+form fields below, the `REJECTION` / `GST_RATE` kinds, re-running `0068`'s seed and backfilling Bill To
+from the mirrors). See
 [The app's own records are normalized](#the-apps-own-records-are-normalized---procurement-2026-09-28).
 
 - `Plant` - `code` (the lowercase key `PTUser.plants` uses), `state_code` (GSTIN state: HRS 26, Achhad
@@ -560,25 +562,33 @@ Normalized POs and MIRs (migrations `0067`, and `0068` seeding the plants and re
 - `Vendor` - unique non-blank `gstin`; a vendor with no GSTIN is unique on `name_key`
   (`procurement_rules.vendor_name_key()`).
 - `PurchaseOrder` - unique `(plant, po_number)` (one number exists at two plants); `vendor` null only
-  for the legacy HRS orders naming none; `tax_type` canonical or blank, `tax_type_raw` as typed;
-  `is_active`; `source_hash` (the mirror's hash, for skip-if-unchanged).
+  for the legacy HRS orders naming none; `po_date`, `currency`, `payment_terms`, `incoterms`,
+  `billing_address`, `ship_to`, `total_value`, `total_inclusive_value`, `remarks`; `tax_type` canonical
+  or blank, `tax_type_raw` as typed; `is_active`; `source_hash` (the mirror's hash, for
+  skip-if-unchanged). The vendor's name, address, GSTIN, email and code are on `Vendor`, once.
 - `PurchaseOrderLine` - unique `(purchase_order, line_no)`, `line_no` being the line's position; `uom`
-  canonical plus `uom_raw`; `is_active` (never deleted); `needs_review` / `review_note`; short-close
+  canonical plus `uom_raw`; `item_code`, `description`, `hsn`, `qty_ordered`, `rate`, `net_value`,
+  `delivery_date`; `is_active` (never deleted); `needs_review` / `review_note`; short-close
   fields (`closed_at`, `closed_by`, `closed_reason`, `close_note`, `closed_by_mir_line`).
 - `PurchaseOrderLineChange` - every value the CSV changed on a line, old and new.
-- `MirReasonCode` - `code`, `kind` (`QTY_SHORT`, `QTY_OVER`, `RATE`, `INVOICE_TOTAL`, `TAX_TYPE`),
+- `MirReasonCode` - `code`, `kind` (`QTY_SHORT`, `QTY_OVER`, `REJECTION`, `RATE`, `GST_RATE`,
+  `INVOICE_TOTAL`, `TAX_TYPE`),
   `closes_line` (only a shortfall may), `note_required`.
 - `MirSequence` - unique `(plant, fy)` counter, row-locked when a MIR number is issued.
 - `Mir` - receiving `plant`, `fy`/`seq`/unique `mir_no`, `vendor`, invoice fields with `invoice_key`
   and `invoice_fy`, entered `invoice_total`, `tcs_amount`, `tax_type` and `tax_type_expected`,
-  transport fields, `status` POSTED/CANCELLED, who created and cancelled (user link and email).
-  Constraints: one POSTED MIR per `(vendor, invoice_key, invoice_fy)`; invoice date not after MIR
-  date; a cancelled MIR has a reason.
+  transport fields, optional `sap_grn_number`, `status` POSTED/CANCELLED, who created and cancelled
+  (user link and email). Constraints: invoice date not after MIR date; a cancelled MIR has a reason.
+  The invoice is NOT unique (one invoice can be several deliveries); `invoice_key` is indexed for the
+  form's "already on MIR ..." notice.
 - `MirLine` - `po_line` (`PROTECT`), received and rejected quantity (rejected within received,
   received above zero), invoice `rate`, the `po_rate` and `open_qty_before` snapshots, discount, other
-  charges, `gst_rate` (0-40), computed gross/taxable/igst/cgst/sgst/line_total, rolls, batch, dept.
+  charges (0 from the form), `gst_rate` (0-40), computed gross/taxable/igst/cgst/sgst/line_total,
+  `material_category` / `material_subcategory` (from the reference list), dept, and rolls / batch
+  (blank from the form).
   Unique `(mir, line_no)` and `(mir, po_line)`.
-- `MirMismatch` - one per `(mir_line, kind)` (or `(mir, kind)` for the invoice-level kinds), expected
+- `MirMismatch` - `kind` one of `QTY_SHORT`, `QTY_OVER`, `QTY_REJECTED`, `RATE_HIGH`, `RATE_LOW`,
+  `GST_RATE`, `INVOICE_TOTAL`, `TAX_TYPE`; one per `(mir_line, kind)` (or `(mir, kind)` for the invoice-level kinds), expected
   and actual, `difference_pct`, `reason`, `note`, `status` OPEN/RESOLVED/VOID; a RESOLVED one carries
   `resolved_at` and a `resolution_note`.
 

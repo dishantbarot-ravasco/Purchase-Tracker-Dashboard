@@ -932,14 +932,29 @@ so nothing is counted twice while both exist.
 2026-09-29 - a vendor-name search offered every open order of that vendor, which is how a receipt lands
 on the wrong one). **Every
 plant's open POs are offered** (owner rule: any plant's store may receive any plant's PO), then lines
-of one or several POs of **one vendor** (one MIR is one vendor's invoice). Per MIR they type the
-invoice number, date and total, TCS, and transport details; per line the quantity received and
-rejected, the invoice rate, discount, freight/packing, GST rate, and optionally rolls, batch and
-department. The page sends the form to `preview` on every change and paints what comes back; it never
-computes a figure itself. Saving runs the same check again inside the transaction.
+of one or several POs of **one vendor** (one MIR is one vendor's invoice). Opening a PO shows its header
+as the purchase team raised it (PO date, payment terms, incoterms, currency, tax type, GST %, values,
+Bill To, Ship To, vendor address, remarks) above its lines. Per MIR the clerk types the invoice number,
+date and total, TCS, the tax type, an optional SAP GRN number and optional transport details; per line
+the quantity received and rejected (in the PO line's own unit), the invoice rate (in the PO's currency
+per that unit), discount, GST %, the **material category** (required) and sub-category (optional) from
+`MaterialCategoryReference`'s list - prefilled by `mir_service.suggested_categories()`, the PO line's
+item code against the list's SAP item code first, then its description - and department use. Required
+fields carry a red asterisk. Freight/packing, rolls and batch are not on the form (owner, 2026-09-29);
+their `MirLine` columns stay, at 0 / blank. The page sends the form to `preview` on every change and
+paints what comes back; it never computes a figure itself. Saving runs the same check again inside the
+transaction.
+
+**The invoice number is required but not unique** (owner, 2026-09-29). One invoice can arrive as
+several deliveries, each its own MIR - the Drive MIR files do this (one BST Elastomers invoice on five
+HRS MIRs). So earlier POSTED MIRs of the same vendor invoice in its financial year, at any plant, come
+back from `evaluate()` as `notices` ("Invoice X is already on HRS/26-27/0003 ... Save only if this is
+another delivery"), shown in blue above the lines, never as an error. Invoice numbers are compared
+after upper-casing, removing spaces and leading zeros (`invoice_key()`); there is no database
+constraint on them (migration `0076` dropped it).
 
 **What is computed** (`procurement_rules.line_amounts()`): gross = qty x rate, taxable = gross -
-discount + freight/packing, GST on taxable - IGST, or half CGST and half SGST/UGST - each tax rounded
+discount (+ `other_charges`, always 0 from the form), GST on taxable - IGST, or half CGST and half SGST/UGST - each tax rounded
 on its own as invoices print them. The tax type follows the states: the vendor's GSTIN state against
 the RECEIVING plant's (HRS 26, a union territory, so UGST; Achhad 27; Vapi 24), falling back to the
 PO's tax type when the vendor has no GSTIN. The GST field defaults to the rate the PO's two totals
@@ -951,21 +966,30 @@ imply when it lands on a slab.
 | --- | --- | --- | --- |
 | Accepted quantity below the open quantity | accepted = received - rejected, exactly | `QTY_SHORT` | "balance to come" keeps the line open; "close the line" short-closes it |
 | Accepted quantity above the open quantity | exactly - there is no tolerance, weighbridge included | `QTY_OVER` | recorded; the line reads received |
+| Any rejected quantity | above zero | `QTY_REJECTED` (reasons of kind `REJECTION`) | recorded, for the return / replacement / debit note |
 | Invoice rate different from the PO rate | at 4 decimals | `RATE_HIGH` / `RATE_LOW` | recorded |
+| GST % different from the one the PO's totals imply | only when the PO's two totals land on one slab (`po_gst_rate()`) | `GST_RATE` | recorded |
 | Invoice total more than Rs 1 from the computed total | the rupee an invoice rounds to | `INVOICE_TOTAL` | recorded |
 | Tax type other than the states imply | | `TAX_TYPE` | recorded |
 
-Each becomes a `MirMismatch` that stays `OPEN` until a purchase manager resolves it with a note.
+Each becomes a `MirMismatch` that stays `OPEN` until a purchase manager resolves it with a note. A
+rejection with a shortfall asks two questions, so it carries two differences: why the goods were
+rejected (`QTY_REJECTED`) and whether the balance is still coming (`QTY_SHORT`). The reason list lives
+in one place, migration `0068`'s `REASONS` (41 reasons across the seven kinds); migration `0076`
+re-runs its `seed()` so a database that already applied `0068` gets the new ones, and a reason is never
+deleted (a posted mismatch points at it with `PROTECT`).
+
+**Open mismatches is the purchase team's follow-up list.** The store never has to wait on it: a MIR
+with differences is saved with the reasons chosen, and each difference sits in the Open mismatches
+tab (count on the tab) until someone chases the balance, raises the debit note, amends the PO or
+returns the material, then marks it resolved with a note saying what was done.
 
 **What is refused outright**: a receiving plant the account may not edit (403); a MIR date in the
 future or before a line's PO date; an invoice date after the MIR date; a PO line that is retired,
 dropped from the sheet, closed, waiting for review, without a quantity or rate, or already received in
 full; the same line twice; two vendors on one MIR; a PO with no vendor and none chosen; a GST rate off
-the slabs; a discount above the line's value. And **the same vendor invoice already on a posted MIR at
-any plant** - "MIR already created at <plant>: <MIR no> ... by <who>" (invoice numbers compared after
-upper-casing, removing spaces and leading zeros; separators stay significant, so "1-23" and "12-3"
-never collide). A database constraint backs this, so two clerks posting one invoice at the same
-moment save it once.
+the slabs; a discount above the line's value; a line with no material category, or a category or
+sub-category not on the reference list (when the list has any rows).
 
 **Received so far is never stored.** It is summed from posted MIR lines, so cancelling a MIR returns
 its quantity at once, voids its open mismatches and reopens any line it closed. Posting locks the PO
@@ -1330,11 +1354,14 @@ name the user already has).
 
 ### apps/services/mir_service.py
 
-`evaluate(payload, lock=False)` - the one check-and-price of a MIR (header, vendor, duplicate invoice,
-tax type, lines, mismatches, invoice total); returns errors and figures, never saves.
+`evaluate(payload, lock=False)` - the one check-and-price of a MIR (header, vendor, earlier MIRs of the
+same invoice as `notices`, tax type, lines, categories, mismatches, invoice total); returns errors,
+notices and figures, never saves. `category_options()` - {category: [sub-categories]} from
+`MaterialCategoryReference`; `suggested_categories(po_lines)` - each line's (category, sub-category) by
+item code, then by `normalize_material(description)`.
 `post_mir(payload, user)` - `evaluate(lock=True)` then saves `Mir`, `MirLine`s, `MirMismatch`es and any
-line closure in one transaction; the MIR number comes from `_next_seq()` (row-locked `MirSequence`); an
-`IntegrityError` on the invoice constraint becomes a duplicate-invoice error. `cancel_mir()`,
+line closure in one transaction; the MIR number comes from `_next_seq()` (row-locked `MirSequence`), so
+two MIRs posted at once at one plant get consecutive numbers. `cancel_mir()`,
 `resolve_mismatch()`, `close_po_line()`, `reopen_po_line()`, `clear_line_review()` - the other writes,
 each row-locked and requiring a reason or note. `accepted_by_line()` / `line_state()` - received so far
 and whether a line can take a receipt. `search_open_pos()` - open POs whose PO number contains the query.

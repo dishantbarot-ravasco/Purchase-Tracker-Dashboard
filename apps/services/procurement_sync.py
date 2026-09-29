@@ -190,6 +190,7 @@ def project_plant_orders(plant_code: str) -> ProjectionResult:
             "tax_type_raw": (legacy.tax_type or "")[:100],
             "payment_terms": legacy.payment_terms or "",
             "incoterms": legacy.incoterms or "",
+            "billing_address": legacy.billing_address or "",
             "ship_to": legacy.ship_to or "",
             "total_value": legacy.total_value,
             "total_inclusive_value": legacy.total_inclusive_value,

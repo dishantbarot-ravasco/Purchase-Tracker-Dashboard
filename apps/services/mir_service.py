@@ -12,21 +12,26 @@ the screen can never show a figure the server would compute differently.
 What a posting checks (each failure is a message on the field it concerns):
 
   header  - the receiving plant exists; the MIR date is not in the future and
-            not before any line's PO date; the invoice date is not after the
-            MIR date; the invoice number is new for this vendor in its
-            financial year AT EVERY PLANT (a second MIR for one invoice is
-            refused, naming the plant and MIR that already hold it); one
-            vendor across every line; a tax type is known.
+            not before any line's PO date; the invoice number and date are
+            entered and the invoice date is not after the MIR date; one
+            vendor across every line; a tax type is known. The invoice
+            number is NOT unique (owner, 2026-09-29): one invoice can arrive
+            as several deliveries, each its own MIR, so earlier MIRs of the
+            same vendor invoice come back as a notice, never an error.
   lines   - each PO line is open (PO and line active, not closed, not
             waiting for review, not already received in full), appears once,
             and has a positive quantity, a rejected quantity within it, a
-            non-negative rate/discount/charges, and a GST rate on a slab.
-  reasons - accepted quantity short of or over the open quantity, a rate
-            different from the PO's, an invoice total more than the
-            rounding rupee away from the computed one, and a tax type other
-            than the states imply: each needs a reason of its kind (and a
-            note where the reason says so). Each becomes a MirMismatch that
-            stays OPEN until a purchase manager resolves it.
+            non-negative rate/discount, a GST rate on a slab, and a material
+            category from the reference list (sub-category optional, but of
+            that category).
+  reasons - accepted quantity short of or over the open quantity, any
+            rejected quantity, a rate different from the PO's, a GST rate
+            other than the one the PO's totals imply, an invoice total more
+            than the rounding rupee away from the computed one, and a tax
+            type other than the states imply: each needs a reason of its
+            kind (and a note where the reason says so). Each becomes a
+            MirMismatch that stays OPEN until a purchase manager resolves
+            it.
 
 Quantities are compared EXACTLY. There is no tolerance: an over-delivery of
 weighed material is recorded with the "Weighbridge variance" reason, not
@@ -38,7 +43,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal, InvalidOperation
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.db.models import DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
@@ -128,6 +133,39 @@ def search_open_pos(query: str, limit: int = 25) -> list:
     )
 
 
+def category_options() -> dict:
+    """{category: [sub-category, ...]} from MaterialCategoryReference, the
+    one list the MIR form's category pickers offer."""
+    from apps.core.models import MaterialCategoryReference
+
+    out: dict[str, set] = {}
+    for category, sub in MaterialCategoryReference.objects.values_list("category", "subcategory"):
+        category = (category or "").strip()
+        if category:
+            out.setdefault(category, set())
+            if (sub or "").strip():
+                out[category].add(sub.strip())
+    return {c: sorted(subs) for c, subs in sorted(out.items())}
+
+
+def suggested_categories(po_lines) -> dict:
+    """{po line id: (category, sub-category)} from MaterialCategoryReference:
+    the PO line's item code against the list's SAP item code first, then
+    its description the same way the dashboard files a stock lot
+    (normalize_material()). ("", "") when the list does not know it."""
+    from apps.core.models import MaterialCategoryReference
+    from apps.services.parsers.common import normalize_material
+
+    refs = list(MaterialCategoryReference.objects.all())
+    by_code = {r.sap_item_code.strip(): r for r in refs if (r.sap_item_code or "").strip()}
+    by_desc = {r.normalized_description: r for r in refs}
+    out = {}
+    for line in po_lines:
+        ref = by_code.get((line.item_code or "").strip()) or by_desc.get(normalize_material(line.description))
+        out[line.id] = (ref.category, ref.subcategory) if ref else ("", "")
+    return out
+
+
 def po_lines_with_state(po) -> list:
     lines = list(po.lines.select_related("purchase_order").order_by("line_no"))
     accepted = accepted_by_line(line.id for line in lines)
@@ -207,6 +245,8 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
     mir_date = _date(payload.get("mir_date"), "mir_date", errors)
     if mir_date and mir_date > today:
         errors.append({"field": "mir_date", "message": "The MIR date cannot be in the future."})
+    notices: list[str] = []
+    categories = category_options()
     invoice_no = _text(payload.get("invoice_no"), 60)
     if not rules.invoice_key(invoice_no):
         errors.append({"field": "invoice_no", "message": "Required."})
@@ -264,16 +304,18 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
     elif wanted and vendor is None and chosen_vendor_id in (None, ""):
         errors.append({"field": "vendor_id", "message": "This PO names no vendor - choose the vendor on the invoice."})
 
-    # ── Duplicate invoice, at every plant.
+    # ── The same invoice on earlier MIRs, at every plant: allowed (one
+    # invoice can come as several deliveries), but said, so a clerk entering
+    # the same delivery twice sees it before saving.
     invoice_key = rules.invoice_key(invoice_no)
     invoice_fy = rules.financial_year(invoice_date) if invoice_date else ""
     if vendor is not None and invoice_key and invoice_fy:
-        dup = (Mir.objects.filter(vendor=vendor, invoice_key=invoice_key, invoice_fy=invoice_fy, status="POSTED")
-               .select_related("plant").first())
-        if dup is not None:
-            errors.append({"field": "invoice_no", "message": (
-                f"MIR already created at {dup.plant.name}: {dup.mir_no} of {dup.mir_date:%d-%m-%Y} "
-                f"for invoice {dup.invoice_no}, by {dup.created_by_email}.")})
+        earlier = (Mir.objects.filter(vendor=vendor, invoice_key=invoice_key, invoice_fy=invoice_fy, status="POSTED")
+                   .select_related("plant").order_by("mir_date", "id")[:5])
+        for dup in earlier:
+            notices.append(f"Invoice {dup.invoice_no} is already on {dup.mir_no} ({dup.plant.name}, "
+                           f"{dup.mir_date:%d-%m-%Y}, entered by {dup.created_by_email}). "
+                           "Save only if this is another delivery.")
 
     # ── Tax type.
     po_tax = next((po_lines[x].purchase_order.tax_type for x in wanted if x in po_lines and po_lines[x].purchase_order.tax_type), "")
@@ -333,6 +375,14 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         if gst is not None and not rules.is_gst_slab(gst):
             errors.append({"field": f"{f}.gst_rate", "message": "Not a GST rate (0, 0.1, 0.25, 1.5, 3, 5, 12, 18, 28, 40)."})
             gst = None
+        category = _text(raw.get("material_category"), 200)
+        subcategory = _text(raw.get("material_subcategory"), 200)
+        if not category:
+            errors.append({"field": f"{f}.material_category", "message": "Required."})
+        elif categories and category not in categories:
+            errors.append({"field": f"{f}.material_category", "message": "Choose a category from the list."})
+        elif subcategory and categories and subcategory not in categories[category]:
+            errors.append({"field": f"{f}.material_subcategory", "message": f"Not a sub-category of {category}."})
         rolls = raw.get("rolls")
         if rolls not in (None, ""):
             try:
@@ -348,6 +398,7 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         out = {"index": i, "po_line": line, "state": state, "qty_received": qty, "qty_rejected": rejected, "rate": rate,
                "discount": discount, "other_charges": other, "gst_rate": gst, "rolls": rolls,
                "batch_no": _text(raw.get("batch_no"), 60), "dept_use": _text(raw.get("dept_use"), 60),
+               "material_category": category, "material_subcategory": subcategory,
                "remarks": _text(raw.get("remarks"), 2000), "amounts": None}
         ready = None not in (qty, rejected, rate, discount, other, gst) and discount >= 0 and other >= 0
         if ready:
@@ -364,6 +415,16 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
                 mismatches.append({"line": i, "kind": kind, "expected": open_qty, "actual": accepted_qty,
                                    "difference_pct": rules.pct_of(accepted_qty - open_qty, open_qty),
                                    "reason": reason, "note": _text(raw.get("qty_note"), 2000)})
+        if rejected is not None and rejected > 0:
+            reason = _reason(raw.get("reject_reason"), "REJECTION", f"{f}.reject_reason", raw.get("reject_note"), errors, reasons)
+            mismatches.append({"line": i, "kind": "QTY_REJECTED", "expected": Decimal("0"), "actual": rejected,
+                               "difference_pct": rules.pct_of(rejected, qty) if qty else None,
+                               "reason": reason, "note": _text(raw.get("reject_note"), 2000)})
+        po_gst = rules.po_gst_rate(po.total_value, po.total_inclusive_value)
+        if gst is not None and po_gst is not None and gst != po_gst:
+            reason = _reason(raw.get("gst_reason"), "GST_RATE", f"{f}.gst_reason", raw.get("gst_note"), errors, reasons)
+            mismatches.append({"line": i, "kind": "GST_RATE", "expected": po_gst, "actual": gst,
+                               "difference_pct": None, "reason": reason, "note": _text(raw.get("gst_note"), 2000)})
         if rate is not None and rules.rate_differs(line.rate, rate):
             kind = "RATE_HIGH" if rate > line.rate else "RATE_LOW"
             reason = _reason(raw.get("rate_reason"), "RATE", f"{f}.rate_reason", raw.get("rate_note"), errors, reasons)
@@ -390,7 +451,9 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         "invoice_date": invoice_date, "invoice_fy": invoice_fy, "invoice_total": invoice_total, "tcs_amount": tcs,
         "tax_type": tax_type, "tax_type_expected": expected_tax, "computed_total": computed_total,
         "header": {k: _text(payload.get(k), 60) for k in ("challan_no", "lr_no", "vehicle_no", "eway_bill_no",
-                                                           "gate_entry_no", "weighbridge_slip_no")},
+                                                           "gate_entry_no", "weighbridge_slip_no")}
+                  | {"sap_grn_number": _text(payload.get("sap_grn_number"), 50)},
+        "notices": notices,
         "remarks": _text(payload.get("remarks"), 2000),
     }
 
@@ -412,53 +475,47 @@ def post_mir(payload: dict, user):
     with the field errors; returns the saved Mir."""
     from apps.core.models import Mir, MirLine, MirMismatch
 
-    try:
-        with transaction.atomic():
-            result = evaluate(payload, lock=True)
-            if not result["ok"]:
-                raise MirValidationError(result["errors"])
-            plant = result["plant"]
-            fy = rules.financial_year(result["mir_date"])
-            seq = _next_seq(plant, fy)
-            mir = Mir.objects.create(
-                plant=plant, fy=fy, seq=seq, mir_no=rules.mir_number(plant.mir_prefix, fy, seq),
-                mir_date=result["mir_date"], vendor=result["vendor"], invoice_no=result["invoice_no"],
-                invoice_key=result["invoice_key"], invoice_date=result["invoice_date"], invoice_fy=result["invoice_fy"],
-                invoice_total=result["invoice_total"], tcs_amount=result["tcs_amount"], tax_type=result["tax_type"],
-                tax_type_expected=result["tax_type_expected"], remarks=result["remarks"],
-                created_by=user, created_by_email=getattr(user, "email", ""), **result["header"],
+    with transaction.atomic():
+        result = evaluate(payload, lock=True)
+        if not result["ok"]:
+            raise MirValidationError(result["errors"])
+        plant = result["plant"]
+        fy = rules.financial_year(result["mir_date"])
+        seq = _next_seq(plant, fy)
+        mir = Mir.objects.create(
+            plant=plant, fy=fy, seq=seq, mir_no=rules.mir_number(plant.mir_prefix, fy, seq),
+            mir_date=result["mir_date"], vendor=result["vendor"], invoice_no=result["invoice_no"],
+            invoice_key=result["invoice_key"], invoice_date=result["invoice_date"], invoice_fy=result["invoice_fy"],
+            invoice_total=result["invoice_total"], tcs_amount=result["tcs_amount"], tax_type=result["tax_type"],
+            tax_type_expected=result["tax_type_expected"], remarks=result["remarks"],
+            created_by=user, created_by_email=getattr(user, "email", ""), **result["header"],
+        )
+        saved = {}
+        for n, ln in enumerate(result["lines"], start=1):
+            a = ln["amounts"]
+            saved[ln["index"]] = MirLine.objects.create(
+                mir=mir, line_no=n, po_line=ln["po_line"], qty_received=ln["qty_received"],
+                qty_rejected=ln["qty_rejected"], rate=ln["rate"], po_rate=ln["po_line"].rate,
+                open_qty_before=ln["state"]["open_qty"], discount=ln["discount"], other_charges=ln["other_charges"],
+                gst_rate=ln["gst_rate"], gross=a["gross"], taxable=a["taxable"], igst=a["igst"], cgst=a["cgst"],
+                sgst=a["sgst"], line_total=a["total"], rolls=ln["rolls"], batch_no=ln["batch_no"],
+                dept_use=ln["dept_use"], material_category=ln["material_category"],
+                material_subcategory=ln["material_subcategory"], remarks=ln["remarks"],
             )
-            saved = {}
-            for n, ln in enumerate(result["lines"], start=1):
-                a = ln["amounts"]
-                saved[ln["index"]] = MirLine.objects.create(
-                    mir=mir, line_no=n, po_line=ln["po_line"], qty_received=ln["qty_received"],
-                    qty_rejected=ln["qty_rejected"], rate=ln["rate"], po_rate=ln["po_line"].rate,
-                    open_qty_before=ln["state"]["open_qty"], discount=ln["discount"], other_charges=ln["other_charges"],
-                    gst_rate=ln["gst_rate"], gross=a["gross"], taxable=a["taxable"], igst=a["igst"], cgst=a["cgst"],
-                    sgst=a["sgst"], line_total=a["total"], rolls=ln["rolls"], batch_no=ln["batch_no"],
-                    dept_use=ln["dept_use"], remarks=ln["remarks"],
-                )
-            now = timezone.now()
-            for mm in result["mismatches"]:
-                mir_line = saved[mm["line"]] if mm["line"] is not None else None
-                MirMismatch.objects.create(
-                    mir=mir, mir_line=mir_line, kind=mm["kind"], expected=mm["expected"], actual=mm["actual"],
-                    difference_pct=mm["difference_pct"], reason=mm["reason"], note=mm["note"],
-                )
-                # "Close the line": no balance is coming for this PO line.
-                if mm["kind"] == "QTY_SHORT" and mm["reason"].closes_line:
-                    po_line = mir_line.po_line
-                    po_line.closed_at, po_line.closed_by, po_line.closed_reason = now, user, mm["reason"]
-                    po_line.close_note, po_line.closed_by_mir_line = mm["note"] or mm["reason"].label, mir_line
-                    po_line.save(update_fields=["closed_at", "closed_by", "closed_reason", "close_note", "closed_by_mir_line"])
-            return mir
-    except IntegrityError as exc:
-        # A second clerk posting the same invoice at the same moment passes
-        # evaluate() too; the partial unique constraint stops the second.
-        if "uniq_posted_mir_per_vendor_invoice" in str(exc):
-            raise MirValidationError([{"field": "invoice_no", "message": "MIR already created for this invoice at another counter just now - reload to see it."}]) from exc
-        raise
+        now = timezone.now()
+        for mm in result["mismatches"]:
+            mir_line = saved[mm["line"]] if mm["line"] is not None else None
+            MirMismatch.objects.create(
+                mir=mir, mir_line=mir_line, kind=mm["kind"], expected=mm["expected"], actual=mm["actual"],
+                difference_pct=mm["difference_pct"], reason=mm["reason"], note=mm["note"],
+            )
+            # "Close the line": no balance is coming for this PO line.
+            if mm["kind"] == "QTY_SHORT" and mm["reason"].closes_line:
+                po_line = mir_line.po_line
+                po_line.closed_at, po_line.closed_by, po_line.closed_reason = now, user, mm["reason"]
+                po_line.close_note, po_line.closed_by_mir_line = mm["note"] or mm["reason"].label, mir_line
+                po_line.save(update_fields=["closed_at", "closed_by", "closed_reason", "close_note", "closed_by_mir_line"])
+        return mir
 
 
 def cancel_mir(mir, user, reason: str):

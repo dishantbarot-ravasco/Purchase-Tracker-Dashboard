@@ -103,6 +103,9 @@ class PurchaseOrder(models.Model):
     tax_type_raw = models.CharField(max_length=100, blank=True, default="")
     payment_terms = models.TextField(blank=True, default="")
     incoterms = models.TextField(blank=True, default="")
+    # Bill To and Ship To as the PO prints them. The vendor's own name,
+    # address, GSTIN, email and code live once on Vendor.
+    billing_address = models.TextField(blank=True, default="")
     ship_to = models.TextField(blank=True, default="")
     total_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     total_inclusive_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
@@ -181,6 +184,8 @@ class MirReasonCode(models.Model):
         RATE = "RATE", "Rate differs"
         INVOICE_TOTAL = "INVOICE_TOTAL", "Invoice total differs"
         TAX_TYPE = "TAX_TYPE", "Tax type differs"
+        REJECTION = "REJECTION", "Quantity rejected"
+        GST_RATE = "GST_RATE", "GST rate differs"
 
     code = models.CharField(max_length=40, unique=True)
     kind = models.CharField(max_length=20, choices=Kind.choices)
@@ -227,7 +232,7 @@ class Mir(models.Model):
     mir_date = models.DateField()
     vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="mirs")
     invoice_no = models.CharField(max_length=60)
-    # procurement_rules.invoice_key() - what duplicates are checked on.
+    # procurement_rules.invoice_key() - how the form finds earlier MIRs of the same invoice.
     invoice_key = models.CharField(max_length=60)
     invoice_date = models.DateField()
     # The invoice's own financial year: vendors restart numbering each April.
@@ -244,6 +249,8 @@ class Mir(models.Model):
     eway_bill_no = models.CharField(max_length=30, blank=True, default="")
     gate_entry_no = models.CharField(max_length=40, blank=True, default="")
     weighbridge_slip_no = models.CharField(max_length=40, blank=True, default="")
+    # Filled once the receipt is booked in SAP; optional at entry.
+    sap_grn_number = models.CharField(max_length=50, blank=True, default="")
     remarks = models.TextField(blank=True, default="")
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.POSTED)
     # Who posted it. The email is kept as well because a user row can be
@@ -259,11 +266,9 @@ class Mir(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["plant", "fy", "seq"], name="uniq_mir_seq_per_plant_fy"),
-            # One posted MIR per vendor invoice, at ANY plant.
-            models.UniqueConstraint(
-                fields=["vendor", "invoice_key", "invoice_fy"], condition=Q(status="POSTED"),
-                name="uniq_posted_mir_per_vendor_invoice",
-            ),
+            # No uniqueness on the invoice (owner, 2026-09-29): one invoice can
+            # arrive as several deliveries, each its own MIR (the Drive MIR
+            # files do this). The form names the earlier MIRs instead.
             models.CheckConstraint(condition=Q(invoice_date__lte=F("mir_date")), name="mir_invoice_not_after_receipt"),
             models.CheckConstraint(condition=Q(invoice_total__gte=0) & Q(tcs_amount__gte=0), name="mir_amounts_not_negative"),
             models.CheckConstraint(
@@ -305,6 +310,11 @@ class MirLine(models.Model):
     rolls = models.PositiveIntegerField(null=True, blank=True)
     batch_no = models.CharField(max_length=60, blank=True, default="")
     dept_use = models.CharField(max_length=60, blank=True, default="")
+    # Chosen from MaterialCategoryReference's list, prefilled from the PO
+    # line's material. The same material can be filed differently on two
+    # receipts only if a clerk changes it; there is no material master yet.
+    material_category = models.CharField(max_length=200, blank=True, default="")
+    material_subcategory = models.CharField(max_length=200, blank=True, default="")
     remarks = models.TextField(blank=True, default="")
 
     class Meta:
@@ -331,6 +341,8 @@ class MirMismatch(models.Model):
         RATE_LOW = "RATE_LOW", "Rate lower than PO"
         INVOICE_TOTAL = "INVOICE_TOTAL", "Invoice total differs"
         TAX_TYPE = "TAX_TYPE", "Tax type differs"
+        QTY_REJECTED = "QTY_REJECTED", "Quantity rejected"
+        GST_RATE = "GST_RATE", "GST rate differs from PO"
 
     class Status(models.TextChoices):
         OPEN = "OPEN", "Open"

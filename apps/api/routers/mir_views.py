@@ -71,7 +71,7 @@ def _plant(p):
     return {"code": p.code, "name": p.name}
 
 
-def _po_line(line, state):
+def _po_line(line, state, suggested=("", "")):
     po = line.purchase_order
     return {
         "id": line.id, "lineNo": line.line_no, "itemCode": line.item_code, "description": line.description,
@@ -80,6 +80,8 @@ def _po_line(line, state):
         "openQty": _s(state["open_qty"]), "status": state["status"], "receivable": state["receivable"],
         "blockedReason": state["blocked_reason"], "needsReview": line.needs_review, "reviewNote": line.review_note,
         "closeNote": line.close_note, "poId": po.id, "poNumber": po.po_number, "plant": po.plant.code,
+        "currency": po.currency, "poGstRate": _s(rules.po_gst_rate(po.total_value, po.total_inclusive_value)),
+        "suggestedCategory": suggested[0], "suggestedSubcategory": suggested[1],
     }
 
 
@@ -88,6 +90,18 @@ def _po_summary(po):
         "id": po.id, "poNumber": po.po_number, "poDate": _d(po.po_date), "plant": _plant(po.plant),
         "vendor": _vendor(po.vendor), "taxType": po.tax_type, "currency": po.currency,
         "gstRate": _s(rules.po_gst_rate(po.total_value, po.total_inclusive_value)),
+    }
+
+
+def _po_header(po):
+    """The PO as the purchase team raised it - shown above its lines so the
+    clerk can check the delivery against the order."""
+    v = po.vendor
+    return {
+        "vendorAddress": v.address if v else "", "vendorEmail": v.email if v else "",
+        "billingAddress": po.billing_address, "shipTo": po.ship_to, "paymentTerms": po.payment_terms,
+        "incoterms": po.incoterms, "taxTypeRaw": po.tax_type_raw, "totalValue": _s(po.total_value),
+        "totalInclusiveValue": _s(po.total_inclusive_value), "remarks": po.remarks,
     }
 
 
@@ -110,6 +124,7 @@ def meta(request):
         "plants": plants, "reasons": reasons,
         "taxTypes": [{"code": c, "label": rules.TaxType.LABELS[c]} for c in rules.TaxType.ALL],
         "gstSlabs": [str(s) for s in rules.GST_SLABS],
+        "categories": [{"name": c, "subcategories": subs} for c, subs in mir_service.category_options().items()],
         "invoiceRoundingTolerance": str(rules.INVOICE_ROUNDING_TOLERANCE),
         "today": _d(timezone.localdate()),
     })
@@ -134,8 +149,10 @@ def open_pos(request):
 @permission_classes([IsEditor])
 def purchase_order(request, po_id):
     po = get_object_or_404(PurchaseOrder.objects.select_related("plant", "vendor"), pk=po_id)
-    return Response({**_po_summary(po), "isActive": po.is_active,
-                     "lines": [_po_line(line, st) for line, st in mir_service.po_lines_with_state(po)]})
+    lines = mir_service.po_lines_with_state(po)
+    suggested = mir_service.suggested_categories([line for line, _st in lines])
+    return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active,
+                     "lines": [_po_line(line, st, suggested[line.id]) for line, st in lines]})
 
 
 @api_view(["GET"])
@@ -166,7 +183,7 @@ def _preview_payload(result):
                        for m in result["mismatches"]],
         "lines": lines, "vendor": _vendor(result["vendor"]), "taxType": result["tax_type"],
         "taxTypeExpected": result["tax_type_expected"], "computedTotal": _s(result["computed_total"]),
-        "invoiceTotal": _s(result["invoice_total"]),
+        "invoiceTotal": _s(result["invoice_total"]), "notices": result["notices"],
     }
 
 
@@ -216,7 +233,7 @@ def _mir_detail(mir):
         **_mir_row(mir, total), "taxType": mir.tax_type, "taxTypeExpected": mir.tax_type_expected,
         "tcsAmount": _s(mir.tcs_amount), "challanNo": mir.challan_no, "lrNo": mir.lr_no, "vehicleNo": mir.vehicle_no,
         "ewayBillNo": mir.eway_bill_no, "gateEntryNo": mir.gate_entry_no, "weighbridgeSlipNo": mir.weighbridge_slip_no,
-        "remarks": mir.remarks, "cancelledBy": mir.cancelled_by_email, "cancelledAt": mir.cancelled_at.isoformat() if mir.cancelled_at else None,
+        "sapGrnNumber": mir.sap_grn_number, "remarks": mir.remarks, "cancelledBy": mir.cancelled_by_email, "cancelledAt": mir.cancelled_at.isoformat() if mir.cancelled_at else None,
         "cancelReason": mir.cancel_reason,
         "lines": [{
             "lineNo": ln.line_no, "poNumber": ln.po_line.purchase_order.po_number, "poPlant": ln.po_line.purchase_order.plant.code,
@@ -226,6 +243,8 @@ def _mir_detail(mir):
             "otherCharges": _s(ln.other_charges), "gstRate": _s(ln.gst_rate), "taxable": _s(ln.taxable), "igst": _s(ln.igst),
             "cgst": _s(ln.cgst), "sgst": _s(ln.sgst), "lineTotal": _s(ln.line_total), "rolls": ln.rolls,
             "batchNo": ln.batch_no, "deptUse": ln.dept_use, "remarks": ln.remarks,
+            "materialCategory": ln.material_category, "materialSubcategory": ln.material_subcategory,
+            "currency": ln.po_line.purchase_order.currency,
         } for ln in lines],
         "mismatches": [_mismatch(m) for m in mir.mismatches.select_related("reason", "mir_line").all()],
     }

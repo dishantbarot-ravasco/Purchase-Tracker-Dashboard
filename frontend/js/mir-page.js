@@ -3,11 +3,12 @@
 //
 // The page never prices a line or decides a mismatch itself. Every input
 // change sends the whole form to /api/mir/preview (debounced) and paints
-// what comes back - the figures, the mismatches that need a reason, the
-// field errors. Saving sends the same body to /api/mir/entries/new, which
-// re-runs the same check server-side inside the transaction. Inputs are
-// never re-rendered while the clerk types, so focus and cursor survive a
-// preview; only the computed cells and the reason rows are repainted.
+// what comes back - the figures, the differences that need a reason, the
+// field errors, the notices. Saving sends the same body to
+// /api/mir/entries/new, which re-runs the same check server-side inside the
+// transaction. Inputs are never re-rendered while the clerk types, so focus
+// and cursor survive a preview; only the computed cells and the difference
+// cards are repainted.
 
 let META = null;
 // The debounced preview, built once in initNewMir().
@@ -22,8 +23,19 @@ const S = {
   previewSeq: 0,
   triedToPost: false,
 };
-const LINE_KEYS = ['qty_received', 'qty_rejected', 'rate', 'discount', 'other_charges', 'gst_rate', 'rolls', 'batch_no', 'dept_use',
-  'qty_reason', 'qty_note', 'rate_reason', 'rate_note'];
+
+// Each difference the server can report, what reason list answers it, and
+// the payload keys its reason and note travel under.
+const DIFF = {
+  QTY_SHORT: { reasonKind: 'QTY_SHORT', key: 'qty', title: 'Quantity short' },
+  QTY_OVER: { reasonKind: 'QTY_OVER', key: 'qty', title: 'Quantity over' },
+  QTY_REJECTED: { reasonKind: 'REJECTION', key: 'reject', title: 'Quantity rejected' },
+  RATE_HIGH: { reasonKind: 'RATE', key: 'rate', title: 'Rate above the PO' },
+  RATE_LOW: { reasonKind: 'RATE', key: 'rate', title: 'Rate below the PO' },
+  GST_RATE: { reasonKind: 'GST_RATE', key: 'gst', title: 'GST rate differs from the PO' },
+  INVOICE_TOTAL: { reasonKind: 'INVOICE_TOTAL', key: 'invoice_total', title: 'Invoice total does not add up' },
+  TAX_TYPE: { reasonKind: 'TAX_TYPE', key: 'tax_type', title: 'Tax type differs' },
+};
 
 (async function () {
   const user = await requireAuth();
@@ -35,11 +47,13 @@ const LINE_KEYS = ['qty_received', 'qty_rejected', 'rate', 'discount', 'other_ch
   try {
     META = await apiMir('/meta');
   } catch (e) {
-    document.getElementById('main-content').prepend(noticeEl(e.message));
+    document.getElementById('main-content').prepend(bannerEl(e.message));
     return;
   }
   initNewMir();
   initRegister();
+  initMismatches();
+  refreshMismatchCount();
 })();
 
 /** /api/mir/... fetch wrapper - same shape as review-page.js's apiReview(). */
@@ -70,10 +84,16 @@ async function apiMir(path, opts) {
 
 // ── Formatting ────────────────────────────────────────────────────────────
 // Exact figures, never the dashboard's rounded KPI shorthand (formatInr()):
-// this is a record being entered, and every paisa is compared.
-function money(s) {
+// this is a record being entered, and every paisa is compared. The currency
+// is the PO's own (PurchaseOrder.currency), never assumed.
+function money(s, currency) {
   if (s === null || s === undefined || s === '') return '-';
-  return 'Rs ' + Number(s).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const n = Number(s);
+  try {
+    return n.toLocaleString('en-IN', { style: 'currency', currency: currency || 'INR', minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  } catch (e) {
+    return (currency || '') + ' ' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+  }
 }
 function qty(s) {
   if (s === null || s === undefined || s === '') return '-';
@@ -83,11 +103,16 @@ function qty(s) {
 function trimZeros(s) { return s === null || s === undefined ? '' : String(s).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, ''); }
 function dateIN(iso) { return iso ? formatDateIN(iso) : '-'; }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
-function noticeEl(text) { const d = document.createElement('div'); d.className = 'mir-notice'; d.textContent = text; return d; }
+function bannerEl(text) { const d = document.createElement('div'); d.className = 'mir-banner mir-banner-warn'; d.textContent = text; return d; }
 function reasonsOf(kind) { return META.reasons.filter(r => r.kind === kind); }
 function reasonByCode(code) { return META.reasons.find(r => r.code === code); }
 function plantName(code) { const p = META.plants.find(x => x.code === code); return p ? p.name : code; }
-const MISMATCH_KIND = { QTY_SHORT: 'QTY_SHORT', QTY_OVER: 'QTY_OVER', RATE_HIGH: 'RATE', RATE_LOW: 'RATE', INVOICE_TOTAL: 'INVOICE_TOTAL', TAX_TYPE: 'TAX_TYPE' };
+function req() { return ' <span class="req-mark" aria-hidden="true">*</span>'; }
+// The MIR's currency: its lines' PO currency (one vendor, one invoice).
+function mirCurrency() { return S.lines.length ? (S.lines[0].line.currency || 'INR') : 'INR'; }
+function statusPill(text, tone) { return '<span class="status-pill mir-pill-' + tone + '">' + escapeHtml(text) + '</span>'; }
+const MIR_STATUS_TONE = { POSTED: 'ok', CANCELLED: 'bad' };
+const MISMATCH_STATUS_TONE = { OPEN: 'warn', RESOLVED: 'ok', VOID: 'muted' };
 
 // ── View tabs ─────────────────────────────────────────────────────────────
 function initViewTabs() {
@@ -126,7 +151,7 @@ function initNewMir() {
   document.getElementById('poSearch').addEventListener('input', search);
   schedulePreview = debounce(runPreview, 350);
   const schedule = schedulePreview;
-  ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount'].forEach(id =>
+  ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount', 'sapGrnNo'].forEach(id =>
     document.getElementById(id).addEventListener('input', schedule));
   document.getElementById('taxType').addEventListener('change', () => { S.taxTouched = true; schedule(); });
   document.getElementById('mirForm').addEventListener('submit', e => { e.preventDefault(); postMir(); });
@@ -142,7 +167,7 @@ async function runSearch() {
     const data = await apiMir('/open-pos?q=' + encodeURIComponent(q));
     if (document.getElementById('poSearch').value.trim() !== q) return;
     if (!data.purchaseOrders.length) {
-      box.innerHTML = '<div class="mir-muted">No open PO matches "' + escapeHtml(q) + '". If the PO exists, it may be missing from the master PO sheet - ask purchase to add it.</div>';
+      box.innerHTML = '<div class="mir-empty">No open PO number contains "' + escapeHtml(q) + '". If the PO exists, it may be missing from the master PO sheet, or every line may already be received - ask purchase.</div>';
       return;
     }
     box.innerHTML = data.purchaseOrders.map(poResultHtml).join('');
@@ -160,13 +185,26 @@ function poResultHtml(po) {
   const clash = vendorClash(po);
   return '<div class="mir-po' + (clash ? ' is-disabled' : '') + '">' +
     '<div class="mir-po-head">' +
-      '<span class="mir-badge">' + escapeHtml(po.plant.name) + '</span>' +
-      '<b>' + escapeHtml(po.poNumber) + '</b>' +
-      '<span>' + escapeHtml(po.vendor ? po.vendor.name : 'No vendor on the PO') + '</span>' +
-      '<span class="mir-muted">' + dateIN(po.poDate) + ' &middot; ' + po.openLines + ' of ' + po.totalLines + ' lines open</span>' +
-      (clash ? '<span class="mir-muted">Another vendor - one MIR is one invoice</span>'
+      '<div class="mir-po-id"><b>PO ' + escapeHtml(po.poNumber) + '</b><span class="mir-plant-tag">' + escapeHtml(po.plant.name) + '</span></div>' +
+      '<div class="mir-po-vendor">' + escapeHtml(po.vendor ? po.vendor.name : 'No vendor on the PO') + '</div>' +
+      '<div class="mir-muted">Dated ' + dateIN(po.poDate) + ' &middot; ' + po.openLines + ' of ' + po.totalLines + ' lines open</div>' +
+      (clash ? '<div class="mir-muted">Another vendor - one MIR is one invoice</div>'
         : '<button type="button" class="btn btn-navy btn-small" data-open-po="' + po.id + '">Show lines</button>') +
     '</div><div class="mir-po-lines"></div></div>';
+}
+
+function poHeaderHtml(po) {
+  const item = (k, v) => v ? '<div class="mir-kv-item"><span class="mir-kv-k">' + escapeHtml(k) + '</span><span class="mir-kv-v">' + escapeHtml(v) + '</span></div>' : '';
+  const tax = META.taxTypes.find(t => t.code === po.taxType);
+  return '<div class="mir-po-facts">' +
+    item('PO date', dateIN(po.poDate)) + item('Payment terms', po.paymentTerms) + item('Incoterms', po.incoterms) +
+    item('Currency', po.currency) + item('Tax type', tax ? tax.label : po.taxTypeRaw) +
+    item('GST on the PO', po.gstRate ? Number(po.gstRate) + '%' : '') +
+    item('Value (excl. GST)', po.totalValue ? money(po.totalValue, po.currency) : '') +
+    item('Value (incl. GST)', po.totalInclusiveValue ? money(po.totalInclusiveValue, po.currency) : '') +
+    item('Bill to', po.billingAddress) + item('Ship to', po.shipTo) +
+    item('Vendor address', po.vendorAddress) + item('Remarks', po.remarks) +
+  '</div>';
 }
 
 async function openPo(poId, el) {
@@ -175,7 +213,8 @@ async function openPo(poId, el) {
   try {
     const po = await apiMir('/purchase-orders/' + poId);
     const picked = new Set(S.lines.map(l => l.line.id));
-    target.innerHTML = '<table class="mir-table"><thead><tr><th></th><th>#</th><th>Material</th><th>Unit</th><th class="num">Ordered</th>' +
+    target.innerHTML = poHeaderHtml(po) +
+      '<div class="table-wrap mir-table-wrap"><table><thead><tr><th></th><th>#</th><th>Material</th><th>HSN</th><th>Unit</th><th class="num">Ordered</th>' +
       '<th class="num">Received</th><th class="num">Open</th><th class="num">PO rate</th><th>Delivery</th></tr></thead><tbody>' +
       po.lines.map(l => {
         const late = l.deliveryDate && l.deliveryDate < META.today && l.receivable;
@@ -184,12 +223,13 @@ async function openPo(poId, el) {
           '<td>' + l.lineNo + '</td>' +
           '<td>' + escapeHtml(l.description) + (l.itemCode ? ' <span class="mir-muted">' + escapeHtml(l.itemCode) + '</span>' : '') +
             (l.receivable ? '' : '<div class="mir-muted">' + escapeHtml(l.blockedReason) + '</div>') + '</td>' +
-          '<td>' + escapeHtml(l.uom) + (l.uomKnown ? '' : ' <span class="mir-flag" title="Unit not recognised on the PO sheet">?</span>') + '</td>' +
+          '<td>' + escapeHtml(l.hsn || '-') + '</td>' +
+          '<td>' + escapeHtml(l.uom || '-') + (l.uomKnown ? '' : ' <span class="mir-flag" title="Unit not recognised on the PO sheet">?</span>') + '</td>' +
           '<td class="num">' + qty(l.qtyOrdered) + '</td><td class="num">' + qty(l.accepted) + '</td>' +
-          '<td class="num"><b>' + qty(l.openQty) + '</b></td><td class="num">' + money(l.rate) + '</td>' +
-          '<td>' + dateIN(l.deliveryDate) + (late ? ' <span class="mir-flag">late</span>' : '') + '</td></tr>';
-      }).join('') + '</tbody></table>' +
-      '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" data-add>Add selected lines</button></div>';
+          '<td class="num"><b>' + qty(l.openQty) + '</b></td><td class="num">' + money(l.rate, l.currency) + '</td>' +
+          '<td>' + dateIN(l.deliveryDate) + (late ? ' ' + statusPill('late', 'bad') : '') + '</td></tr>';
+      }).join('') + '</tbody></table></div>' +
+      '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" data-add>Add ticked lines to this MIR</button></div>';
     target.querySelector('[data-add]').onclick = () => {
       const ids = [...target.querySelectorAll('[data-pick]:checked:not(:disabled)')].map(c => Number(c.dataset.pick));
       addLines(po, po.lines.filter(l => ids.includes(l.id)));
@@ -211,11 +251,16 @@ function addLines(po, lines) {
   }
   lines.forEach(line => {
     if (S.lines.some(x => x.line.id === line.id)) return;
-    S.lines.push({ line, po, v: { qty_received: '', qty_rejected: '', rate: trimZeros(line.rate), discount: '', other_charges: '',
-      gst_rate: po.gstRate || '', rolls: '', batch_no: '', dept_use: '', qty_reason: '', qty_note: '', rate_reason: '', rate_note: '' } });
+    S.lines.push({ line, po, v: {
+      qty_received: '', qty_rejected: '', rate: trimZeros(line.rate), discount: '',
+      gst_rate: line.poGstRate ? trimZeros(line.poGstRate) : '', dept_use: '',
+      material_category: line.suggestedCategory || '', material_subcategory: line.suggestedSubcategory || '',
+      qty_reason: '', qty_note: '', rate_reason: '', rate_note: '', reject_reason: '', reject_note: '', gst_reason: '', gst_note: '',
+    } });
   });
   document.getElementById('invoiceCard').hidden = false;
   document.getElementById('linesCard').hidden = false;
+  document.querySelectorAll('[data-currency]').forEach(el => { el.textContent = mirCurrency(); });
   renderVendor();
   renderLines();
   schedulePreview();
@@ -224,15 +269,15 @@ function addLines(po, lines) {
 function renderVendor() {
   const box = document.getElementById('vendorBox');
   if (S.vendor) {
-    box.innerHTML = '<span class="form-label">Vendor</span> <b>' + escapeHtml(S.vendor.name) + '</b>' +
+    box.innerHTML = '<span class="mir-kv-k">Vendor</span> <b>' + escapeHtml(S.vendor.name) + '</b>' +
       (S.vendor.gstin ? ' <span class="mir-muted">GSTIN ' + escapeHtml(S.vendor.gstin) + '</span>' : ' <span class="mir-flag">no GSTIN on file</span>') +
       (S.vendorFromPo ? '' : ' <button type="button" class="mir-link" id="changeVendor">change</button>');
     const change = document.getElementById('changeVendor');
     if (change) change.onclick = () => { S.vendor = null; renderVendor(); schedulePreview(); };
     return;
   }
-  box.innerHTML = '<div class="form-group"><label class="form-label" for="vendorSearch">Vendor on the invoice (the PO names none)</label>' +
-    '<input class="form-control" id="vendorSearch" placeholder="Vendor name or GSTIN" autocomplete="off"></div><div id="vendorHits" class="mir-vendor-hits"></div>';
+  box.innerHTML = '<div class="form-group"><label class="form-label" for="vendorSearch">Vendor on the invoice (the PO names none)' + req() + '</label>' +
+    '<input class="form-control" id="vendorSearch" data-field="vendor_id" placeholder="Vendor name or GSTIN" autocomplete="off"></div><div id="vendorHits" class="mir-vendor-hits"></div>';
   document.getElementById('vendorSearch').addEventListener('input', debounce(async () => {
     const q = document.getElementById('vendorSearch').value.trim();
     const hits = document.getElementById('vendorHits');
@@ -250,39 +295,75 @@ function renderVendor() {
   }, 300));
 }
 
+function categoryControl(i, ln) {
+  const cats = META.categories || [];
+  if (!cats.length) {
+    return '<input class="form-control" data-idx="' + i + '" data-key="material_category" maxlength="200" value="' + escapeHtml(ln.v.material_category) + '">';
+  }
+  return '<select class="form-control" data-idx="' + i + '" data-key="material_category"><option value="">Choose</option>' +
+    cats.map(c => '<option value="' + escapeHtml(c.name) + '"' + (c.name === ln.v.material_category ? ' selected' : '') + '>' + escapeHtml(c.name) + '</option>').join('') +
+    '</select>';
+}
+
+function subcategoryOptions(ln) {
+  const cat = (META.categories || []).find(c => c.name === ln.v.material_category);
+  const subs = cat ? cat.subcategories : [];
+  if (ln.v.material_subcategory && !subs.includes(ln.v.material_subcategory)) ln.v.material_subcategory = '';
+  return '<option value="">' + (subs.length ? 'Choose (optional)' : (cat ? 'None listed' : 'Pick a category first')) + '</option>' +
+    subs.map(s => '<option value="' + escapeHtml(s) + '"' + (s === ln.v.material_subcategory ? ' selected' : '') + '>' + escapeHtml(s) + '</option>').join('');
+}
+
+function subcategoryControl(i, ln) {
+  if (!(META.categories || []).length) {
+    return '<input class="form-control" data-idx="' + i + '" data-key="material_subcategory" maxlength="200" value="' + escapeHtml(ln.v.material_subcategory) + '">';
+  }
+  return '<select class="form-control" data-idx="' + i + '" data-key="material_subcategory">' + subcategoryOptions(ln) + '</select>';
+}
+
 function renderLines() {
   const area = document.getElementById('linesArea');
   const slabs = META.gstSlabs;
   area.innerHTML = S.lines.map((ln, i) => {
     const l = ln.line;
-    const input = (key, attrs) => '<input class="form-control num" data-idx="' + i + '" data-key="' + key + '" value="' + escapeHtml(ln.v[key]) + '" ' + (attrs || '') + '>';
+    const unit = l.uom || 'unit';
+    const cur = l.currency || 'INR';
+    const input = (key, attrs) => '<input class="form-control" data-idx="' + i + '" data-key="' + key + '" value="' + escapeHtml(ln.v[key]) + '" ' + (attrs || '') + '>';
     return '<div class="mir-line" data-line="' + i + '">' +
       '<div class="mir-line-head">' +
-        '<div><span class="mir-badge">' + escapeHtml(plantName(l.plant)) + '</span> <b>PO ' + escapeHtml(l.poNumber) + '</b> line ' + l.lineNo +
-          ' - ' + escapeHtml(l.description) + '</div>' +
-        '<div class="mir-muted">Ordered ' + qty(l.qtyOrdered) + ' ' + escapeHtml(l.uom) + ' &middot; received so far ' + qty(l.accepted) +
-          ' &middot; <b>open ' + qty(l.openQty) + '</b> &middot; PO rate ' + money(l.rate) + '</div>' +
+        '<div class="mir-line-title"><span class="mir-line-no">' + (i + 1) + '</span><div>' +
+          '<div><b>' + escapeHtml(l.description) + '</b>' + (l.itemCode ? ' <span class="mir-muted">' + escapeHtml(l.itemCode) + '</span>' : '') + '</div>' +
+          '<div class="mir-muted">PO ' + escapeHtml(l.poNumber) + ' line ' + l.lineNo + ' &middot; ' + escapeHtml(plantName(l.plant)) + (l.hsn ? ' &middot; HSN ' + escapeHtml(l.hsn) : '') + '</div>' +
+        '</div></div>' +
         '<button type="button" class="mir-link" data-remove="' + i + '">Remove</button>' +
       '</div>' +
+      '<div class="mir-line-facts">' +
+        fact('Ordered', qty(l.qtyOrdered) + ' ' + unit) + fact('Received so far', qty(l.accepted) + ' ' + unit) +
+        fact('Open', '<b>' + qty(l.openQty) + ' ' + escapeHtml(unit) + '</b>', true) + fact('PO rate', money(l.rate, cur) + ' / ' + unit) +
+        (l.poGstRate ? fact('PO GST', Number(l.poGstRate) + '%') : '') + (l.deliveryDate ? fact('Due', dateIN(l.deliveryDate)) : '') +
+      '</div>' +
       '<div class="mir-line-grid">' +
-        field('Qty received (' + escapeHtml(l.uom) + ')', input('qty_received', 'inputmode="decimal"')) +
-        field('Qty rejected', input('qty_rejected', 'inputmode="decimal" placeholder="0"')) +
-        field('Rate on invoice (Rs)', input('rate', 'inputmode="decimal"')) +
-        field('Discount (Rs)', input('discount', 'inputmode="decimal" placeholder="0"')) +
-        field('Freight / packing (Rs)', input('other_charges', 'inputmode="decimal" placeholder="0"')) +
-        field('GST %', '<select class="form-control" data-idx="' + i + '" data-key="gst_rate"><option value="">choose</option>' +
-          slabs.map(s => '<option value="' + s + '"' + (String(Number(ln.v.gst_rate)) === String(Number(s)) && ln.v.gst_rate !== '' ? ' selected' : '') + '>' + s + '%</option>').join('') + '</select>') +
-        field('Rolls', input('rolls', 'inputmode="numeric" placeholder="-"')) +
-        field('Batch / lot no.', '<input class="form-control" data-idx="' + i + '" data-key="batch_no" maxlength="60" value="' + escapeHtml(ln.v.batch_no) + '">') +
+        field('Qty received (' + escapeHtml(unit) + ')' + req(), input('qty_received', 'inputmode="decimal" autocomplete="off"')) +
+        field('Qty rejected (' + escapeHtml(unit) + ')', input('qty_rejected', 'inputmode="decimal" placeholder="0" autocomplete="off"')) +
+        field('Rate on invoice (' + escapeHtml(cur) + ' / ' + escapeHtml(unit) + ')' + req(), input('rate', 'inputmode="decimal" autocomplete="off"')) +
+        field('Discount (' + escapeHtml(cur) + ')', input('discount', 'inputmode="decimal" placeholder="0" autocomplete="off"')) +
+        field('GST %' + req(), '<select class="form-control" data-idx="' + i + '" data-key="gst_rate"><option value="">Choose</option>' +
+          slabs.map(s => '<option value="' + s + '"' + (ln.v.gst_rate !== '' && String(Number(ln.v.gst_rate)) === String(Number(s)) ? ' selected' : '') + '>' + s + '%</option>').join('') + '</select>') +
+        field('Material category' + req(), categoryControl(i, ln)) +
+        field('Sub-category', subcategoryControl(i, ln)) +
         field('Department use', '<input class="form-control" data-idx="' + i + '" data-key="dept_use" maxlength="60" value="' + escapeHtml(ln.v.dept_use) + '">') +
       '</div>' +
       '<div class="mir-line-figures" id="fig-' + i + '"></div>' +
-      '<div class="mir-reasons" id="reasons-' + i + '"></div>' +
+      '<div class="mir-diffs" id="reasons-' + i + '"></div>' +
     '</div>';
   }).join('');
   area.querySelectorAll('[data-key]').forEach(el => {
     el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
-      S.lines[Number(el.dataset.idx)].v[el.dataset.key] = el.value;
+      const ln = S.lines[Number(el.dataset.idx)];
+      ln.v[el.dataset.key] = el.value;
+      if (el.dataset.key === 'material_category') {
+        const sub = area.querySelector('select[data-idx="' + el.dataset.idx + '"][data-key="material_subcategory"]');
+        if (sub) sub.innerHTML = subcategoryOptions(ln);
+      }
       schedulePreview();
     });
   });
@@ -295,15 +376,20 @@ function renderLines() {
   }; });
 }
 
-function field(label, control) {
-  return '<label class="form-group"><span class="form-label">' + label + '</span>' + control + '</label>';
+function fact(label, valueHtml, strong) {
+  return '<div class="mir-fact' + (strong ? ' is-strong' : '') + '"><span class="mir-kv-k">' + escapeHtml(label) + '</span><span>' +
+    (valueHtml.indexOf('<') === -1 ? escapeHtml(valueHtml) : valueHtml) + '</span></div>';
+}
+
+function field(labelHtml, control) {
+  return '<label class="form-group"><span class="form-label">' + labelHtml + '</span>' + control + '</label>';
 }
 
 function payload() {
   const val = id => document.getElementById(id).value;
   const body = {
     plant: val('plantSel'), mir_date: val('mirDate'), invoice_no: val('invoiceNo'), invoice_date: val('invoiceDate'),
-    invoice_total: val('invoiceTotal'), tcs_amount: val('tcsAmount'),
+    invoice_total: val('invoiceTotal'), tcs_amount: val('tcsAmount'), sap_grn_number: val('sapGrnNo'),
     challan_no: val('challanNo'), lr_no: val('lrNo'), vehicle_no: val('vehicleNo'), eway_bill_no: val('ewayBillNo'),
     gate_entry_no: val('gateEntryNo'), weighbridge_slip_no: val('weighbridgeSlipNo'), remarks: val('remarks'),
     tax_type_reason: S.header.tax_type_reason || '', tax_type_note: S.header.tax_type_note || '',
@@ -331,58 +417,72 @@ async function runPreview() {
 }
 
 function paintPreview(p) {
+  const cur = mirCurrency();
   // Figures per line.
   S.lines.forEach((ln, i) => {
     const fig = p.lines.find(x => x.index === i);
     const box = document.getElementById('fig-' + i);
     if (!box) return;
     box.innerHTML = fig && fig.total !== null
-      ? '<span>Taxable <b>' + money(fig.taxable) + '</b></span>' +
-        (Number(fig.igst) ? '<span>IGST ' + money(fig.igst) + '</span>' : '<span>CGST ' + money(fig.cgst) + '</span><span>' + (p.taxType === 'CGST_UGST' ? 'UGST ' : 'SGST ') + money(fig.sgst) + '</span>') +
-        '<span>Line total <b>' + money(fig.total) + '</b></span>'
-      : '';
+      ? '<span>Value <b>' + money(fig.gross, cur) + '</b></span><span>Taxable <b>' + money(fig.taxable, cur) + '</b></span>' +
+        (Number(fig.igst) ? '<span>IGST ' + money(fig.igst, cur) + '</span>' : '<span>CGST ' + money(fig.cgst, cur) + '</span><span>' + (p.taxType === 'CGST_UGST' ? 'UGST ' : 'SGST ') + money(fig.sgst, cur) + '</span>') +
+        '<span class="mir-line-total">Line total <b>' + money(fig.total, cur) + '</b></span>'
+      : '<span class="mir-muted">Enter the quantity, rate and GST % to see the line\'s figures.</span>';
   });
-  // Reason rows: one per mismatch the server found on each line.
+  // Difference cards: one per difference the server found on each line.
   S.lines.forEach((ln, i) => {
     const box = document.getElementById('reasons-' + i);
     if (!box) return;
     const mms = p.mismatches.filter(m => m.line === i);
-    const sig = mms.map(m => m.kind + m.expected + m.actual).join('|');
+    const sig = mms.map(m => m.kind + m.expected + m.actual + (ln.v[DIFF[m.kind].key + '_reason'] || '')).join('|');
     if (box.dataset.sig === sig) return;  // unchanged - keep the clerk's selection and focus
     box.dataset.sig = sig;
-    box.innerHTML = mms.map(m => reasonRowHtml(m, i, ln)).join('');
-    wireReasonRow(box, i);
+    box.innerHTML = mms.map(m => lineDiffHtml(m, i, ln)).join('');
+    wireLineDiff(box, i);
   });
   // Tax type: default to what the states imply until the clerk changes it.
   const taxSel = document.getElementById('taxType');
   if (!S.taxTouched && p.taxTypeExpected) taxSel.value = p.taxTypeExpected;
   const expected = META.taxTypes.find(t => t.code === p.taxTypeExpected);
   document.getElementById('taxTypeHint').textContent = expected ? 'Expected from the vendor\'s and plant\'s states: ' + expected.label : 'Vendor state unknown - choose the tax type on the invoice.';
-  headerReason('TAX_TYPE', 'taxReasonRow', 'tax_type', p);
-  headerReason('INVOICE_TOTAL', 'totalReasonRow', 'invoice_total', p);
+  headerDiff('TAX_TYPE', 'taxReasonRow', p);
+  headerDiff('INVOICE_TOTAL', 'totalReasonRow', p);
+  // The same invoice on earlier MIRs: allowed, but said.
+  document.getElementById('noticeBox').innerHTML = (p.notices || []).map(n =>
+    '<div class="mir-notice"><span class="mir-notice-icon" aria-hidden="true">i</span><span>' + escapeHtml(n) + '</span></div>').join('');
   // Totals.
   const diff = p.computedTotal !== null && p.invoiceTotal !== null ? Number(p.invoiceTotal) - Number(p.computedTotal) : null;
+  const off = diff !== null && Math.abs(diff) > Number(META.invoiceRoundingTolerance);
   document.getElementById('totalsBox').innerHTML =
-    '<span>Computed total <b>' + money(p.computedTotal) + '</b></span>' +
-    '<span>Invoice total <b>' + money(p.invoiceTotal) + '</b></span>' +
-    (diff !== null ? '<span class="' + (Math.abs(diff) > Number(META.invoiceRoundingTolerance) ? 'mir-bad' : 'mir-good') + '">Difference ' + money(diff.toFixed(2)) + '</span>' : '');
+    tile('Computed total', money(p.computedTotal, cur), '') +
+    tile('Invoice total', money(p.invoiceTotal, cur), '') +
+    (diff !== null ? tile('Difference', money(diff.toFixed(2), cur), off ? 'is-bad' : 'is-ok') : '');
   showErrors(p.errors);
   document.getElementById('postBtn').disabled = !p.ok;
+  const open = p.mismatches.length;
   document.getElementById('postHint').textContent = p.ok
-    ? (p.mismatches.length ? p.mismatches.length + ' difference(s) will be recorded for review.' : 'Everything agrees with the PO.')
+    ? (open ? open + ' difference' + (open === 1 ? '' : 's') + ' will be saved with the reasons chosen, for the purchase team to follow up.' : 'Everything agrees with the PO.')
     : '';
 }
 
-function mismatchText(m, ln) {
-  const unit = ln ? ' ' + ln.line.uom : '';
-  const pct = m.differencePct !== null ? ' (' + (Number(m.differencePct) > 0 ? '+' : '') + Number(m.differencePct) + '%)' : '';
+function tile(label, value, tone) {
+  return '<div class="mir-total-tile ' + tone + '"><span class="mir-kv-k">' + escapeHtml(label) + '</span><span class="mir-total-val">' + escapeHtml(value) + '</span></div>';
+}
+
+/** One line of plain English per difference: what the numbers are. */
+function diffText(m, ln) {
+  const unit = ln ? ' ' + (ln.line.uom || '') : '';
+  const cur = ln ? ln.line.currency : mirCurrency();
+  const pct = m.differencePct !== null && m.differencePct !== undefined ? ' (' + (Number(m.differencePct) > 0 ? '+' : '') + Number(m.differencePct) + '%)' : '';
   switch (m.kind) {
-    case 'QTY_SHORT': return 'Accepted ' + qty(m.actual) + unit + ' against ' + qty(m.expected) + unit + ' open - short by ' + qty(Number(m.expected) - Number(m.actual)) + unit + pct + '.';
-    case 'QTY_OVER': return 'Accepted ' + qty(m.actual) + unit + ' against ' + qty(m.expected) + unit + ' open - over by ' + qty(Number(m.actual) - Number(m.expected)) + unit + pct + '.';
-    case 'RATE_HIGH': return 'Invoice rate ' + money(m.actual) + ' is above the PO rate ' + money(m.expected) + pct + '.';
-    case 'RATE_LOW': return 'Invoice rate ' + money(m.actual) + ' is below the PO rate ' + money(m.expected) + pct + '.';
-    case 'INVOICE_TOTAL': return 'Invoice total ' + money(m.actual) + ' differs from the computed ' + money(m.expected) + pct + '.';
-    case 'TAX_TYPE': return 'Tax type ' + m.actualText + ' differs from the expected ' + m.expectedText + '.';
+    case 'QTY_SHORT': return 'Accepted ' + qty(m.actual) + unit + ' against ' + qty(m.expected) + unit + ' still open on the PO: short by ' + qty(Number(m.expected) - Number(m.actual)) + unit + pct + '.';
+    case 'QTY_OVER': return 'Accepted ' + qty(m.actual) + unit + ' against ' + qty(m.expected) + unit + ' still open on the PO: over by ' + qty(Number(m.actual) - Number(m.expected)) + unit + pct + '.';
+    case 'QTY_REJECTED': return qty(m.actual) + unit + ' rejected' + (m.differencePct ? ' (' + Number(m.differencePct) + '% of the quantity received)' : '') + '. Only the accepted quantity counts against the PO.';
+    case 'RATE_HIGH': return 'Invoice rate ' + money(m.actual, cur) + ' is above the PO rate ' + money(m.expected, cur) + pct + '.';
+    case 'RATE_LOW': return 'Invoice rate ' + money(m.actual, cur) + ' is below the PO rate ' + money(m.expected, cur) + pct + '.';
+    case 'GST_RATE': return 'GST ' + Number(m.actual) + '% on the invoice; the PO\'s totals imply ' + Number(m.expected) + '%.';
+    case 'INVOICE_TOTAL': return 'The invoice says ' + money(m.actual, cur) + ' but the lines add up to ' + money(m.expected, cur) + pct + '.';
+    case 'TAX_TYPE': return 'The invoice charges ' + m.actualText + '; the vendor\'s and plant\'s states imply ' + m.expectedText + '.';
     default: return m.kind;
   }
 }
@@ -392,44 +492,57 @@ function reasonSelectHtml(kind, selected, attrs) {
     reasonsOf(kind).map(r => '<option value="' + r.code + '"' + (r.code === selected ? ' selected' : '') + '>' + escapeHtml(r.label) + '</option>').join('') + '</select>';
 }
 
-function reasonRowHtml(m, i, ln) {
-  const which = m.kind.startsWith('QTY') ? 'qty' : 'rate';
-  const kind = MISMATCH_KIND[m.kind];
-  const reason = reasonByCode(ln.v[which + '_reason']);
-  const code = reason && reason.kind === kind ? reason.code : '';
-  if (!code) ln.v[which + '_reason'] = '';
-  return '<div class="mir-reason ' + (m.kind === 'QTY_SHORT' || m.kind === 'RATE_LOW' ? 'is-short' : 'is-over') + '">' +
-    '<div class="mir-reason-text">' + escapeHtml(mismatchText(m, ln)) + '</div>' +
-    reasonSelectHtml(kind, code, 'data-reason-idx="' + i + '" data-reason-key="' + which + '_reason" aria-label="Reason"') +
-    '<input class="form-control" data-reason-idx="' + i + '" data-reason-key="' + which + '_note" maxlength="2000" placeholder="Note' +
-      (reason && reason.noteRequired ? ' (required)' : ' (optional)') + '" value="' + escapeHtml(ln.v[which + '_note']) + '" aria-label="Note">' +
-    (reason && reason.closesLine ? '<div class="mir-muted">This closes the PO line: no balance will be expected.</div>' : '') +
+/** A difference card: what differs, whether a reason is chosen, the reason
+    and its note. Amber until a reason is picked, green once it is. */
+function diffCardHtml(m, ln, reasonCode, note, reasonAttrs, noteAttrs) {
+  const d = DIFF[m.kind];
+  const reason = reasonByCode(reasonCode);
+  const done = !!(reason && reason.kind === d.reasonKind && (!reason.noteRequired || (note || '').trim()));
+  return '<div class="mir-diff ' + (done ? 'is-done' : 'is-todo') + '">' +
+    '<div class="mir-diff-head">' +
+      '<span class="mir-diff-icon" aria-hidden="true">' + (done ? '&#10003;' : '!') + '</span>' +
+      '<span class="mir-diff-title">' + escapeHtml(d.title) + '</span>' +
+      '<span class="mir-diff-state">' + (done ? 'Reason recorded' : 'Needs a reason') + '</span>' +
+    '</div>' +
+    '<div class="mir-diff-text">' + escapeHtml(diffText(m, ln)) + '</div>' +
+    '<div class="mir-diff-inputs">' +
+      '<label class="form-group"><span class="form-label">Reason' + req() + '</span>' +
+        reasonSelectHtml(d.reasonKind, reason && reason.kind === d.reasonKind ? reason.code : '', reasonAttrs + ' aria-label="Reason: ' + escapeHtml(d.title) + '"') + '</label>' +
+      '<label class="form-group"><span class="form-label">Note' + (reason && reason.noteRequired ? req() : ' (optional)') + '</span>' +
+        '<input class="form-control" ' + noteAttrs + ' maxlength="2000" value="' + escapeHtml(note || '') + '" placeholder="' +
+        (reason && reason.noteRequired ? 'This reason needs a short explanation' : 'Anything the purchase team should know') + '"></label>' +
+    '</div>' +
+    (reason && reason.closesLine ? '<div class="mir-diff-foot">This closes the PO line: no balance will be expected from the vendor.</div>' : '') +
   '</div>';
 }
 
-function wireReasonRow(box, i) {
+function lineDiffHtml(m, i, ln) {
+  const key = DIFF[m.kind].key;
+  return diffCardHtml(m, ln, ln.v[key + '_reason'], ln.v[key + '_note'],
+    'data-reason-idx="' + i + '" data-reason-key="' + key + '_reason"', 'data-reason-idx="' + i + '" data-reason-key="' + key + '_note"');
+}
+
+function wireLineDiff(box, i) {
   box.querySelectorAll('[data-reason-key]').forEach(el => {
     el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
       S.lines[i].v[el.dataset.reasonKey] = el.value;
-      if (el.tagName === 'SELECT') { box.dataset.sig = ''; }  // repaint for the note hint / closes-line notice
+      if (el.tagName === 'SELECT') box.dataset.sig = '';  // repaint: state chip, note hint, closes-line notice
       schedulePreview();
     });
   });
 }
 
-function headerReason(kind, rowId, prefix, p) {
+function headerDiff(kind, rowId, p) {
   const row = document.getElementById(rowId);
+  const prefix = DIFF[kind].key;
   const m = p.mismatches.find(x => x.kind === kind);
   if (!m) { row.hidden = true; row.innerHTML = ''; row.dataset.sig = ''; S.header[prefix + '_reason'] = ''; return; }
-  const sig = m.kind + m.expected + m.actual + (m.actualText || '');
+  const sig = m.kind + m.expected + m.actual + (m.actualText || '') + (S.header[prefix + '_reason'] || '');
   row.hidden = false;
   if (row.dataset.sig === sig) return;
   row.dataset.sig = sig;
-  const reason = reasonByCode(S.header[prefix + '_reason']);
-  row.innerHTML = '<div class="mir-reason is-over"><div class="mir-reason-text">' + escapeHtml(mismatchText(m)) + '</div>' +
-    reasonSelectHtml(kind, reason ? reason.code : '', 'data-h="' + prefix + '_reason" aria-label="Reason"') +
-    '<input class="form-control" data-h="' + prefix + '_note" maxlength="2000" placeholder="Note' + (reason && reason.noteRequired ? ' (required)' : ' (optional)') +
-      '" value="' + escapeHtml(S.header[prefix + '_note'] || '') + '" aria-label="Note"></div>';
+  row.innerHTML = diffCardHtml(m, null, S.header[prefix + '_reason'], S.header[prefix + '_note'],
+    'data-h="' + prefix + '_reason"', 'data-h="' + prefix + '_note"');
   row.querySelectorAll('[data-h]').forEach(el => el.addEventListener(el.tagName === 'SELECT' ? 'change' : 'input', () => {
     S.header[el.dataset.h] = el.value;
     if (el.tagName === 'SELECT') row.dataset.sig = '';
@@ -440,11 +553,13 @@ function headerReason(kind, rowId, prefix, p) {
 const FIELD_LABELS = {
   plant: 'Receiving plant', mir_date: 'MIR date', invoice_no: 'Invoice number', invoice_date: 'Invoice date',
   invoice_total: 'Invoice total', tcs_amount: 'TCS', tax_type: 'Tax type', vendor_id: 'Vendor', lines: 'Lines',
+  sap_grn_number: 'SAP GRN number',
   tax_type_reason: 'Tax type reason', tax_type_note: 'Tax type note', invoice_total_reason: 'Invoice total reason',
   invoice_total_note: 'Invoice total note',
-  qty_received: 'qty received', qty_rejected: 'qty rejected', rate: 'rate', discount: 'discount', other_charges: 'freight/packing',
-  gst_rate: 'GST %', rolls: 'rolls', po_line_id: 'PO line', qty_reason: 'quantity reason', qty_note: 'quantity note',
-  rate_reason: 'rate reason', rate_note: 'rate note',
+  qty_received: 'qty received', qty_rejected: 'qty rejected', rate: 'rate', discount: 'discount',
+  gst_rate: 'GST %', po_line_id: 'PO line', material_category: 'material category', material_subcategory: 'sub-category',
+  qty_reason: 'quantity reason', qty_note: 'quantity note', rate_reason: 'rate reason', rate_note: 'rate note',
+  reject_reason: 'rejection reason', reject_note: 'rejection note', gst_reason: 'GST reason', gst_note: 'GST note',
 };
 
 function fieldLabel(field) {
@@ -459,7 +574,8 @@ function fieldLabel(field) {
 function showErrors(errors) {
   document.querySelectorAll('.is-invalid').forEach(el => el.classList.remove('is-invalid'));
   // Before the first Save, "Required." on an untouched field is noise, not news.
-  const shown = S.triedToPost ? errors : errors.filter(e => e.message !== 'Required.' && e.message !== 'Choose a reason.');
+  const quiet = e => e.message === 'Required.' || e.message === 'Choose a reason.';
+  const shown = S.triedToPost ? errors : errors.filter(e => !quiet(e));
   document.getElementById('formErrors').innerHTML = shown.map(e =>
     '<li>' + (e.field ? '<b>' + escapeHtml(fieldLabel(e.field)) + ':</b> ' : '') + escapeHtml(e.message) + '</li>').join('');
   errors.forEach(e => {
@@ -467,7 +583,7 @@ function showErrors(errors) {
     const el = m
       ? document.querySelector('[data-idx="' + m[1] + '"][data-key="' + m[2] + '"], [data-reason-idx="' + m[1] + '"][data-reason-key="' + m[2] + '"]')
       : document.querySelector('[data-field="' + e.field + '"], [data-h="' + e.field + '"]');
-    if (el && (S.triedToPost || (e.message !== 'Required.' && e.message !== 'Choose a reason.'))) el.classList.add('is-invalid');
+    if (el && (S.triedToPost || !quiet(e))) el.classList.add('is-invalid');
   });
 }
 
@@ -477,11 +593,13 @@ async function postMir() {
   btn.disabled = true;
   try {
     const mir = await apiMir('/entries/new', { method: 'POST', body: payload() });
+    const n = mir.mismatches.length;
     document.getElementById('postedNo').textContent = mir.mirNo;
-    document.getElementById('postedDetail').textContent = mir.vendor.name + ', invoice ' + mir.invoiceNo + ', ' + money(mir.computedTotal) +
-      (mir.mismatches.length ? ' - ' + mir.mismatches.length + ' difference(s) recorded for review.' : '.');
+    document.getElementById('postedDetail').textContent = mir.vendor.name + ', invoice ' + mir.invoiceNo + ', ' + money(mir.computedTotal, mirCurrency()) +
+      (n ? ' - ' + n + ' difference' + (n === 1 ? '' : 's') + ' sent to Open mismatches.' : '.');
     document.getElementById('postedBanner').hidden = false;
     document.getElementById('mirForm').hidden = true;
+    refreshMismatchCount();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   } catch (e) {
     showErrors(e.errors && e.errors.length ? e.errors : [{ field: '', message: e.message }]);
@@ -494,7 +612,7 @@ function resetForm() {
   S.lines = []; S.vendor = null; S.vendorFromPo = false; S.taxTouched = false; S.header = {}; S.preview = null; S.triedToPost = false;
   document.getElementById('mirForm').reset();
   document.getElementById('mirDate').value = META.today;
-  ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
+  ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox', 'noticeBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
   ['taxReasonRow', 'totalReasonRow'].forEach(id => { const r = document.getElementById(id); r.hidden = true; r.innerHTML = ''; r.dataset.sig = ''; });
   document.getElementById('invoiceCard').hidden = true;
   document.getElementById('linesCard').hidden = true;
@@ -505,10 +623,13 @@ function resetForm() {
 }
 
 // ── Register ──────────────────────────────────────────────────────────────
+function plantOptions() {
+  return '<option value="">All my plants</option>' +
+    META.plants.filter(p => p.canRead).map(p => '<option value="' + escapeHtml(p.code) + '">' + escapeHtml(p.name) + '</option>').join('');
+}
+
 function initRegister() {
-  const readable = META.plants.filter(p => p.canRead);
-  document.getElementById('regPlant').innerHTML = '<option value="">All my plants</option>' +
-    readable.map(p => '<option value="' + escapeHtml(p.code) + '">' + escapeHtml(p.name) + '</option>').join('');
+  document.getElementById('regPlant').innerHTML = plantOptions();
   const reload = debounce(loadRegister, 300);
   ['regPlant', 'regStatus', 'regSearch', 'regFrom', 'regTo'].forEach(id => document.getElementById(id).addEventListener('input', reload));
 }
@@ -523,13 +644,14 @@ async function loadRegister() {
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
   try {
     const data = await apiMir('/entries?' + params.toString());
-    if (!data.entries.length) { area.innerHTML = '<div class="mir-muted">No MIRs match.</div>'; return; }
-    area.innerHTML = '<table class="mir-table mir-table-click"><thead><tr><th>MIR</th><th>Date</th><th>Plant</th><th>Vendor</th><th>Invoice</th>' +
+    if (!data.entries.length) { area.innerHTML = '<div class="mir-empty">No MIRs match these filters.</div>'; return; }
+    area.innerHTML = '<div class="table-wrap"><table class="mir-click"><thead><tr><th>MIR no.</th><th>MIR date</th><th>Plant</th><th>Vendor</th><th>Invoice</th>' +
       '<th class="num">Total</th><th>Status</th><th>Entered by</th></tr></thead><tbody>' +
-      data.entries.map(e => '<tr data-mir="' + e.id + '" tabindex="0"><td><b>' + escapeHtml(e.mirNo) + '</b></td><td>' + dateIN(e.mirDate) + '</td>' +
-        '<td>' + escapeHtml(e.plant.name) + '</td><td>' + escapeHtml(e.vendor.name) + '</td><td>' + escapeHtml(e.invoiceNo) + '</td>' +
-        '<td class="num">' + money(e.computedTotal) + '</td><td><span class="mir-status mir-status-' + e.status.toLowerCase() + '">' + escapeHtml(e.status) + '</span></td>' +
-        '<td>' + escapeHtml(e.createdBy) + '</td></tr>').join('') + '</tbody></table>';
+      data.entries.map(e => '<tr data-mir="' + e.id + '" tabindex="0"><td class="nowrap"><b>' + escapeHtml(e.mirNo) + '</b></td><td class="nowrap">' + dateIN(e.mirDate) + '</td>' +
+        '<td>' + escapeHtml(e.plant.name) + '</td><td>' + escapeHtml(e.vendor.name) + '</td>' +
+        '<td>' + escapeHtml(e.invoiceNo) + '<div class="mir-muted">' + dateIN(e.invoiceDate) + '</div></td>' +
+        '<td class="num">' + money(e.computedTotal) + '</td><td>' + statusPill(e.status === 'POSTED' ? 'Posted' : 'Cancelled', MIR_STATUS_TONE[e.status]) + '</td>' +
+        '<td>' + escapeHtml(e.createdBy) + '</td></tr>').join('') + '</tbody></table></div>';
     area.querySelectorAll('[data-mir]').forEach(tr => {
       const open = () => loadDetail(Number(tr.dataset.mir));
       tr.onclick = open;
@@ -547,23 +669,30 @@ async function loadDetail(id) {
   try { m = await apiMir('/entries/' + id); } catch (e) { area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>'; return; }
   const canCancel = m.status === 'POSTED' && (META.plants.find(p => p.code === m.plant.code) || {}).canReceive;
   const tax = META.taxTypes.find(t => t.code === m.taxType);
-  area.innerHTML = '<section class="mir-card mir-detail">' +
-    '<h2 class="mir-card-title">' + escapeHtml(m.mirNo) + ' <span class="mir-status mir-status-' + m.status.toLowerCase() + '">' + escapeHtml(m.status) + '</span></h2>' +
-    '<div class="mir-kv">' +
-      kv('Plant', m.plant.name) + kv('MIR date', dateIN(m.mirDate)) + kv('Vendor', m.vendor.name + (m.vendor.gstin ? ' (' + m.vendor.gstin + ')' : '')) +
-      kv('Invoice', m.invoiceNo + ', ' + dateIN(m.invoiceDate)) + kv('Invoice total', money(m.invoiceTotal)) + kv('Computed total', money(m.computedTotal)) +
-      kv('Tax type', tax ? tax.label : m.taxType) + kv('TCS', money(m.tcsAmount)) + kv('Entered by', m.createdBy + ', ' + new Date(m.createdAt).toLocaleString('en-IN')) +
-      (m.vehicleNo ? kv('Vehicle', m.vehicleNo) : '') + (m.challanNo ? kv('Challan', m.challanNo) : '') + (m.gateEntryNo ? kv('Gate entry', m.gateEntryNo) : '') +
-      (m.cancelReason ? kv('Cancelled', m.cancelledBy + ': ' + m.cancelReason) : '') +
+  const cur = m.lines.length ? m.lines[0].currency : 'INR';
+  const item = (k, v) => v ? '<div class="mir-kv-item"><span class="mir-kv-k">' + escapeHtml(k) + '</span><span class="mir-kv-v">' + escapeHtml(v) + '</span></div>' : '';
+  area.innerHTML = '<section class="mir-panel mir-detail">' +
+    '<div class="mir-detail-head"><h3 class="mir-panel-title">' + escapeHtml(m.mirNo) + '</h3>' +
+      statusPill(m.status === 'POSTED' ? 'Posted' : 'Cancelled', MIR_STATUS_TONE[m.status]) + '</div>' +
+    '<div class="mir-po-facts">' +
+      item('Plant', m.plant.name) + item('MIR date', dateIN(m.mirDate)) + item('Vendor', m.vendor.name + (m.vendor.gstin ? ' (' + m.vendor.gstin + ')' : '')) +
+      item('Invoice', m.invoiceNo + ', ' + dateIN(m.invoiceDate)) + item('Invoice total', money(m.invoiceTotal, cur)) + item('Computed total', money(m.computedTotal, cur)) +
+      item('Tax type', tax ? tax.label : m.taxType) + item('TCS', Number(m.tcsAmount) ? money(m.tcsAmount, cur) : '') +
+      item('SAP GRN number', m.sapGrnNumber) + item('Vehicle', m.vehicleNo) + item('Challan', m.challanNo) + item('LR', m.lrNo) +
+      item('E-way bill', m.ewayBillNo) + item('Gate entry', m.gateEntryNo) + item('Weighbridge slip', m.weighbridgeSlipNo) +
+      item('Remarks', m.remarks) + item('Entered by', m.createdBy + ', ' + new Date(m.createdAt).toLocaleString('en-IN')) +
+      (m.cancelReason ? item('Cancelled', m.cancelledBy + ': ' + m.cancelReason) : '') +
     '</div>' +
-    '<table class="mir-table"><thead><tr><th>#</th><th>PO / line</th><th>Material</th><th class="num">Received</th><th class="num">Rejected</th>' +
+    '<div class="table-wrap"><table><thead><tr><th>#</th><th>PO / line</th><th>Material</th><th>Category</th><th class="num">Received</th><th class="num">Rejected</th>' +
       '<th class="num">Rate</th><th class="num">PO rate</th><th class="num">GST %</th><th class="num">Taxable</th><th class="num">Total</th></tr></thead><tbody>' +
-      m.lines.map(l => '<tr><td>' + l.lineNo + '</td><td>' + escapeHtml(l.poNumber) + ' #' + l.poLineNo + ' <span class="mir-muted">' + escapeHtml(plantName(l.poPlant)) + '</span></td>' +
-        '<td>' + escapeHtml(l.description) + '</td><td class="num">' + qty(l.qtyReceived) + ' ' + escapeHtml(l.uom) + '</td><td class="num">' + qty(l.qtyRejected) + '</td>' +
-        '<td class="num">' + money(l.rate) + '</td><td class="num">' + money(l.poRate) + '</td><td class="num">' + Number(l.gstRate) + '</td>' +
-        '<td class="num">' + money(l.taxable) + '</td><td class="num">' + money(l.lineTotal) + '</td></tr>').join('') +
-    '</tbody></table>' +
-    (m.mismatches.length ? '<h3 class="mir-subtitle">Differences recorded</h3>' + mismatchTableHtml(m.mismatches, false) : '') +
+      m.lines.map(l => '<tr><td>' + l.lineNo + '</td><td>' + escapeHtml(l.poNumber) + ' #' + l.poLineNo + '<div class="mir-muted">' + escapeHtml(plantName(l.poPlant)) + '</div></td>' +
+        '<td>' + escapeHtml(l.description) + (l.deptUse ? '<div class="mir-muted">For ' + escapeHtml(l.deptUse) + '</div>' : '') + '</td>' +
+        '<td>' + escapeHtml(l.materialCategory || '-') + (l.materialSubcategory ? '<div class="mir-muted">' + escapeHtml(l.materialSubcategory) + '</div>' : '') + '</td>' +
+        '<td class="num">' + qty(l.qtyReceived) + ' ' + escapeHtml(l.uom) + '</td><td class="num">' + (Number(l.qtyRejected) ? qty(l.qtyRejected) + ' ' + escapeHtml(l.uom) : '-') + '</td>' +
+        '<td class="num">' + money(l.rate, l.currency) + '</td><td class="num">' + money(l.poRate, l.currency) + '</td><td class="num">' + Number(l.gstRate) + '%</td>' +
+        '<td class="num">' + money(l.taxable, l.currency) + '</td><td class="num">' + money(l.lineTotal, l.currency) + '</td></tr>').join('') +
+    '</tbody></table></div>' +
+    (m.mismatches.length ? '<h4 class="mir-subtitle">Differences recorded</h4>' + mismatchListHtml(m.mismatches.map(x => Object.assign({ currency: cur }, x)), false) : '') +
     (canCancel ? '<div class="mir-cancel"><input class="form-control" id="cancelReason" maxlength="500" placeholder="Why is this MIR being cancelled?" aria-label="Cancel reason">' +
       '<button type="button" class="btn btn-navy" id="cancelBtn">Cancel this MIR</button></div><div class="mir-error-text" id="cancelErr"></div>' : '') +
   '</section>';
@@ -577,33 +706,50 @@ async function loadDetail(id) {
       await apiMir('/entries/' + id + '/cancel', { method: 'POST', body: { reason } });
       loadDetail(id);
       loadRegister();
+      refreshMismatchCount();
     } catch (e) { document.getElementById('cancelErr').textContent = e.message; }
   };
 }
 
-function kv(k, v) { return '<div><span class="form-label">' + escapeHtml(k) + '</span><div>' + escapeHtml(v) + '</div></div>'; }
-
-function mismatchTableHtml(list, withMir) {
-  return '<table class="mir-table"><thead><tr>' + (withMir ? '<th>MIR</th><th>Plant</th><th>Vendor</th><th>PO</th>' : '') +
-    '<th>Line</th><th>Difference</th><th class="num">Expected</th><th class="num">Actual</th><th>Reason</th><th>Status</th>' + (withMir ? '<th></th>' : '') + '</tr></thead><tbody>' +
-    list.map(x => '<tr>' +
-      (withMir ? '<td><b>' + escapeHtml(x.mirNo) + '</b><div class="mir-muted">' + dateIN(x.mirDate) + '</div></td><td>' + escapeHtml(x.plant.name) + '</td>' +
-        '<td>' + escapeHtml(x.vendor.name) + '<div class="mir-muted">Inv ' + escapeHtml(x.invoiceNo) + '</div></td><td>' + escapeHtml(x.poNumber || '-') +
-        (x.description ? '<div class="mir-muted">' + escapeHtml(x.description) + '</div>' : '') + '</td>' : '') +
-      '<td>' + (x.lineNo || 'invoice') + '</td><td>' + escapeHtml(x.kindLabel) + (x.differencePct ? ' <span class="mir-muted">' + (Number(x.differencePct) > 0 ? '+' : '') + Number(x.differencePct) + '%</span>' : '') + '</td>' +
-      '<td class="num">' + figure(x, x.expected) + '</td><td class="num">' + figure(x, x.actual) + '</td>' +
-      '<td>' + escapeHtml(x.reasonLabel) + (x.note ? '<div class="mir-muted">' + escapeHtml(x.note) + '</div>' : '') + '</td>' +
-      '<td>' + escapeHtml(x.status) + (x.resolutionNote ? '<div class="mir-muted">' + escapeHtml(x.resolvedBy + ': ' + x.resolutionNote) + '</div>' : '') + '</td>' +
-      (withMir ? '<td>' + (x.status === 'OPEN' && canResolve(x) ? '<div class="mir-resolve"><input class="form-control" data-resolve-note="' + x.id + '" placeholder="How was it resolved?" aria-label="Resolution note">' +
-        '<button type="button" class="btn btn-navy btn-small" data-resolve="' + x.id + '">Resolve</button></div>' : '') + '</td>' : '') +
-    '</tr>').join('') + '</tbody></table>';
+// ── Mismatches ────────────────────────────────────────────────────────────
+function initMismatches() {
+  document.getElementById('mmPlant').innerHTML = plantOptions();
+  ['mmStatus', 'mmPlant'].forEach(id => document.getElementById(id).addEventListener('input', loadMismatches));
 }
 
-// A mismatch's expected/actual in its own terms: rupees for a rate or an
-// invoice total, a quantity otherwise, a dash for the tax type (no figure).
-function figure(x, v) {
-  if (v === null || v === undefined) return '-';
-  return (x.kind.startsWith('RATE') || x.kind === 'INVOICE_TOTAL') ? money(v) : qty(v);
+async function refreshMismatchCount() {
+  const badge = document.getElementById('mismatchCount');
+  try {
+    const data = await apiMir('/mismatches?status=OPEN');
+    const n = data.mismatches.length;
+    badge.textContent = n >= 500 ? '500+' : String(n);
+    badge.hidden = n === 0;
+  } catch (e) { badge.hidden = true; }
+}
+
+/** Differences as cards: the MIR and PO they belong to, what differed, the
+    reason given at entry, and - while open - the resolve box. */
+function mismatchListHtml(list, withMir) {
+  return '<div class="mir-mm-list">' + list.map(x => {
+    const cur = x.currency || 'INR';
+    const fig = v => v === null || v === undefined ? '-' : ((x.kind.startsWith('RATE') || x.kind === 'INVOICE_TOTAL') ? money(v, cur) : (x.kind === 'GST_RATE' ? Number(v) + '%' : qty(v)));
+    const figures = x.kind === 'TAX_TYPE' ? '' : '<span>Expected <b>' + fig(x.expected) + '</b></span><span>Actual <b>' + fig(x.actual) + '</b></span>' +
+      (x.differencePct ? '<span>' + (Number(x.differencePct) > 0 ? '+' : '') + Number(x.differencePct) + '%</span>' : '');
+    return '<div class="mir-mm is-' + x.status.toLowerCase() + '">' +
+      '<div class="mir-mm-head">' +
+        '<span class="mir-mm-kind">' + escapeHtml(x.kindLabel) + (x.lineNo ? ' <span class="mir-muted">line ' + x.lineNo + '</span>' : ' <span class="mir-muted">whole invoice</span>') + '</span>' +
+        statusPill(x.status === 'VOID' ? 'Void' : x.status.charAt(0) + x.status.slice(1).toLowerCase(), MISMATCH_STATUS_TONE[x.status]) +
+      '</div>' +
+      (withMir ? '<div class="mir-mm-where"><b>' + escapeHtml(x.mirNo) + '</b> of ' + dateIN(x.mirDate) + ' &middot; ' + escapeHtml(x.plant.name) +
+        ' &middot; ' + escapeHtml(x.vendor.name) + ', invoice ' + escapeHtml(x.invoiceNo) +
+        (x.poNumber ? '<div class="mir-muted">PO ' + escapeHtml(x.poNumber) + (x.description ? ' - ' + escapeHtml(x.description) : '') + '</div>' : '') + '</div>' : '') +
+      (figures ? '<div class="mir-mm-figs">' + figures + '</div>' : '') +
+      '<div class="mir-mm-reason"><span class="mir-kv-k">Reason given</span> ' + escapeHtml(x.reasonLabel) + (x.note ? ' <span class="mir-muted">- ' + escapeHtml(x.note) + '</span>' : '') + '</div>' +
+      (x.resolutionNote ? '<div class="mir-mm-reason"><span class="mir-kv-k">Resolved</span> ' + escapeHtml(x.resolvedBy + ': ' + x.resolutionNote) + '</div>' : '') +
+      (withMir && x.status === 'OPEN' && canResolve(x) ? '<div class="mir-resolve"><input class="form-control" data-resolve-note="' + x.id + '" placeholder="What was done? e.g. debit note 123 raised, balance received on MIR ..." aria-label="Resolution note">' +
+        '<button type="button" class="btn btn-navy btn-small" data-resolve="' + x.id + '">Mark resolved</button></div>' : '') +
+    '</div>';
+  }).join('') + '</div>';
 }
 
 function canResolve(x) {
@@ -612,17 +758,22 @@ function canResolve(x) {
 
 async function loadMismatches() {
   const area = document.getElementById('mismatchArea');
+  const params = new URLSearchParams({ status: document.getElementById('mmStatus').value });
+  const plant = document.getElementById('mmPlant').value;
+  if (plant) params.set('plant', plant);
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
   try {
-    const data = await apiMir('/mismatches?status=OPEN');
-    if (!data.mismatches.length) { area.innerHTML = '<div class="mir-muted">No open mismatches.</div>'; return; }
-    area.innerHTML = mismatchTableHtml(data.mismatches, true);
+    const data = await apiMir('/mismatches?' + params.toString());
+    if (!data.mismatches.length) { area.innerHTML = '<div class="mir-empty">Nothing here.</div>'; return; }
+    area.innerHTML = mismatchListHtml(data.mismatches, true);
     area.querySelectorAll('[data-resolve]').forEach(b => { b.onclick = async () => {
-      const note = area.querySelector('[data-resolve-note="' + b.dataset.resolve + '"]').value.trim();
-      if (!note) { window.alert('Say how it was resolved.'); return; }
+      const input = area.querySelector('[data-resolve-note="' + b.dataset.resolve + '"]');
+      const note = input.value.trim();
+      if (!note) { input.classList.add('is-invalid'); input.focus(); return; }
       try {
         await apiMir('/mismatches/' + b.dataset.resolve + '/resolve', { method: 'POST', body: { note } });
         loadMismatches();
+        refreshMismatchCount();
       } catch (e) { window.alert(e.message); }
     }; });
   } catch (e) {

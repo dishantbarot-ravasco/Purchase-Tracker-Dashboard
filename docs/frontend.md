@@ -379,7 +379,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `list-sort.js`, `search-po-page.js` |
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
 | `admin.html` | WhiteNoise | `brand.css`, `admin-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `admin-page.js` |
-| `mir.html` | WhiteNoise | `brand.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `mir-page.js` |
+| `mir.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `mir-page.js` |
 | `login.html` | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
 
 Every protected page has the same static `.topnav` markup (brand link, `#navTabs`, `#navUser`) that
@@ -388,7 +388,8 @@ replaced wholesale by `main.js`'s `init()`. `admin.html` ships its create/edit-u
 (`#uf-overlay`) and `#toastStack` as static markup, plus a `#deniedContent` panel for non-admins
 (defence in depth; the endpoints enforce `IsAdmin`). `review.html` has two views (`#viewQueue`,
 `#viewStats`) behind `review-viewtab` buttons. `mir.html` has three views (`#viewNew`, `#viewRegister`, `#viewMismatches`) behind
-`mir-viewtab` buttons. Page header comments in `home.html` still mention an
+the dashboard's own `.view-tab` buttons; it is the one page besides `index.html` that loads `style.css`, so its tabs, filter
+bars, tables and pills are the dashboard's components. Page header comments in `home.html` still mention an
 "inline script"; it is `home-page.js`.
 
 ### frontend/js/theme-init.js
@@ -1231,15 +1232,24 @@ decides a mismatch**: every input change runs the debounced `schedulePreview` ->
 `/api/mir/preview`, a sequence number drops a stale reply) -> `paintPreview()`, and Save posts the same
 `payload()` to `/api/mir/entries/new`. Inputs are rendered once per line change (`renderLines()`) and
 never re-rendered while typing; `paintPreview()` repaints only the computed figures (`#fig-<i>`), the
-reason rows (`#reasons-<i>`, rebuilt only when the mismatch signature changes, so a chosen reason and
-focus survive), the header reason rows (`headerReason()` for tax type and invoice total), the totals
-and the error list. `showErrors()` hides "Required." / "Choose a reason." until the first Save attempt.
-New MIR: `runSearch()` (GET `open-pos`), `openPo()` (GET `purchase-orders/<id>`, a line that cannot take
-a receipt is shown greyed with the server's reason, "late" when past its delivery date), `addLines()`
-(one vendor per MIR: a result of another vendor is shown disabled), `renderVendor()` (a vendor picker
-when the PO names none), `postMir()`, `resetForm()`. Register: `loadRegister()`, `loadDetail()` (cancel
-with a reason when the caller may receive at that plant). Mismatches: `loadMismatches()` with inline
-resolve. Money is shown exact (`money()`, "Rs 5,42,800.00"), never the dashboard's rounded `formatInr()`.
+difference cards (`#reasons-<i>`, rebuilt only when the difference or its chosen reason changes, so
+focus survives), the header difference cards (`headerDiff()` for tax type and invoice total), the
+invoice notices (`#noticeBox`), the total tiles and the error list. `showErrors()` hides "Required." /
+"Choose a reason." until the first Save attempt. `DIFF` maps each server difference kind to its reason
+kind and payload key (`qty`, `reject`, `rate`, `gst`, `tax_type`, `invoice_total`); `diffCardHtml()` draws
+one card - amber "Needs a reason" until a reason (and a required note) is there, green "Reason
+recorded" after - and `diffText()` says what differs in plain words. New MIR: `runSearch()` (GET
+`open-pos`), `openPo()` (GET `purchase-orders/<id>`: `poHeaderHtml()` shows the PO's header facts, then
+the lines, a line that cannot take a receipt greyed with the server's reason, "late" when past its
+delivery date), `addLines()` (one vendor per MIR; the GST % and category start from the PO's rate and
+the server's suggestion), `renderLines()` (unit and currency labels from the PO line;
+`categoryControl()` / `subcategoryControl()` pickers from `META.categories`, the sub-category list
+rebuilt in place when the category changes), `renderVendor()`, `postMir()`, `resetForm()`. Register:
+`loadRegister()`, `loadDetail()` (category, GRN and every transport field shown; cancel with a reason
+when the caller may receive at that plant). Mismatches: `loadMismatches()` (status and plant filters)
+and `mismatchListHtml()` cards with inline resolve; `refreshMismatchCount()` keeps the tab's count.
+Money is shown exact in the PO's currency (`money(value, currency)` through `Intl`, "₹5,42,800.00"
+for INR), never the dashboard's rounded `formatInr()`.
 Top-level names were checked against `auth.js` / `shared.js` for collisions (one global scope).
 
 ### frontend/js/admin-page.js
@@ -1309,9 +1319,12 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   filter bars (one 32px control height, uppercase labels, stacking per group under 560px), the Raw
   Material list's `.mat-*` cell classes and `.mat-grid-cols` track widths, the Import list's `.imp-grid-cols` track widths and `.imp-*` classes, dark mode. Both lists'
   rows use tabular figures and lift on hover; `.status-pill` never wraps.
-- **`mir-page.css`** (`mir.html`) - brand tokens only, defines no custom property: view tabs, step
-  cards, PO results, line cards, reason rows (`.mir-reason.is-short` / `.is-over`), register and
-  mismatch tables, status pills.
+- **`mir-page.css`** (`mir.html`) - on top of `brand.css` and `style.css`, using their tokens and
+  defining no custom property: panels in the dashboard's `.chart-panel` look (`.mir-panel`, gold title
+  bar), PO facts, line cards and fact chips, difference cards (`.mir-diff.is-todo` / `.is-done`), total
+  tiles, invoice notices, mismatch cards (`.mir-mm.is-open` / `.is-resolved` / `.is-void`), and
+  `.mir-pill-*` tones on the dashboard's `.status-pill`. Typed figures are left-aligned; only computed
+  table figures align right.
 - **`search-po-page.css`** also lets the date-range filter's two inputs share the row under 500px
   instead of overflowing a phone screen.
 - **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,
