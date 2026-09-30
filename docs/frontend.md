@@ -428,6 +428,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
 | `admin.html` | WhiteNoise | `brand.css`, `admin-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `admin-page.js` |
 | `mir.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `mir-page.js` |
+| `stock.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css`, `stock-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `stock-page.js` |
 | `login.html` | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
 
 Every protected page has the same static `.topnav` markup (brand link, `#navTabs`, `#navUser`) that
@@ -475,8 +476,8 @@ cookie; nothing here holds a token.
   `/login.html`. Each page bootstrap returns early when it resolves `null`.
 - `logout()` - best-effort POST `/api/auth/logout`, then always redirects.
 - `renderNavTabs(container, activePage)` - Home (`/home.html`), Dashboard (`/`), Search PO, MIR Entry
-  (`/mir.html`, every role), Review Matches, and Admin only when `role === 'admin'`. `activePage` is
-  `home`/`dashboard`/`search`/`mir`/`review`/`admin`.
+  (`/mir.html`, every role), RM Store (`/stock.html`, every role), Review Matches, and Admin only when
+  `role === 'admin'`. `activePage` is `home`/`dashboard`/`search`/`mir`/`stock`/`review`/`admin`.
 - `renderUserBadge(container)` - initials avatar coloured by role (`.avatar-role-*`), name/role, a
   dropdown with Change Password and Logout; a document click closes it.
 - `initThemeToggle()` - inserts `#themeToggleBtn` before `.nav-user` and persists the choice to
@@ -1334,6 +1335,30 @@ Accuracy view: `loadStats()` (GET `/api/review/stats`, refetched on every open),
 link to `/api/review/stats/export`. `formatMoneyExact()` keeps full precision on purpose. Its own
 `showToast(text)` targets `#reviewToast`.
 
+### frontend/js/stock-page.js
+
+`stock.html`'s page ("RM Store", 2026-09-29): five views - Stock on hand, Issue, Return to store,
+Adjust, Register. Like `mir-page.js` it never draws stock or values a line: every input change sends the
+form to `/api/stock/preview` (debounced, stale responses dropped) and paints the lots each line draws,
+the value, the "Still to do" list and notices; saving re-runs the same check server-side. Inputs are
+not re-rendered on a preview. Every top-level name is `st...` / `ST_...` (one global scope with
+`auth.js` / `shared.js`).
+
+- `apiStock()` - the fetch wrapper. `stSetupForm(formId, kind, hooks)` - the shared form machinery
+  (plant and date within `backdateDays`, preview, errors mapped to fields - red only after a save was
+  tried - save, reset); each form supplies `payload`, `paint`, `lineKey`, `reset`, `onPlant`.
+- Issue (`stIssueForm()`): finds materials in the plant's stock (`stPicker()` over `ST_STOCK`, refreshed
+  after every save), department suggestions from `meta.departments`. Return (`stReturnForm()`,
+  `stReturnPick()`): finds a posted issue, offers what is still out per line with a reason; also opened
+  from an issue in the Register. Adjust (`stAdjustForm()`): lines of three kinds - physical count, add
+  stock (material from stock or the master, unit, rate), write off - with the reason list of the right
+  direction; says whether it will wait for approval.
+- Stock on hand (`stLoadStock()`, `stLoadMaterial()`): rows per material and unit, then a material's
+  lots, ledger with running balance, and its store settings for an editor.
+- Register (`stLoadRegister()`, `stLoadVoucher()`): filters (pending approvals first for an admin who has
+  some), detail with the lots each line drew, approve / turn down, cancel or withdraw, and "take
+  material back from this issue". `stPaintPending()` keeps the tab's count of pending approvals.
+
 ### frontend/js/mir-page.js
 
 `mir.html`, self-contained like `review-page.js`: `apiMir(path, opts)` wraps `/api/mir` (JSON body
@@ -1366,7 +1391,9 @@ a filed material's category shown read-only from the master, otherwise the `cate
 category changes), `renderVendor()`, `postMir()` (a saved MIR is confirmed in a `mirToast()` that fades after 8 s, and the page goes straight back to an empty form - no banner of the last MIR), `resetForm()` (keeps the receiving plant, since a store enters its MIRs at one plant). Register:
 `loadRegister()`, `loadDetail()` (the header as a `factsTableHtml()` label/value table - short facts two
 to a row, addresses and remarks across it, the same table as "More PO details"; the lines with their
-material's category; the change history; cancel with a reason). The detail says what can still change and
+material's category and, from `mirStockCellHtml()`, what each line put into the RM store and how much
+is still there; the change history; cancel with a reason - refused, with the issue named, once its stock
+has been issued). The detail says what can still change and
 until when (`editUntil`, `rejectUntil` from the server): `openEdit()` offers only the fields
 `edit_mir()` accepts (just the SAP GRN number once the edit window has closed) plus a required reason;
 `openReject()` records a later rejection on one line (new total, a rejection reason, a note).

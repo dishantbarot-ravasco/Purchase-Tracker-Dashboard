@@ -239,6 +239,9 @@ function renderNavTabs(container, activePage) {
     // MIR entry (2026-09-28) - every role reads the register; entering a
     // MIR needs Editor at the receiving plant (mir.html says so itself).
     { key: 'mir', href: '/mir.html', label: 'MIR Entry' },
+    // RM store entry (2026-09-29) - issues, returns and adjustments against
+    // the stock MIR entry brings in; every role reads stock for its plants.
+    { key: 'stock', href: '/stock.html', label: 'RM Store' },
     // Match Accuracy Programme, Phase 1 (doc 03) - any authenticated role
     // can review, not just admin/editor, since throughput (~200 reviews)
     // matters more than gating here (see review_views.py's own docstring).

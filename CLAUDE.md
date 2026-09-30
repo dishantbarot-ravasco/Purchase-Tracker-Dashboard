@@ -105,8 +105,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - Import models from `apps.core.models`; a new model goes in its plant/concern file and into
   `__init__.py`'s imports and `__all__`. Business logic lives in `apps.services`, never `apps.core`.
   [layering](docs/architecture.md#layering)
-- Keep `parsers/common.py`, `validation.py`, `stock_identity.py`, `material_identity.py`, `arithmetic_checks.py`, and
-  `consumption_engine.py` free of Django imports - migrations import them.
+- Keep `parsers/common.py`, `validation.py`, `stock_identity.py`, `material_identity.py`, `arithmetic_checks.py`,
+  `consumption_engine.py` and `stock_rules.py` free of Django imports - migrations import them.
   [layering](docs/architecture.md#layering)
 - Per-plant model classes are deliberate for the **Drive mirrors**; never merge them into one table
   with a `plant` column. Records the app owns (procurement: POs for MIR entry, MIRs) are the opposite:
@@ -279,6 +279,22 @@ Read the linked section before breaking any of these. Each is there because it w
   them, so the root `conftest.py` re-seeds them for every database test. Never make a test depend on
   migration data without it. [helpers](docs/testing-deployment.md#test-helpers)
 
+### RM stock entry
+- A posted MIR line IS the receipt: `stock_service.receive_mir()` makes its lot at the receiving plant, and a
+  lot never stores a quantity - it is derived from the MIR line (received less rejected) or the adjustment
+  line while that is posted. Never add a stored balance.
+  [RM stock entry](docs/api-and-features.md#rm-stock-entry-2026-09-29)
+- Stock may never go below zero on ANY day: every draw, cancellation and MIR cancel/rejection goes through
+  `stock_rules.min_running_balance()` over the lot's dated movements, with the lots row-locked. A MIR whose
+  stock was issued cannot be cancelled or have more rejected.
+- `stock_service.evaluate()` is the only place a voucher is checked and valued; the page previews through it.
+  Vouchers are never edited - cancel and re-enter. An editor's adjustment waits for an admin; the one who
+  entered it cannot approve it.
+- Stock converts only within weight (MT, G into KG); every other unit is its own stock line. Values are
+  before GST.
+- Stock reasons live only in migration `0082`'s `REASONS` (re-seeded by the root `conftest.py`); a new one
+  goes there plus a migration that re-runs its `seed()`. Never delete one.
+
 ### Consumption
 - `received`/`issued` are period-to-date cumulative at all three plants. Consumption is
   `issued_1 - issued_0`; branch on whether `issued` reset, not on whether `opening` changed.
@@ -423,6 +439,9 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **`cache_page` infrastructure exists and nothing uses it** - every endpoint is business data behind auth.
 - **A day where qcluster was down has no stock snapshot**, deliberately not backfilled; `sync-status`
   exposes `snapshotGapDays` as a badge.
+- **RM stock entry has no inter-plant transfer yet** (challan, job work): stock issued at one plant cannot
+  be received at another, and opening balances are typed in, not imported from the Drive RM sheets.
+  [RM stock entry](docs/api-and-features.md#rm-stock-entry-2026-09-29)
 
 - **Several code comments and docstrings are stale** - found by the 2026-09-24 documentation audit
   and listed in each doc's File reference. The bugs that audit found are all fixed.

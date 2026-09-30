@@ -1021,15 +1021,16 @@ async function loadDetail(id) {
     facts +
     '<div id="editArea"></div>' +
     '<div class="table-wrap"><table><thead><tr><th>#</th><th>PO / line</th><th>Material</th><th>Category</th><th class="num">Received</th><th class="num">Rejected</th>' +
-      '<th class="num">Rate</th><th class="num">PO rate</th><th class="num">GST %</th><th class="num">Taxable</th><th class="num">Total</th>' + (canReject ? '<th></th>' : '') + '</tr></thead><tbody>' +
+      '<th class="num">Rate</th><th class="num">PO rate</th><th class="num">GST %</th><th class="num">Taxable</th><th class="num">Total</th><th class="num" title="What this line put into the store, and how much of it is still there (RM Store)">In store</th>' + (canReject ? '<th></th>' : '') + '</tr></thead><tbody>' +
       m.lines.map(l => '<tr><td>' + l.lineNo + '</td><td>' + escapeHtml(l.poNumber) + ' #' + l.poLineNo + '<div class="mir-muted">' + escapeHtml(plantName(l.poPlant)) + '</div></td>' +
         '<td>' + escapeHtml(l.description) + (l.deptUse ? '<div class="mir-muted">For ' + escapeHtml(l.deptUse) + '</div>' : '') + (l.remarks ? '<div class="mir-muted">' + escapeHtml(l.remarks) + '</div>' : '') + '</td>' +
         '<td>' + escapeHtml(l.materialCategory || '-') + (l.materialSubcategory ? '<div class="mir-muted">' + escapeHtml(l.materialSubcategory) + '</div>' : '') + '</td>' +
         '<td class="num">' + qty(l.qtyReceived) + ' ' + escapeHtml(l.uom) + '</td><td class="num">' + (Number(l.qtyRejected) ? qty(l.qtyRejected) + ' ' + escapeHtml(l.uom) : '-') + '</td>' +
         '<td class="num">' + money(l.rate, l.currency) + '</td><td class="num">' + money(l.poRate, l.currency) + '</td><td class="num">' + Number(l.gstRate) + '%</td>' +
         '<td class="num">' + money(l.taxable, l.currency) + '</td><td class="num">' + money(l.lineTotal, l.currency) + '</td>' +
+        '<td class="num">' + mirStockCellHtml(l.stock) + '</td>' +
         (canReject ? '<td><button type="button" class="mir-link" data-reject="' + l.lineNo + '">Record rejection</button></td>' : '') + '</tr>' +
-        (canReject ? '<tr class="mir-reject-row" data-reject-row="' + l.lineNo + '" hidden><td colspan="12"></td></tr>' : '')).join('') +
+        (canReject ? '<tr class="mir-reject-row" data-reject-row="' + l.lineNo + '" hidden><td colspan="13"></td></tr>' : '')).join('') +
     '</tbody></table></div>' +
     (m.mismatches.length ? '<h4 class="mir-subtitle">Differences recorded</h4>' + mismatchListHtml(m.mismatches.map(x => Object.assign({ currency: cur }, x)), false) : '') +
     (m.history.length ? '<h4 class="mir-subtitle">Change history</h4><div class="table-wrap"><table><thead><tr><th>When</th><th>Who</th><th>What</th><th>From</th><th>To</th><th>Reason</th></tr></thead><tbody>' +
@@ -1056,6 +1057,14 @@ async function loadDetail(id) {
       refreshMismatchCount();
     } catch (e) { document.getElementById('cancelErr').textContent = e.message; }
   };
+}
+
+/** A MIR line's stock (stock_service.mir_line_stock()): what it put into
+    the store, in the stock unit (weight in KG), and how much is left. */
+function mirStockCellHtml(st) {
+  if (!st) return '-';
+  if (!st.stocked) return '<span class="mir-muted">Straight to use</span>';
+  return qty(st.balance) + ' ' + escapeHtml(st.uom) + '<div class="mir-muted">of ' + qty(st.in) + ' received</div>';
 }
 
 const HISTORY_LABELS = {

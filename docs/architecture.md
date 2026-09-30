@@ -22,7 +22,7 @@ Render).
   package** (split from one 3,255-line `models.py` on 2026-09-23): `hrs.py` / `achhad.py` /
   `vapi.py` hold each plant's PO/MIR/Stock/match models, and `sync.py`, `review.py` (corrections,
   dismissals, manual pins, category reference, flags, match reviews), `auth.py`, `reports.py`,
-  `ledgers.py` and `consumption.py` the shared ones. `__init__.py` re-exports every class -
+  `ledgers.py`, `consumption.py`, `procurement.py` and `stock.py` the shared ones. `__init__.py` re-exports every class -
   **always import from `apps.core.models`**, never a submodule. The split moved no model and
   changed no schema (`makemigrations --check`: no changes; Django registers models by app label,
   not module path, so migrations still name them `core.<Model>`). A new model goes in the file for
@@ -549,6 +549,18 @@ in [consumption.md](consumption.md).
 - `ConsumptionEvent` - an interval deliberately not counted (or logged for disagreement), with
   `lot_ref` as a `'<model>#<pk>'` string, `kind`, both issue-book and balance quantities.
 - `ConsumptionCoverage` - one row per (plant, day) observed; the rate denominator.
+
+### apps/core/models/stock.py
+
+RM stock entered in the app (migration `0082`, which also seeds `StockReasonCode` - its `REASONS` list
+is the one source, re-seeded by the root `conftest.py` - and gives every MIR line already posted its
+lot). Normalized like procurement: `StockReasonCode`, `StockSetting` (per plant and material: kept in
+store, minimum level), `StockSequence`, `StockVoucher` / `StockVoucherLine` (issue, return, adjustment;
+`PENDING` / `POSTED` / `REJECTED` / `CANCELLED`, constraints for a department on an issue, the issue a
+return names, a decision on every non-pending adjustment and a reason on every cancellation),
+`StockLot` (one per MIR line or addition; **no stored quantity** - derived from its MIR line or voucher
+line while that is posted) and `StockAllocation` (which lots a voucher line drew from or gave back to).
+See [api-and-features.md](api-and-features.md#rm-stock-entry-2026-09-29).
 
 ### apps/core/models/procurement.py
 

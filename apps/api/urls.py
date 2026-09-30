@@ -15,7 +15,7 @@ from django.urls import include, path
 
 from apps.api import views
 from apps.api.auth_views import PTLoginView, PTTokenRefreshView, PTTokenVerifyView, whoami
-from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, mir_views, password_views, preferences_views, reports_views, review_views, vapi_views
+from apps.api.routers import achhad_views, admin_overview_views, hrs_views, imports_views, mir_views, password_views, preferences_views, reports_views, review_views, stock_views, vapi_views
 
 urlpatterns = [
     path("health", views.health, name="health"),
@@ -72,6 +72,19 @@ urlpatterns = [
     path("mir/materials/<int:material_id>/category", mir_views.material_category, name="mir-material-category"),
     path("mir/po-lines/<int:line_id>/reopen", mir_views.reopen_line, name="mir-reopen-line"),
     path("mir/po-lines/<int:line_id>/review", mir_views.review_line, name="mir-review-line"),
+    # RM stock entry (2026-09-29) - apps/api/routers/stock_views.py.
+    path("stock/meta", stock_views.meta, name="stock-meta"),
+    path("stock/balances", stock_views.balances, name="stock-balances"),
+    path("stock/materials/<int:material_id>", stock_views.material_stock, name="stock-material"),
+    path("stock/material-search", stock_views.material_search, name="stock-material-search"),
+    path("stock/settings", stock_views.settings, name="stock-settings"),
+    path("stock/preview", stock_views.preview, name="stock-preview"),
+    path("stock/vouchers", stock_views.vouchers, name="stock-vouchers"),
+    path("stock/vouchers/new", stock_views.post_voucher, name="stock-post"),
+    path("stock/vouchers/<int:voucher_id>", stock_views.voucher, name="stock-voucher"),
+    path("stock/vouchers/<int:voucher_id>/cancel", stock_views.cancel_voucher, name="stock-cancel"),
+    path("stock/vouchers/<int:voucher_id>/approve", stock_views.approve_voucher, name="stock-approve"),
+    path("stock/vouchers/<int:voucher_id>/reject", stock_views.reject_voucher, name="stock-reject"),
     path("purchase-orders", hrs_views.purchase_orders, name="hrs-purchase-orders"),
     path("purchase-orders/summary", hrs_views.purchase_order_summary, name="hrs-purchase-order-summary"),
     path("purchase-orders/<str:po_number>/fields", hrs_views.correct_field, name="hrs-correct-field"),

@@ -39,6 +39,12 @@ What a posting checks (each failure is a message on the field it concerns):
 Quantities are compared EXACTLY. There is no tolerance: an over-delivery of
 weighed material is recorded with the "Weighbridge variance" reason, not
 waved through.
+
+STOCK (2026-09-29). A posted MIR is also the store's receipt: post_mir()
+makes one stock lot per line (stock_service.receive_mir()), holding the
+line's accepted quantity. Cancelling the MIR or recording a rejection later
+takes that stock back out, so both are refused once it has been issued
+(stock_service.check_mir_cancel() / check_mir_rejection()).
 """
 
 from __future__ import annotations
@@ -51,7 +57,7 @@ from django.db.models import DecimalField, F, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from apps.services import materials
+from apps.services import materials, stock_service
 from apps.services import procurement_rules as rules
 
 MAX_LINES = 50
@@ -528,13 +534,24 @@ def post_mir(payload: dict, user):
                 po_line.closed_at, po_line.closed_by, po_line.closed_reason = now, user, mm["reason"]
                 po_line.close_note, po_line.closed_by_mir_line = mm["note"] or mm["reason"].label, mir_line
                 po_line.save(update_fields=["closed_at", "closed_by", "closed_reason", "close_note", "closed_by_mir_line"])
+        # Into the store: one lot per line, holding its accepted quantity.
+        stock_service.receive_mir(mir)
         return mir
+
+
+def _stock_check(check, *args):
+    """A stock refusal, as the MIR form's own error."""
+    try:
+        check(*args)
+    except stock_service.StockValidationError as exc:
+        raise MirValidationError(exc.errors) from exc
 
 
 def cancel_mir(mir, user, reason: str):
     """Cancel a posted MIR: its lines stop counting at once (received is
     summed from posted MIRs only), its open mismatches become VOID, and any
-    PO line it closed is reopened. Nothing is deleted."""
+    PO line it closed is reopened. Nothing is deleted. Its stock lots then
+    hold nothing - refused while any of that stock is issued."""
     from apps.core.models import Mir, MirMismatch, PurchaseOrderLine
 
     reason = (reason or "").strip()
@@ -544,6 +561,8 @@ def cancel_mir(mir, user, reason: str):
         mir = Mir.objects.select_for_update().get(pk=mir.pk)
         if mir.status != Mir.Status.POSTED:
             raise MirValidationError([{"field": "status", "message": "This MIR is already cancelled."}])
+        # Its stock leaves with it - refused if any of it has been issued.
+        _stock_check(stock_service.check_mir_cancel, mir)
         mir.status = Mir.Status.CANCELLED
         mir.cancelled_by, mir.cancelled_by_email = user, getattr(user, "email", "")
         mir.cancelled_at, mir.cancel_reason = timezone.now(), reason
@@ -781,6 +800,8 @@ def record_rejection(mir_line, user, qty_rejected, reason_code: str, note: str):
                 "A rejection cannot be reduced here.")}])
         if new_total > line.qty_received:
             raise MirValidationError([{"field": "qty_rejected", "message": "Cannot be more than the quantity received."}])
+        # The rejected material leaves the store - refused if it was issued.
+        _stock_check(stock_service.check_mir_rejection, line, new_total)
         note = _text(note, 2000)
         _log(mir, line, "qty_rejected", f"{line.qty_rejected.normalize():f}", f"{new_total.normalize():f}",
              f"{reason.label}. {note}".strip(), user)

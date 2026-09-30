@@ -41,7 +41,7 @@ from apps.core.models import (
     PurchaseOrderLine,
     Vendor,
 )
-from apps.services import materials, mir_service
+from apps.services import materials, mir_service, stock_service
 from apps.services import procurement_rules as rules
 
 
@@ -242,6 +242,8 @@ def _mir_detail(mir):
     lines = list(mir.lines.select_related("po_line__purchase_order__plant", "po_line__material").order_by("line_no"))
     window = mir_service.edit_window(mir)
     total = sum((ln.line_total for ln in lines), Decimal("0")) + mir.tcs_amount
+    # What each line put into the store, and how much of it is still there.
+    stock = stock_service.mir_line_stock(mir)
     return {
         **_mir_row(mir, total), "taxType": mir.tax_type, "taxTypeExpected": mir.tax_type_expected,
         "tcsAmount": _s(mir.tcs_amount), "challanNo": mir.challan_no, "lrNo": mir.lr_no, "vehicleNo": mir.vehicle_no,
@@ -264,6 +266,8 @@ def _mir_detail(mir):
             "materialCategory": ln.po_line.material.category if ln.po_line.material else "",
             "materialSubcategory": ln.po_line.material.subcategory if ln.po_line.material else "",
             "currency": ln.po_line.purchase_order.currency,
+            "stock": ({"uom": stock[ln.id]["uom"], "in": _s(stock[ln.id]["in"]), "balance": _s(stock[ln.id]["balance"]),
+                       "stocked": stock[ln.id]["stocked"]} if ln.id in stock else None),
         } for ln in lines],
         "mismatches": [_mismatch(m) for m in mir.mismatches.select_related("reason", "mir_line").all()],
     }

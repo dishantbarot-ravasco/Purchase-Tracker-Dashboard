@@ -46,6 +46,8 @@ concern, each class moved verbatim with the comments above it:
   ledgers.py      Company-wide licence ledgers: RoDTEP scrips/usage and Advance Licences/materials.
   consumption.py  The raw-material consumption ledger: daily rows, excluded events, and observed-day coverage.
   procurement.py  The app's own normalized POs and MIRs (one table per entity, plant as a column) - MIR entry.
+  stock.py        RM stock entered in the app: lots (one per MIR line or addition), issue / return / adjustment
+                  vouchers and the lots they drew from - normalized like procurement.py.
   preferences.py  Per-user saved view preferences: sort presets.
 
 Every class is re-exported below, so `from apps.core.models import X` - the only import
@@ -143,6 +145,15 @@ from .procurement import (  # noqa: F401
     MirMismatch,
     MirChange,
 )
+from .stock import (  # noqa: F401
+    StockReasonCode,
+    StockSetting,
+    StockSequence,
+    StockVoucher,
+    StockVoucherLine,
+    StockLot,
+    StockAllocation,
+)
 from .preferences import (  # noqa: F401
     SortPreset,
 )
@@ -216,4 +227,11 @@ __all__ = [
     "MirLine",
     "MirMismatch",
     "MirChange",
+    "StockReasonCode",
+    "StockSetting",
+    "StockSequence",
+    "StockVoucher",
+    "StockVoucherLine",
+    "StockLot",
+    "StockAllocation",
 ]
