@@ -16,7 +16,7 @@ one is cancelled and entered again).
                     project owner: "if a material has not been entered in the
                     MIR the RM can't issue it"). Its quantity is NOT stored - it
                     holds the MIR line's accepted quantity (received less
-                    rejected, converted to the stock unit) for as long as the
+                    rejected, in the MIR line's own unit) for as long as the
                     MIR is posted, so a cancelled MIR or a rejection found
                     later changes stock at once, with nothing to keep in step.
                     Source ADJUSTMENT lots were opening balances added by hand
@@ -162,7 +162,7 @@ class StockVoucherLine(models.Model):
     # 2026-09-30, when an issue drew several lots oldest first.
     lot = models.ForeignKey("core.StockLot", on_delete=models.PROTECT, null=True, blank=True, related_name="voucher_lines")
     material = models.ForeignKey("core.Material", on_delete=models.PROTECT, related_name="+")
-    # The stock unit (stock_rules.stock_unit()).
+    # The unit - the MIR line's own (KG only for a lot migration 0084 could not convert back).
     uom = models.CharField(max_length=20, blank=True, default="")
     qty = models.DecimalField(max_digits=14, decimal_places=3)
     # -1 takes stock out (issue, write-off, count short), +1 puts it back
@@ -206,7 +206,8 @@ class StockLot(models.Model):
     vendor = models.ForeignKey("core.Vendor", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     # The plant whose PO paid for it, when that is not where it sits.
     bill_to_plant = models.ForeignKey("core.Plant", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
-    # Stock units per unit of the MIR line (1000 for MT held in KG).
+    # Stock units per unit of the MIR line: 1 - a lot keeps the MIR line's unit.
+    # 1000 / 0.001 only on a lot from before migration 0084 that stayed in KG.
     factor = models.DecimalField(max_digits=12, decimal_places=6, default=1)
     # Value of one stock unit, before GST; null when the receipt had no value.
     rate = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)

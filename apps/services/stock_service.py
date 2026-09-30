@@ -95,12 +95,17 @@ def receive_mir(mir) -> list:
         po_line = line.po_line
         if po_line.material_id is None:
             continue
-        uom, factor = rules.stock_unit(po_line.uom)
+        # The MIR line's own unit, as received (2026-09-30, project owner: "why
+        # can't we copy the same UOM as PO or MIR"). Every issue names its MIR
+        # receipt, so nothing adds two receipts together and no unit needs
+        # converting; factor stays 1 (only lots made before migration 0084 had
+        # MT/G held in KG).
+        uom = (po_line.uom or "").strip().upper()
         po = po_line.purchase_order
         lots.append(StockLot.objects.create(
             plant=mir.plant, material=po_line.material, uom=uom, source=StockLot.Source.MIR, mir_line=line,
             received_date=mir.mir_date, vendor=mir.vendor, bill_to_plant=po.plant if po.plant_id != mir.plant_id else None,
-            factor=factor, rate=rules.lot_rate(line.taxable, line.qty_received, factor), currency=po.currency or "INR",
+            factor=1, rate=rules.lot_rate(line.taxable, line.qty_received, 1), currency=po.currency or "INR",
             stocked=is_stocked(mir.plant, po_line.material), batch_no=line.batch_no,
         ))
     return lots
@@ -244,13 +249,16 @@ def _search(qs, q: str):
                      | Q(mir_line__po_line__item_code__icontains=q))
 
 
-def receipts_for_issue(plant, q: str = "", *, limit: int = 80) -> list:
-    """[(lot, balance)] - this plant's MIR receipts with stock left, for the
-    issue form's picker: the ones matching `q` (all of them when `q` is
-    empty), oldest MIR first so the oldest stock is the obvious pick."""
+def receipts_for_issue(plant_codes, q: str = "", *, limit: int = 80) -> list:
+    """[(lot, balance)] - the MIR receipts with stock left at these plants,
+    for the issue form's picker: the ones matching `q` (all of them when `q`
+    is empty), oldest MIR first so the oldest stock is the obvious pick. The
+    form takes its plant from the MIR picked, so it searches every plant the
+    storekeeper may issue at."""
     from apps.core.models import StockLot
 
-    qs = _search(StockLot.objects.filter(plant=plant, stocked=True, source="MIR", mir_line__mir__status="POSTED"), q)
+    qs = _search(StockLot.objects.filter(plant__code__in=list(plant_codes), stocked=True, source="MIR",
+                                         mir_line__mir__status="POSTED"), q)
     lots = list(qs.select_related(*LOT_RELATED).order_by("received_date", "mir_line__mir__mir_no", "mir_line__line_no", "id")[:3000])
     bal = lot_balances(lots)
     return [(lot, bal[lot.id]["balance"]) for lot in lots if bal[lot.id]["balance"] > 0][:limit]

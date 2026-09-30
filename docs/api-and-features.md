@@ -73,7 +73,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
 | GET | `stock/meta` | `meta` | Auth | Plants with `canRead` / `canWrite` / `canApprove`, stock reasons (no `OPENING_BALANCE`), today, `backdateDays`, departments used per plant, `pendingApprovals`, the categories held (the register's filter) |
-| GET | `stock/receipts?plant=&q=&all=` | `receipts` | Auth, readable plant (404) | The plant's MIR receipts with stock left, oldest MIR first, matching a MIR number, material, vendor, invoice, PO or item code (80 at most), or every open one with `all=1` (500 at most) - the issue and difference forms' picker. Each carries everything from its MIR line |
+| GET | `stock/receipts?plant=&q=&all=` | `receipts` | Auth, readable plant (404); every readable plant without `plant` | MIR receipts with stock left, oldest MIR first, matching a MIR number, material, vendor, invoice, PO or item code (80 at most), or every open one with `all=1` (500 at most) - the issue and difference forms' picker. Each carries everything from its MIR line |
 | GET | `stock/receipts/<lot_id>` | `receipt` | Auth, readable plant (404) | One MIR receipt: its MIR facts, balances, every movement with the running balance, the plant's store setting for the material |
 | GET | `stock/register?plant=&from=&to=&q=&category=&all=` | `register` | Auth, readable plants | The RM register: one row per MIR receipt for the period (default this month to today) - opening, received, issued, returned, adjusted, closing, rate, value, days in store. `all=1` keeps receipts that held nothing all period |
 | GET | `stock/differences?status=&plant=` | `differences` | Auth, readable plants | Stock differences (Open mismatches): `OPEN` (waiting for an admin, default), `RESOLVED`, `CANCELLED`, `ALL` |
@@ -1109,10 +1109,15 @@ come in as MIRs. The source `ADJUSTMENT` lots made by hand before 2026-09-30 sti
 offers only MIR receipts.
 
 **The three views, like MIR entry's.**
-- **Issue from MIR** - one form: the plant and date (pre-filled; department, person, production order
-  and remarks are optional - the Drive sheet never recorded them), then **pick the MIR**: search by MIR
-  number, material, vendor, invoice, PO or item code, or "Show all open MIRs"; hits are grouped by MIR,
-  oldest MIR first, only receipts with stock left at that plant, and a MIR with several lines offers
+- **Issue from MIR** - one form: the date (pre-filled; department, person, production order and remarks
+  are optional - the Drive sheet never recorded them) and the plant, then **pick the MIR**: search by MIR
+  number, material, vendor, invoice, PO or item code, or "Show all open MIRs". **The plant follows the MIR
+  picked** (2026-09-30): the form starts on "All plants", searching every plant the storekeeper may issue
+  at, and the first MIR picked sets the plant; after that only that plant's MIRs are offered, a MIR of
+  another plant (from the register) is refused with a message, and the saved message names the plant. The
+  owner had issued at HRS believing it was Achhad, because the form sat on its default plant and two
+  near-identical Reclaim Rubber lines (6 MPA at Achhad, 7 MPA at HRS) looked alike. Hits are grouped by
+  MIR with the plant named, oldest MIR first, only receipts with stock left, and a MIR with several lines offers
   "Add all lines". The list stays open after a pick, so several MIRs are picked in a row. Clicking a line adds it with everything from the
   MIR (date, vendor, PO, invoice, item code, category, rate, days in store, whose PO); the storekeeper
   enters only the quantity. Lines from several MIRs go on one issue, one line per MIR line. The draw is
@@ -1136,10 +1141,14 @@ offers only MIR receipts.
 **Returns** go back into the MIR receipt the issue line took from, at its rate, no more than that line
 still has out, dated on or after the issue, with a reason from the RETURN list.
 
-**Stock units.** A MIR line keeps the PO's unit; stock converts **only within weight** (MT and G into KG,
-exactly, the factor kept on the lot - `stock_rules.stock_unit()`). A lot is valued at the line's taxable
-value (after discount, with other charges, **before GST**, which is claimed back) over the quantity
-received, in stock units. Values total INR only.
+**Units.** A lot keeps **its MIR line's own unit** - MT stays MT, KG stays KG (2026-09-30, project owner:
+"why can't we copy the same UOM as PO or MIR?"). The first build held all weight in KG because it added a
+material's receipts together for FIFO; now every issue names its receipt, nothing is added across
+receipts, and nothing needs converting. Migration `0084` turned the earlier KG lots back into their MIR
+line's unit, with their voucher lines and allocations, where every figure divided exactly (a lot that
+would round stays in KG and still works). A lot is valued at the line's taxable value (after discount,
+with other charges, **before GST**, which is claimed back) over the quantity received. Values total INR
+only.
 
 **A receipt never goes below zero on any day** - not only today. Every issue, write-off, cancellation and
 MIR change replays the receipt's dated movements (`stock_rules.min_running_balance()`) and refuses
@@ -1544,7 +1553,7 @@ RM stock entry's rules (see [RM stock entry](#rm-stock-entry-2026-09-29)). The M
 `record_rejection()`, which turn the refusal into a `MirValidationError`), `mir_line_stock(mir)`.
 Reading: `lot_events()` (a lot's dated movements, with overrides for a change being checked),
 `lot_balances()` (in, issued, returned, adjusted, balance), `receipts_for_issue(plant, q)` (the picker),
-`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, the picker ordered oldest MIR first, `lot_detail(lot)` (movements with
+`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, `receipts_for_issue(plant_codes, q)` ordered oldest MIR first, `lot_detail(lot)` (movements with
 the running balance), `differences(plant_codes, status)`, `returnable_lines(issue)`, `departments(plant)`,
 `doc_of(lot)`. `LOT_RELATED` is the `select_related` a lot needs for all of that.
 `evaluate(payload, lock=False, earliest=None)` - the one check-and-value of an issue, return or difference;
@@ -1558,8 +1567,9 @@ id order): `post_voucher()` (numbers from `_next_seq()`, row-locked `StockSequen
 
 ### apps/services/stock_rules.py
 
-Pure rules, no Django imports (migration `0082` uses them): `stock_unit()` (weight held in KG, every
-other unit as it is), `lot_rate()` (taxable value over the quantity received, in stock units),
+Pure rules, no Django imports (migration `0082` uses them): `stock_unit()` (weight held in KG - the rule
+`0082` made the first lots with, kept for that migration only; new lots keep the MIR line's unit),
+`lot_rate()` (taxable value over the quantity received),
 `value()`, `voucher_number()`, and `min_running_balance(events, from_date)` - the lowest end-of-day
 balance of a lot on or after a day, which every posting checks stays at or above zero.
 

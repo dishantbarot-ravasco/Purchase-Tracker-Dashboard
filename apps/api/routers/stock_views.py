@@ -136,13 +136,15 @@ def meta(request):
 
 @api_view(["GET"])
 def receipts(request):
-    """A plant's MIR receipts with stock left, for the issue form and the
-    difference form: ?plant= (required), ?q= MIR, material, vendor,
+    """MIR receipts with stock left, for the issue form and the difference
+    form: at ?plant= (404 if the caller may not read it), or at every plant
+    the caller may read when it is left out; ?q= MIR, material, vendor,
     invoice, PO or item code; ?all=1 lists every open one (up to 500)."""
-    plant = Plant.objects.filter(code=request.query_params.get("plant")).first()
-    if plant is None or not user_can_access_plant(request.user, plant.code):
+    wanted = request.query_params.get("plant")
+    plants = [p.code for p in Plant.objects.all() if user_can_access_plant(request.user, p.code) and (not wanted or p.code == wanted)]
+    if wanted and not plants:
         return _not_found()
-    rows = stock_service.receipts_for_issue(plant, request.query_params.get("q", ""),
+    rows = stock_service.receipts_for_issue(plants, request.query_params.get("q", ""),
                                             limit=500 if request.query_params.get("all") == "1" else 80)
     return Response({"receipts": [_receipt(lot, bal) for lot, bal in rows]})
 

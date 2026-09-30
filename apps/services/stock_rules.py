@@ -5,14 +5,12 @@ No Django imports, like procurement_rules.py, so each rule is tested on its
 own and migration 0082 can use the same unit and rate rules when it turns the
 MIRs posted before stock existed into lots.
 
-STOCK UNITS. A MIR line keeps the PO line's own unit (procurement_rules: "KG
-and MT stay different units"), because a receipt is compared against its
-order. Stock adds receipts together, so a material bought once in MT and once
-in KG must land in one unit: within the weight family (KG, MT, G) every lot is
-held in KG, converted exactly (1 MT = 1000 KG), and the lot records the
-factor it was converted by. No other family is converted - there is nothing
-exact to convert litres, metres or numbers into - so a lot in NOS stays NOS
-and is its own stock line beside the same material's KG.
+STOCK UNITS. A lot keeps its MIR line's own unit (2026-09-30): every issue
+names the MIR receipt it comes out of, so no two receipts are ever added
+together and nothing needs converting. stock_unit() below is the earlier rule
+(weight held in KG, 1 MT = 1000 KG) - kept only because migration 0082 made
+the first lots with it; migration 0084 turned those back into their MIR
+line's unit.
 
 THE BALANCE CHECK. Stock may never go below zero on ANY day, not only
 today: a backdated issue that fits today's balance can still take a lot
@@ -39,9 +37,9 @@ _CONVERSIONS = {
 
 
 def stock_unit(uom: str) -> tuple[str, Decimal]:
-    """(stock unit, factor) for a PO line's canonical unit. Weight is held in
-    KG; every other unit is its own stock unit with factor 1. A blank unit
-    stays blank - it is shown as "no unit", never guessed."""
+    """(stock unit, factor) as migration 0082 made its lots: weight held in
+    KG, every other unit as it is. Not used for new lots - see STOCK UNITS
+    above."""
     code = (uom or "").strip().upper()
     return _CONVERSIONS.get(code, (code, Decimal("1")))
 

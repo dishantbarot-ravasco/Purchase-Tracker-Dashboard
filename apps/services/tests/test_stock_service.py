@@ -169,11 +169,12 @@ class TestReceipts:
         assert lot.bill_to_plant.code == "vapi"
         assert _on_hand("hrs") == Decimal("100") and _on_hand("vapi") == Decimal("0")
 
-    def test_mt_is_received_into_kg(self, user):
+    def test_a_lot_keeps_the_mir_lines_own_unit(self, user):
+        # Owner, 2026-09-30: copy the PO / MIR unit - no conversion to KG.
         _receive(user, "2", "50000", uom="MT")
         lot = StockLot.objects.get()
-        assert (lot.uom, lot.factor, lot.rate) == ("KG", Decimal("1000"), Decimal("50.0000"))
-        assert _on_hand() == Decimal("2000")
+        assert (lot.uom, lot.factor, lot.rate) == ("MT", Decimal("1"), Decimal("50000.0000"))
+        assert _on_hand(uom="MT") == Decimal("2") and _on_hand(uom="KG") == Decimal("0")
 
     def test_rejected_at_the_gate_never_enters_stock(self, user):
         _receive(user, "100", rejected="30")
@@ -380,9 +381,9 @@ class TestMirChangesAfterIssue:
 
     def test_the_mir_detail_says_what_each_line_put_into_stock(self, user):
         mir = _receive(user, "2", "50000", uom="MT")
-        _issue(user, "500", _lot(mir))
+        _issue(user, "0.5", _lot(mir))
         info = stock_service.mir_line_stock(mir)[mir.lines.get().id]
-        assert (info["uom"], info["in"], info["balance"]) == ("KG", Decimal("2000.000"), Decimal("1500.000"))
+        assert (info["uom"], info["in"], info["balance"]) == ("MT", Decimal("2.000"), Decimal("1.500"))
 
 
 # ── Stock differences: the store's open mismatches ─────────────────────
@@ -509,9 +510,40 @@ class TestRegister:
         new = _lot(_receive(user, "100", days_ago=1))
         _issue(user, "100", _lot(_receive(user, "100", days_ago=2)))
         _receive(user, "100", plant="vapi")
-        hrs = Plant.objects.get(code="hrs")
-        assert [lot for lot, _bal in stock_service.receipts_for_issue(hrs)] == [old, new]
-        assert [lot for lot, _bal in stock_service.receipts_for_issue(hrs, new.mir_line.mir.mir_no)] == [new]
+        assert [lot for lot, _bal in stock_service.receipts_for_issue(["hrs"])] == [old, new]
+        assert [lot for lot, _bal in stock_service.receipts_for_issue(["hrs"], new.mir_line.mir.mir_no)] == [new]
+        # Across plants: the form takes its plant from the MIR picked.
+        assert len(stock_service.receipts_for_issue(["hrs", "vapi"])) == 3
+
+
+@pytest.mark.django_db
+class TestLotsBackInTheirMirUnit:
+    """Migration 0084: lots made when MT and G were held in KG."""
+
+    def _as_before(self, lot):
+        StockLot.objects.filter(pk=lot.pk).update(uom="KG", factor=Decimal("1000"), rate=Decimal("50.0000"))
+
+    def _migrate(self):
+        importlib.import_module("apps.core.migrations.0084_stock_lot_mir_unit").lots_in_their_mir_unit(django_apps, None)
+
+    def test_a_kg_lot_and_its_issue_go_back_to_mt(self, user):
+        lot = _lot(_receive(user, "2", "50000", uom="MT"))
+        self._as_before(lot)
+        issue = _issue(user, "500", StockLot.objects.get(pk=lot.pk))
+        self._migrate()
+        lot.refresh_from_db()
+        line = issue.lines.get()
+        assert (lot.uom, lot.factor, lot.rate) == ("MT", Decimal("1"), Decimal("50000.0000"))
+        assert (line.uom, line.qty, line.allocations.get().qty) == ("MT", Decimal("0.500"), Decimal("0.500"))
+        assert _left(lot) == Decimal("1.500")
+
+    def test_a_lot_whose_figures_would_round_stays_in_kg(self, user):
+        lot = _lot(_receive(user, "2", "50000", uom="MT"))
+        self._as_before(lot)
+        _issue(user, "0.5", StockLot.objects.get(pk=lot.pk))  # 0.0005 MT - not exact at 3 decimals
+        self._migrate()
+        lot.refresh_from_db()
+        assert (lot.uom, lot.factor) == ("KG", Decimal("1000"))
 
 
 @pytest.mark.django_db

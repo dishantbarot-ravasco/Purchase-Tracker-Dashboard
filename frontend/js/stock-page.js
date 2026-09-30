@@ -103,7 +103,7 @@ const ST_STATUS_TONE = { POSTED: 'ok', PENDING: 'warn', REJECTED: 'bad', CANCELL
 const ST_MOVE_LABEL = { RECEIPT: 'MIR receipt', OPENING: 'Opening balance', ISSUE: 'Issue', RETURN: 'Return', ADJUST: 'Stock difference' };
 const ST_DIFF_LABEL = { COUNT: 'Physical count', WRITE_OFF: 'Write-off', GAIN: 'Found more' };
 
-function stToast(text) {
+function stToast(text, tone) {
   let stack = document.getElementById('stToasts');
   if (!stack) {
     stack = document.createElement('div');
@@ -113,7 +113,7 @@ function stToast(text) {
     document.body.appendChild(stack);
   }
   const el = document.createElement('div');
-  el.className = 'toast success';
+  el.className = 'toast ' + (tone || 'success');
   el.textContent = text;
   stack.appendChild(el);
   setTimeout(() => el.remove(), 8000);
@@ -180,7 +180,9 @@ function stSetupForm(formId, kind, hooks) {
     return ctl;
   }
   const plantSel = form.querySelector('select[data-field="plant"]');
-  if (plantSel) plantSel.innerHTML = stPlantOptions(stWritable(), false);
+  // "All plants" searches every plant's MIRs; the first MIR picked sets
+  // the plant (stTakePlant()).
+  if (plantSel) plantSel.innerHTML = stPlantOptions(stWritable(), true);
   const date = form.querySelector('[data-field="voucher_date"]');
   date.value = ST_META.today;
   date.max = ST_META.today;
@@ -292,7 +294,7 @@ async function stPost(ctl) {
   btn.disabled = true;
   try {
     const v = await apiStock('/vouchers/new', { method: 'POST', body: ctl.hooks.payload() });
-    stToast(v.voucherNo + (v.status === 'PENDING' ? ' saved - waiting for an admin to approve it; stock changes once approved.' : ' saved.'));
+    stToast(v.voucherNo + ' saved at ' + v.plant.name + (v.status === 'PENDING' ? ' - waiting for an admin to approve it; stock changes once approved.' : '.'));
     ctl.hooks.reset();
     if (ctl.hooks.saved) ctl.hooks.saved(v);
     stPaintPending();
@@ -304,10 +306,30 @@ async function stPost(ctl) {
   }
 }
 
+// A form's lines all come from one plant: the first MIR picked sets the
+// form's plant, and a MIR at another plant is refused until this entry is
+// saved. Returns false when refused.
+function stTakePlant(ctl, r) {
+  const current = ctl.lines.length ? ctl.lines[0].r.plant : null;
+  if (current && current.code !== r.plant.code) {
+    stToast(r.doc + ' is at ' + r.plant.name + ', but this entry is for ' + current.name + '. Save it first, then pick from ' + r.plant.name + '.', 'error');
+    return false;
+  }
+  const sel = ctl.form.querySelector('select[data-field="plant"]');
+  if (sel && sel.value !== r.plant.code) {
+    sel.value = r.plant.code;
+    if (ctl.hooks.plantSet) ctl.hooks.plantSet();
+  }
+  return true;
+}
+
 function stResetCommon(ctl) {
-  const plant = stPlantOf(ctl);
+  const plantEl = ctl.form.querySelector('[data-field="plant"]');
+  // Back to "All plants" after a save, so the next MIR picked sets the plant
+  // again; a form with one plant (or the return form's fixed one) keeps it.
+  const plant = plantEl.tagName === 'SELECT' && plantEl.querySelector('option[value=""]') ? '' : plantEl.value;
   ctl.form.reset();
-  ctl.form.querySelector('[data-field="plant"]').value = plant;
+  plantEl.value = plant;
   ctl.form.querySelector('[data-field="voucher_date"]').value = ST_META.today;
   ctl.lines = []; ctl.preview = null; ctl.tried = false; ctl.extra = {};
   ['[data-todo]', '[data-notices]', '[data-totals]'].forEach(s => { ctl.form.querySelector(s).innerHTML = ''; });
@@ -315,8 +337,9 @@ function stResetCommon(ctl) {
 }
 
 // ── Picking a MIR ─────────────────────────────────────────────────────────
-// The search box, the "Show all open MIRs" button and the hits: this plant's
-// MIR receipts with stock left, grouped by MIR, oldest MIR first. Clicking a
+// The search box, the "Show all open MIRs" button and the hits: the MIR
+// receipts with stock left at the form's plant (every plant the user may
+// write at, under "All plants"), grouped by MIR, oldest MIR first. Clicking a
 // line adds it; "Add all lines" adds every line of that MIR not yet added.
 // The list stays open after a pick (the added lines grey out), so several
 // MIRs can be picked in a row. Returns {clear()} for a plant change.
@@ -340,6 +363,7 @@ function stMirPicker(input, allBtn, box, plantFn, takenFn, onPick) {
     box.innerHTML = '<div class="st-summary">' + groups.length + ' open MIR' + (groups.length === 1 ? '' : 's') + ', ' + rows.length + ' line' +
       (rows.length === 1 ? '' : 's') + ' with stock left' + (showAll && !q ? '' : ' matching "' + escapeHtml(q) + '"') + '</div>' +
       groups.map((g, gi) => '<div class="st-mir-group"><div class="st-mir-head"><b>' + escapeHtml(g.key) + '</b>' +
+        '<span class="st-plant-tag">' + escapeHtml(g.head.plant.name) + '</span>' +
         '<span class="mir-muted">' + escapeHtml([stDate(g.head.receivedDate), g.head.vendor, g.head.invoiceNo ? 'Invoice ' + g.head.invoiceNo : ''].filter(Boolean).join(' - ')) + '</span>' +
         (g.rows.length > 1 ? '<button type="button" class="mir-link st-add-all" data-group="' + gi + '"' + (open(g).length ? '' : ' disabled') + '>Add all ' + g.rows.length + ' lines</button>' : '') +
         '</div>' +
@@ -359,7 +383,8 @@ function stMirPicker(input, allBtn, box, plantFn, takenFn, onPick) {
     const q = input.value.trim();
     if (q.length < 2 && !showAll) { rows = []; box.innerHTML = ''; return; }
     box.innerHTML = '<div class="mir-muted">Loading...</div>';
-    const params = { plant: plantFn() };
+    const params = {};
+    if (plantFn()) params.plant = plantFn();
     if (q.length >= 2) params.q = q;
     else params.all = '1';
     let found;
@@ -367,7 +392,7 @@ function stMirPicker(input, allBtn, box, plantFn, takenFn, onPick) {
       found = (await apiStock('/receipts?' + new URLSearchParams(params).toString())).receipts;
     } catch (e) { box.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>'; return; }
     if (input.value.trim() !== q) return;
-    rows = found;
+    rows = found.filter(r => stWritable().some(p => p.code === r.plant.code));
     paint();
   }, 250);
   const setAll = on => {
@@ -399,6 +424,7 @@ function stIssueForm() {
         (after !== null ? ' &middot; <b>' + stQty(String(after), ln.r.uom) + '</b> left in this MIR after it' : '') + '</div>' : '');
     }),
     progress: p => stIssueProgress(ctl, p),
+    plantSet: () => stIssueDepartments(ctl),
     reset: () => { stResetCommon(ctl); stIssueRender(ctl); stIssueProgress(ctl, null); },
     onPlant: () => { ctl.lines = []; stIssueRender(ctl); stIssueDepartments(ctl); if (ctl.picker) ctl.picker.clear(); },
   };
@@ -407,7 +433,7 @@ function stIssueForm() {
   // `quiet`: added from "Add all lines" or the register - no jump to the
   // quantity box, so the list stays where the storekeeper is looking.
   ctl.add = (r, quiet) => {
-    if (ctl.lines.some(l => l.r.id === r.id)) return;
+    if (ctl.lines.some(l => l.r.id === r.id) || !stTakePlant(ctl, r)) return;
     ctl.lines.push({ key: 'i' + (ctl.nextKey++), r, name: r.material.name, qty: '' });
     stIssueRender(ctl);
     ctl.schedule();
@@ -448,7 +474,7 @@ function stIssueRender(ctl) {
   document.getElementById('isStep3').hidden = !ctl.lines.length;
   area.innerHTML = ctl.lines.map((l, i) =>
     '<div class="mir-line"><div class="mir-line-head"><div class="mir-line-title"><span class="mir-line-no">' + (i + 1) + '</span><div><b>' + escapeHtml(l.r.material.name) + '</b>' +
-      '<div class="mir-muted">' + escapeHtml(stMirRef(l.r)) + ' - ' + stQty(l.r.balance, l.r.uom) + ' left</div></div></div>' +
+      '<div class="mir-muted">' + escapeHtml(stMirRef(l.r) + ' - ' + l.r.plant.name) + ' - ' + stQty(l.r.balance, l.r.uom) + ' left</div></div></div>' +
       '<button type="button" class="mir-link" data-remove="' + l.key + '">Remove</button></div>' +
     stReceiptChips(l.r) +
     '<div class="mir-line-grid"><div class="form-group"><label class="form-label" for="isQty' + l.key + '">Quantity going out (' + escapeHtml(l.r.uom || 'units') + ') <span class="req-mark">*</span></label>' +
@@ -543,7 +569,7 @@ function stDiffForm() {
   ctl = stSetupForm('diffForm', 'ADJUST', hooks);
   ctl.nextKey = 1;
   ctl.add = r => {
-    if (ctl.lines.some(l => l.r.id === r.id)) return;
+    if (ctl.lines.some(l => l.r.id === r.id) || !stTakePlant(ctl, r)) return;
     ctl.lines.push({ key: 'd' + (ctl.nextKey++), r, name: r.material.name, mode: 'count', qty: '', counted: '', reason: '', note: '' });
     stDiffRender(ctl);
     ctl.schedule();
@@ -572,7 +598,7 @@ function stDiffRender(ctl) {
       : '<div class="form-group"><label class="form-label" for="dfQty' + l.key + '">Quantity written off (' + escapeHtml(l.r.uom || 'units') + ') <span class="req-mark">*</span></label>' +
         '<input class="form-control" id="dfQty' + l.key + '" data-line="' + l.key + '" data-key="qty" inputmode="decimal" autocomplete="off" value="' + escapeHtml(l.qty) + '"></div>';
     return '<div class="mir-line"><div class="mir-line-head"><div class="mir-line-title"><span class="mir-line-no">' + (i + 1) + '</span><div><b>' + escapeHtml(l.r.material.name) + '</b>' +
-        '<div class="mir-muted">' + escapeHtml(stMirRef(l.r)) + ' - ' + stQty(l.r.balance, l.r.uom) + ' in the register</div></div></div>' +
+        '<div class="mir-muted">' + escapeHtml(stMirRef(l.r) + ' - ' + l.r.plant.name) + ' - ' + stQty(l.r.balance, l.r.uom) + ' in the register</div></div></div>' +
         '<button type="button" class="mir-link" data-remove="' + l.key + '">Remove</button></div>' +
       '<div class="mir-line-grid">' +
         '<div class="form-group"><label class="form-label" for="dfMode' + l.key + '">Kind of difference <span class="req-mark">*</span></label><select class="form-control" id="dfMode' + l.key + '" data-line="' + l.key + '" data-key="mode">' +
@@ -723,14 +749,11 @@ async function stLoadReceipt(lotId) {
   };
 }
 
-// Put a receipt onto a form at its plant (from the register's detail).
+// Put a receipt onto a form (from the register's detail); it sets the
+// form's plant, or is refused if the form already holds another plant's.
 function stSendTo(ctl, viewId, receipt) {
   if (!ctl || ctl.form.hidden) return;
   if (viewId) stShowView(viewId);
-  if (stPlantOf(ctl) !== receipt.plant.code) {
-    ctl.form.querySelector('[data-field="plant"]').value = receipt.plant.code;
-    if (ctl.hooks.onPlant) ctl.hooks.onPlant();
-  }
   ctl.add(receipt, true);
   ctl.form.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }

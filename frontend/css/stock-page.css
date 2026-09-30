@@ -11,6 +11,7 @@
 .st-pick-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
 .st-pick-bar .mir-search { flex: 1 1 260px; margin: 0; }
 .st-add-all { margin-left: auto; font-size: 12.5px; }
+.st-plant-tag { background: var(--card); border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px; font-size: 11.5px; font-weight: 700; color: var(--navy); }
 .st-add-all:disabled { color: var(--slate-soft); text-decoration: none; cursor: default; }
 .st-mir-group { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: var(--gray-soft); }
 .st-mir-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; margin-bottom: 8px; color: var(--navy); }

@@ -1377,6 +1377,9 @@ top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.
   after a save was tried - save, reset); each form's host carries `data-form-host` and a `data-no-write`
   banner, and each form supplies `payload`, `paint`, `lineAt`, `reset`, and optionally `onPlant`,
   `progress`, `saved`.
+- `stTakePlant(ctl, receipt)` - the plant follows the MIR: the forms start on "All plants", the first MIR
+  added sets the plant select (and the issue's department suggestions), and a MIR of another plant is
+  refused with an error toast until the entry is saved; `stResetCommon()` goes back to "All plants".
 - `stMirPicker(input, allBtn, box, ...)` - the MIR search shared by the issue and difference forms:
   `/api/stock/receipts` (`all=1` behind "Show all open MIRs"), hits grouped by MIR with "Add all lines", the
   list kept open after a pick with added lines greyed; returns `{clear()}` for a plant change. A line is

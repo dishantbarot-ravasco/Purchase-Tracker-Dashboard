@@ -554,7 +554,7 @@ in [consumption.md](consumption.md).
 
 RM stock entered in the app (migration `0082`, which also seeds `StockReasonCode` - its `REASONS` list
 is the one source, re-seeded by the root `conftest.py` - and gives every MIR line already posted its
-lot; `0083` names each voucher line's MIR receipt and makes an issue's department optional). Normalized
+lot; `0083` names each voucher line's MIR receipt and makes an issue's department optional; `0084` turns lots held in KG back into their MIR line's unit). Normalized
 like procurement: `StockReasonCode`, `StockSetting` (per plant and material: kept in store, minimum
 level), `StockSequence`, `StockVoucher` / `StockVoucherLine` (issue, return, stock difference; `PENDING`
 / `POSTED` / `REJECTED` / `CANCELLED`, constraints for the issue a return names, a decision on every
