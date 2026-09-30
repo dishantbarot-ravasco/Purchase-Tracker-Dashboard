@@ -138,9 +138,11 @@ an exhaustive hand-maintained globals list that would itself become a second sou
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push and pull request, on
 any branch, as three jobs on `ubuntu-22.04`:
 
-- **`django`** (Postgres 16 service): installs `postgresql-client-16` and puts it first on `PATH` (the
-  runner ships client 14, and `test_db_backup.py`'s real `pg_dump` refuses a server newer than
-  itself - the same guard the nightly backup relies on), then `uv sync`, `pip-audit`, `ruff check .`,
+- **`django`** (Postgres 16 service): enables the PostgreSQL apt repository (postgresql-common's
+  `apt.postgresql.org.sh` - the runner does not have it, so installing client 16 directly fails),
+  installs `postgresql-client-16` and puts it first on `PATH` (the runner ships client 14, and
+  `test_db_backup.py`'s real `pg_dump` refuses a server newer than itself - the same guard the
+  nightly backup relies on), then `uv sync`, `pip-audit`, `ruff check .`,
   `makemigrations --check --dry-run`, `manage.py check`, `check --deploy --fail-level WARNING`
   (plain `check --deploy` never fails a build on its own - every deploy check is Warning-level - so
   `--fail-level WARNING` is what makes it real; `security.W003` is silenced in `settings.py` because

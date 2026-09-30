@@ -53,11 +53,14 @@ jobs:
       - name: Install the PostgreSQL 16 client
         # test_db_backup.py runs the real pg_dump against the postgres:16
         # service, and pg_dump refuses a server newer than itself. The
-        # runner ships client 14 (from the PostgreSQL apt repository, which
-        # is already configured); 16 is put first on PATH so pg_dump and
-        # pg_restore match the service's major version.
+        # runner ships client 14 and does NOT have the PostgreSQL apt
+        # repository enabled (installing client 16 straight away fails with
+        # "Unable to locate package"), so postgresql-common's own script
+        # adds it first. 16 is put first on PATH so pg_dump and pg_restore
+        # match the service's major version.
         run: |
-          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           sudo apt-get install -y -qq postgresql-client-16
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
