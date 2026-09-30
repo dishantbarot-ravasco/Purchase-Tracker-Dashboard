@@ -468,8 +468,6 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **`prune_revoked_tokens` has a trigger endpoint but no fixed cadence.**
 - **No backup has been restored yet.** The nightly dump to R2 is built and tested against a local
   database; restore the first production dump into a scratch database before relying on it.
-- **The Dockerfile's PostgreSQL client step was not built locally** (the sandbox could not reach the
-  apt repositories). CI's `docker-image` job is its first real build.
 - **`cache_page` infrastructure exists and nothing uses it** - every endpoint is business data behind auth.
 - **A day where qcluster was down has no stock snapshot**, deliberately not backfilled; `sync-status`
   exposes `snapshotGapDays` as a badge.
