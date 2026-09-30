@@ -256,6 +256,10 @@ The single settings module, driven by environment variables (loaded from `.env` 
   messages, clickjacking. When `DEBUG` is on, `NoCacheMiddleware` is inserted at index 1.
 - **Database**: Postgres only. `DATABASE_URL` via `dj_database_url` (`conn_max_age=600`,
   health checks), else discrete `PG*` vars.
+- **Cloudflare R2**: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`
+  (local dev only), `R2_BUCKETS` (`po` / `invoice` / `backup` from the three `R2_BUCKET_*` vars) and
+  `BACKUP_RETENTION_DAYS` (30). Blank switches storage off; see
+  [testing-deployment.md](testing-deployment.md#cloudflare-r2-object-storage-2026-09-30).
 - **Cache**: `DatabaseCache` in table `pt_cache_table` (needs `createcachetable` once);
   `LocMemCache` under pytest, detected by `"pytest" in sys.modules` (not `sys.argv`, which never
   contained a bare `test`). Nothing uses `cache_page`; the comment records why it must never sit
@@ -579,8 +583,10 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
 - `PurchaseOrder` - unique `(plant, po_number)` (one number exists at two plants); `vendor` null only
   for the legacy HRS orders naming none; `po_date`, `currency`, `payment_terms`, `incoterms`,
   `billing_address`, `ship_to`, `total_value`, `total_inclusive_value`, `remarks`; `tax_type` canonical
-  or blank, `tax_type_raw` as typed; `is_active`; `source_hash` (the mirror's hash, for
-  skip-if-unchanged). The vendor's name, address, GSTIN, email and code are on `Vendor`, once.
+  or blank, `tax_type_raw` as typed; `is_active`; `source` - `csv` (projected from the Drive PO CSV)
+  or `app` (entered or confirmed in the app; the projection never writes one, migration `0086`, see
+  [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)); `source_hash` (the
+  mirror's hash, for skip-if-unchanged). The vendor's name, address, GSTIN, email and code are on `Vendor`, once.
 - `Material` - the material master: `name`, unique `name_key` (`material_identity.material_key()`),
   `item_code` (reference only - PO sheets reuse a code across grades), `uom`, `hsn`, `category`,
   `subcategory`, and who filed it at MIR entry (`category_set_by_email`, `category_set_at`; blank when
@@ -618,6 +624,15 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   `resolved_at` and a `resolution_note`.
 - `MirChange` - one edit to a posted MIR: `mir`, `mir_line` (null for a header field), `field`,
   `old_value`, `new_value`, `reason` (never blank), who and when.
+- `Document` - an uploaded PO or invoice file kept in Cloudflare R2 (migration `0087`, written only by
+  `apps/services/documents.py`; see [api-and-features.md](api-and-features.md#po-and-invoice-files-2026-09-30)).
+  `kind` PO / INVOICE; `plant`; `po_number` (PO files, as uploaded - deliberately no FK to
+  `PurchaseOrder`, since the file can arrive first and a PO number can be revised or cancelled) or
+  `mir` (invoice files, `PROTECT`); `revision` and `status` CURRENT / SUPERSEDED / WITHDRAWN;
+  unique `storage_key`; `original_filename`, `content_type`, `size_bytes`, `sha256`, `note`; who
+  uploaded and when; who withdrew, when and why. Constraints: unique revision per `(plant, po_number)`
+  for PO files and per `mir` for invoice files; a PO file has a PO number and no MIR, an invoice file
+  a MIR and no PO number. Never deleted.
 
 ### apps/core/models/preferences.py
 

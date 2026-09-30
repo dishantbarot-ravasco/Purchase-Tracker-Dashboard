@@ -187,6 +187,14 @@ class TaxTypeChoice(models.TextChoices):
 
 
 class PurchaseOrder(models.Model):
+    class Source(models.TextChoices):
+        # Projected from the Drive PO master CSV (procurement_sync.py).
+        CSV = "csv", "PO master CSV (Drive)"
+        # Entered or confirmed in the app. The CSV projection never writes
+        # to one of these, so the same PO number arriving both ways stays
+        # one order, owned by the app (uniq_po_per_plant keeps it one row).
+        APP = "app", "Entered in the app"
+
     plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="purchase_orders")
     po_number = models.CharField(max_length=100)
     po_date = models.DateField(null=True, blank=True)
@@ -209,6 +217,7 @@ class PurchaseOrder(models.Model):
     # False once the master CSV stops listing the order. Its lines then take
     # no new receipts; everything already received stays.
     is_active = models.BooleanField(default=True)
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.CSV)
     # The legacy row's own change hash - an unchanged order is skipped.
     source_hash = models.CharField(max_length=64, blank=True, default="")
     synced_at = models.DateTimeField(null=True, blank=True)
@@ -497,3 +506,61 @@ class MirChange(models.Model):
     class Meta:
         ordering = ["-changed_at", "-id"]
         constraints = [models.CheckConstraint(condition=~Q(reason=""), name="mir_change_has_reason")]
+
+
+class Document(models.Model):
+    """An uploaded PO or invoice file (2026-09-30). The file itself lives in
+    Cloudflare R2 (apps/services/object_storage.py); this row is the record
+    of it. Files are never deleted - a newer upload supersedes, a withdrawal
+    says why - so every version a decision was made on can be opened again.
+
+    A PO file is filed under (plant, po_number), not a PurchaseOrder row:
+    the PO may reach the app after its file does, and a PO number can be
+    revised or cancelled upstream. Each upload for the same PO is the next
+    revision; only one revision per PO is CURRENT. An invoice file belongs
+    to one MIR, with the same revision rule."""
+
+    class Kind(models.TextChoices):
+        PO = "PO", "Purchase order"
+        INVOICE = "INVOICE", "Invoice"
+
+    class Status(models.TextChoices):
+        CURRENT = "CURRENT", "Current"
+        SUPERSEDED = "SUPERSEDED", "Superseded by a newer revision"
+        WITHDRAWN = "WITHDRAWN", "Withdrawn"
+
+    kind = models.CharField(max_length=10, choices=Kind.choices)
+    plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="documents")
+    # The PO number as uploaded (PO files); blank for an invoice file.
+    po_number = models.CharField(max_length=100, blank=True, default="")
+    mir = models.ForeignKey(Mir, on_delete=models.PROTECT, null=True, blank=True, related_name="documents")
+    revision = models.PositiveIntegerField()
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.CURRENT)
+    storage_key = models.CharField(max_length=500, unique=True)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    size_bytes = models.PositiveBigIntegerField()
+    sha256 = models.CharField(max_length=64)
+    note = models.TextField(blank=True, default="")
+    uploaded_by = models.ForeignKey("core.PTUser", on_delete=models.SET_NULL, null=True, related_name="+")
+    uploaded_by_email = models.CharField(max_length=255)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    withdrawn_by_email = models.CharField(max_length=255, blank=True, default="")
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    withdraw_reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plant", "po_number", "revision"], condition=Q(kind="PO"),
+                                    name="uniq_po_document_revision"),
+            models.UniqueConstraint(fields=["mir", "revision"], condition=Q(kind="INVOICE"),
+                                    name="uniq_invoice_document_revision"),
+            models.CheckConstraint(condition=Q(kind="INVOICE", mir__isnull=False, po_number="")
+                                   | Q(kind="PO", mir__isnull=True) & ~Q(po_number=""),
+                                   name="document_kind_shape"),
+        ]
+        indexes = [models.Index(fields=["kind", "plant", "po_number"]), models.Index(fields=["status"])]
+        ordering = ["-uploaded_at", "-id"]
+
+    def __str__(self):
+        return f"{self.kind} {self.plant_id} {self.po_number or self.mir_id} r{self.revision}"

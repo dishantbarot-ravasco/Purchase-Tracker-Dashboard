@@ -39,4 +39,4 @@ def test_no_page_declares_a_top_level_name_twice():
 
 def test_the_guard_reads_the_mir_page():
     scripts = dict(_page_scripts())["mir.html"]
-    assert [s.name for s in scripts] == ["theme-init.js", "auth.js", "shared.js", "mir-page.js"]
+    assert [s.name for s in scripts] == ["theme-init.js", "auth.js", "shared.js", "doc-files.js", "mir-page.js"]

@@ -89,7 +89,7 @@ DJANGO_DEBUG=false uv run python manage.py check --deploy --fail-level WARNING
 #        compute_*_consumption takes --all | --since YYYY-MM-DD (default 45-day lookback)
 # Read-only: report_retired_pos, report_match_accuracy, backfill_achhad_po_numbers
 # Procurement (MIR entry): sync_procurement_pos [--plant x] - DB-only projection, also in release.sh
-# Maintenance: prune_revoked_tokens
+# Maintenance: prune_revoked_tokens; backup_database (pg_dump to R2 now - the nightly job by hand)
 ```
 
 Full reference: [data-sync.md#commands](docs/data-sync.md#commands) and
@@ -136,6 +136,10 @@ Read the linked section before breaking any of these. Each is there because it w
   PO line is never deleted at all (MIR lines point at it).
   [PO diff](docs/data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)
   [retired POs](docs/data-sync.md#purchase-orders-are-retired-not-deleted---and-until-2026-09-18-they-were-neither)
+- A procurement PO with `source = app` is never written by the CSV projection: the same PO number
+  arriving from Drive and from the app stays one row, owned by the app. The two systems are
+  **compared, never added** - never sum a Drive-side quantity with an app-side one.
+  [app-owned POs](docs/data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)
 - The PO CSVs are written upstream by an extraction agent. For Madura fabric it must calculate the
   weight (KG = GSM x width m x length m x rolls / 1000) into QTY, UOM `KG`, in the fixed description
   shape; with no GSM printed (HRS's fabric orders) it never guesses one and writes ROLLS.
@@ -286,6 +290,17 @@ Read the linked section before breaking any of these. Each is there because it w
 - Reference rows (plants, MIR reasons) come from migration `0068`; a `transaction=True` test flushes
   them, so the root `conftest.py` re-seeds them for every database test. Never make a test depend on
   migration data without it. [helpers](docs/testing-deployment.md#test-helpers)
+
+### Files and backups (2026-09-30)
+- Uploaded PO and invoice files live in private Cloudflare R2 buckets; `documents.py` is the only writer
+  of `Document` rows. A PO file is keyed on (plant, PO number), never a `PurchaseOrder` FK: a re-upload is
+  the next revision, a cancelled PO or wrong upload is withdrawn with a reason, and **nothing is ever
+  deleted** (row or object). [files](docs/api-and-features.md#po-and-invoice-files-2026-09-30)
+- A file opens through `/api/documents/<id>/open` (302 to a five-minute link) in a new tab - never
+  fetch the link and navigate a blank tab: the app's COOP header leaves it on `about:blank`.
+- The nightly `nightly-db-backup` schedule dumps the database to R2. `pg_dump` must be at least the
+  server's major version: raise the Dockerfile's `postgresql-client-18` BEFORE upgrading Render's
+  Postgres major version. [backups](docs/testing-deployment.md#backups-2026-09-30)
 
 ### RM stock entry
 - The MIR is the ONLY way stock comes in (owner, 2026-09-30): a posted MIR line IS the receipt -
@@ -451,6 +466,10 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git history** with 4 dev/test `pt_users`
   bcrypt hashes. History was deliberately not rewritten - rotate any reused password.
 - **`prune_revoked_tokens` has a trigger endpoint but no fixed cadence.**
+- **No backup has been restored yet.** The nightly dump to R2 is built and tested against a local
+  database; restore the first production dump into a scratch database before relying on it.
+- **The Dockerfile's PostgreSQL client step was not built locally** (the sandbox could not reach the
+  apt repositories). CI's `docker-image` job is its first real build.
 - **`cache_page` infrastructure exists and nothing uses it** - every endpoint is business data behind auth.
 - **A day where qcluster was down has no stock snapshot**, deliberately not backfilled; `sync-status`
   exposes `snapshotGapDays` as a badge.

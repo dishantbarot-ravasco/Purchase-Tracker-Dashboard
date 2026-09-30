@@ -53,6 +53,13 @@ scheduler daemon gets a chance to fire it. Q_CLUSTER["catch_up"] is already
 False (config/settings.py) - a worker that was down for a while runs once on
 restart, not once per missed interval.
 
+A second row, `nightly-db-backup` (2026-09-30), runs
+apps/services/db_backup.scheduled_backup() at 02:13 IST - outside the sync
+hours, off the round minute. Same get_or_create-then-correct-drift handling
+as the sync row. Its first run fires on the first deploy that creates it, so
+a missing R2 setting shows up as a failed task straight away rather than
+the next night.
+
 Usage:
     python manage.py ensure_schedules
 """
@@ -61,30 +68,38 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 from django_q.models import Schedule
 
-_SCHEDULE_NAME = "daily-sync-all-plants"  # stale name, kept - see module docstring
-_SCHEDULE_FUNC = "apps.services.sync_trigger.run_daily_sync_all_plants"
+# (name, func, cron). Names are the get_or_create key - never rename one.
+_SCHEDULES = (
+    # 9:00 AM through 8:00 PM IST, once an hour (12 runs/day). Stale name,
+    # kept - see module docstring.
+    ("daily-sync-all-plants", "apps.services.sync_trigger.run_daily_sync_all_plants", "0 9-20 * * *"),
+    ("nightly-db-backup", "apps.services.db_backup.scheduled_backup", "13 2 * * *"),
+)
 _SCHEDULE_TYPE = Schedule.CRON
-_CRON = "0 9-20 * * *"  # 9:00 AM through 8:00 PM IST, once an hour (12 runs/day)
 
 
 class Command(BaseCommand):
-    help = "Idempotently create/update the daily-sync-all-plants django-q2 Schedule row (9 AM-8 PM IST, hourly)."
+    help = "Idempotently create/update the app's django-q2 Schedule rows (hourly sync, nightly backup)."
 
     def handle(self, *args, **options):
+        for name, func, cron in _SCHEDULES:
+            self._ensure(name, func, cron)
+
+    def _ensure(self, name, func, cron):
         schedule, created = Schedule.objects.get_or_create(
-            name=_SCHEDULE_NAME,
+            name=name,
             defaults={
-                "func": _SCHEDULE_FUNC,
+                "func": func,
                 "schedule_type": _SCHEDULE_TYPE,
-                "cron": _CRON,
+                "cron": cron,
                 "minutes": None,
                 "next_run": timezone.now(),
             },
         )
         drifted = (
-            schedule.func != _SCHEDULE_FUNC
+            schedule.func != func
             or schedule.schedule_type != _SCHEDULE_TYPE
-            or schedule.cron != _CRON
+            or schedule.cron != cron
         )
         if not created and drifted:
             # Correct drift (e.g. the every-3-hours->cron migration, or
@@ -92,14 +107,14 @@ class Command(BaseCommand):
             # next_run - see the module docstring for why. `minutes` is
             # cleared too - a stale value left over from the MINUTES-typed
             # row would otherwise sit there unused but confusing to read.
-            schedule.func = _SCHEDULE_FUNC
+            schedule.func = func
             schedule.schedule_type = _SCHEDULE_TYPE
-            schedule.cron = _CRON
+            schedule.cron = cron
             schedule.minutes = None
             schedule.save(update_fields=["func", "schedule_type", "cron", "minutes"])
 
         verb = "created" if created else "already exists"
         self.stdout.write(self.style.SUCCESS(
-            f"ensure_schedules: {_SCHEDULE_NAME!r} {verb} (cron {_CRON!r}, "
+            f"ensure_schedules: {name!r} {verb} (cron {cron!r}, "
             f"next_run={schedule.next_run.isoformat()})"
         ))

@@ -62,6 +62,11 @@ def _seed():
                                       qty_as_per_po=Decimal("1"), qty_as_per_boe=Decimal("1"), uom="KG",
                                       net_price=Decimal("1"), net_value=Decimal("1"), boe_number=ids["boe"],
                                       license_type="RoDTEP", license_number=ids["license"])
+        # An uploaded PO file, filed under the plant's own PO number.
+        m.Document.objects.create(kind="PO", plant=m.Plant.objects.get(code=_key), po_number=ids["po"], revision=1,
+                                  storage_key=f"{_key}/{ids['po']}/r1.pdf", original_filename=f"{ids['po']}.pdf",
+                                  content_type="application/pdf", size_bytes=1, sha256="0" * 64,
+                                  uploaded_by_email="seed@ravasco.com")
 
 
 def _get_patterns(resolver=None, prefix=""):
@@ -134,3 +139,4 @@ def test_the_check_would_catch_an_unscoped_ledger():
     client.force_authenticate(user=make_user(email="all@ravasco.com", role="viewer"))
     body = client.get("/api/imports/rodtep").content.decode()
     assert FOREIGN["vapi"]["import_po"] in body
+    assert FOREIGN["vapi"]["po"] in client.get("/api/documents/po").content.decode()

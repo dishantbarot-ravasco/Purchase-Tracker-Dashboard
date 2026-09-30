@@ -202,6 +202,23 @@ services:
         sync: false
       - key: SENTRY_ENVIRONMENT
         value: production
+      # Cloudflare R2 object storage (2026-09-30) - apps/services/object_storage.py.
+      # The web service uploads and opens PO and invoice files; the worker
+      # (below) writes the nightly database backup. Same values on both -
+      # Render does not share env vars across services, so set them twice.
+      # The bucket names must match the buckets created in Cloudflare.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_PO
+        value: pt-po-files
+      - key: R2_BUCKET_INVOICE
+        value: pt-invoice-files
+      - key: R2_BUCKET_BACKUPS
+        value: pt-db-backups
 
   # Runs the Drive sync/match pipelines queued by apps/services/sync_trigger.py
   # (django-q2's ORM broker - queued tasks are rows in the shared Postgres DB
@@ -297,3 +314,17 @@ services:
         sync: false
       - key: SENTRY_ENVIRONMENT
         value: production
+      # Cloudflare R2 - same values as the web service's block above. The
+      # worker runs the nightly-db-backup schedule into R2_BUCKET_BACKUPS.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_PO
+        value: pt-po-files
+      - key: R2_BUCKET_INVOICE
+        value: pt-invoice-files
+      - key: R2_BUCKET_BACKUPS
+        value: pt-db-backups

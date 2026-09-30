@@ -264,13 +264,22 @@ function poHeaderHtml(po) {
     (more ? '<details class="mir-po-more"><summary>More PO details (terms, addresses, remarks)</summary>' + more + '</details>' : '');
 }
 
+/** The PO's uploaded copy (po-files.html), so the store can check the
+    delivery against the order as printed. Only the current revision is
+    offered; older ones stay on the PO Files page. */
+function poFilesHtml(po) {
+  const current = (po.poFiles || []).find(f => f.status === 'CURRENT');
+  if (!current) return '<p class="mir-muted doc-file-none">No PO copy uploaded yet.</p>';
+  return '<div class="doc-file-po"><span class="mir-kv-k">PO copy</span> ' + docFileLineHtml(current) + '</div>';
+}
+
 async function openPo(poId, el) {
   const target = el.querySelector('.mir-po-lines');
   target.innerHTML = '<div class="mir-muted">Loading lines...</div>';
   try {
     const po = await apiMir('/purchase-orders/' + poId);
     const picked = new Set(S.lines.map(l => l.line.id));
-    target.innerHTML = poHeaderHtml(po) +
+    target.innerHTML = poHeaderHtml(po) + poFilesHtml(po) +
       '<div class="table-wrap mir-table-wrap"><table><thead><tr><th></th><th>#</th><th>Material</th><th>HSN</th><th>Unit</th><th class="num">Ordered</th>' +
       '<th class="num">Received</th><th class="num">Open</th><th class="num">PO rate</th><th>Delivery</th>' + (po.canManage ? '<th>Purchase manager</th>' : '') + '</tr></thead><tbody>' +
       po.lines.map(l => {
@@ -289,6 +298,7 @@ async function openPo(poId, el) {
           (po.canManage ? '<tr class="mir-action-row" data-action-row="' + l.id + '" hidden><td colspan="11"></td></tr>' : '');
       }).join('') + '</tbody></table></div>' +
       '<div class="mir-actions"><button type="button" class="btn btn-primary btn-small" data-add>Add ticked lines to this MIR</button></div>';
+    docFileBindOpen(target);
     target.querySelector('[data-add]').onclick = () => {
       const ids = [...target.querySelectorAll('[data-pick]:checked:not(:disabled)')].map(c => Number(c.dataset.pick));
       addLines(po, po.lines.filter(l => ids.includes(l.id)));
@@ -806,14 +816,34 @@ async function postMir() {
     }
     return;
   }
+  const invoiceFile = document.getElementById('invoiceFile').files[0];
+  const fileProblem = invoiceFile ? docFileProblem(invoiceFile) : '';
+  if (fileProblem) {
+    showErrors([{ field: '', message: 'Invoice copy: ' + fileProblem }]);
+    document.getElementById('invoiceFile').focus();
+    return;
+  }
   btn.disabled = true;
   try {
     const mir = await apiMir('/entries/new', { method: 'POST', body: payload() });
     const n = mir.mismatches.length;
+    // The invoice copy goes up once the MIR exists. The MIR is saved either
+    // way; a failed upload says so and can be retried from the register.
+    let fileNote = '';
+    if (invoiceFile) {
+      try {
+        const fd = new FormData();
+        fd.append('file', invoiceFile);
+        await docFileUpload('/api/mir/entries/' + mir.id + '/invoice', fd);
+        fileNote = ' Invoice copy attached.';
+      } catch (e) {
+        fileNote = ' The invoice copy was NOT attached (' + e.message + ') - attach it from the MIR register.';
+      }
+    }
     // Straight back to an empty form for the next delivery; the saved MIR
     // is confirmed in a toast that fades, and stays findable in the register.
     mirToast(mir.mirNo + ' saved - ' + mir.vendor.name + ', invoice ' + mir.invoiceNo + ', ' + money(mir.computedTotal, mirCurrency()) +
-      (n ? '. ' + n + ' difference' + (n === 1 ? '' : 's') + ' sent to Open mismatches.' : '.'));
+      (n ? '. ' + n + ' difference' + (n === 1 ? '' : 's') + ' sent to Open mismatches.' : '.') + fileNote);
     clearDraft();
     resetForm();
     refreshMismatchCount();
@@ -1019,6 +1049,7 @@ async function loadDetail(id) {
       (m.canReject ? 'A rejection found later can be recorded until ' + dateIN(m.rejectUntil) + '. ' : '') +
       'Quantities, rates, GST and totals are never edited: if one is wrong, cancel this MIR and enter it again.</p>' : '') +
     facts +
+    invoiceFilesHtml(m, mayWrite) +
     '<div id="editArea"></div>' +
     '<div class="table-wrap"><table><thead><tr><th>#</th><th>PO / line</th><th>Material</th><th>Category</th><th class="num">Received</th><th class="num">Rejected</th>' +
       '<th class="num">Rate</th><th class="num">PO rate</th><th class="num">GST %</th><th class="num">Taxable</th><th class="num">Total</th><th class="num" title="What this line put into the store, and how much of it is still there (RM Store)">In store</th>' + (canReject ? '<th></th>' : '') + '</tr></thead><tbody>' +
@@ -1042,6 +1073,7 @@ async function loadDetail(id) {
       '<button type="button" class="btn btn-navy" id="cancelBtn">Cancel this MIR</button></div><div class="mir-error-text" id="cancelErr"></div>' : '') +
   '</section>';
   area.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  bindInvoiceFiles(area, id);
   const editBtn = document.getElementById('editBtn');
   if (editBtn) editBtn.onclick = () => openEdit(m);
   area.querySelectorAll('[data-reject]').forEach(b => { b.onclick = () => openReject(m, Number(b.dataset.reject)); });
@@ -1056,6 +1088,42 @@ async function loadDetail(id) {
       loadRegister();
       refreshMismatchCount();
     } catch (e) { document.getElementById('cancelErr').textContent = e.message; }
+  };
+}
+
+/** The MIR's invoice copies, newest revision first, and - for a posted MIR
+    the caller may write - a picker to attach one or replace the current one
+    (the older copy is kept as a superseded revision). */
+function invoiceFilesHtml(m, mayWrite) {
+  const files = m.invoiceFiles || [];
+  return '<h4 class="mir-subtitle">Invoice copy</h4>' +
+    (files.length ? files.map(docFileLineHtml).join('') : '<p class="mir-muted doc-file-none">No invoice copy attached.</p>') +
+    (mayWrite ? '<div class="doc-file-upload"><label class="form-label" for="invoiceFileLater">' + (files.length ? 'Replace with a newer copy' : 'Attach the invoice') + '</label>' +
+      '<input class="form-control" type="file" id="invoiceFileLater" accept="' + DOC_FILE_ACCEPT + '">' +
+      '<button type="button" class="btn btn-navy btn-small" id="invoiceUploadBtn">Upload</button>' +
+      '<span class="mir-error-text" id="invoiceUploadErr" role="alert"></span></div>' : '');
+}
+
+function bindInvoiceFiles(area, mirId) {
+  docFileBindOpen(area);
+  const btn = document.getElementById('invoiceUploadBtn');
+  if (!btn) return;
+  btn.onclick = async () => {
+    const err = document.getElementById('invoiceUploadErr');
+    const file = document.getElementById('invoiceFileLater').files[0];
+    const problem = docFileProblem(file);
+    if (problem) { err.textContent = problem; return; }
+    btn.disabled = true;
+    err.textContent = '';
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await docFileUpload('/api/mir/entries/' + mirId + '/invoice', fd);
+      loadDetail(mirId);
+    } catch (e) {
+      err.textContent = e.message;
+      btn.disabled = false;
+    }
   };
 }
 

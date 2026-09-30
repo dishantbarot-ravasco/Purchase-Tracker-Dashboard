@@ -238,6 +238,9 @@ function renderNavTabs(container, activePage) {
     { key: 'search', href: '/search-po.html', label: 'Search PO' },
     // MIR entry (2026-09-28) - every role reads the register; entering a
     // MIR needs Editor at the receiving plant (mir.html says so itself).
+    // Uploaded PO copies (2026-09-30) - every role reads its plants' files;
+    // uploading needs Editor at the plant.
+    { key: 'pofiles', href: '/po-files.html', label: 'PO Files' },
     { key: 'mir', href: '/mir.html', label: 'MIR Entry' },
     // RM store entry (2026-09-29) - issues, returns and adjustments against
     // the stock MIR entry brings in; every role reads stock for its plants.

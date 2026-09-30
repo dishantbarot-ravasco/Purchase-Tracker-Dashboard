@@ -194,6 +194,27 @@ class TestProjection:
         _sync(tmp_path, other)
         assert PurchaseOrder.objects.get(po_number="3000009001").is_active is False
 
+    def test_an_order_the_app_owns_is_never_overwritten_or_duplicated(self, tmp_path):
+        """The same PO number arriving from the CSV and from the app stays
+        one order with the app's figures: its quantity is never counted
+        twice, and the hourly sync does not undo what was confirmed."""
+        _sync(tmp_path, _three_lines())
+        po = PurchaseOrder.objects.get(plant__code="hrs", po_number="3000009001")
+        po.source = PurchaseOrder.Source.APP
+        po.save(update_fields=["source"])
+        line = _lines()[0]
+        line.qty_ordered = Decimal("900")
+        line.save(update_fields=["qty_ordered"])
+
+        rows = _three_lines()
+        rows[0] = _row("1", "SBR 1502", 1200, 100)
+        _sync(tmp_path, rows)
+
+        assert PurchaseOrder.objects.filter(po_number="3000009001").count() == 1
+        assert _lines()[0].qty_ordered == Decimal("900")
+        assert len(_lines()) == 3
+        assert project_plant_orders("hrs").orders_held == ["3000009001"]
+
 
 @pytest.mark.django_db
 class TestVendorMaster:

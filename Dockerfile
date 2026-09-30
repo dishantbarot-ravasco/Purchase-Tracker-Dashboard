@@ -40,6 +40,25 @@ WORKDIR /app
 # between two otherwise identical builds.
 RUN pip install --no-cache-dir "uv==0.11.19"
 
+# pg_dump and pg_restore for the nightly database backup
+# (apps/services/db_backup.py, run by the qcluster worker). pg_dump refuses
+# to dump a server newer than itself, and Debian's own client lags behind
+# Render's Postgres, so the client comes from the PostgreSQL project's apt
+# repository, pinned to a major version at least as new as the server's
+# (a newer pg_dump dumps any older server). Raise the version here BEFORE
+# upgrading the Render database's major version. curl is only needed to
+# fetch the repository key and is removed again in the same layer.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && . /etc/os-release \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-18 \
+    && apt-get purge -y --auto-remove curl \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy dependency manifests first so `uv sync` is cached by Docker unless
 # pyproject.toml/uv.lock actually change - avoids re-resolving on every code
 # edit. --no-dev keeps pytest/ruff/coverage out of the production image (CI

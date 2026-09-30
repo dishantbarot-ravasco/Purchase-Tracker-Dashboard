@@ -576,6 +576,28 @@ RODTEP_FOLDER_ID = os.environ.get("RODTEP_FOLDER_ID", "16gdQxPCDutLTxZ2oiX1M1TCi
 ADVANCE_LICENSE_FILE_ID = os.environ.get("ADVANCE_LICENSE_FILE_ID", "1zqxUwxUn2fpftBUJhqjjfRmzjgkob0rb2U11VRXudX4")
 
 # ---------------------------------------------------------------------------
+# Cloudflare R2 object storage (2026-09-30) - S3-compatible, reached through
+# boto3 (apps/services/object_storage.py). One private bucket per kind of
+# file: uploaded PO PDFs, uploaded invoices, and the nightly database
+# backups. Blank values leave storage switched off (local dev and CI need no
+# Cloudflare account); anything that needs it then raises StorageNotConfigured
+# with the missing variable's name.
+# ---------------------------------------------------------------------------
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "")
+R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+# Blank in production (derived from R2_ACCOUNT_ID). Set only to point local
+# dev at another S3-compatible server, such as MinIO.
+R2_ENDPOINT_URL = os.environ.get("R2_ENDPOINT_URL", "")
+R2_BUCKETS = {
+    "po": os.environ.get("R2_BUCKET_PO", ""),
+    "invoice": os.environ.get("R2_BUCKET_INVOICE", ""),
+    "backup": os.environ.get("R2_BUCKET_BACKUPS", ""),
+}
+# Nightly pg_dump files older than this are deleted from the backup bucket.
+BACKUP_RETENTION_DAYS = int(os.environ.get("BACKUP_RETENTION_DAYS", "30"))
+
+# ---------------------------------------------------------------------------
 # Session - DB-backed, required for the Google OAuth PKCE code_verifier
 # round-trip and for the pending_user_id stored during the device-verify OTP
 # flow. SESSION_SAVE_EVERY_REQUEST is essential: without it, session writes

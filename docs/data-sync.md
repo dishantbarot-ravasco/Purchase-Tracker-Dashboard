@@ -22,7 +22,7 @@ uv run python manage.py runserver          # dev server
 uv run python manage.py migrate
 uv run python manage.py makemigrations core
 uv run python manage.py createcachetable   # one-off: DatabaseCache's table (pt_cache_table)
-uv run python manage.py ensure_schedules   # idempotent: creates/corrects the django-q2 Schedule row
+uv run python manage.py ensure_schedules   # idempotent: creates/corrects the django-q2 Schedule rows (sync, backup)
 uv run python manage.py qcluster           # the worker that actually fires the schedule and queued syncs
 uv run pytest                              # test suite (real Postgres, no mocking)
 uv run ruff check .                        # lint gate (red/green, also in CI)
@@ -65,6 +65,7 @@ uv run python manage.py backfill_achhad_po_numbers --mir-file in.xlsx --output o
 
 # Maintenance
 uv run python manage.py prune_revoked_tokens
+uv run python manage.py backup_database    # pg_dump to the R2 backup bucket now (the nightly job, by hand)
 ```
 
 Every `sync_*` command accepts `--file <path>` to parse a local copy instead of fetching from Drive
@@ -267,6 +268,16 @@ position. The projection also cleans on the way in: one `Vendor` per GSTIN, unit
 are unchanged is skipped, so a second run writes nothing. The projection runs after the mirror's own
 commit: if it fails, that run's SyncRun is FAILED but the CSV sync itself stands.
 
+**An order the app owns is never written by the projection** (2026-09-30). `PurchaseOrder.source` is
+`csv` for an order projected here and `app` for one entered or confirmed in the app (the PO upload
+and extraction flow sets it). While both systems run side by side, the same PO number reaches the app
+both ways; `uniq_po_per_plant` keeps it **one row**, and the projection skips an `app` order
+(`ProjectionResult.orders_held`, printed by `sync_procurement_pos`) instead of overwriting the
+figures a person confirmed. So an order's quantity is never counted twice: the Drive side keeps its
+own copy in the legacy mirror for the reconciliation dashboard, the app keeps its row, and the two
+are **compared, never added**. A PO the CSV retires stays active in the app if the app owns it; a
+cancelled app PO is retired in the app.
+
 ### Rules for the PO extraction agent - Madura fabric weight (2026-09-30)
 
 The PO master CSVs are written upstream, by the agent that extracts each PO PDF into rows; this app
@@ -374,7 +385,12 @@ the same set exactly. **When snapshot history has holes, check for a live worker
 the snapshot code.** `Q_CLUSTER["catch_up"]` is `False` and the Stock xlsx only holds today's
 position, so missed days are permanently unrecoverable. The entry point is
 `sync_trigger.run_daily_sync_all_plants()`, which also runs each plant's Import PO pipeline and the
-company-wide RoDTEP and Advance Licence syncs. Admin/dashboard-triggered `sync-trigger` endpoints
+company-wide RoDTEP and Advance Licence syncs.
+
+A second row, **`nightly-db-backup`** (2026-09-30), runs `db_backup.scheduled_backup()` at **02:13
+IST** (`13 2 * * *`) - outside the sync hours and off the round minute. It dumps the database to the
+R2 backup bucket ([testing-deployment.md](testing-deployment.md#backups-2026-09-30)). Its first run
+fires on the deploy that creates it, so a missing R2 setting shows up at once as a failed task. Admin/dashboard-triggered `sync-trigger` endpoints
 still exist alongside it, and a plant is **skipped, not queued behind**, if a manual refresh is
 already mid-flight for it.
 
@@ -825,15 +841,23 @@ No Drive access. Identical except the plant key; Achhad's also folds in any exis
 ### [apps/core/management/commands/sync_procurement_pos.py](../apps/core/management/commands/sync_procurement_pos.py)
 
 `project_plant_orders()` for all three plants, or `--plant`. No Drive call. For the first backfill
-after a deploy (release.sh runs it) and for re-running by hand; prints counts and any line flagged for
-review.
+after a deploy (release.sh runs it) and for re-running by hand; prints counts, how many orders were
+left as the app has them (`source = app`), and any line flagged for review.
 
 ### [apps/core/management/commands/ensure_schedules.py](../apps/core/management/commands/ensure_schedules.py)
 
-`get_or_create()`s the `daily-sync-all-plants` `Schedule` (`func` =
-`apps.services.sync_trigger.run_daily_sync_all_plants`, `Schedule.CRON`, `0 9-20 * * *`,
-`next_run` = now on creation). On an existing row it corrects only drifted `func`/`schedule_type`/
-`cron` and clears `minutes`; it never touches `next_run`. Run by `release.sh` on every deploy.
+`get_or_create()`s each row of `_SCHEDULES` by name: `daily-sync-all-plants` (`func` =
+`apps.services.sync_trigger.run_daily_sync_all_plants`, `Schedule.CRON`, `0 9-20 * * *`) and
+`nightly-db-backup` (`apps.services.db_backup.scheduled_backup`, `13 2 * * *`), `next_run` = now on
+creation. On an existing row it corrects only drifted `func`/`schedule_type`/`cron` and clears
+`minutes`; it never touches `next_run`. Never rename a row - the name is the key, and a rename would
+create a second job. Run by `release.sh` on every deploy.
+
+### [apps/core/management/commands/backup_database.py](../apps/core/management/commands/backup_database.py)
+
+One `db_backup.run_backup()` now - the nightly job run by hand, after setting up R2 or before a risky
+migration. A missing R2 setting or a failed `pg_dump` becomes a `CommandError` naming the cause.
+See [testing-deployment.md](testing-deployment.md#backups-2026-09-30).
 
 ### [apps/core/management/commands/report_retired_pos.py](../apps/core/management/commands/report_retired_pos.py)
 

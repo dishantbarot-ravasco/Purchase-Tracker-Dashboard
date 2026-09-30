@@ -271,3 +271,11 @@ tr.mir-reject-row > td { background: var(--card); }
 
 /* Purchase-manager action panel under a PO line (review / reopen / short-close). */
 tr.mir-action-row > td { background: var(--card); }
+
+/* Uploaded PO and invoice copies (doc-files.js, 2026-09-30). */
+.doc-file-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin: 4px 0; font-size: 13px; }
+.doc-file-po { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 2px 0 10px; }
+.doc-file-none { margin: 4px 0 10px; }
+.doc-file-upload { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0 14px; }
+.doc-file-upload .form-label { margin: 0; }
+.doc-file-upload .form-control { flex: 1 1 220px; }

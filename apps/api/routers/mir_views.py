@@ -31,6 +31,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
 from apps.api.permissions import IsEditor, user_can_access_plant, user_can_edit_plant
+from apps.api.routers.document_views import invoice_files, po_files
 from apps.core.models import (
     Material,
     Mir,
@@ -164,7 +165,7 @@ def purchase_order(request, po_id):
     # the buttons only when this is true.
     can_manage = getattr(request.user, "role", "") in ("admin", "editor") and user_can_edit_plant(request.user, po.plant.code)
     return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active, "canManage": can_manage,
-                     "lines": [_po_line(line, st) for line, st in lines]})
+                     "poFiles": po_files(po), "lines": [_po_line(line, st) for line, st in lines]})
 
 
 @api_view(["GET"])
@@ -270,6 +271,7 @@ def _mir_detail(mir):
                        "stocked": stock[ln.id]["stocked"]} if ln.id in stock else None),
         } for ln in lines],
         "mismatches": [_mismatch(m) for m in mir.mismatches.select_related("reason", "mir_line").all()],
+        "invoiceFiles": invoice_files(mir),
     }
 
 

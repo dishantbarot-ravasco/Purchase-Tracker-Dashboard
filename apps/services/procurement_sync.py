@@ -16,6 +16,11 @@ The rules that protect receipts:
   - A line is never deleted. One the CSV no longer lists is deactivated; an
     order the CSV no longer lists is deactivated. Receipts against either
     stay exactly as posted.
+  - An order the app owns (source APP: uploaded or entered in the app) is
+    never written here, even when the CSV lists the same PO number. The
+    order stays one row (one PO per plant and number), so its quantities
+    are never counted twice; the Drive side keeps its own copy in the
+    legacy mirror, and the two are compared, never added.
   - If the CSV changes what a line IS (material, item code or unit) after a
     receipt was posted against it, the line is flagged needs_review rather
     than silently re-pointed: the receipt may no longer belong to it.
@@ -53,6 +58,9 @@ class ProjectionResult:
     lines_updated: int = 0
     lines_deactivated: int = 0
     lines_flagged: list = field(default_factory=list)
+    # PO numbers the CSV also lists but the app owns (source APP): left as
+    # the app has them.
+    orders_held: list = field(default_factory=list)
 
 
 def _legacy_model(plant_code: str):
@@ -180,6 +188,9 @@ def project_plant_orders(plant_code: str) -> ProjectionResult:
     for legacy in legacy_orders:
         result.orders_seen += 1
         po = current.get(legacy.po_number)
+        if po is not None and po.source == PurchaseOrder.Source.APP:
+            result.orders_held.append(legacy.po_number)
+            continue
         if po is not None and po.source_hash == legacy.synced_from_row_hash and po.is_active == legacy.is_active:
             continue
         vendor = upsert_vendor(legacy.vendor_gstin, legacy.vendor_name, legacy.vendor_code,

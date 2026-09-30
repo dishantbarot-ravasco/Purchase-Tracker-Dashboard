@@ -80,3 +80,13 @@ class TestEnsureSchedules:
         assert schedule.schedule_type == Schedule.CRON
         assert schedule.cron == "0 9-20 * * *"
         assert schedule.minutes is None
+
+    def test_creates_the_nightly_backup_schedule_once(self):
+        call_command("ensure_schedules")
+        call_command("ensure_schedules")
+
+        schedule = Schedule.objects.get(name="nightly-db-backup")
+        assert schedule.func == "apps.services.db_backup.scheduled_backup"
+        assert schedule.schedule_type == Schedule.CRON
+        assert schedule.cron == "13 2 * * *"
+        assert Schedule.objects.filter(name="nightly-db-backup").count() == 1

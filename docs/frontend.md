@@ -455,7 +455,8 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `list-sort.js`, `search-po-page.js` |
 | `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
 | `admin.html` | WhiteNoise | `brand.css`, `admin-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `admin-page.js` |
-| `mir.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `mir-page.js` |
+| `mir.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `mir-page.js` |
+| `po-files.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `po-files-page.js` |
 | `stock.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css`, `stock-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `stock-page.js` |
 | `login.html` | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
 
@@ -466,7 +467,9 @@ replaced wholesale by `main.js`'s `init()`. `admin.html` ships its create/edit-u
 (defence in depth; the endpoints enforce `IsAdmin`). `review.html` has two views (`#viewQueue`,
 `#viewStats`) behind `review-viewtab` buttons. `mir.html` has three views (`#viewNew`, `#viewRegister`, `#viewMismatches`) behind
 the dashboard's own `.view-tab` buttons; it is the one page besides `index.html` that loads `style.css`, so its tabs, filter
-bars, tables and pills are the dashboard's components. Page header comments in `home.html` still mention an
+bars, tables and pills are the dashboard's components. `po-files.html` (PO uploads) borrows the same
+three stylesheets and has one upload panel (`#uploadPanel`, shown only when the account may upload
+somewhere) above a filter row and the file list. Page header comments in `home.html` still mention an
 "inline script"; it is `home-page.js`.
 
 ### frontend/js/theme-init.js
@@ -503,9 +506,10 @@ cookie; nothing here holds a token.
 - `requireAuth()` - GET `/api/auth/me`, fills `CURRENT_USER`; any failure logs and redirects to
   `/login.html`. Each page bootstrap returns early when it resolves `null`.
 - `logout()` - best-effort POST `/api/auth/logout`, then always redirects.
-- `renderNavTabs(container, activePage)` - Home (`/home.html`), Dashboard (`/`), Search PO, MIR Entry
-  (`/mir.html`, every role), RM Store (`/stock.html`, every role), Review Matches, and Admin only when
-  `role === 'admin'`. `activePage` is `home`/`dashboard`/`search`/`mir`/`stock`/`review`/`admin`.
+- `renderNavTabs(container, activePage)` - Home (`/home.html`), Dashboard (`/`), Search PO, PO Files
+  (`/po-files.html`, every role), MIR Entry (`/mir.html`, every role), RM Store (`/stock.html`, every
+  role), Review Matches, and Admin only when `role === 'admin'`. `activePage` is
+  `home`/`dashboard`/`search`/`pofiles`/`mir`/`stock`/`review`/`admin`.
 - `renderUserBadge(container)` - initials avatar coloured by role (`.avatar-role-*`), name/role, a
   dropdown with Change Password and Logout; a document click closes it.
 - `initThemeToggle()` - inserts `#themeToggleBtn` before `.nav-user` and persists the choice to
@@ -1449,11 +1453,41 @@ which POSTs `materials/<id>/category` and updates every line of that material. D
 `scheduleDraft()` (on every form input and every preview) write the form to localStorage under
 `draftKey()` (per user; wrapped in try/catch, so a blocked store only means no draft); `offerDraft()`
 shows `#draftBanner` at load; `restoreDraft()` re-reads each PO and keeps only lines still receivable;
-`clearDraft()` on save and on a cleared form (`resetForm(true)` keeps it, for the restore itself). Mismatches: `loadMismatches()` (status and plant filters)
+`clearDraft()` on save and on a cleared form (`resetForm(true)` keeps it, for the restore itself). The
+invoice copy (`#invoiceFile`, not part of the draft): `postMir()` checks it with `docFileProblem()`
+before saving anything, then uploads it to `entries/<id>/invoice` once the MIR exists - a failed upload
+leaves the MIR saved and the toast says to attach it from the register. `poFilesHtml()` shows the PO's
+current uploaded copy above its lines; `invoiceFilesHtml()` / `bindInvoiceFiles()` list a MIR's invoice
+copies in its detail and attach or replace one. Mismatches: `loadMismatches()` (status and plant filters)
 and `mismatchListHtml()` cards with inline resolve; `refreshMismatchCount()` keeps the tab's count.
 Money is shown exact in the PO's currency (`money(value, currency)` through `Intl`, "₹5,42,800.00"
 for INR), never the dashboard's rounded `formatInr()`.
 Top-level names were checked against `auth.js` / `shared.js` for collisions (one global scope).
+
+### frontend/js/doc-files.js
+
+Shared by `po-files.html` and `mir.html`; every name starts `docFile` / `DOC_FILE_` (one global scope).
+`docFileUpload(url, formData)` POSTs a multipart upload through `authFetch` (no Content-Type header -
+the browser sets the boundary) and throws the server's message. `docFileProblem(file)` is the
+browser-side size (20 MB) and extension check; the server checks again by content. `docFileOpen(id)`
+opens `/api/documents/<id>/open` in a new tab, where the server redirects to a five-minute R2 link.
+**It must open the app's own URL directly**: fetching the link first and pointing a blank tab at it
+left the tab on `about:blank`, because the app's `Cross-Origin-Opener-Policy: same-origin` stops a
+script from navigating a tab it opened to another origin - and a direct open is never pop-up blocked.
+`docFileLineHtml()` / `docFileStatusPill()` / `docFileSize()` draw a file as a line (Open, revision,
+Current / Older revision / Withdrawn, name, size, who, when, withdrawal reason) and
+`docFileBindOpen(root)` wires its Open buttons.
+
+### frontend/js/po-files-page.js
+
+`po-files.html`. Reads `/api/mir/meta` for plants (`canReceive` is the same rule as uploading - Editor
+or Admin at that plant), shows the upload panel only when there is such a plant, and lists
+`/api/documents/po` (plant and PO-number filters re-fetch, debounced; the Show filter - current
+copies, all revisions, withdrawn - filters the fetched rows). `poFilesUpload()` checks plant, PO number
+and file before sending and reports the new revision. Each row: PO number and note, plant, revision,
+status (with the withdrawal reason), Open, who and when, whether the PO is in the app yet, and
+Withdraw for a plant the account may write - `poFilesOpenWithdraw()` opens an inline reason field
+under the row and POSTs `documents/<id>/withdraw`. `poFilesApi()` is the page's JSON wrapper.
 
 ### frontend/js/admin-page.js
 
@@ -1540,7 +1574,8 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   scroll container that never scrolls, and sticky then never engages), difference cards (`.mir-diff.is-todo` / `.is-done`), total
   tiles, invoice notices, mismatch cards (`.mir-mm.is-open` / `.is-resolved` / `.is-void`), and
   `.mir-pill-*` tones on the dashboard's `.status-pill`. Typed figures are left-aligned; only computed
-  table figures align right.
+  table figures align right. `po-files.html` loads it too, and the `.doc-file-*` rules at its end lay
+  out uploaded-file lines and the attach/withdraw rows (flex, wrapping on a phone).
 - **`search-po-page.css`** also lets the date-range filter's two inputs share the row under 500px
   instead of overflowing a phone screen.
 - **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,

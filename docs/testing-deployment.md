@@ -247,6 +247,55 @@ under the manifest storage was checked to succeed if it is ever taken up. **A se
 longer reads raises no warning** - check the effective value
 (`django.contrib.staticfiles.storage.staticfiles_storage`) rather than the settings file.
 
+### Cloudflare R2 object storage (2026-09-30)
+
+Uploaded PO and invoice files and the nightly database backups live in **Cloudflare R2**, reached
+through boto3 (R2 speaks the S3 API) in
+[`object_storage.py`](api-and-features.md#appsservicesobject_storagepy). Three **private** buckets,
+one per kind of file, named by env var: `R2_BUCKET_PO` (`pt-po-files`), `R2_BUCKET_INVOICE`
+(`pt-invoice-files`), `R2_BUCKET_BACKUPS` (`pt-db-backups`), plus `R2_ACCOUNT_ID`,
+`R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. The bucket names are plain values in `render.yaml`; the
+account id and keys are `sync: false` and set by hand **on both services** (the web service uploads
+and opens files, the worker writes backups). A separate bucket per kind lets each have its own
+lifecycle rule and, later, its own key. Blank values switch storage off rather than erroring at
+import: uploads then answer 503 "storage not set up" and a backup fails naming the missing variable.
+`R2_ENDPOINT_URL` stays blank in production; locally it can point at any S3-compatible server
+(MinIO, or `moto_server`, which is how the upload pages were exercised in a browser).
+
+Nothing is public. A file is opened through `/api/documents/<id>/open`, which redirects to a
+**five-minute presigned link**; the bucket never gets a public URL or a custom domain. Nothing the
+app writes to R2 is ever deleted by the app except backups past their retention.
+
+### Backups (2026-09-30)
+
+**The database is now the only copy of what is entered in the app** - MIRs, stock vouchers, uploaded
+file records. The Drive mirrors can be re-synced; those cannot. Two layers:
+
+1. **Render's own point-in-time recovery** on the paid Postgres plan: restore to any moment inside
+   the plan's recovery window from the Render dashboard (database -> Recovery). It lives on Render,
+   next to the database, and restores into a new instance.
+2. **A nightly logical dump off Render** - the `nightly-db-backup` schedule (02:13 IST, qcluster
+   worker) runs [`db_backup.run_backup()`](#appsservicesdb_backuppy): `pg_dump --format=custom
+   --no-owner --no-privileges`, checked with `pg_restore --list` (a dump with no table data is not
+   uploaded), uploaded as `postgres/YYYY/MM/<db>-YYYYMMDD-HHMMSS.dump`, then dumps older than
+   `BACKUP_RETENTION_DAYS` (30) are deleted - **never the newest 7**, so a schedule that stalls for
+   weeks cannot empty the bucket. Any failure raises: the django-q task shows as failed and Sentry
+   reports it. `manage.py backup_database` does the same by hand.
+
+**`pg_dump` must be at least the server's major version.** The Dockerfile installs
+`postgresql-client-18` from the PostgreSQL project's apt repository, not Debian's (which lags);
+a newer client dumps any older server. **Raise that pin before upgrading the Render database's
+major version**, or every nightly backup fails with a version-mismatch error.
+
+**Restoring a dump** (into a new database, never over the live one first):
+
+```bash
+pg_restore --no-owner --no-privileges --dbname "$NEW_DATABASE_URL" purchase_tracker-YYYYMMDD-HHMMSS.dump
+```
+
+A backup nobody has restored is a hope, not a backup: restore one into a scratch database after the
+first nightly run, and again after any major upgrade.
+
 ### Docker (local dev)
 
 The same image, plus a Postgres 16, via `docker-compose.yml`. It exists so a developer can run the
@@ -350,7 +399,7 @@ the web service as the pre-deploy step, then swaps traffic. Secrets marked `sync
 
 [pyproject.toml](../pyproject.toml). Project metadata, `requires-python = ">=3.12"`, runtime
 dependencies (Django `>=5.2,<7.0`, DRF, simplejwt, `psycopg[binary]`, whitenoise, django-q2,
-croniter, sentry-sdk, gunicorn, Google client libs, openpyxl, bcrypt) and the `dev` dependency group
+croniter, sentry-sdk, gunicorn, Google client libs, openpyxl, bcrypt, boto3 for Cloudflare R2) and the `dev` dependency group
 (pytest, pytest-cov, pytest-django, ruff). `[tool.pytest.ini_options]` sets
 `DJANGO_SETTINGS_MODULE = "config.settings"`, `python_files = "test_*.py"` and `--reuse-db`.
 `[tool.ruff]` targets `py312`, line length 140, excludes migrations/`.venv`/`staticfiles`; the lint
@@ -364,7 +413,9 @@ here without re-locking changes nothing that is tested.
 [Dockerfile](../Dockerfile). Single image for web and worker, local and production. `FROM` is
 `python:3.12-slim` pinned by digest; env sets `UV_PYTHON=3.12`, `UV_PYTHON_DOWNLOADS=never`,
 `UV_NO_SYNC=1`, `UV_LINK_MODE=copy` and puts `/app/.venv/bin` first on `PATH`. Installs a pinned
-`uv` via pip, then `uv sync --frozen --no-dev --no-install-project` on the manifests alone (cached
+`uv` via pip, then `postgresql-client-18` (pg_dump / pg_restore for the nightly backup) from the
+PostgreSQL apt repository - curl fetches the repository key and is purged in the same layer; see
+[Backups](#backups-2026-09-30) for why that major version must stay at or above the server's - then `uv sync --frozen --no-dev --no-install-project` on the manifests alone (cached
 layer), `COPY . .`, a second `uv sync --frozen --no-dev`, and `collectstatic` at build time (the
 dev-only `SECRET_KEY` fallback covers it; no DB needed). There are **no `ARG` lines on purpose**:
 Render only forwards env vars into a build as declared ARGs, so no secret can be baked into a layer.
@@ -407,10 +458,22 @@ runs it twice. Runs as Render's web `preDeployCommand` and as compose `app`'s en
 recreate the service and both must change, or every request is a 400 and Google sign-in breaks),
 `DATABASE_URL` from the database's `connectionString`, Drive folder/file ids and SMTP host/port as
 plain values, and `sync: false` for every secret (`GOOGLE_SERVICE_ACCOUNT_JSON`, `SMTP_USER/PASS/FROM`,
-`GOOGLE_CLIENT_ID/SECRET`, `SAFECUBE_API_KEY`, `SENTRY_DSN`). `REPORT_CRON_SECRET` is generated
+`GOOGLE_CLIENT_ID/SECRET`, `SAFECUBE_API_KEY`, `SENTRY_DSN`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
+`R2_SECRET_ACCESS_KEY`). The three `R2_BUCKET_*` names are plain values on both services. `REPORT_CRON_SECRET` is generated
 (web only) and must be copied into the external cron-job.org jobs. The worker gets
 `DJANGO_SECRET_KEY` and `JWT_SIGNING_KEY` via `fromService`; `SENTRY_DSN` is not shared
 automatically and must be set to the same value on both services.
+
+### [apps/services/db_backup.py](../apps/services/db_backup.py)
+
+The nightly backup (see [Backups](#backups-2026-09-30)). `dump_to()` runs `pg_dump` then
+`pg_restore --list` with the connection read from `settings.DATABASES["default"]` - the password in
+`PGPASSWORD` and `sslmode` in `PGSSLMODE`, never on the command line; a missing binary, a timeout
+(600 s) or a non-zero exit is a `BackupFailed` carrying stderr. `backup_key()` dates the object in
+IST. `keys_to_prune()` is pure: dumps under `postgres/` past the retention window, sparing the newest
+`MIN_KEEP` (7). `run_backup()` checks R2 is configured before dumping, uploads, then prunes;
+`scheduled_backup()` is the django-q entry point. Tests: `test_db_backup.py` runs the real
+`pg_dump` against the test database (skipped only where the client tools are absent).
 
 ### .github/workflows/ci.yml
 
@@ -470,7 +533,9 @@ disables it, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`), database (`DATA
 or `_FILE`, never both), Drive folder ids, auth (`ALLOWED_EMAIL_DOMAIN`, `JWT_SIGNING_KEY`), SMTP,
 Google OAuth client, `SAFECUBE_API_KEY`, `REPORT_CRON_SECRET` (blank makes every report endpoint
 refuse with 503), `MISMATCH_REPORT_PLANT_HEADS_ENABLED` (killswitch, default `false`),
-`DELETE_USER_ALLOWED_EMAIL`, and `EMAIL_OTP_POOL_WORKERS`/`EMAIL_BULK_POOL_WORKERS`. The file is
+`DELETE_USER_ALLOWED_EMAIL`, `EMAIL_OTP_POOL_WORKERS`/`EMAIL_BULK_POOL_WORKERS`, and Cloudflare R2
+(`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, the three `R2_BUCKET_*` names, the
+local-only `R2_ENDPOINT_URL`, and `BACKUP_RETENTION_DAYS`). The file is
 covered by the em dash guard. Never read or paste the real `.env`.
 
 ### .claude/launch.json

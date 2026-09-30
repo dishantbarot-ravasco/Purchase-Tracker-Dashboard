@@ -145,6 +145,7 @@ from .procurement import (  # noqa: F401
     MirLine,
     MirMismatch,
     MirChange,
+    Document,
 )
 from .stock import (  # noqa: F401
     StockReasonCode,
@@ -229,6 +230,7 @@ __all__ = [
     "MirLine",
     "MirMismatch",
     "MirChange",
+    "Document",
     "StockReasonCode",
     "StockSetting",
     "StockSequence",

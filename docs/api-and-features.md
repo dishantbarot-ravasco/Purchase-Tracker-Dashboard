@@ -93,16 +93,26 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | --- | --- | --- | --- | --- |
 | GET | `mir/meta` | `meta` | Auth | Plants with `canRead` / `canReceive`, reason codes, tax types, GST slabs, today |
 | GET | `mir/open-pos?q=` | `open_pos` | IsEditor, every plant on purpose | Active POs with an open line whose number, vendor name or GSTIN matches |
-| GET | `mir/purchase-orders/<id>` | `purchase_order` | IsEditor, every plant on purpose | A normalized PO with each line's received-so-far, open quantity and whether it can take a receipt |
+| GET | `mir/purchase-orders/<id>` | `purchase_order` | IsEditor, every plant on purpose | A normalized PO with each line's received-so-far, open quantity and whether it can take a receipt, plus its uploaded copies (`poFiles`, withdrawn ones left out) |
 | GET | `mir/vendors?q=` | `vendors` | IsEditor | Vendor picker for a PO that names no vendor |
 | POST | `mir/preview` | `preview` | IsEditor + receiving plant (403) | Check and price the form; saves nothing |
 | POST | `mir/entries/new` | `post_entry` | IsEditor + receiving plant (403) | Save a MIR; 201, or 400 with `errors: [{field, message}]` |
 | GET | `mir/entries?plant=&status=&q=&from=&to=` | `entries` | Auth, readable plants only | The MIR register, newest first |
-| GET | `mir/entries/<id>` | `entry` | Auth, readable plant (404) | One MIR with lines and mismatches |
+| GET | `mir/entries/<id>` | `entry` | Auth, readable plant (404) | One MIR with lines, mismatches and `invoiceFiles` |
 | POST | `mir/entries/<id>/cancel` | `cancel_entry` | IsEditor + MIR's plant (403) | Cancel with a reason |
 | GET | `mir/mismatches?status=&plant=` | `mismatches` | Auth, readable plants only | Mismatches, `OPEN` by default |
 | POST | `mir/mismatches/<id>/resolve` | `resolve` | IsEditor + MIR's or PO's plant (403) | Resolve with a note |
 | POST | `mir/po-lines/<id>/close` / `reopen` / `review` | `close_line` / `reopen_line` / `review_line` | IsEditor + PO's plant (403) | Short-close a line, reopen it, or clear a `needs_review` flag |
+
+### PO and invoice files (`document_views`)
+
+| Method | Path | View | Permission | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `documents/po?plant=&q=` | `po_documents` | Auth, readable plants only | PO files newest first, every revision and status, with `poInSystem` and `storageReady` |
+| POST | `documents/po/upload` | `upload_po_document` | IsEditor + that plant (403) | Multipart `plant`, `poNumber`, `note`, `file`; 201, 400 with a message, 503 if R2 is not set up |
+| GET | `documents/<id>/open` | `open_document` | Auth, readable plant (404) | 302 to a five-minute R2 link |
+| POST | `documents/<id>/withdraw` | `withdraw_document` | IsEditor + the file's plant (403) | Withdraw with a `reason` |
+| POST | `mir/entries/<id>/invoice` | `mir_invoice` | IsEditor + MIR's plant (403) | Multipart `file`, `note`: attach or replace a posted MIR's invoice copy |
 
 ### Review, admin, reports
 
@@ -327,7 +337,10 @@ side is in [frontend.md](frontend.md); the server-relevant facts:
   plant's PO list and deep-links into `/?plant=<key>&po=<number>` for full detail.
 - **`review.html`** (`review-page.js`) - the match-accuracy queue and Accuracy view (above).
 - **`mir.html`** (`mir-page.js`) - MIR entry, the register and open mismatches ([MIR entry](#mir-entry-2026-09-28)).
-  Any role reads the register; entering needs Editor or Admin at the receiving plant.
+  Any role reads the register; entering needs Editor or Admin at the receiving plant. The form takes
+  the invoice copy, and a MIR's detail shows and replaces it ([files](#po-and-invoice-files-2026-09-30)).
+- **`po-files.html`** (`po-files-page.js`) - the purchase team's PO uploads ([files](#po-and-invoice-files-2026-09-30)).
+  Any role lists and opens its plants' files; uploading and withdrawing need Editor or Admin there.
 - **`admin.html`** (`admin-page.js`) - admin only: per-plant sync status, Overview tab, Users panel.
   The client-side access-denied panel is defence in depth; **the endpoints enforce `IsAdmin`
   server-side**.
@@ -1184,6 +1197,43 @@ way to bring the Drive sheets' current stock in (it has to be entered as MIRs). 
 before 2026-09-30 that drew several lots keep working through their allocations; a pending difference
 from then without a MIR receipt cannot be approved (turn it down and enter it again).
 
+### PO and invoice files (2026-09-30)
+
+The first step of moving PO and invoice paperwork off Drive: the purchase team uploads each PO's copy
+for its plant (`po-files.html`), and the store attaches the vendor's invoice to the MIR it posts
+(`mir.html`). Files go to Cloudflare R2
+([testing-deployment.md](testing-deployment.md#cloudflare-r2-object-storage-2026-09-30)); a
+`Document` row ([architecture.md](architecture.md#appscoremodelsprocurementpy)) records each one.
+`documents.py` is the only writer of those rows. The extraction agents will read these same files.
+
+**A PO number can be revised or cancelled upstream, so a file is filed under (plant, PO number), not
+under a `PurchaseOrder` row**, and nothing is ever deleted:
+
+- **Revised PO** - upload the new copy under the same number. It becomes the next **revision** and
+  `CURRENT`; the previous one becomes `SUPERSEDED` and stays openable. Revision numbers count per
+  plant and PO number (the plant row is locked while numbering, so two uploads cannot share one).
+- **Same file twice** (same SHA-256, not withdrawn) is refused with "already on record as revision N"
+  - a double click is not a revision.
+- **Cancelled PO or wrong upload** - **Withdraw** with a reason (who and when are recorded).
+  Withdrawing the current revision makes the newest superseded one current again, so undoing a
+  mistaken upload restores what was there. A **renumbered** PO is withdrawn under the old number and
+  uploaded under the new one.
+- The file may reach the app before its PO does: the list shows **In the app: Not yet** until a
+  `PurchaseOrder` with that plant and number exists (worked out at read time, never stored).
+
+An invoice copy belongs to one **posted** MIR, with the same revision rule ("Replace with a newer
+copy"); a cancelled MIR takes no new file. The MIR form uploads the chosen copy right after the MIR
+is saved - the MIR stands even if that upload fails, and the toast says to attach it from the
+register.
+
+Files are accepted by **content, not name**: the first bytes must be a PDF, JPEG or PNG, at most
+20 MB. The object key is `<plant>/<PO number or MIR number>/r<revision>-<random>.<ext>`, so a key
+never collides or reveals more than the record already does. R2 is written **before** the row: a
+failed upload leaves no row pointing at nothing. A file opens through `documents/<id>/open`, a 302
+to a five-minute link - the page opens that app URL in a new tab rather than fetching the link and
+pointing a blank tab at it, because the app's `Cross-Origin-Opener-Policy: same-origin` stops a
+script from navigating a tab it opened to another origin (found in a browser test).
+
 ### Sort presets (2026-09-28)
 
 Raw Material Analysis (and its modal's Stock by Plant and Open Purchase Orders tables), Domestic
@@ -1513,7 +1563,34 @@ quantities are returned as strings, never floats. `_po_line()` / `_po_summary()`
 `_mismatch()` are the payload shapes; `_readable_plants()` filters reads; `_receiving_plant_allowed()`
 gates preview and post. The three PO lookups are cross-plant by owner rule and listed as such in
 `test_endpoint_permission_guard.py`. `entries` orders explicitly: Django ignores `Meta.ordering` on
-its aggregate query.
+its aggregate query. `purchase_order` adds the PO's copies (`document_views.po_files()`) and
+`_mir_detail()` the MIR's invoice copies (`document_views.invoice_files()`).
+
+### apps/api/routers/document_views.py
+
+The [PO and invoice file](#po-and-invoice-files-2026-09-30) endpoints. Gates, parses and serializes
+only; every rule is in `documents.py`. Listing is a GET open to every role, uploading a separate
+POST (`documents/po/upload`) so the role gate sits on the write alone. `DocumentError` becomes a 400
+with its message, `StorageNotConfigured` a 503 ("storage is not set up yet"). `open_document`
+answers a plain-text 404/503 rather than JSON, since it is opened in a browser tab. `serialize()`,
+`po_files()` and `invoice_files()` are shared with `mir_views`.
+
+### apps/services/documents.py
+
+`upload_po()`, `upload_invoice()`, `withdraw()`, `open_link()` - the rules in
+[PO and invoice files](#po-and-invoice-files-2026-09-30). Each upload locks (the plant row for a PO,
+the MIR row for an invoice), sniffs the content type from the first bytes, refuses a duplicate hash,
+numbers the revision, writes R2, supersedes the previous current revision and creates the row, in
+one transaction. `DocumentError` is a `ValueError`, shown to the user as it is.
+
+### apps/services/object_storage.py
+
+The Cloudflare R2 wrapper: boto3 against `https://<account>.r2.cloudflarestorage.com` (or
+`R2_ENDPOINT_URL`). A bucket is named by kind - `po`, `invoice`, `backup` - never by its real name.
+`require_configured()` / `is_configured()` name every missing setting; `upload_file()` (multipart
+for large files on its own), `list_objects()` (every page), `delete_objects()` (1000 keys per call),
+`presigned_url()`. Nothing here makes an object public. Tested with botocore's `Stubber`
+(`test_object_storage.py`).
 
 ### apps/api/routers/preferences_views.py
 
@@ -1626,7 +1703,9 @@ length / roll count / total weight parts; `material_key()` is `normalize_materia
 
 `project_plant_orders(plant_code)` - see [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28).
 Each projected line is linked to its `Material` (`materials.material_for()`). `upsert_vendor()` - one `Vendor` per GSTIN (or cleaned name without one); the newest PO's details win,
-a blank never erases. `LEGACY_PO_MODELS` names each plant's CSV mirror model.
+a blank never erases. `LEGACY_PO_MODELS` names each plant's CSV mirror model. An order with
+`source = app` is skipped and listed in `ProjectionResult.orders_held` - see
+[data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28).
 
 ### apps/services/rematch.py
 

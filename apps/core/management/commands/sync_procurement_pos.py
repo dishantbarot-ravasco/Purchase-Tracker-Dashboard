@@ -29,7 +29,8 @@ class Command(BaseCommand):
             r = project_plant_orders(code)
             self.stdout.write(self.style.SUCCESS(
                 f"sync_procurement_pos {code}: {r.orders_seen} orders seen, {r.orders_written} written, "
-                f"lines {r.lines_created} created / {r.lines_updated} updated / {r.lines_deactivated} deactivated"
+                f"lines {r.lines_created} created / {r.lines_updated} updated / {r.lines_deactivated} deactivated, "
+                f"{len(r.orders_held)} left as the app has them"
             ))
             if r.lines_flagged:
                 self.stdout.write(self.style.WARNING(
