@@ -1,20 +1,28 @@
 """
-/api/stock/... - RM stock entry (2026-09-29). The rules live in
+/api/stock/... - the RM store. The rules live in
 apps/services/stock_service.py; this file only gates, parses and serializes.
 
+The page has three views, like MIR entry: Issue (pick a MIR, issue from it),
+the RM register (one row per MIR receipt, like the store's Stock sheet, plus
+the issue slips) and Open mismatches (stock differences waiting for an
+admin).
+
 Access:
-  - Reading stock, lots, the ledger and vouchers: any role, filtered to the
-    plants the account may read (user_can_access_plant()).
-  - Issuing, returning, adjusting, cancelling and a material's settings:
-    Editor or Admin, allowed to edit THAT plant (user_can_edit_plant()).
-  - Approving or turning down an adjustment: Admin, at that plant. An
-    editor's adjustment waits for this; an admin's posts at once.
+  - Reading receipts, the register, a receipt's movements, slips and
+    differences: any role, filtered to the plants the account may read
+    (user_can_access_plant()).
+  - Issuing, returning, recording a difference, cancelling and a material's
+    settings: Editor or Admin, allowed to edit THAT plant
+    (user_can_edit_plant()).
+  - Approving or turning down a difference: Admin, at that plant. An
+    editor's difference waits for this; an admin's posts at once.
 
 Stock is always the plant's own: unlike MIR entry's PO lookups, nothing here
 reads another plant's store. Quantities and money travel as strings, never
 floats, so the screen shows exactly what was stored.
 """
 
+import datetime
 from decimal import Decimal
 
 from django.db.models import Q
@@ -25,8 +33,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
 from apps.api.permissions import IsAdmin, IsEditor, user_can_access_plant, user_can_edit_plant
-from apps.core.models import Material, Plant, StockReasonCode, StockVoucher
-from apps.services import procurement_rules as prules
+from apps.core.models import Material, Plant, StockLot, StockReasonCode, StockVoucher
 from apps.services import stock_rules, stock_service
 
 
@@ -62,8 +69,34 @@ def _is_writer(user):
     return getattr(user, "role", "") in ("admin", "editor")
 
 
-def _readable_plants(user):
-    return [p.code for p in Plant.objects.all() if user_can_access_plant(user, p.code)]
+def _readable_plants(user, wanted=None):
+    """Plant codes the caller may read, narrowed to `wanted` when given."""
+    return [p.code for p in Plant.objects.all() if user_can_access_plant(user, p.code) and (not wanted or p.code == wanted)]
+
+
+def _date(value, default):
+    try:
+        return datetime.date.fromisoformat(value) if value else default
+    except ValueError:
+        return default
+
+
+def _receipt(lot, balance=None):
+    """A MIR receipt as the page shows it: everything comes from the MIR."""
+    mir_line = lot.mir_line if lot.source == "MIR" else None
+    po = mir_line.po_line.purchase_order if mir_line else None
+    return {
+        "id": lot.id, "source": lot.source, "doc": stock_service.doc_of(lot),
+        "mirId": mir_line.mir_id if mir_line else None, "mirNo": mir_line.mir.mir_no if mir_line else None,
+        "lineNo": mir_line.line_no if mir_line else None, "invoiceNo": mir_line.mir.invoice_no if mir_line else "",
+        "poNumber": po.po_number if po else "", "itemCode": mir_line.po_line.item_code if mir_line else "",
+        "voucherId": lot.voucher_line.voucher_id if lot.source != "MIR" else None,
+        "receivedDate": _d(lot.received_date), "plant": _plant(lot.plant), "material": _material(lot.material), "uom": lot.uom,
+        "vendor": lot.vendor.name if lot.vendor else "", "billToPlant": _plant(lot.bill_to_plant),
+        "rate": _s(lot.rate), "currency": lot.currency, "stocked": lot.stocked, "batchNo": lot.batch_no,
+        "balance": _s(balance),
+        "days": (timezone.localdate() - lot.received_date).days,
+    }
 
 
 # ── Reference data ────────────────────────────────────────────────────────
@@ -71,9 +104,9 @@ def _readable_plants(user):
 
 @api_view(["GET"])
 def meta(request):
-    """Plants (and what the caller may do at each), reasons, units, today,
-    the backdating window, departments used before, and how many
-    adjustments wait for approval."""
+    """Plants (and what the caller may do at each), reasons, today, the
+    backdating window, departments used before, categories held, and how
+    many differences wait for approval."""
     user = request.user
     plants, departments, readable = [], {}, []
     for p in Plant.objects.all():
@@ -85,78 +118,79 @@ def meta(request):
             readable.append(p.code)
             departments[p.code] = stock_service.departments(p)
     pending = StockVoucher.objects.filter(plant__code__in=readable, status="PENDING").count()
+    categories = sorted({c for c in StockLot.objects.filter(plant__code__in=readable)
+                         .values_list("material__category", flat=True).distinct() if c})
     return Response({
         "plants": plants,
         "reasons": [{"code": r.code, "kind": r.kind, "label": r.label, "noteRequired": r.note_required}
-                    for r in StockReasonCode.objects.filter(is_active=True)],
-        "units": list(prules.KNOWN_UOMS),
+                    # Stock comes in only through a MIR now: no opening-balance reason.
+                    for r in StockReasonCode.objects.filter(is_active=True).exclude(code="OPENING_BALANCE")],
         "today": _d(timezone.localdate()), "backdateDays": stock_service.BACKDATE_DAYS,
         "departments": departments, "pendingApprovals": pending, "isAdmin": getattr(user, "role", "") == "admin",
+        "categories": categories,
     })
 
 
-# ── Stock on hand ─────────────────────────────────────────────────────────
-
-
-def _row(r):
-    return {
-        "plant": _plant(r["plant"]), "material": _material(r["material"]), "uom": r["uom"], "qty": _s(r["qty"]),
-        "value": _s(r["value"]), "otherCurrencyQty": _s(r["other_currency_qty"]), "openLots": r["open_lots"],
-        "lots": r["lots"], "lastReceived": _d(r["last_received"]), "oldestHeld": _d(r["oldest_held"]),
-        "isStocked": r["is_stocked"], "minLevel": _s(r["min_level"]), "belowMin": r["below_min"],
-    }
+# ── Picking a MIR ─────────────────────────────────────────────────────────
 
 
 @api_view(["GET"])
-def balances(request):
-    """Stock on hand per plant, material and stock unit, for the plants the
-    caller may read. ?plant= narrows; ?q= searches material names."""
-    plants = _readable_plants(request.user)
-    if request.query_params.get("plant"):
-        plants = [p for p in plants if p == request.query_params["plant"]]
-    rows = stock_service.stock_rows(plants)
-    q = (request.query_params.get("q") or "").strip().lower()
-    if q:
-        rows = [r for r in rows if q in r["material"].name.lower()]
-    return Response({"rows": [_row(r) for r in rows]})
-
-
-def _lot(lot, b):
-    source_doc = lot.mir_line.mir.mir_no if lot.source == "MIR" else lot.voucher_line.voucher.voucher_no
-    return {
-        "id": lot.id, "source": lot.source, "doc": source_doc,
-        "mirId": lot.mir_line.mir_id if lot.source == "MIR" else None,
-        "voucherId": lot.voucher_line.voucher_id if lot.source != "MIR" else None,
-        "receivedDate": _d(lot.received_date), "vendor": lot.vendor.name if lot.vendor else "",
-        "billToPlant": _plant(lot.bill_to_plant), "in": _s(b["in"]), "drawn": _s(b["drawn"]), "returned": _s(b["returned"]),
-        "balance": _s(b["balance"]), "rate": _s(lot.rate), "currency": lot.currency,
-        "value": _s(stock_rules.value(b["balance"], lot.rate)) if b["balance"] > 0 else "0.00",
-        "stocked": lot.stocked, "batchNo": lot.batch_no, "factor": _s(lot.factor),
-    }
-
-
-@api_view(["GET"])
-def material_stock(request, material_id):
-    """One material's lots at one plant (?plant=, ?uom=) and its ledger."""
-    material = get_object_or_404(Material, pk=material_id)
+def receipts(request):
+    """A plant's MIR receipts with stock left, for the issue form and the
+    difference form: ?plant= (required), ?q= MIR, material, vendor,
+    invoice, PO or item code."""
     plant = Plant.objects.filter(code=request.query_params.get("plant")).first()
     if plant is None or not user_can_access_plant(request.user, plant.code):
         return _not_found()
-    uom = (request.query_params.get("uom") or "").upper()
-    detail = stock_service.material_detail(plant, material, uom)
-    setting = detail["setting"]
+    rows = stock_service.receipts_for_issue(plant, request.query_params.get("q", ""))
+    return Response({"receipts": [_receipt(lot, bal) for lot, bal in rows]})
+
+
+# ── The RM register ───────────────────────────────────────────────────────
+
+
+@api_view(["GET"])
+def register(request):
+    """One row per MIR receipt for a period, like the store's Stock sheet.
+    ?plant= ?from= ?to= (default: this month to today) ?q= ?category=
+    ?all=1 keeps receipts that held nothing all period."""
+    plants = _readable_plants(request.user, request.query_params.get("plant"))
+    today = timezone.localdate()
+    date_to = _date(request.query_params.get("to"), today)
+    date_from = _date(request.query_params.get("from"), date_to.replace(day=1))
+    if date_from > date_to:
+        return Response({"error": "The From date is after the To date."}, status=http.HTTP_400_BAD_REQUEST)
+    rows = stock_service.register_rows(plants, date_from, date_to, q=request.query_params.get("q", ""),
+                                       category=request.query_params.get("category", ""),
+                                       include_empty=request.query_params.get("all") == "1")
     return Response({
-        "plant": _plant(plant), "material": _material(material), "uom": uom,
-        "canWrite": _is_writer(request.user) and user_can_edit_plant(request.user, plant.code),
+        "from": _d(date_from), "to": _d(date_to),
+        "rows": [{**_receipt(r["lot"]), "opening": _s(r["opening"]), "received": _s(r["received"]), "issued": _s(r["issued"]),
+                  "returned": _s(r["returned"]), "adjusted": _s(r["adjusted"]), "closing": _s(r["closing"]),
+                  "value": _s(r["value"]), "days": r["days"], "lastIssued": _d(r["last_issued"])} for r in rows],
+    })
+
+
+@api_view(["GET"])
+def receipt(request, lot_id):
+    """One MIR receipt: where it came from, its balances, every movement with
+    the running balance, and the plant's setting for the material."""
+    lot = get_object_or_404(StockLot.objects.select_related(*stock_service.LOT_RELATED), pk=lot_id)
+    if not user_can_access_plant(request.user, lot.plant.code):
+        return _not_found()
+    detail = stock_service.lot_detail(lot)
+    b, setting = detail["balances"], detail["setting"]
+    return Response({
+        **_receipt(lot, b["balance"]), "in": _s(b["in"]), "issued": _s(b["issued"]), "returned": _s(b["returned"]),
+        "adjusted": _s(b["adjusted"]),
+        "value": _s(stock_rules.value(b["balance"], lot.rate)) if b["balance"] > 0 and lot.currency == "INR" else "0.00",
+        "canWrite": _is_writer(request.user) and user_can_edit_plant(request.user, lot.plant.code),
         "setting": {"isStocked": setting.is_stocked if setting else True,
                     "minLevel": _s(setting.min_level) if setting else None,
                     "minLevelUom": setting.min_level_uom if setting else "",
-                    "updatedBy": setting.updated_by_email if setting else "",
-                    "updatedAt": setting.updated_at.isoformat() if setting else None},
-        "lots": [_lot(lot, b) for lot, b in detail["lots"]],
-        "ledger": [{"date": _d(e["date"]), "doc": e["doc"], "kind": e["kind"], "qty": _s(e["qty"]), "detail": e["detail"],
-                    "counts": e["counts"], "note": e["note"], "balance": _s(e["balance"]), "voucherId": e.get("voucherId")}
-                   for e in detail["ledger"]],
+                    "updatedBy": setting.updated_by_email if setting else ""},
+        "movements": [{"date": _d(m["date"]), "kind": m["kind"], "doc": m["doc"], "voucherId": m["voucherId"],
+                       "qty": _s(m["qty"]), "balance": _s(m["balance"]), "detail": m["detail"]} for m in detail["movements"]],
     })
 
 
@@ -178,32 +212,20 @@ def settings(request):
     return Response({"ok": True})
 
 
-@api_view(["GET"])
-@permission_classes([IsEditor])
-def material_search(request):
-    """The company-wide material master, for adding stock of a material the
-    plant holds none of yet (an opening balance). Not plant data."""
-    q = (request.query_params.get("q") or "").strip()
-    if len(q) < 2:
-        return Response({"materials": []})
-    qs = Material.objects.filter(Q(name__icontains=q) | Q(item_code=q)).order_by("name")[:25]
-    return Response({"materials": [{**_material(m), "uom": stock_rules.stock_unit(m.uom)[0]} for m in qs]})
-
-
 # ── Vouchers ──────────────────────────────────────────────────────────────
 
 
 def _draws(draws):
-    return [{"lotId": lot.id, "doc": lot.mir_line.mir.mir_no if lot.source == "MIR" else lot.voucher_line.voucher.voucher_no,
-             "receivedDate": _d(lot.received_date), "qty": _s(q), "rate": _s(lot.rate)} for lot, q in draws]
+    return [{"lotId": lot.id, "doc": stock_service.doc_of(lot), "receivedDate": _d(lot.received_date), "qty": _s(q),
+             "rate": _s(lot.rate)} for lot, q in draws]
 
 
 def _preview_payload(result):
     return {
         "ok": result["ok"], "errors": result["errors"], "notices": result["notices"],
-        "lines": [{"index": ln["index"], "materialId": ln["material"].id if ln.get("material") else None, "uom": ln.get("uom"),
+        "lines": [{"index": ln["index"], "lotId": ln["lot"].id if ln.get("lot") else None, "uom": ln.get("uom"),
                    "qty": _s(ln.get("qty")), "direction": ln.get("direction"), "value": _s(ln.get("value")),
-                   "book": _s(ln.get("book")), "counted": _s(ln.get("counted")), "rate": _s(ln.get("rate")),
+                   "book": _s(ln.get("book")), "counted": _s(ln.get("counted")),
                    "draws": _draws(ln.get("draws") or [])} for ln in result["lines"]],
     }
 
@@ -235,8 +257,8 @@ def post_voucher(request):
 
 
 def _line_value(line):
-    if line.voucher.kind == "ADJUST" and line.direction > 0:
-        return stock_rules.value(line.qty, line.rate)
+    if line.lot_id is None and line.voucher.kind == "ADJUST" and line.direction > 0:
+        return stock_rules.value(line.qty, line.rate)  # an old opening balance
     total = sum((stock_rules.value(a.qty, a.lot.rate) for a in line.allocations.all() if a.lot.currency == "INR"), Decimal("0.00"))
     return total * line.direction
 
@@ -255,7 +277,7 @@ def _voucher_row(v, lines=None):
 
 def _voucher_detail(v, user):
     v = StockVoucher.objects.select_related("plant", "return_of").get(pk=v.pk)
-    lines = list(v.lines.select_related("material", "reason", "return_of_line")
+    lines = list(v.lines.select_related("material", "reason", "return_of_line", *("lot__" + r for r in stock_service.LOT_RELATED))
                  .prefetch_related("allocations__lot__mir_line__mir", "allocations__lot__voucher_line__voucher").order_by("line_no"))
     can_write = _is_writer(user) and user_can_edit_plant(user, v.plant.code)
     returnable = []
@@ -274,23 +296,23 @@ def _voucher_detail(v, user):
                       and v.created_by_id != getattr(user, "pk", None),
         "returnable": returnable,
         "lines": [{
-            "lineNo": ln.line_no, "material": _material(ln.material), "uom": ln.uom, "qty": _s(ln.qty), "direction": ln.direction,
-            "reason": ln.reason.label if ln.reason else "", "note": ln.note, "rate": _s(ln.rate),
-            "counted": _s(ln.counted_qty), "book": _s(ln.book_qty), "value": _s(_line_value(ln)) if v.status != "PENDING" or ln.rate else None,
-            "draws": [{"lotId": a.lot_id, "doc": a.lot.mir_line.mir.mir_no if a.lot.source == "MIR" else a.lot.voucher_line.voucher.voucher_no,
-                       "receivedDate": _d(a.lot.received_date), "qty": _s(a.qty), "rate": _s(a.lot.rate)} for a in ln.allocations.all()],
+            "lineNo": ln.line_no, "receipt": _receipt(ln.lot) if ln.lot_id else None, "material": _material(ln.material),
+            "uom": ln.uom, "qty": _s(ln.qty), "direction": ln.direction,
+            "reason": ln.reason.label if ln.reason else "", "note": ln.note,
+            "counted": _s(ln.counted_qty), "book": _s(ln.book_qty),
+            "value": _s(_line_value(ln)) if v.status != "PENDING" else None,
+            "draws": [{"lotId": a.lot_id, "doc": stock_service.doc_of(a.lot), "receivedDate": _d(a.lot.received_date),
+                       "qty": _s(a.qty), "rate": _s(a.lot.rate)} for a in ln.allocations.all()],
         } for ln in lines],
     }
 
 
 @api_view(["GET"])
 def vouchers(request):
-    """Issues, returns and adjustments, newest first, for the plants the
-    caller may read. Filters: ?plant= ?kind= ?status= ?q= (number,
-    department, person, material) ?from= ?to=."""
-    plants = _readable_plants(request.user)
-    if request.query_params.get("plant"):
-        plants = [p for p in plants if p == request.query_params["plant"]]
+    """Issue slips, returns and differences, newest first, for the plants
+    the caller may read. Filters: ?plant= ?kind= ?status= ?q= (number,
+    department, person, material, MIR number) ?from= ?to=."""
+    plants = _readable_plants(request.user, request.query_params.get("plant"))
     qs = StockVoucher.objects.filter(plant__code__in=plants).select_related("plant", "return_of")
     if request.query_params.get("kind") in StockVoucher.Kind.values:
         qs = qs.filter(kind=request.query_params["kind"])
@@ -299,7 +321,8 @@ def vouchers(request):
     q = (request.query_params.get("q") or "").strip()
     if q:
         qs = qs.filter(Q(voucher_no__icontains=q) | Q(department__icontains=q) | Q(issued_to__icontains=q)
-                       | Q(reference__icontains=q) | Q(lines__material__name__icontains=q)).distinct()
+                       | Q(reference__icontains=q) | Q(lines__material__name__icontains=q)
+                       | Q(lines__lot__mir_line__mir__mir_no__icontains=q)).distinct()
     for key, lookup in (("from", "voucher_date__gte"), ("to", "voucher_date__lte")):
         if request.query_params.get(key):
             qs = qs.filter(**{lookup: request.query_params[key]})
@@ -313,6 +336,31 @@ def voucher(request, voucher_id):
     if not user_can_access_plant(request.user, v.plant.code):
         return _not_found()
     return Response(_voucher_detail(v, request.user))
+
+
+# ── Open mismatches: stock differences ────────────────────────────────────
+
+
+@api_view(["GET"])
+def differences(request):
+    """Stock differences at the plants the caller may read: ?status=OPEN
+    (waiting for an admin, the default) / RESOLVED / CANCELLED / ALL,
+    ?plant= to narrow."""
+    plants = _readable_plants(request.user, request.query_params.get("plant"))
+    out = []
+    for ln in stock_service.differences(plants, request.query_params.get("status", "OPEN")):
+        v = ln.voucher
+        out.append({
+            "voucherId": v.id, "voucherNo": v.voucher_no, "date": _d(v.voucher_date), "plant": _plant(v.plant),
+            "status": v.status, "statusLabel": v.get_status_display(), "lineNo": ln.line_no,
+            "receipt": _receipt(ln.lot) if ln.lot_id else None, "material": _material(ln.material), "uom": ln.uom,
+            "kind": "COUNT" if ln.counted_qty is not None else ("GAIN" if ln.direction > 0 else "WRITE_OFF"),
+            "direction": ln.direction, "qty": _s(ln.qty), "counted": _s(ln.counted_qty), "book": _s(ln.book_qty),
+            "value": _s(stock_rules.value(ln.qty * ln.direction, ln.lot.rate)) if ln.lot_id and ln.lot.currency == "INR" else None,
+            "reason": ln.reason.label if ln.reason else "", "note": ln.note, "createdBy": v.created_by_email,
+            "decidedBy": v.decided_by_email, "decisionNote": v.decision_note,
+        })
+    return Response({"differences": out})
 
 
 def _writable_voucher(request, voucher_id):

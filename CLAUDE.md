@@ -284,16 +284,20 @@ Read the linked section before breaking any of these. Each is there because it w
   migration data without it. [helpers](docs/testing-deployment.md#test-helpers)
 
 ### RM stock entry
-- A posted MIR line IS the receipt: `stock_service.receive_mir()` makes its lot at the receiving plant, and a
-  lot never stores a quantity - it is derived from the MIR line (received less rejected) or the adjustment
-  line while that is posted. Never add a stored balance.
+- The MIR is the ONLY way stock comes in (owner, 2026-09-30): a posted MIR line IS the receipt -
+  `stock_service.receive_mir()` makes its lot at the receiving plant - and nothing is added by hand (no
+  opening balances; `mode: "add"` is refused). A lot never stores a quantity - it is derived from the MIR
+  line (received less rejected) while that is posted. Never add a stored balance.
   [RM stock entry](docs/api-and-features.md#rm-stock-entry-2026-09-29)
+- Every voucher line names the MIR receipt it acts on (`lot_id`); the storekeeper picks the MIR and types only
+  the quantity - everything else comes from the MIR. Never draw FIFO across receipts: the store runs two
+  receipts of one material in parallel.
 - Stock may never go below zero on ANY day: every draw, cancellation and MIR cancel/rejection goes through
-  `stock_rules.min_running_balance()` over the lot's dated movements, with the lots row-locked. A MIR whose
-  stock was issued cannot be cancelled or have more rejected.
+  `stock_rules.min_running_balance()` over the lot's dated movements, with the lots row-locked in id order. A
+  MIR whose stock was issued cannot be cancelled or have more rejected.
 - `stock_service.evaluate()` is the only place a voucher is checked and valued; the page previews through it.
-  Vouchers are never edited - cancel and re-enter. An editor's adjustment waits for an admin; the one who
-  entered it cannot approve it.
+  Vouchers are never edited - cancel and re-enter. A stock difference (count or write-off, the page's "Open
+  mismatches") by an editor waits for an admin; the one who entered it cannot approve it.
 - Stock converts only within weight (MT, G into KG); every other unit is its own stock line. Values are
   before GST.
 - Stock reasons live only in migration `0082`'s `REASONS` (re-seeded by the root `conftest.py`); a new one
@@ -444,7 +448,8 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **A day where qcluster was down has no stock snapshot**, deliberately not backfilled; `sync-status`
   exposes `snapshotGapDays` as a badge.
 - **RM stock entry has no inter-plant transfer yet** (challan, job work): stock issued at one plant cannot
-  be received at another, and opening balances are typed in, not imported from the Drive RM sheets.
+  be received at another, and there is no way to bring the Drive RM sheets' current stock in - stock enters
+  only through MIRs.
   [RM stock entry](docs/api-and-features.md#rm-stock-entry-2026-09-29)
 
 - **Several code comments and docstrings are stale** - found by the 2026-09-24 documentation audit

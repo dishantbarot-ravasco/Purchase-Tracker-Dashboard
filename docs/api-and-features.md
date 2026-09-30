@@ -72,17 +72,18 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `stock/meta` | `meta` | Auth | Plants with `canRead` / `canWrite` / `canApprove`, stock reasons, units, today, `backdateDays`, departments used per plant, `pendingApprovals` |
-| GET | `stock/balances?plant=&q=` | `balances` | Auth, readable plants | Stock on hand per plant, material and stock unit: qty, INR value, open lots, last receipt, oldest stock held, minimum level |
-| GET | `stock/materials/<id>?plant=&uom=` | `material_stock` | Auth, readable plant (404) | One material's lots at a plant and its ledger with the running balance |
-| GET | `stock/material-search?q=` | `material_search` | IsEditor | The company-wide material master, for an addition of a material the plant holds none of |
+| GET | `stock/meta` | `meta` | Auth | Plants with `canRead` / `canWrite` / `canApprove`, stock reasons (no `OPENING_BALANCE`), today, `backdateDays`, departments used per plant, `pendingApprovals`, the categories held (the register's filter) |
+| GET | `stock/receipts?plant=&q=` | `receipts` | Auth, readable plant (404) | The plant's MIR receipts with stock left, matching a MIR number, material, vendor, invoice, PO or item code - the issue and difference forms' picker. Each carries everything from its MIR line |
+| GET | `stock/receipts/<lot_id>` | `receipt` | Auth, readable plant (404) | One MIR receipt: its MIR facts, balances, every movement with the running balance, the plant's store setting for the material |
+| GET | `stock/register?plant=&from=&to=&q=&category=&all=` | `register` | Auth, readable plants | The RM register: one row per MIR receipt for the period (default this month to today) - opening, received, issued, returned, adjusted, closing, rate, value, days in store. `all=1` keeps receipts that held nothing all period |
+| GET | `stock/differences?status=&plant=` | `differences` | Auth, readable plants | Stock differences (Open mismatches): `OPEN` (waiting for an admin, default), `RESOLVED`, `CANCELLED`, `ALL` |
 | POST | `stock/settings` | `settings` | IsEditor + plant (403) | Whether the plant keeps a material in store, and its minimum level |
-| POST | `stock/preview` | `preview` | IsEditor + plant (403) | Check and value an issue / return / adjustment; saves nothing |
-| POST | `stock/vouchers/new` | `post_voucher` | IsEditor + plant (403) | Save one; 201 (an editor's adjustment `PENDING`), or 400 with `errors: [{field, message}]` |
-| GET | `stock/vouchers?plant=&kind=&status=&q=&from=&to=` | `vouchers` | Auth, readable plants | The register, newest first |
-| GET | `stock/vouchers/<id>` | `voucher` | Auth, readable plant (404) | One voucher: lines, the lots each drew, returns against it, what is still out |
-| POST | `stock/vouchers/<id>/cancel` | `cancel_voucher` | IsEditor + plant | Cancel a posted voucher or withdraw a pending adjustment; a reason is required |
-| POST | `stock/vouchers/<id>/approve` | `approve_voucher` | IsAdmin + plant | Approve a pending adjustment (re-checked now) |
+| POST | `stock/preview` | `preview` | IsEditor + plant (403) | Check and value an issue / return / difference; saves nothing |
+| POST | `stock/vouchers/new` | `post_voucher` | IsEditor + plant (403) | Save one; 201 (an editor's difference `PENDING`), or 400 with `errors: [{field, message}]` |
+| GET | `stock/vouchers?plant=&kind=&status=&q=&from=&to=` | `vouchers` | Auth, readable plants | The issue slips, returns and differences, newest first; `q` also finds a MIR number |
+| GET | `stock/vouchers/<id>` | `voucher` | Auth, readable plant (404) | One voucher: lines with their MIR receipt, returns against it, what is still out |
+| POST | `stock/vouchers/<id>/cancel` | `cancel_voucher` | IsEditor + plant | Cancel a posted voucher or withdraw a pending difference; a reason is required |
+| POST | `stock/vouchers/<id>/approve` | `approve_voucher` | IsAdmin + plant | Approve a pending difference (re-checked now) |
 | POST | `stock/vouchers/<id>/reject` | `reject_voucher` | IsAdmin + plant | Turn one down; a note is required |
 
 ### MIR entry, cross-plant (`mir_views`)
@@ -1083,59 +1084,75 @@ master CSV cannot be received against (the search says to ask purchase to add it
 ### RM stock entry (2026-09-29)
 
 The project owner asked for the Raw Material entry "like we have for MIR entry ... directly connecting
-with MIR entry", built with its edge cases and workflow. It follows MIR entry's rules exactly: the app's
-own normalized records ([architecture.md](architecture.md#appscoremodelsstockpy)), one `evaluate()`
-for preview and post, row locks, figures derived rather than stored, and a posted document never edited
-- a wrong one is cancelled and entered again. The page is `stock.html` ("RM Store"). The Drive RM
-sheets, their sync and the dashboard's Inventory / On Order / Stock & Orders tabs are untouched: stock
-entered here is separate until the two are compared and the sheets retired.
+with MIR entry". The first build (2026-09-29) was a five-tab store with FIFO issues, returns and
+adjustments; the owner found it hard to follow and, after comparing it with the HRS Drive RM file, asked
+for it rebuilt the MIR way (2026-09-30): "an single form structure like we had for the MIR and the
+equivalent MIR register and Open mismatch", where "if a material has not been entered in the MIR the RM
+can't issue it" and "the user will have the option to select the MIR and issue the quantity etc all other
+data gets transferred from the MIR data". It follows MIR entry's rules exactly: the app's own normalized
+records ([architecture.md](architecture.md#appscoremodelsstockpy)), one `evaluate()` for preview and
+post, row locks, figures derived rather than stored, and a posted document never edited - a wrong one is
+cancelled and entered again. The page is `stock.html` ("RM Store"). The Drive RM sheets, their sync and
+the dashboard's Inventory / On Order / Stock & Orders tabs are untouched: stock entered here is separate
+until the two are compared and the sheets retired.
 
-**The MIR is the receipt.** `mir_service.post_mir()` calls `stock_service.receive_mir()`, which makes one
-`StockLot` per MIR line at the **receiving** plant (where the goods sit; the paying plant is kept as
-`bill_to_plant` when it differs). A lot stores no quantity: it holds the line's accepted quantity
-(received less rejected) while the MIR is posted, so cancelling the MIR or recording a rejection later
-changes stock at once. Both are therefore **refused once that stock has been issued**
-(`check_mir_cancel()` / `check_mir_rejection()`, inside the MIR's own transaction, the lots locked): the
-message names the issue and says to return it or record the loss first. The MIR register shows, per
-line, what it put into the store and how much is left.
+**The MIR is the only way in.** `mir_service.post_mir()` calls `stock_service.receive_mir()`, which makes
+one `StockLot` per MIR line at the **receiving** plant (where the goods sit - the HRS Drive sheet also
+holds RTP-1-billed lots at HRS, tagged; the paying plant is kept as `bill_to_plant` when it differs). A lot
+stores no quantity: it holds the line's accepted quantity (received less rejected) while the MIR is
+posted, so cancelling the MIR or recording a rejection later changes stock at once. Both are therefore
+**refused once that stock has been issued** (`check_mir_cancel()` / `check_mir_rejection()`, inside the
+MIR's own transaction, the lots locked): the message names the issue and says to return it or record the
+loss first. Nothing else creates stock - no opening balances or additions by hand (`mode: "add"` is
+refused; `OPENING_BALANCE` is kept in the reasons table but not offered). Opening stock at go-live has to
+come in as MIRs. The source `ADJUSTMENT` lots made by hand before 2026-09-30 still count, but the picker
+offers only MIR receipts.
 
-**Stock units.** A MIR line keeps the PO's unit; stock converts **only within weight** (MT and G into
-KG, exactly, the factor kept on the lot - `stock_rules.stock_unit()`). Every other unit is its own stock
-line: nothing exact converts litres, metres or numbers. A lot is valued at the line's taxable value
-(after discount, with other charges, **before GST**, which is claimed back) over the quantity received,
-in stock units. Values total INR only; a non-INR lot is counted as quantity and flagged.
+**The three views, like MIR entry's.**
+- **Issue from MIR** - one form: the plant and date (pre-filled; department, person, production order
+  and remarks are optional - the Drive sheet never recorded them), then **pick the MIR**: search by MIR
+  number, material, vendor, invoice, PO or item code; hits are grouped by MIR, oldest first within a
+  material, only receipts with stock left at that plant. Clicking a line adds it with everything from the
+  MIR (date, vendor, PO, invoice, item code, category, rate, days in store, whose PO); the storekeeper
+  enters only the quantity. Lines from several MIRs go on one issue, one line per MIR line. The draw is
+  from **that receipt only** - never FIFO across receipts: the Drive sheet showed the store running two
+  receipts of SBR 1502 in parallel.
+- **RM register** - "Stock by MIR", one row per MIR receipt like the Drive Stock tab: MIR and line, receipt
+  date, material and item code, category, unit, opening (at the start of the period), received, issued,
+  returned, adjusted, closing, rate, value, days in store, vendor and whose PO. A receipt that held nothing
+  all period and moved nothing is left out unless "Include MIRs with nothing left". A row opens the
+  receipt's movements with the running balance, its store settings, and **Issue from this MIR** /
+  **Record a difference**. "Issue slips" lists the vouchers; an issue offers **Take material back**.
+- **Open mismatches** - stock differences, the RM counterpart of MIR mismatches: a **physical count** of
+  what is left of one MIR receipt (the difference from the register on that day is recorded, both figures
+  kept) or a **write-off** (damage, loss, a sample). **An editor's difference is saved PENDING, listed as
+  open, and moves nothing until an admin approves it**; approval re-checks it against the receipt as it is
+  now (on its own day), and the one who entered it cannot approve it. An admin's own posts at once,
+  recorded as approved by them. A count that found more puts it back into the same receipt.
 
-**Going out and coming back** - three vouchers, numbered per plant, kind and financial year
-(`HRS/ISS/26-27/0001`, `RET`, `ADJ`), dated today or up to `BACKDATE_DAYS` (7) back:
-- **Issue**: to a department (required) and a person (required), optionally a production order;
-  material drawn **oldest lot first** and valued at each lot's rate; one line per material. Going below
-  the material's minimum level is a notice, not an error.
-- **Return**: against the posted issue it left on, same plant, dated on or after it; no more than that
-  issue line still has out; back into the lots the issue drew, newest first; a reason from the RETURN
-  list (the "other" reason needs a note).
-- **Adjustment**: a **physical count** (the counted quantity against the books at the end of its day -
-  the difference is the adjustment, both kept on the line), **add stock** (an opening balance or stock
-  found; valued at the rate entered, or the latest receipt's) or **write off** (damage, loss, a
-  sample). A reason of the matching direction is required, most with a note. **An editor's adjustment
-  is saved PENDING and moves nothing until an admin approves it**; approval re-checks it against stock
-  as it is now (on its own date), and the one who entered it cannot approve it. An admin's own posts at
-  once, recorded as approved by them.
+**Returns** go back into the MIR receipt the issue line took from, at its rate, no more than that line
+still has out, dated on or after the issue, with a reason from the RETURN list.
 
-**Stock never goes below zero on any day** - not only today. Every draw, cancellation and MIR change
-replays each affected lot's dated movements (`stock_rules.min_running_balance()`) and refuses anything
-that would take any end-of-day balance negative: a backdated issue that fits today can still fail on
-its own day, and the error says how much could be taken then and how much is in stock now. Two issues
-of the last of a material at once serialize on the locked lots, and one of them is refused.
+**Stock units.** A MIR line keeps the PO's unit; stock converts **only within weight** (MT and G into KG,
+exactly, the factor kept on the lot - `stock_rules.stock_unit()`). A lot is valued at the line's taxable
+value (after discount, with other charges, **before GST**, which is claimed back) over the quantity
+received, in stock units. Values total INR only.
 
-**Cancelling.** An issue with a posted return against it waits for the return to be cancelled; a
-return, or an addition, whose stock has been issued again cannot be cancelled; a cancelled voucher
+**A receipt never goes below zero on any day** - not only today. Every issue, write-off, cancellation and
+MIR change replays the receipt's dated movements (`stock_rules.min_running_balance()`) and refuses
+anything that would take any end-of-day balance negative, or date an issue before the MIR came in. Two
+issues of the last of a receipt at once serialize on the locked lot, and one of them is refused.
+
+**Cancelling.** An issue with a posted return against it waits for the return to be cancelled; a return,
+or a count that found more, whose stock has been issued again cannot be cancelled; a cancelled voucher
 stops counting at once. A material a plant does not keep in store (`StockSetting.is_stocked`, e.g.
-conveyor fabric) has its MIR lots recorded as "straight to use", holding nothing; the flag is read when
-the MIR is posted and kept on the lot, so changing it never rewrites a receipt.
+conveyor fabric) has its MIR lots recorded as "straight to use", holding nothing and never offered for
+issue; the flag is read when the MIR is posted and kept on the lot.
 
-**Not built yet:** transfers between plants (challan, job work) - material issued at one plant cannot
-yet be received at another - and a nightly export of the ledger. Opening balances are entered as
-additions by hand; no import from the Drive RM sheets.
+**Not built yet:** transfers between plants (challan, job work), an Excel export of the register, and a
+way to bring the Drive sheets' current stock in (it has to be entered as MIRs). Voucher lines entered
+before 2026-09-30 that drew several lots keep working through their allocations; a pending difference
+from then without a MIR receipt cannot be approved (turn it down and enter it again).
 
 ### Sort presets (2026-09-28)
 
@@ -1494,8 +1511,10 @@ name the user already has).
 
 The `/api/stock/...` views in the table above: gating, parsing and serializing only; the rules are in
 `stock_service`. Figures travel as strings. Every read narrows to the plants the caller may read, every
-write to a plant the caller may edit; approving is `IsAdmin`. `_voucher_detail()` adds what the page
-needs to act: `canCancel`, `canApprove` (never for the one who entered it), `returnable`.
+write to a plant the caller may edit; approving is `IsAdmin`. `_receipt(lot, balance)` is how a MIR
+receipt travels everywhere (picker, register row, voucher line, difference): its MIR number and line,
+invoice, PO, item code, material, unit, vendor, whose PO, rate and days in store. `_voucher_detail()` adds
+what the page needs to act: `canCancel`, `canApprove` (never for the one who entered it), `returnable`.
 
 ### apps/services/mir_service.py
 
@@ -1521,13 +1540,18 @@ RM stock entry's rules (see [RM stock entry](#rm-stock-entry-2026-09-29)). The M
 `check_mir_rejection(line, new_rejected)` (refuse removing issued stock; called by `cancel_mir()` /
 `record_rejection()`, which turn the refusal into a `MirValidationError`), `mir_line_stock(mir)`.
 Reading: `lot_events()` (a lot's dated movements, with overrides for a change being checked),
-`lot_balances()`, `stock_rows(plant_codes)`, `material_detail(plant, material, uom)` (lots and the
-ledger), `returnable_lines(issue)`, `departments(plant)`. `evaluate(payload, lock=False, earliest=None)`
-- the one check-and-value of an issue, return or adjustment; `_draw()` is the FIFO draw that respects
-every later day's balance. Writes, each in one transaction with the lots locked: `post_voucher()`
-(numbers from `_next_seq()`, row-locked `StockSequence`), `approve_adjustment()` /
-`reject_adjustment()`, `cancel_voucher()`, `update_setting()`. `StockValidationError.errors` is
-`[{field, message}]` in the payload's own terms (`lines.0.qty`). `BACKDATE_DAYS` (7), `MAX_LINES` (50).
+`lot_balances()` (in, issued, returned, adjusted, balance), `receipts_for_issue(plant, q)` (the picker),
+`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, `lot_detail(lot)` (movements with
+the running balance), `differences(plant_codes, status)`, `returnable_lines(issue)`, `departments(plant)`,
+`doc_of(lot)`. `LOT_RELATED` is the `select_related` a lot needs for all of that.
+`evaluate(payload, lock=False, earliest=None)` - the one check-and-value of an issue, return or difference;
+every line names its MIR receipt (`lot_id`), checked by `_receipt()` (this plant, held in store, MIR
+posted, once per voucher) and drawn by `_take()`, which respects every later day's balance. A line's value
+is `None` until its quantity fits. Writes, each in one transaction with the lots locked (`_lock_lots()`,
+id order): `post_voucher()` (numbers from `_next_seq()`, row-locked `StockSequence`),
+`approve_adjustment()` / `reject_adjustment()`, `cancel_voucher()`, `update_setting()`.
+`StockValidationError.errors` is `[{field, message}]` in the payload's own terms (`lines.0.qty`).
+`BACKDATE_DAYS` (7), `MAX_LINES` (50), `ADJUST_MODES`.
 
 ### apps/services/stock_rules.py
 

@@ -1365,27 +1365,33 @@ link to `/api/review/stats/export`. `formatMoneyExact()` keeps full precision on
 
 ### frontend/js/stock-page.js
 
-`stock.html`'s page ("RM Store", 2026-09-29): five views - Stock on hand, Issue, Return to store,
-Adjust, Register. Like `mir-page.js` it never draws stock or values a line: every input change sends the
-form to `/api/stock/preview` (debounced, stale responses dropped) and paints the lots each line draws,
-the value, the "Still to do" list and notices; saving re-runs the same check server-side. Inputs are
-not re-rendered on a preview. Every top-level name is `st...` / `ST_...` (one global scope with
-`auth.js` / `shared.js`).
+`stock.html`'s page ("RM Store"), built like MIR entry (2026-09-30): three views - **Issue from MIR**,
+**RM register** (Stock by MIR / Issue slips) and **Open mismatches**. Like `mir-page.js` it never draws
+stock or values a line: every input change sends the form to `/api/stock/preview` (debounced, stale
+responses dropped) and paints the value, what the MIR has left after it, the "Still to do" list and
+notices; saving re-runs the same check server-side. Inputs are not re-rendered on a preview. Every
+top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.js`).
 
-- `apiStock()` - the fetch wrapper. `stSetupForm(formId, kind, hooks)` - the shared form machinery
-  (plant and date within `backdateDays`, preview, errors mapped to fields - red only after a save was
-  tried - save, reset); each form supplies `payload`, `paint`, `lineKey`, `reset`, `onPlant`.
-- Issue (`stIssueForm()`): finds materials in the plant's stock (`stPicker()` over `ST_STOCK`, refreshed
-  after every save), department suggestions from `meta.departments`. Return (`stReturnForm()`,
-  `stReturnPick()`): finds a posted issue, offers what is still out per line with a reason; also opened
-  from an issue in the Register. Adjust (`stAdjustForm()`): lines of three kinds - physical count, add
-  stock (material from stock or the master, unit, rate), write off - with the reason list of the right
-  direction; says whether it will wait for approval.
-- Stock on hand (`stLoadStock()`, `stLoadMaterial()`): rows per material and unit, then a material's
-  lots, ledger with running balance, and its store settings for an editor.
-- Register (`stLoadRegister()`, `stLoadVoucher()`): filters (pending approvals first for an admin who has
-  some), detail with the lots each line drew, approve / turn down, cancel or withdraw, and "take
-  material back from this issue". `stPaintPending()` keeps the tab's count of pending approvals.
+- `apiStock()` - the fetch wrapper. `stSetupForm(formId, kind, hooks)` - the shared form machinery for
+  the three forms (plant and date within `backdateDays`, preview, errors mapped to fields - red only
+  after a save was tried - save, reset); each form's host carries `data-form-host` and a `data-no-write`
+  banner, and each form supplies `payload`, `paint`, `lineAt`, `reset`, and optionally `onPlant`,
+  `progress`, `saved`.
+- `stMirPicker()` - the MIR search shared by the issue and difference forms: `/api/stock/receipts`, hits
+  grouped by MIR, a line added with everything from its MIR (`stReceiptChips()`); the quantity is the
+  only thing typed.
+- Issue (`stIssueForm()`, `stIssueRender()`, `stIssueProgress()`): the three-step strip like MIR entry's,
+  optional department / person / production order in a `<details>`.
+- RM register (`stInitRegister()`, `stLoadRegister()`, `stLoadReceipt()`): the Drive-sheet-shaped table
+  per MIR receipt for a period (this month by default), category filter from `meta.categories`; a row
+  opens the receipt's movements, store settings, and Issue from this MIR / Record a difference
+  (`stSendTo()`). Issue slips (`stLoadSlips()`, `stLoadVoucher(id, areaId)`): detail with approve /
+  turn down, cancel or withdraw, and Take material back (`stReturnOpen()`, the return form under the
+  slips).
+- Open mismatches (`stInitMismatches()`, `stLoadMismatches()`, `stDiffForm()`): the stock differences
+  list (Open by default) with the voucher detail to approve or turn down, and the Record a difference
+  form - physical count or write-off per MIR line, with the reason list of the right direction.
+  `stPaintPending()` keeps the tab's count of differences waiting for approval.
 
 ### frontend/js/mir-page.js
 

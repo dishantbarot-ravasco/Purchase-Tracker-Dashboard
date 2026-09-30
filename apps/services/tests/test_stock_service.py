@@ -2,13 +2,13 @@
 apps/services/stock_service.py and stock_rules.py - RM stock entry, on real
 Postgres.
 
-Each class is one rule of the design (2026-09-29): a posted MIR is the
-receipt (its accepted quantity, in the stock unit, while it stays posted);
-issues draw the oldest lot first and never take stock below zero on any
-day; returns go back to the lots their issue drew; adjustments wait for an
-admin; a MIR whose stock was issued cannot be cancelled or have more
-rejected; numbering; and two storekeepers issuing the last of a material at
-once.
+Each class is one rule of the design: a posted MIR is the only way stock
+comes in (its accepted quantity, in the stock unit, while it stays posted);
+an issue names the MIR receipt it comes out of (2026-09-30) and never takes
+it below zero on any day; a return goes back into that receipt; stock
+differences (counts, write-offs) wait for an admin; a MIR whose stock was
+issued cannot be cancelled or have more rejected; the register; numbering;
+and two storekeepers issuing the last of a receipt at once.
 """
 
 import datetime
@@ -75,9 +75,13 @@ def _material(description="SBR 1502"):
     return materials.material_for(description)
 
 
-def _issue(user, qty, *, days_ago=0, plant="hrs", description="SBR 1502", uom="KG", **extra):
-    body = {"kind": "ISSUE", "plant": plant, "voucher_date": _day(days_ago).isoformat(), "department": "Mixing",
-            "issued_to": "Ramesh", "lines": [{"material_id": _material(description).id, "uom": uom, "qty": qty}]}
+def _lot(mir):
+    return StockLot.objects.get(mir_line__mir=mir)
+
+
+def _issue(user, qty, lot, *, days_ago=0, plant="hrs", **extra):
+    body = {"kind": "ISSUE", "plant": plant, "voucher_date": _day(days_ago).isoformat(),
+            "lines": [{"lot_id": lot.id, "qty": qty}]}
     body.update(extra)
     return stock_service.post_voucher(body, user)
 
@@ -93,9 +97,13 @@ def _adjust(user, lines, *, plant="hrs", days_ago=0):
     return stock_service.post_voucher({"kind": "ADJUST", "plant": plant, "voucher_date": _day(days_ago).isoformat(), "lines": lines}, user)
 
 
+def _left(lot):
+    return stock_service.lot_balances([StockLot.objects.get(pk=lot.pk)])[lot.pk]["balance"]
+
+
 def _on_hand(plant="hrs", description="SBR 1502", uom="KG"):
-    rows = [r for r in stock_service.stock_rows([plant]) if r["material"] == _material(description) and r["uom"] == uom]
-    return rows[0]["qty"] if rows else Decimal("0")
+    lots = list(StockLot.objects.filter(plant__code=plant, material=_material(description), uom=uom))
+    return sum((b["balance"] for b in stock_service.lot_balances(lots).values()), Decimal("0"))
 
 
 def _messages(exc):
@@ -176,8 +184,7 @@ class TestReceipts:
         mir = _receive(user)
         lot = StockLot.objects.get(mir_line__mir=mir)
         assert lot.stocked is False and _on_hand() == Decimal("0")
-        ledger = stock_service.material_detail(lot.plant, lot.material, "KG")["ledger"]
-        assert ledger[0]["note"] == "Went straight to use - not stocked"
+        assert stock_service.lot_detail(lot)["movements"] == []
 
     def test_cancelling_an_unissued_mir_empties_its_lot(self, user):
         mir = _receive(user)
@@ -185,77 +192,93 @@ class TestReceipts:
         assert _on_hand() == Decimal("0")
 
 
-# ── Issues ──────────────────────────────────────────────────────────────
+# ── Issues: out of the MIR the storekeeper picks ────────────────────────
 
 
 @pytest.mark.django_db
 class TestIssues:
-    def test_an_issue_takes_the_oldest_lot_first_and_is_valued_at_its_rates(self, user):
-        _receive(user, "100", "50", days_ago=5)
-        _receive(user, "100", "60", days_ago=2)
-        issue = _issue(user, "150")
-        allocs = sorted((a.lot.rate, a.qty) for a in issue.lines.get().allocations.select_related("lot"))
-        assert allocs == [(Decimal("50.0000"), Decimal("100")), (Decimal("60.0000"), Decimal("50"))]
-        preview = stock_service.evaluate({"kind": "ISSUE", "plant": "hrs", "voucher_date": TODAY.isoformat(), "department": "M",
-                                          "issued_to": "R", "lines": [{"material_id": _material().id, "uom": "KG", "qty": "40"}]})
-        assert preview["lines"][0]["value"] == Decimal("2400.00")  # all from the Rs 60 lot now
-        assert _on_hand() == Decimal("50")
+    def test_an_issue_takes_the_chosen_mir_receipt_and_is_valued_at_its_rate(self, user):
+        older = _lot(_receive(user, "100", "50", days_ago=5))
+        newer = _lot(_receive(user, "100", "60", days_ago=2))
+        issue = _issue(user, "40", newer)
+        line = issue.lines.get()
+        assert line.lot == newer and line.material == newer.material and line.uom == "KG"
+        assert [(a.lot_id, a.qty) for a in line.allocations.all()] == [(newer.id, Decimal("40"))]
+        # Nothing is taken from the older receipt just because it is older.
+        assert (_left(older), _left(newer)) == (Decimal("100.000"), Decimal("60.000"))
+        preview = stock_service.evaluate({"kind": "ISSUE", "plant": "hrs", "voucher_date": TODAY.isoformat(),
+                                          "lines": [{"lot_id": newer.id, "qty": "10"}]})
+        assert preview["ok"] and preview["lines"][0]["value"] == Decimal("600.00")
 
-    def test_more_than_is_in_stock_is_refused(self, user):
-        _receive(user, "100")
+    def test_more_than_the_receipt_holds_is_refused_even_when_another_holds_plenty(self, user):
+        lot = _lot(_receive(user, "100"))
+        _receive(user, "500")
         with pytest.raises(StockValidationError) as exc:
-            _issue(user, "100.001")
-        assert "lines.0.qty" in _fields(exc) and "Only 100" in _messages(exc)
+            _issue(user, "100.001", lot)
+        assert "lines.0.qty" in _fields(exc) and "Only 100" in _messages(exc) and lot.mir_line.mir.mir_no in _messages(exc)
         assert not StockVoucher.objects.exists()
 
-    def test_an_issue_dated_before_the_material_arrived_is_refused(self, user):
-        _receive(user, "100", days_ago=1)
+    def test_an_issue_dated_before_the_mir_came_in_is_refused(self, user):
+        lot = _lot(_receive(user, "100", days_ago=1))
         with pytest.raises(StockValidationError) as exc:
-            _issue(user, "10", days_ago=3)
-        assert "arrived after that date" in _messages(exc)
+            _issue(user, "10", lot, days_ago=3)
+        assert "came in on" in _messages(exc)
 
     def test_a_backdated_issue_that_fits_today_but_not_its_day_is_refused(self, user):
         # 100 in on day -5, 60 out on day -1: 40 today. 50 dated day -3 fits
         # the 100 held that day - but would leave -10 after day -1's issue.
-        _receive(user, "100", days_ago=5)
-        _issue(user, "60", days_ago=1)
+        lot = _lot(_receive(user, "100", days_ago=5))
+        _issue(user, "60", lot, days_ago=1)
         with pytest.raises(StockValidationError):
-            _issue(user, "50", days_ago=3)
-        assert _issue(user, "40", days_ago=3).status == "POSTED"
-        assert _on_hand() == Decimal("0")
+            _issue(user, "50", lot, days_ago=3)
+        assert _issue(user, "40", lot, days_ago=3).status == "POSTED"
+        assert _left(lot) == Decimal("0")
 
     def test_dates_are_today_or_up_to_the_backdating_window(self, user):
-        _receive(user, "100", days_ago=20)
+        lot = _lot(_receive(user, "100", days_ago=20))
         for days in (-1, stock_service.BACKDATE_DAYS + 1):
             with pytest.raises(StockValidationError) as exc:
-                _issue(user, "1", days_ago=days)
+                _issue(user, "1", lot, days_ago=days)
             assert "voucher_date" in _fields(exc)
-        assert _issue(user, "1", days_ago=stock_service.BACKDATE_DAYS).status == "POSTED"
+        assert _issue(user, "1", lot, days_ago=stock_service.BACKDATE_DAYS).status == "POSTED"
 
-    def test_department_and_receiver_are_required_and_one_line_per_material(self, user):
-        _receive(user, "100")
+    def test_department_is_optional_and_a_receipt_goes_on_one_line(self, user):
+        lot = _lot(_receive(user, "100"))
+        assert _issue(user, "1", lot).department == ""
         body = {"kind": "ISSUE", "plant": "hrs", "voucher_date": TODAY.isoformat(),
-                "lines": [{"material_id": _material().id, "uom": "KG", "qty": "1"}, {"material_id": _material().id, "uom": "KG", "qty": "2"}]}
+                "lines": [{"lot_id": lot.id, "qty": "1"}, {"lot_id": lot.id, "qty": "2"}, {"qty": "1"}]}
         with pytest.raises(StockValidationError) as exc:
             stock_service.post_voucher(body, user)
-        assert {"department", "issued_to", "lines.1.material_id"} <= _fields(exc)
+        assert _fields(exc) == {"lines.1.lot_id", "lines.2.lot_id"} and "Choose the MIR" in _messages(exc)
 
-    def test_a_lot_at_another_plant_is_not_this_plants_stock(self, user):
-        _receive(user, "100", plant="vapi")
-        with pytest.raises(StockValidationError):
-            _issue(user, "1", plant="hrs")
+    def test_a_receipt_at_another_plant_is_not_this_plants_stock(self, user):
+        lot = _lot(_receive(user, "100", plant="vapi"))
+        with pytest.raises(StockValidationError) as exc:
+            _issue(user, "1", lot, plant="hrs")
+        assert "received at" in _messages(exc)
+
+    def test_a_cancelled_or_straight_to_use_receipt_holds_nothing_to_issue(self, user):
+        mir = _receive(user, "100")
+        mir_service.cancel_mir(mir, user, "entered twice")
+        with pytest.raises(StockValidationError) as exc:
+            _issue(user, "1", _lot(mir))
+        assert "is cancelled" in _messages(exc)
+        StockSetting.objects.create(plant=Plant.objects.get(code="hrs"), material=_material("Carbon Black N330"), is_stocked=False)
+        with pytest.raises(StockValidationError) as exc:
+            _issue(user, "1", _lot(_receive(user, "100", description="Carbon Black N330")))
+        assert "straight to use" in _messages(exc)
 
     def test_issues_are_numbered_per_plant_kind_and_year(self, user):
-        _receive(user, "100")
-        a, b = _issue(user, "1"), _issue(user, "1")
+        lot = _lot(_receive(user, "100"))
+        a, b = _issue(user, "1", lot), _issue(user, "1", lot)
         fy = a.fy
         assert (a.voucher_no, b.voucher_no) == (f"HRS/ISS/{fy[2:4]}-{fy[5:7]}/0001", f"HRS/ISS/{fy[2:4]}-{fy[5:7]}/0002")
 
     def test_going_below_the_minimum_level_is_a_notice_not_an_error(self, user):
-        _receive(user, "100")
+        lot = _lot(_receive(user, "100"))
         StockSetting.objects.create(plant=Plant.objects.get(code="hrs"), material=_material(), min_level=Decimal("50"), min_level_uom="KG")
-        result = stock_service.evaluate({"kind": "ISSUE", "plant": "hrs", "voucher_date": TODAY.isoformat(), "department": "M",
-                                         "issued_to": "R", "lines": [{"material_id": _material().id, "uom": "KG", "qty": "60"}]})
+        result = stock_service.evaluate({"kind": "ISSUE", "plant": "hrs", "voucher_date": TODAY.isoformat(),
+                                         "lines": [{"lot_id": lot.id, "qty": "60"}]})
         assert result["ok"] and "below its minimum level" in result["notices"][0]
 
 
@@ -264,27 +287,23 @@ class TestIssues:
 
 @pytest.mark.django_db
 class TestReturns:
-    def test_a_return_goes_back_into_the_lots_its_issue_drew_newest_first(self, user):
-        _receive(user, "100", "50", days_ago=5)
-        _receive(user, "100", "60", days_ago=4)
-        issue = _issue(user, "150", days_ago=2)
-        ret = _return(user, issue, "70")
-        back = sorted((a.lot.rate, a.qty) for a in ret.lines.get().allocations.select_related("lot"))
-        # 50 back to the Rs 60 lot it last drew from, the other 20 to the Rs 50 lot.
-        assert back == [(Decimal("50.0000"), Decimal("20")), (Decimal("60.0000"), Decimal("50"))]
-        assert _on_hand() == Decimal("120")
+    def test_a_return_goes_back_into_the_receipt_it_came_from(self, user):
+        lot = _lot(_receive(user, "100", "50", days_ago=5))
+        issue = _issue(user, "60", lot, days_ago=2)
+        ret = _return(user, issue, "25")
+        line = ret.lines.get()
+        assert line.lot == lot and [(a.lot_id, a.qty) for a in line.allocations.all()] == [(lot.id, Decimal("25"))]
+        assert _left(lot) == Decimal("65.000")
 
     def test_no_more_than_is_still_out_can_come_back(self, user):
-        _receive(user, "100")
-        issue = _issue(user, "40")
+        issue = _issue(user, "40", _lot(_receive(user, "100")))
         _return(user, issue, "30")
         with pytest.raises(StockValidationError) as exc:
             _return(user, issue, "11")
         assert "At most 10" in _messages(exc)
 
     def test_a_return_cannot_be_dated_before_its_issue_or_go_to_another_plant(self, user):
-        _receive(user, "100", days_ago=5)
-        issue = _issue(user, "40", days_ago=2)
+        issue = _issue(user, "40", _lot(_receive(user, "100", days_ago=5)), days_ago=2)
         with pytest.raises(StockValidationError) as exc:
             _return(user, issue, "10", days_ago=3)
         assert "voucher_date" in _fields(exc)
@@ -295,8 +314,7 @@ class TestReturns:
         assert "return_of" in _fields(exc)
 
     def test_a_return_needs_a_reason_and_the_other_reason_a_note(self, user):
-        _receive(user, "100")
-        issue = _issue(user, "40")
+        issue = _issue(user, "40", _lot(_receive(user, "100")))
         with pytest.raises(StockValidationError) as exc:
             _return(user, issue, "1", reason="")
         assert "lines.0.reason" in _fields(exc)
@@ -311,27 +329,26 @@ class TestReturns:
 @pytest.mark.django_db
 class TestCancelling:
     def test_an_issue_with_a_return_against_it_cannot_be_cancelled_until_the_return_is(self, user):
-        _receive(user, "100")
-        issue = _issue(user, "40")
+        lot = _lot(_receive(user, "100"))
+        issue = _issue(user, "40", lot)
         ret = _return(user, issue, "10")
         with pytest.raises(StockValidationError) as exc:
             stock_service.cancel_voucher(issue, user, "wrong")
         assert ret.voucher_no in _messages(exc)
         stock_service.cancel_voucher(ret, user, "wrong")
         stock_service.cancel_voucher(issue, user, "wrong")
-        assert _on_hand() == Decimal("100")
+        assert _left(lot) == Decimal("100")
 
     def test_a_return_whose_stock_was_issued_again_cannot_be_cancelled(self, user):
-        _receive(user, "100")
-        issue = _issue(user, "100")
+        lot = _lot(_receive(user, "100"))
+        issue = _issue(user, "100", lot)
         ret = _return(user, issue, "30")
-        _issue(user, "30")
+        _issue(user, "30", lot)
         with pytest.raises(StockValidationError):
             stock_service.cancel_voucher(ret, user, "wrong")
 
     def test_cancelling_needs_a_reason(self, user):
-        _receive(user, "100")
-        issue = _issue(user, "1")
+        issue = _issue(user, "1", _lot(_receive(user, "100")))
         with pytest.raises(StockValidationError):
             stock_service.cancel_voucher(issue, user, " ")
 
@@ -343,7 +360,7 @@ class TestCancelling:
 class TestMirChangesAfterIssue:
     def test_a_mir_whose_stock_was_issued_cannot_be_cancelled(self, user):
         mir = _receive(user, "100")
-        issue = _issue(user, "10")
+        issue = _issue(user, "10", _lot(mir))
         with pytest.raises(MirValidationError) as exc:
             mir_service.cancel_mir(mir, user, "entered twice")
         assert issue.voucher_no in _messages(exc)
@@ -354,7 +371,7 @@ class TestMirChangesAfterIssue:
 
     def test_a_late_rejection_may_take_only_what_is_still_in_the_store(self, user):
         mir = _receive(user, "100")
-        _issue(user, "80")
+        _issue(user, "80", _lot(mir))
         line = mir.lines.get()
         with pytest.raises(MirValidationError):
             mir_service.record_rejection(line, user, "21", "REJ_QUALITY", "")
@@ -363,101 +380,138 @@ class TestMirChangesAfterIssue:
 
     def test_the_mir_detail_says_what_each_line_put_into_stock(self, user):
         mir = _receive(user, "2", "50000", uom="MT")
-        _issue(user, "500")
+        _issue(user, "500", _lot(mir))
         info = stock_service.mir_line_stock(mir)[mir.lines.get().id]
         assert (info["uom"], info["in"], info["balance"]) == ("KG", Decimal("2000.000"), Decimal("1500.000"))
 
 
-# ── Adjustments ─────────────────────────────────────────────────────────
+# ── Stock differences: the store's open mismatches ─────────────────────
 
 
 @pytest.mark.django_db
-class TestAdjustments:
-    def test_an_editors_adjustment_waits_for_an_admin_and_moves_nothing_until_then(self, user, admin):
-        v = _adjust(user, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "500", "rate": "48", "reason": "OPENING_BALANCE"}])
-        assert v.status == "PENDING" and _on_hand() == Decimal("0")
-        stock_service.approve_adjustment(v, admin, "checked the sheet")
+class TestDifferences:
+    def test_an_editors_write_off_waits_for_an_admin_and_moves_nothing_until_then(self, user, admin):
+        lot = _lot(_receive(user, "100"))
+        v = _adjust(user, [{"mode": "remove", "lot_id": lot.id, "qty": "30", "reason": "DAMAGED_EXPIRED", "note": "wet"}])
+        assert v.status == "PENDING" and _left(lot) == Decimal("100")
+        stock_service.approve_adjustment(v, admin, "saw the bags")
         v.refresh_from_db()
-        assert v.status == "POSTED" and v.decided_by == admin
-        assert _on_hand() == Decimal("500")
-        assert StockLot.objects.get(voucher_line__voucher=v).rate == Decimal("48.0000")
+        assert v.status == "POSTED" and v.decided_by == admin and _left(lot) == Decimal("70")
 
-    def test_an_admins_adjustment_posts_at_once(self, admin):
-        v = _adjust(admin, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "5", "rate": "1", "reason": "OPENING_BALANCE"}])
-        assert v.status == "POSTED" and _on_hand() == Decimal("5")
+    def test_an_admins_difference_posts_at_once(self, admin, user):
+        lot = _lot(_receive(user, "100"))
+        v = _adjust(admin, [{"mode": "remove", "lot_id": lot.id, "qty": "5", "reason": "SAMPLE_TESTING"}])
+        assert v.status == "POSTED" and _left(lot) == Decimal("95")
 
     def test_turning_one_down_needs_a_note(self, user, admin):
-        v = _adjust(user, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "5", "rate": "1", "reason": "OPENING_BALANCE"}])
+        lot = _lot(_receive(user, "100"))
+        v = _adjust(user, [{"mode": "remove", "lot_id": lot.id, "qty": "5", "reason": "SAMPLE_TESTING"}])
         with pytest.raises(StockValidationError):
             stock_service.reject_adjustment(v, admin, "")
-        stock_service.reject_adjustment(v, admin, "no count sheet")
+        stock_service.reject_adjustment(v, admin, "no sample was sent")
         v.refresh_from_db()
-        assert v.status == "REJECTED" and _on_hand() == Decimal("0")
+        assert v.status == "REJECTED" and _left(lot) == Decimal("100")
 
-    def test_a_count_writes_off_the_difference_from_the_books_on_its_day(self, user, admin):
-        _receive(user, "100", days_ago=3)
-        v = _adjust(admin, [{"mode": "count", "material_id": _material().id, "uom": "KG", "counted": "92", "reason": "COUNT_LOSS", "note": "monthly count"}])
+    def test_a_count_records_the_difference_from_that_receipts_books_on_its_day(self, user, admin):
+        lot = _lot(_receive(user, "100", days_ago=3))
+        _receive(user, "500", days_ago=3)  # another receipt of the same material: not counted here
+        v = _adjust(admin, [{"mode": "count", "lot_id": lot.id, "counted": "92", "reason": "COUNT_LOSS", "note": "monthly count"}])
         line = v.lines.get()
-        assert (line.book_qty, line.counted_qty, line.qty, line.direction) == (Decimal("100"), Decimal("92"), Decimal("8"), -1)
-        assert _on_hand() == Decimal("92")
+        assert (line.lot, line.book_qty, line.counted_qty, line.qty, line.direction) == (lot, Decimal("100"), Decimal("92"), Decimal("8"), -1)
+        assert _left(lot) == Decimal("92")
+
+    def test_a_count_that_found_more_goes_back_into_the_same_receipt(self, user, admin):
+        lot = _lot(_receive(user, "100", "50"))
+        v = _adjust(admin, [{"mode": "count", "lot_id": lot.id, "counted": "104", "reason": "COUNT_GAIN", "note": "recount"}])
+        assert _left(lot) == Decimal("104") and StockLot.objects.count() == 1
+        _issue(user, "104", lot)
+        with pytest.raises(StockValidationError):
+            stock_service.cancel_voucher(v, admin, "miscounted")
 
     def test_a_count_matching_the_books_or_with_a_reason_of_the_wrong_kind_is_refused(self, admin, user):
-        _receive(user, "100")
+        lot = _lot(_receive(user, "100"))
         with pytest.raises(StockValidationError) as exc:
-            _adjust(admin, [{"mode": "count", "material_id": _material().id, "uom": "KG", "counted": "100", "reason": "COUNT_LOSS", "note": "x"}])
-        assert "nothing to adjust" in _messages(exc)
+            _adjust(admin, [{"mode": "count", "lot_id": lot.id, "counted": "100", "reason": "COUNT_LOSS", "note": "x"}])
+        assert "no difference" in _messages(exc)
         with pytest.raises(StockValidationError) as exc:
-            _adjust(admin, [{"mode": "count", "material_id": _material().id, "uom": "KG", "counted": "110", "reason": "COUNT_LOSS", "note": "x"}])
+            _adjust(admin, [{"mode": "count", "lot_id": lot.id, "counted": "110", "reason": "COUNT_LOSS", "note": "x"}])
         assert "lines.0.reason" in _fields(exc)
 
-    def test_an_addition_without_a_rate_takes_the_latest_receipts_or_must_be_given_one(self, admin, user):
+    def test_stock_cannot_be_added_by_hand(self, admin):
         with pytest.raises(StockValidationError) as exc:
-            _adjust(admin, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "5", "reason": "OPENING_BALANCE"}])
-        assert "lines.0.rate" in _fields(exc)
-        _receive(user, "100", "55")
-        v = _adjust(admin, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "5", "reason": "COUNT_GAIN", "note": "found"}])
-        assert v.lines.get().rate == Decimal("55.0000")
+            _adjust(admin, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "5", "rate": "1", "reason": "OPENING_BALANCE"}])
+        assert "only through a MIR" in _messages(exc)
 
     def test_approval_re_checks_a_write_off_against_stock_that_moved_since(self, user, admin):
-        _receive(user, "100")
-        v = _adjust(user, [{"mode": "remove", "material_id": _material().id, "uom": "KG", "qty": "30", "reason": "DAMAGED_EXPIRED", "note": "wet"}])
-        _issue(user, "80")
+        lot = _lot(_receive(user, "100"))
+        v = _adjust(user, [{"mode": "remove", "lot_id": lot.id, "qty": "30", "reason": "DAMAGED_EXPIRED", "note": "wet"}])
+        _issue(user, "80", lot)
         with pytest.raises(StockValidationError):
             stock_service.approve_adjustment(v, admin, "ok")
         assert StockVoucher.objects.get(pk=v.pk).status == "PENDING"
 
-    def test_an_opening_balance_already_issued_from_cannot_be_cancelled(self, admin, user):
-        v = _adjust(admin, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "50", "rate": "40", "reason": "OPENING_BALANCE"}])
-        _issue(user, "10")
-        with pytest.raises(StockValidationError):
-            stock_service.cancel_voucher(v, admin, "wrong figure")
-
     def test_the_person_who_entered_it_cannot_approve_it(self, user):
-        v = _adjust(user, [{"mode": "add", "material_id": _material().id, "uom": "KG", "qty": "5", "rate": "1", "reason": "OPENING_BALANCE"}])
+        lot = _lot(_receive(user, "100"))
+        v = _adjust(user, [{"mode": "remove", "lot_id": lot.id, "qty": "5", "reason": "SAMPLE_TESTING"}])
         with pytest.raises(StockValidationError):
             stock_service.approve_adjustment(v, user, "self")
 
+    def test_the_open_list_is_what_waits_for_an_admin(self, user, admin):
+        lot = _lot(_receive(user, "100"))
+        waiting = _adjust(user, [{"mode": "remove", "lot_id": lot.id, "qty": "5", "reason": "SAMPLE_TESTING"}])
+        _adjust(admin, [{"mode": "remove", "lot_id": lot.id, "qty": "1", "reason": "SAMPLE_TESTING"}])
+        assert [ln.voucher_id for ln in stock_service.differences(["hrs"], "OPEN")] == [waiting.id]
+        assert len(stock_service.differences(["hrs"], "RESOLVED")) == 1 and stock_service.differences(["vapi"], "ALL") == []
 
-# ── Reading ─────────────────────────────────────────────────────────────
+
+# ── Reading: the register and a receipt's story ─────────────────────────
 
 
 @pytest.mark.django_db
-class TestLedger:
-    def test_the_ledger_runs_receipt_issue_return_in_date_order(self, user):
-        _receive(user, "100", days_ago=4)
-        issue = _issue(user, "60", days_ago=2)
-        _return(user, issue, "10")
-        detail = stock_service.material_detail(Plant.objects.get(code="hrs"), _material(), "KG")
-        assert [(e["kind"], e["qty"], e["balance"]) for e in detail["ledger"]] == [
-            ("RECEIPT", Decimal("100.000"), Decimal("100.000")), ("ISSUE", Decimal("-60"), Decimal("40.000")),
-            ("RETURN", Decimal("10"), Decimal("50.000"))]
+class TestRegister:
+    def test_a_row_per_receipt_with_opening_movements_and_closing_for_the_period(self, user):
+        lot = _lot(_receive(user, "100", "50", days_ago=6))
+        _issue(user, "30", lot, days_ago=5)
+        issue = _issue(user, "20", lot, days_ago=2)
+        _return(user, issue, "5", days_ago=1)
+        rows = stock_service.register_rows(["hrs"], _day(3), TODAY)
+        assert len(rows) == 1
+        r = rows[0]
+        assert (r["lot"], r["opening"], r["received"], r["issued"], r["returned"], r["adjusted"], r["closing"]) == (
+            lot, Decimal("70.000"), 0, Decimal("20"), Decimal("5"), 0, Decimal("55.000"))
+        assert (r["value"], r["days"], r["last_issued"]) == (Decimal("2750.00"), 6, _day(2))
 
-    def test_the_stock_row_values_what_is_left_at_each_lots_rate(self, user):
-        _receive(user, "100", "50", days_ago=3)
-        _receive(user, "100", "60", days_ago=1)
-        _issue(user, "120")
-        row = stock_service.stock_rows(["hrs"])[0]
-        assert (row["qty"], row["value"], row["open_lots"]) == (Decimal("80"), Decimal("4800.00"), 1)
+    def test_a_receipt_that_held_nothing_all_period_is_left_out_unless_asked_for(self, user):
+        lot = _lot(_receive(user, "100", days_ago=6))
+        _issue(user, "100", lot, days_ago=5)
+        assert stock_service.register_rows(["hrs"], _day(3), TODAY) == []
+        assert [r["lot"] for r in stock_service.register_rows(["hrs"], _day(3), TODAY, include_empty=True)] == [lot]
+        # ... and a receipt made after the period is not in it.
+        assert stock_service.register_rows(["hrs"], _day(10), _day(7), include_empty=True) == []
+
+    def test_the_register_searches_mir_number_and_material(self, user):
+        mir = _receive(user, "100")
+        _receive(user, "100", description="Carbon Black N330")
+        assert [r["lot"].material.name for r in stock_service.register_rows(["hrs"], TODAY, TODAY, q="carbon")] == ["Carbon Black N330"]
+        assert [r["lot"] for r in stock_service.register_rows(["hrs"], TODAY, TODAY, q=mir.mir_no)] == [_lot(mir)]
+
+    def test_a_receipts_story_runs_receipt_issue_return_in_date_order(self, user):
+        lot = _lot(_receive(user, "100", days_ago=4))
+        issue = _issue(user, "60", lot, days_ago=2, department="Mixing")
+        _return(user, issue, "10")
+        moves = stock_service.lot_detail(lot)["movements"]
+        assert [(m["kind"], m["qty"], m["balance"], m["detail"]) for m in moves] == [
+            ("RECEIPT", Decimal("100.000"), Decimal("100.000"), "Prime Chemicals"), ("ISSUE", Decimal("-60"), Decimal("40.000"), "Mixing"),
+            ("RETURN", Decimal("10"), Decimal("50.000"), "Not used - returned to store")]
+
+    def test_the_picker_offers_this_plants_receipts_with_stock_left_oldest_first(self, user):
+        old = _lot(_receive(user, "100", days_ago=4))
+        new = _lot(_receive(user, "100", days_ago=1))
+        _issue(user, "100", _lot(_receive(user, "100", days_ago=2)))
+        _receive(user, "100", plant="vapi")
+        hrs = Plant.objects.get(code="hrs")
+        assert [lot for lot, _bal in stock_service.receipts_for_issue(hrs)] == [old, new]
+        assert [lot for lot, _bal in stock_service.receipts_for_issue(hrs, new.mir_line.mir.mir_no)] == [new]
 
 
 @pytest.mark.django_db
@@ -496,9 +550,9 @@ def _in_parallel(fn_a, fn_b):
 
 @pytest.mark.django_db(transaction=True)
 class TestConcurrentIssues:
-    def test_the_last_of_a_material_issued_twice_at_once_is_issued_once(self):
+    def test_the_last_of_a_receipt_issued_twice_at_once_is_issued_once(self):
         user = make_user(email="k1@ravasco.com", role="editor")
-        _receive(user, "100")
-        results = _in_parallel(lambda: _issue(user, "70"), lambda: _issue(user, "70"))
+        lot = _lot(_receive(user, "100"))
+        results = _in_parallel(lambda: _issue(user, "70", lot), lambda: _issue(user, "70", lot))
         assert sum(isinstance(r, StockVoucher) for r in results) == 1, results
         assert _on_hand() == Decimal("30")

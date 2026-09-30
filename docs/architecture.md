@@ -554,13 +554,15 @@ in [consumption.md](consumption.md).
 
 RM stock entered in the app (migration `0082`, which also seeds `StockReasonCode` - its `REASONS` list
 is the one source, re-seeded by the root `conftest.py` - and gives every MIR line already posted its
-lot). Normalized like procurement: `StockReasonCode`, `StockSetting` (per plant and material: kept in
-store, minimum level), `StockSequence`, `StockVoucher` / `StockVoucherLine` (issue, return, adjustment;
-`PENDING` / `POSTED` / `REJECTED` / `CANCELLED`, constraints for a department on an issue, the issue a
-return names, a decision on every non-pending adjustment and a reason on every cancellation),
-`StockLot` (one per MIR line or addition; **no stored quantity** - derived from its MIR line or voucher
-line while that is posted) and `StockAllocation` (which lots a voucher line drew from or gave back to).
-See [api-and-features.md](api-and-features.md#rm-stock-entry-2026-09-29).
+lot; `0083` names each voucher line's MIR receipt and makes an issue's department optional). Normalized
+like procurement: `StockReasonCode`, `StockSetting` (per plant and material: kept in store, minimum
+level), `StockSequence`, `StockVoucher` / `StockVoucherLine` (issue, return, stock difference; `PENDING`
+/ `POSTED` / `REJECTED` / `CANCELLED`, constraints for the issue a return names, a decision on every
+non-pending difference and a reason on every cancellation; each line's `lot` is the MIR receipt it acts
+on), `StockLot` (one per MIR line - the only way stock comes in since 2026-09-30; the old hand-made
+`ADJUSTMENT` lots still count; **no stored quantity** - derived from its MIR line while that is posted)
+and `StockAllocation` (how much a voucher line took from or put back into a lot). See
+[api-and-features.md](api-and-features.md#rm-stock-entry-2026-09-29).
 
 ### apps/core/models/procurement.py
 

@@ -72,11 +72,12 @@ urlpatterns = [
     path("mir/materials/<int:material_id>/category", mir_views.material_category, name="mir-material-category"),
     path("mir/po-lines/<int:line_id>/reopen", mir_views.reopen_line, name="mir-reopen-line"),
     path("mir/po-lines/<int:line_id>/review", mir_views.review_line, name="mir-review-line"),
-    # RM stock entry (2026-09-29) - apps/api/routers/stock_views.py.
+    # RM store (2026-09-29; issue from a chosen MIR 2026-09-30) - apps/api/routers/stock_views.py.
     path("stock/meta", stock_views.meta, name="stock-meta"),
-    path("stock/balances", stock_views.balances, name="stock-balances"),
-    path("stock/materials/<int:material_id>", stock_views.material_stock, name="stock-material"),
-    path("stock/material-search", stock_views.material_search, name="stock-material-search"),
+    path("stock/receipts", stock_views.receipts, name="stock-receipts"),
+    path("stock/receipts/<int:lot_id>", stock_views.receipt, name="stock-receipt"),
+    path("stock/register", stock_views.register, name="stock-register"),
+    path("stock/differences", stock_views.differences, name="stock-differences"),
     path("stock/settings", stock_views.settings, name="stock-settings"),
     path("stock/preview", stock_views.preview, name="stock-preview"),
     path("stock/vouchers", stock_views.vouchers, name="stock-vouchers"),

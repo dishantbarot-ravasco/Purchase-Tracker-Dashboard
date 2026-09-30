@@ -1,40 +1,45 @@
 """
-RM stock entry (2026-09-29, project owner: "the Raw Material entry like we
-have for MIR entry ... directly connecting with MIR entry"). The models are
-apps/core/models/stock.py; the pure rules apps/services/stock_rules.py.
+RM store entry. The models are apps/core/models/stock.py; the pure rules
+apps/services/stock_rules.py.
 
-HOW STOCK COMES IN. A posted MIR line IS the receipt: mir_service.post_mir()
-calls receive_mir(), which makes one StockLot per line at the RECEIVING
-plant. The lot stores no quantity - it holds the MIR line's accepted
-quantity (received less rejected, in the stock unit) while the MIR is
-posted. So cancelling the MIR, or recording a rejection found later, changes
-stock at once; and both are refused (check_mir_cancel(),
-check_mir_rejection()) when the stock they would remove has already been
-issued - that material cannot be un-received.
+THE MIR IS THE ONLY WAY IN (2026-09-30, project owner: "if a material has not
+been entered in the MIR the RM can't issue it"). mir_service.post_mir() calls
+receive_mir(), which makes one StockLot per line at the RECEIVING plant. The
+lot stores no quantity - it holds the MIR line's accepted quantity (received
+less rejected, in the stock unit) while the MIR is posted. So cancelling the
+MIR, or recording a rejection found later, changes stock at once; and both
+are refused (check_mir_cancel(), check_mir_rejection()) when the stock they
+would remove has already been issued - that material cannot be un-received.
+Nothing else creates stock: no opening balances or additions by hand. The
+source ADJUSTMENT lots entered before this rule still count.
 
-HOW STOCK GOES OUT AND BACK. Three documents, each numbered per plant, kind
-and financial year, posted once and never edited (a wrong one is cancelled
-and entered again, like a MIR):
-  ISSUE   material to a department, drawn from the oldest lots first (FIFO)
-          and valued at their rates;
-  RETURN  unused material back to the store, against the issue it left on,
-          back into the lots that issue drew from;
-  ADJUST  what the books cannot explain: an opening balance, a physical
-          count, damage, a sample. An editor's adjustment waits for an
-          admin's approval and moves nothing until then; an admin's posts at
-          once.
+THE STOREKEEPER PICKS THE MIR ("in the RM the user will have the option to
+select the MIR and issue the quantity etc all other data gets transferred
+from the MIR data"). Every voucher line names one MIR receipt (a lot) and a
+quantity; material, unit, vendor, rate and date all come from that receipt.
+Three documents, each numbered per plant, kind and financial year, posted
+once and never edited (a wrong one is cancelled and entered again, like a
+MIR):
+  ISSUE   material out of a MIR receipt to production;
+  RETURN  unused material back, against the issue it left on, into the
+          receipt it came from;
+  ADJUST  a stock difference on one receipt - a physical count that differs
+          from the books, or a write-off (damage, a sample). These are the
+          store's "open mismatches": an editor's waits for an admin's
+          approval and moves nothing until then; an admin's posts at once.
 
 WHAT EVERY POSTING CHECKS. `evaluate()` is the one place a voucher is checked
 and valued; the form previews through it and post_voucher() runs it again
 inside the transaction with the lots locked. Beyond the fields themselves:
-  - stock never goes below zero on ANY day (stock_rules.min_running_balance):
-    an issue dated three days back must fit what the lot held then and every
-    day since, not just today;
-  - a voucher is dated today or up to BACKDATE_DAYS back, never ahead;
+  - a receipt never goes below zero on ANY day (stock_rules.min_running_balance):
+    an issue dated three days back must fit what the receipt held then and
+    every day since, not just today;
+  - a voucher is dated today or up to BACKDATE_DAYS back, never ahead, and
+    never before the receipt came in;
   - a return cannot exceed what its issue line still has out, and is dated
     on or after the issue;
-  - cancelling a return, or an adjustment that added stock, is refused once
-    that stock has been issued again.
+  - cancelling a return, or a count that found more, is refused once that
+    stock has been issued again.
 """
 
 from __future__ import annotations
@@ -43,6 +48,7 @@ import datetime
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.services import procurement_rules as prules
@@ -52,13 +58,20 @@ MAX_LINES = 50
 BACKDATE_DAYS = 7
 KIND_CODES = {"ISSUE": "ISS", "RETURN": "RET", "ADJUST": "ADJ"}
 ZERO = Decimal("0")
-_LOT_RELATED = ("mir_line__mir", "voucher_line__voucher", "material", "vendor", "plant")
+LOT_RELATED = ("mir_line__mir", "mir_line__po_line__purchase_order", "voucher_line__voucher", "material", "vendor",
+                "plant", "bill_to_plant")
 
 
 class StockValidationError(Exception):
     def __init__(self, errors: list[dict]):
         super().__init__("; ".join(e["message"] for e in errors))
         self.errors = errors
+
+
+def doc_of(lot) -> str:
+    """The document a lot came in on: its MIR number (or, for an old
+    opening balance, the adjustment's number)."""
+    return lot.mir_line.mir.mir_no if lot.source == "MIR" else lot.voucher_line.voucher.voucher_no
 
 
 # ── Receipts: the MIR side ────────────────────────────────────────────────
@@ -109,45 +122,54 @@ def _lot_in(lot, *, rejected_override=None) -> Decimal:
 
 
 def _posted_allocations(lot_ids, exclude_voucher_ids=()):
-    """[(lot_id, day, signed qty, voucher_no, voucher_id)] for posted vouchers."""
+    """[(lot_id, day, signed qty, kind, voucher_no, voucher_id, line)] for
+    posted vouchers."""
     from apps.core.models import StockAllocation
 
-    qs = StockAllocation.objects.filter(lot_id__in=list(lot_ids), voucher_line__voucher__status="POSTED")
+    qs = (StockAllocation.objects.filter(lot_id__in=list(lot_ids), voucher_line__voucher__status="POSTED")
+          .select_related("voucher_line__voucher", "voucher_line__reason"))
     if exclude_voucher_ids:
         qs = qs.exclude(voucher_line__voucher_id__in=list(exclude_voucher_ids))
-    return [(lot_id, day, qty * direction, vno, vid) for lot_id, day, direction, qty, vno, vid in qs.values_list(
-        "lot_id", "voucher_line__voucher__voucher_date", "voucher_line__direction", "qty",
-        "voucher_line__voucher__voucher_no", "voucher_line__voucher_id")]
+    out = []
+    for a in qs:
+        vl = a.voucher_line
+        v = vl.voucher
+        out.append((a.lot_id, v.voucher_date, a.qty * vl.direction, v.kind, v.voucher_no, v.id, vl))
+    return out
 
 
 def lot_events(lots, *, exclude_voucher_ids=(), in_override=None) -> dict:
     """{lot_id: [(date, signed qty), ...]}: the lot's receipt, then every
-    posted voucher's draw or return. `in_override` {lot_id: qty} replaces a
-    lot's receipt (a MIR being cancelled or rejected); `exclude_voucher_ids`
+    posted voucher's take or give-back. `in_override` {lot_id: qty} replaces
+    a lot's receipt (a MIR being cancelled or rejected); `exclude_voucher_ids`
     leaves vouchers out (one being cancelled)."""
     events = {lot.id: [] for lot in lots}
     for lot in lots:
         received = in_override[lot.id] if in_override and lot.id in in_override else _lot_in(lot)
         if received:
             events[lot.id].append((lot.received_date, received))
-    for lot_id, day, signed, _vno, _vid in _posted_allocations(events, exclude_voucher_ids):
+    for lot_id, day, signed, *_rest in _posted_allocations(events, exclude_voucher_ids):
         events[lot_id].append((day, signed))
     return events
 
 
+_TOTAL_KEY = {"ISSUE": "issued", "RETURN": "returned", "ADJUST": "adjusted"}
+
+
 def lot_balances(lots) -> dict:
-    """{lot_id: {"in", "drawn", "returned", "balance"}} as of now."""
-    out = {lot.id: {"in": _lot_in(lot), "drawn": ZERO, "returned": ZERO} for lot in lots}
-    for lot_id, _day, signed, _vno, _vid in _posted_allocations(out):
-        key = "returned" if signed > 0 else "drawn"
-        out[lot_id][key] += abs(signed)
+    """{lot_id: {"in", "issued", "returned", "adjusted", "balance"}} as of
+    now. `issued` is positive; `adjusted` is the net of stock differences."""
+    out = {lot.id: {"in": _lot_in(lot), "issued": ZERO, "returned": ZERO, "adjusted": ZERO} for lot in lots}
+    for lot_id, _day, signed, kind, *_rest in _posted_allocations(out):
+        key = _TOTAL_KEY[kind]
+        out[lot_id][key] += -signed if key == "issued" else signed
     for b in out.values():
-        b["balance"] = b["in"] - b["drawn"] + b["returned"]
+        b["balance"] = b["in"] - b["issued"] + b["returned"] + b["adjusted"]
     return out
 
 
 def _vouchers_drawing(lot_ids) -> list[str]:
-    return sorted({vno for _l, _d, signed, vno, _v in _posted_allocations(lot_ids) if signed < 0})
+    return sorted({vno for _l, _d, signed, _k, vno, *_rest in _posted_allocations(lot_ids) if signed < 0})
 
 
 def _removal_error(lot, where: str) -> dict:
@@ -155,7 +177,7 @@ def _removal_error(lot, where: str) -> dict:
     drawn = ", ".join(_vouchers_drawing([lot.id])[:5])
     return {"field": "stock", "message": (
         f"{lot.material.name}{where}: that stock has already been issued ({drawn}). Put it back first - "
-        f"cancel or return the issue - or record the loss with an adjustment. Stock cannot go below zero ({uom}).")}
+        f"cancel or return the issue - or record the loss as a stock difference. Stock cannot go below zero ({uom}).")}
 
 
 def check_mir_cancel(mir):
@@ -165,7 +187,7 @@ def check_mir_cancel(mir):
     from apps.core.models import StockLot
 
     ids = list(StockLot.objects.select_for_update().filter(mir_line__mir=mir).order_by("id").values_list("id", flat=True))
-    lots = list(StockLot.objects.filter(id__in=ids).select_related(*_LOT_RELATED))
+    lots = list(StockLot.objects.filter(id__in=ids).select_related(*LOT_RELATED))
     events = lot_events(lots, in_override={lot.id: ZERO for lot in lots})
     errors = [_removal_error(lot, f" (line {lot.mir_line.line_no})") for lot in lots
               if rules.min_running_balance(events[lot.id]) < 0]
@@ -182,7 +204,7 @@ def check_mir_rejection(mir_line, new_rejected):
     lot_id = StockLot.objects.select_for_update().filter(mir_line=mir_line).values_list("id", flat=True).first()
     if lot_id is None:
         return
-    lot = StockLot.objects.select_related(*_LOT_RELATED).get(pk=lot_id)
+    lot = StockLot.objects.select_related(*LOT_RELATED).get(pk=lot_id)
     events = lot_events([lot], in_override={lot.id: _lot_in(lot, rejected_override=new_rejected)})
     if rules.min_running_balance(events[lot.id]) < 0:
         raise StockValidationError([_removal_error(lot, "")])
@@ -193,7 +215,7 @@ def mir_line_stock(mir) -> dict:
     line of a MIR put into stock and how much of it is still there."""
     from apps.core.models import StockLot
 
-    lots = list(StockLot.objects.filter(mir_line__mir=mir).select_related(*_LOT_RELATED))
+    lots = list(StockLot.objects.filter(mir_line__mir=mir).select_related(*LOT_RELATED))
     bal = lot_balances(lots)
     return {lot.mir_line_id: {"uom": lot.uom, "in": bal[lot.id]["in"], "balance": bal[lot.id]["balance"],
                               "stocked": lot.stocked, "lotId": lot.id} for lot in lots}
@@ -211,100 +233,122 @@ def _settings(plant_ids, material_ids=None) -> dict:
     return {(s.plant_id, s.material_id): s for s in qs}
 
 
-def stock_rows(plant_codes, *, material_id=None) -> list[dict]:
-    """One row per plant, material and stock unit with any lot: quantity on
-    hand, INR value, open lots, last receipt, the oldest stock still held,
-    the minimum level and whether the plant stocks it."""
+def _search(qs, q: str):
+    """Narrow a StockLot queryset to a MIR number, material, vendor,
+    invoice, PO number or item code."""
+    q = (q or "").strip()
+    if not q:
+        return qs
+    return qs.filter(Q(mir_line__mir__mir_no__icontains=q) | Q(material__name__icontains=q) | Q(vendor__name__icontains=q)
+                     | Q(mir_line__mir__invoice_no__icontains=q) | Q(mir_line__po_line__purchase_order__po_number__icontains=q)
+                     | Q(mir_line__po_line__item_code__icontains=q))
+
+
+def receipts_for_issue(plant, q: str = "", *, limit: int = 80) -> list:
+    """[(lot, balance)] - this plant's MIR receipts with stock left, for the
+    issue form's picker: the ones matching `q`, oldest first within a
+    material so the oldest is the obvious pick."""
     from apps.core.models import StockLot
 
-    qs = StockLot.objects.filter(plant__code__in=list(plant_codes)).select_related(*_LOT_RELATED)
-    if material_id is not None:
-        qs = qs.filter(material_id=material_id)
-    lots = list(qs)
+    qs = _search(StockLot.objects.filter(plant=plant, stocked=True, source="MIR", mir_line__mir__status="POSTED"), q)
+    lots = list(qs.select_related(*LOT_RELATED).order_by("material__name", "received_date", "id")[:1000])
     bal = lot_balances(lots)
-    settings = _settings({lot.plant_id for lot in lots}, {lot.material_id for lot in lots})
-    rows: dict = {}
+    return [(lot, bal[lot.id]["balance"]) for lot in lots if bal[lot.id]["balance"] > 0][:limit]
+
+
+def _receipt_kind(lot) -> str:
+    return "RECEIPT" if lot.source == "MIR" else "OPENING"
+
+
+def _movements(lots) -> dict:
+    """{lot_id: [{"date", "kind", "qty" (signed), "doc", "voucherId", "line"}]}:
+    the receipt (when it counts) and every posted voucher, unsorted."""
+    out = {lot.id: [] for lot in lots}
     for lot in lots:
-        key = (lot.plant_id, lot.material_id, lot.uom)
-        b = bal[lot.id]
-        row = rows.get(key)
-        if row is None:
-            setting = settings.get((lot.plant_id, lot.material_id))
-            row = rows[key] = {
-                "plant": lot.plant, "material": lot.material, "uom": lot.uom, "qty": ZERO, "value": ZERO,
-                "other_currency_qty": ZERO, "open_lots": 0, "lots": 0, "last_received": None, "oldest_held": None,
-                "is_stocked": setting.is_stocked if setting else True,
-                "min_level": setting.min_level if setting and setting.min_level_uom in ("", lot.uom) else None,
-            }
-        row["lots"] += 1
-        row["qty"] += b["balance"]
-        if b["balance"] > 0:
-            row["open_lots"] += 1
-            if lot.currency == "INR":
-                row["value"] += rules.value(b["balance"], lot.rate)
+        received = _lot_in(lot)
+        if received:
+            out[lot.id].append({"date": lot.received_date, "kind": _receipt_kind(lot), "qty": received, "doc": doc_of(lot),
+                                "voucherId": None, "line": None})
+    for lot_id, day, signed, kind, vno, vid, vl in _posted_allocations(out):
+        out[lot_id].append({"date": day, "kind": kind, "qty": signed, "doc": vno, "voucherId": vid, "line": vl})
+    return out
+
+
+def register_rows(plant_codes, date_from: datetime.date, date_to: datetime.date, *, q: str = "", category: str = "",
+                  include_empty: bool = False) -> list[dict]:
+    """The RM register, one row per MIR receipt, like the store's own Stock
+    sheet: what it held at the start of the period (opening), what came in,
+    went out, came back and was adjusted within it, and what it held at the
+    end (closing), with its rate, value and days in store. A receipt that
+    held nothing all period and moved nothing is left out unless
+    `include_empty`; so is one that went straight to use."""
+    from apps.core.models import StockLot
+
+    qs = StockLot.objects.filter(plant__code__in=list(plant_codes), received_date__lte=date_to)
+    if category:
+        qs = qs.filter(material__category=category)
+    lots = list(_search(qs, q).select_related(*LOT_RELATED))
+    moves = _movements(lots)
+    today = timezone.localdate()
+    as_of = min(date_to, today)
+    rows = []
+    for lot in lots:
+        mv = moves[lot.id]
+        opening = sum((m["qty"] for m in mv if m["date"] < date_from), ZERO)
+        within = [m for m in mv if date_from <= m["date"] <= date_to]
+        totals = {"received": ZERO, "issued": ZERO, "returned": ZERO, "adjusted": ZERO}
+        for m in within:
+            if m["kind"] in ("RECEIPT", "OPENING"):
+                totals["received"] += m["qty"]
             else:
-                row["other_currency_qty"] += b["balance"]
-            if row["oldest_held"] is None or lot.received_date < row["oldest_held"]:
-                row["oldest_held"] = lot.received_date
-        if b["in"] > 0 and (row["last_received"] is None or lot.received_date > row["last_received"]):
-            row["last_received"] = lot.received_date
-    out = list(rows.values())
-    for row in out:
-        row["below_min"] = row["min_level"] is not None and row["qty"] < row["min_level"]
-    return sorted(out, key=lambda r: (r["plant"].id, r["material"].name.lower(), r["uom"]))
+                key = _TOTAL_KEY[m["kind"]]
+                totals[key] += -m["qty"] if key == "issued" else m["qty"]
+        closing = opening + sum((m["qty"] for m in within), ZERO)
+        if not include_empty and (not lot.stocked or (opening == 0 and closing == 0 and not within)):
+            continue
+        issues = [m["date"] for m in mv if m["kind"] == "ISSUE"]
+        rows.append({"lot": lot, "opening": opening, "closing": closing, **totals,
+                     "value": rules.value(closing, lot.rate) if closing > 0 and lot.currency == "INR" else Decimal("0.00"),
+                     "days": (as_of - lot.received_date).days, "last_issued": max(issues) if issues else None})
+    rows.sort(key=lambda r: ((r["lot"].material.category or "~").lower(), r["lot"].material.name.lower(),
+                             r["lot"].received_date, r["lot"].id))
+    return rows
 
 
-def _doc_of(lot) -> str:
-    return lot.mir_line.mir.mir_no if lot.source == "MIR" else lot.voucher_line.voucher.voucher_no
-
-
-def material_detail(plant, material, uom) -> dict:
-    """A material's lots at a plant (in one stock unit) and its ledger: every
-    receipt, issue, return and adjustment in date order with the running
-    balance."""
-    from apps.core.models import StockAllocation, StockLot
-
-    lots = list(StockLot.objects.filter(plant=plant, material=material, uom=uom)
-                .select_related(*_LOT_RELATED, "voucher_line__reason"))
-    bal = lot_balances(lots)
-    ledger = []
-    for lot in lots:
-        if lot.source == "MIR":
-            # Shown even when it holds nothing - a cancelled MIR, or a receipt
-            # that went straight to use - so the ledger explains itself.
-            line = lot.mir_line
-            posted = line.mir.status == "POSTED"
-            accepted = rules.qty((line.qty_received - line.qty_rejected) * lot.factor) if posted else ZERO
-            ledger.append({"date": lot.received_date, "doc": _doc_of(lot), "kind": "RECEIPT", "qty": accepted,
-                           "detail": lot.vendor.name if lot.vendor else "", "counts": posted and lot.stocked,
-                           "note": "" if posted and lot.stocked else ("MIR cancelled" if not posted else "Went straight to use - not stocked"),
-                           "sort": (lot.received_date, 0, lot.id)})
-        elif bal[lot.id]["in"] > 0:
-            ledger.append({"date": lot.received_date, "doc": _doc_of(lot), "kind": "ADJUST", "qty": bal[lot.id]["in"],
-                           "detail": lot.voucher_line.reason.label if lot.voucher_line.reason else "", "counts": True,
-                           "note": "", "voucherId": lot.voucher_line.voucher_id, "sort": (lot.received_date, 0, lot.id)})
-    allocs = (StockAllocation.objects.filter(lot__in=lots, voucher_line__voucher__status="POSTED")
-              .select_related("voucher_line__voucher", "voucher_line__reason"))
-    by_line: dict = {}
-    for a in allocs:
-        vl = a.voucher_line
-        entry = by_line.setdefault(vl.id, {"line": vl, "qty": ZERO})
-        entry["qty"] += a.qty
-    for entry in by_line.values():
-        vl = entry["line"]
-        v = vl.voucher
-        detail = v.department if v.kind == "ISSUE" else (vl.reason.label if vl.reason else "")
-        ledger.append({"date": v.voucher_date, "doc": v.voucher_no, "kind": v.kind, "qty": entry["qty"] * vl.direction,
-                       "detail": detail, "counts": True, "note": "", "voucherId": v.id, "sort": (v.voucher_date, 1, v.id)})
-    ledger.sort(key=lambda e: e["sort"])
+def lot_detail(lot) -> dict:
+    """One MIR receipt's story: its balances and every movement in date
+    order with the running balance, plus the plant's setting for the
+    material."""
+    bal = lot_balances([lot])[lot.id]
+    moves = sorted(_movements([lot])[lot.id], key=lambda m: (m["date"], m["kind"] not in ("RECEIPT", "OPENING"), m["voucherId"] or 0))
     running = ZERO
-    for e in ledger:
-        if e["counts"]:
-            running += e["qty"]
-        e["balance"] = running
-        del e["sort"]
-    return {"lots": [(lot, bal[lot.id]) for lot in sorted(lots, key=lambda x: (x.received_date, x.id))],
-            "ledger": ledger, "setting": _settings([plant.id], [material.id]).get((plant.id, material.id))}
+    for m in moves:
+        running += m["qty"]
+        m["balance"] = running
+        vl = m.pop("line")
+        v = vl.voucher if vl else None
+        if v is None:
+            m["detail"] = lot.vendor.name if lot.vendor else ""
+        elif v.kind == "ISSUE":
+            m["detail"] = ", ".join(x for x in (v.department, v.issued_to, v.reference) if x)
+        else:
+            m["detail"] = vl.reason.label if vl.reason else ""
+    return {"balances": bal, "movements": moves,
+            "setting": _settings([lot.plant_id], [lot.material_id]).get((lot.plant_id, lot.material_id))}
+
+
+def differences(plant_codes, status: str = "OPEN") -> list:
+    """Stock differences (ADJUST lines), newest first - the store's open
+    mismatches. OPEN is waiting for an admin; RESOLVED is approved or turned
+    down; CANCELLED was withdrawn or cancelled; ALL is everything."""
+    from apps.core.models import StockVoucherLine
+
+    qs = (StockVoucherLine.objects.filter(voucher__kind="ADJUST", voucher__plant__code__in=list(plant_codes))
+          .select_related("voucher__plant", "reason", "material", *("lot__" + r for r in LOT_RELATED)))
+    wanted = {"OPEN": ("PENDING",), "RESOLVED": ("POSTED", "REJECTED"), "CANCELLED": ("CANCELLED",)}.get(status)
+    if wanted:
+        qs = qs.filter(voucher__status__in=wanted)
+    return list(qs.order_by("-voucher__voucher_date", "-voucher_id", "line_no")[:500])
 
 
 def update_setting(plant, material, user, *, is_stocked, min_level, min_level_uom):
@@ -360,6 +404,14 @@ def _int(value):
         return None
 
 
+def _positive(raw, key, f, errors):
+    quantity = _dec(raw.get(key), f"{f}.{key}", errors, places=3)
+    if quantity is not None and quantity <= 0:
+        errors.append({"field": f"{f}.{key}", "message": "Must be more than zero."})
+        return None
+    return quantity
+
+
 def _reason(code, kinds, field, note, errors, reasons):
     if not code:
         errors.append({"field": field, "message": "Choose a reason."})
@@ -376,67 +428,71 @@ def _reason(code, kinds, field, note, errors, reasons):
 # ── Evaluate (preview and post share this) ────────────────────────────────
 
 
-def _candidate_lots(plant, material, uom, *, lock):
-    """The plant's stocked lots of a material in one stock unit, oldest first -
-    the FIFO order. With lock=True they are row-locked, in id order so two
-    postings never deadlock."""
+def _lock_lots(lot_ids):
+    """Row-lock lots in id order, so two postings never deadlock."""
     from apps.core.models import StockLot
 
-    base = StockLot.objects.filter(plant=plant, material=material, uom=uom, stocked=True)
-    if lock:
-        list(base.select_for_update().order_by("id").values_list("id", flat=True))
-    return list(base.select_related(*_LOT_RELATED).order_by("received_date", "id"))
+    list(StockLot.objects.select_for_update().filter(id__in=sorted(lot_ids)).order_by("id").values_list("id", flat=True))
 
 
-def _draw(plant, material, uom, day, quantity, *, lock, field, errors, held):
-    """FIFO draw of `quantity` on `day`: [(lot, qty)], each lot giving no more
-    than it holds on that day and every day after (so a backdated draw can
-    never take a lot negative in between). `held` accumulates this voucher's
-    earlier draws per lot. Adds an error, and returns what could be drawn,
-    when there is not enough."""
-    lots = _candidate_lots(plant, material, uom, lock=lock)
-    events = lot_events(lots)
-    for lot_id, taken in held.items():
-        if lot_id in events:
-            events[lot_id].append((day, -taken))
-    remaining = quantity
-    picks = []
-    for lot in lots:
-        if remaining <= 0:
-            break
-        room = rules.min_running_balance(events[lot.id], day)
-        take = min(room, remaining)
-        if take > 0:
-            picks.append((lot, take))
-            events[lot.id].append((day, -take))
-            held[lot.id] = held.get(lot.id, ZERO) + take
-            remaining -= take
-    if remaining > 0:
-        # What this line could draw on its day, against what the store holds
-        # today: more today means stock that arrived after the voucher date.
-        on_day = quantity - remaining
-        now = sum((b["balance"] for b in lot_balances(lots).values()), ZERO)
-        unit = f" {uom}" if uom else ""
-        msg = f"Only {on_day.normalize():f}{unit} of this can be taken on {day:%d-%m-%Y}"
-        if now > on_day:
-            msg += f" - {now.normalize():f}{unit} is in stock today, the rest arrived after that date"
+def _receipt(raw, f, plant, errors, seen):
+    """The MIR receipt a line names, checked: at this plant, held in store,
+    its MIR posted, and not already on this voucher."""
+    from apps.core.models import StockLot
+
+    lot_id = _int(raw.get("lot_id"))
+    lot = StockLot.objects.filter(pk=lot_id).select_related(*LOT_RELATED).first() if lot_id is not None else None
+    field = f"{f}.lot_id"
+    if lot is None:
+        errors.append({"field": field, "message": "Choose the MIR it comes from."})
+        return None
+    if plant is not None and lot.plant_id != plant.id:
+        errors.append({"field": field, "message": f"{doc_of(lot)} was received at {lot.plant.name} - its stock is there."})
+        return None
+    if not lot.stocked:
+        errors.append({"field": field, "message": f"{doc_of(lot)} went straight to use - nothing of it is held in store."})
+        return None
+    if _lot_in(lot) == 0:
+        errors.append({"field": field, "message": f"{doc_of(lot)} is cancelled - it holds no stock."})
+        return None
+    if lot.id in seen:
+        errors.append({"field": field, "message": f"{doc_of(lot)} line {lot.mir_line.line_no if lot.mir_line_id else ''} "
+                                                  "is already on this entry - enter the total on one line."})
+        return None
+    seen.add(lot.id)
+    return lot
+
+
+def _room(lot, day) -> Decimal:
+    """How much can leave this receipt on `day` without it going below zero
+    on that day or any day after."""
+    return rules.min_running_balance(lot_events([lot])[lot.id], day)
+
+
+def _take(lot, day, quantity, field, errors) -> list:
+    """[(lot, quantity)] when the receipt can give it on `day`, else an
+    error saying what it can give."""
+    unit = f" {lot.uom}" if lot.uom else ""
+    if day < lot.received_date:
+        errors.append({"field": field, "message": f"{doc_of(lot)} came in on {lot.received_date:%d-%m-%Y} - nothing of it "
+                                                  "can go out before that."})
+        return []
+    room = _room(lot, day)
+    if quantity > room:
+        now = lot_balances([lot])[lot.id]["balance"]
+        msg = f"Only {room.normalize():f}{unit} of {doc_of(lot)} can go out on {day:%d-%m-%Y}"
+        if now != room:
+            msg += f" ({now.normalize():f}{unit} is left today)"
         errors.append({"field": field, "message": msg + "."})
-    return picks
+        return []
+    return [(lot, quantity)]
 
 
-def _book_on(plant, material, uom, day) -> Decimal:
-    """What the books held at the end of `day`."""
-    lots = _candidate_lots(plant, material, uom, lock=False)
-    events = lot_events(lots)
-    return sum((sum((q for d, q in events[lot.id] if d <= day), ZERO) for lot in lots), ZERO)
-
-
-def _latest_rate(plant, material, uom):
+def _material_on_hand(plant, material, uom) -> Decimal:
     from apps.core.models import StockLot
 
-    lot = (StockLot.objects.filter(plant=plant, material=material, uom=uom, rate__isnull=False, currency="INR")
-           .order_by("-received_date", "-id").first())
-    return lot.rate if lot else None
+    lots = list(StockLot.objects.filter(plant=plant, material=material, uom=uom, stocked=True).select_related(*LOT_RELATED))
+    return sum((b["balance"] for b in lot_balances(lots).values()), ZERO)
 
 
 def _header(payload, errors, *, today, earliest):
@@ -469,28 +525,26 @@ def _raw_lines(payload, errors):
         errors.append({"field": "lines", "message": "Add at least one line."})
         return []
     if len(raw) > MAX_LINES:
-        errors.append({"field": "lines", "message": f"At most {MAX_LINES} lines on one voucher."})
+        errors.append({"field": "lines", "message": f"At most {MAX_LINES} lines on one entry."})
         raw = raw[:MAX_LINES]
     return [r if isinstance(r, dict) else {} for r in raw]
 
 
-def _material(raw, f, errors):
-    from apps.core.models import Material
-
-    mid = _int(raw.get("material_id"))
-    material = Material.objects.filter(pk=mid).first() if mid is not None else None
-    if material is None:
-        errors.append({"field": f"{f}.material_id", "message": "Choose a material."})
-    return material
+def _inr_value(draws) -> Decimal | None:
+    """The INR value of what a line moves; None when it moves nothing yet
+    (the quantity does not fit), so the form shows no figure."""
+    if not draws:
+        return None
+    return sum((rules.value(q, lot.rate) for lot, q in draws if lot.currency == "INR"), Decimal("0.00"))
 
 
 def evaluate(payload: dict, *, lock: bool = False, earliest: datetime.date | None = None) -> dict:
     """Check and value a voucher. Returns {"ok", "errors", "notices", "kind",
-    "plant", "voucher_date", "lines", ...}; each line carries its draws
-    [(lot, qty)] and value. Never saves. With lock=True (posting only) every
-    lot it reads is row-locked first. `earliest` widens the backdating window
-    - only approve_adjustment() passes it, for an adjustment entered days
-    before it was approved."""
+    "plant", "voucher_date", "lines", ...}; each line carries its receipt
+    (`lot`), its draws [(lot, qty)] and value. Never saves. With lock=True
+    (posting only) every lot it names is row-locked first. `earliest` widens
+    the backdating window - only approve_adjustment() passes it, for a
+    difference entered days before it was approved."""
     kind = payload.get("kind")
     errors: list[dict] = []
     notices: list[str] = []
@@ -502,61 +556,53 @@ def evaluate(payload: dict, *, lock: bool = False, earliest: datetime.date | Non
         earliest = today - datetime.timedelta(days=BACKDATE_DAYS)
     plant, day = _header(payload, errors, today=today, earliest=earliest)
     raw_lines = _raw_lines(payload, errors)
+    if lock:
+        _lock_lots({i for i in (_int(r.get("lot_id")) for r in raw_lines) if i is not None})
     header = {"department": _text(payload.get("department"), 60), "issued_to": _text(payload.get("issued_to"), 120),
               "reference": _text(payload.get("reference"), 60), "remarks": _text(payload.get("remarks"), 2000)}
     result = {"kind": kind, "plant": plant, "voucher_date": day, "header": header, "errors": errors, "notices": notices,
               "lines": [], "return_of": None}
     if kind == "ISSUE":
-        if not header["department"]:
-            errors.append({"field": "department", "message": "Required."})
-        if not header["issued_to"]:
-            errors.append({"field": "issued_to", "message": "Required."})
-        _evaluate_issue(result, raw_lines, lock=lock)
+        _evaluate_issue(result, raw_lines)
     elif kind == "RETURN":
         _evaluate_return(result, payload, raw_lines, lock=lock)
     else:
-        _evaluate_adjust(result, raw_lines, lock=lock)
+        _evaluate_adjust(result, raw_lines)
     result["ok"] = not errors
     return result
 
 
-def _evaluate_issue(result, raw_lines, *, lock):
+def _line(i, lot, **extra) -> dict:
+    return {"index": i, "lot": lot, "material": lot.material if lot else None, "uom": lot.uom if lot else "", "qty": None,
+            "direction": -1, "draws": [], "value": None, "reason": None, "note": "", **extra}
+
+
+def _evaluate_issue(result, raw_lines):
     errors, plant, day = result["errors"], result["plant"], result["voucher_date"]
-    seen, held = set(), {}
+    seen: set = set()
     for i, raw in enumerate(raw_lines):
         f = f"lines.{i}"
-        material = _material(raw, f, errors)
-        uom = _text(raw.get("uom"), 20).upper()
-        quantity = _dec(raw.get("qty"), f"{f}.qty", errors, places=3)
-        if quantity is not None and quantity <= 0:
-            errors.append({"field": f"{f}.qty", "message": "Must be more than zero."})
-            quantity = None
-        out = {"index": i, "material": material, "uom": uom, "qty": quantity, "direction": -1, "draws": [], "value": None,
-               "reason": None, "note": _text(raw.get("note"), 2000)}
+        lot = _receipt(raw, f, plant, errors, seen)
+        out = _line(i, lot, qty=_positive(raw, "qty", f, errors), note=_text(raw.get("note"), 2000))
         result["lines"].append(out)
-        if material is None:
+        if lot is None or day is None or out["qty"] is None:
             continue
-        if (material.id, uom) in seen:
-            errors.append({"field": f"{f}.material_id", "message": "Already on this issue - enter the total on one line."})
-            continue
-        seen.add((material.id, uom))
-        if plant is None or day is None or quantity is None:
-            continue
-        out["draws"] = _draw(plant, material, uom, day, quantity, lock=lock, field=f"{f}.qty", errors=errors, held=held)
-        out["value"] = sum((rules.value(q, lot.rate) for lot, q in out["draws"] if lot.currency == "INR"), Decimal("0.00"))
-        _notice_below_min(result, plant, material, uom, quantity)
+        out["draws"] = _take(lot, day, out["qty"], f"{f}.qty", errors)
+        out["value"] = _inr_value(out["draws"])
+        if out["draws"]:
+            _notice_below_min(result, lot, out["qty"])
 
 
-def _notice_below_min(result, plant, material, uom, quantity):
+def _notice_below_min(result, lot, quantity):
     from apps.core.models import StockSetting
 
-    setting = StockSetting.objects.filter(plant=plant, material=material).first()
-    if not setting or setting.min_level is None or setting.min_level_uom not in ("", uom):
+    setting = StockSetting.objects.filter(plant=lot.plant, material=lot.material).first()
+    if not setting or setting.min_level is None or setting.min_level_uom not in ("", lot.uom):
         return
-    after = sum((b["balance"] for b in lot_balances(_candidate_lots(plant, material, uom, lock=False)).values()), ZERO) - quantity
+    after = _material_on_hand(lot.plant, lot.material, lot.uom) - quantity
     if after < setting.min_level:
-        result["notices"].append(f"{material.name}: {after.normalize():f} {uom} will be left, below its minimum level of "
-                                 f"{setting.min_level.normalize():f} {uom}. Tell the purchase team.")
+        result["notices"].append(f"{lot.material.name}: {after.normalize():f} {lot.uom} will be left, below its minimum level of "
+                                 f"{setting.min_level.normalize():f} {lot.uom}. Tell the purchase team.")
 
 
 def _evaluate_return(result, payload, raw_lines, *, lock):
@@ -580,15 +626,14 @@ def _evaluate_return(result, payload, raw_lines, *, lock):
     seen = set()
     for i, raw in enumerate(raw_lines):
         f = f"lines.{i}"
-        line = StockVoucherLine.objects.filter(pk=_int(raw.get("issue_line_id")), voucher=issue).select_related("material").first()
-        quantity = _dec(raw.get("qty"), f"{f}.qty", errors, places=3)
-        if quantity is not None and quantity <= 0:
-            errors.append({"field": f"{f}.qty", "message": "Must be more than zero."})
-            quantity = None
+        line = (StockVoucherLine.objects.filter(pk=_int(raw.get("issue_line_id")), voucher=issue)
+                .select_related("material", *("lot__" + r for r in LOT_RELATED)).first())
+        quantity = _positive(raw, "qty", f, errors)
         note = _text(raw.get("note"), 2000)
         reason = _reason(raw.get("reason"), ("RETURN",), f"{f}.reason", note, errors, reasons)
-        out = {"index": i, "material": line.material if line else None, "uom": line.uom if line else "", "qty": quantity,
-               "direction": 1, "draws": [], "value": None, "reason": reason, "note": note, "return_of_line": line}
+        out = {"index": i, "lot": line.lot if line else None, "material": line.material if line else None,
+               "uom": line.uom if line else "", "qty": quantity, "direction": 1, "draws": [], "value": None,
+               "reason": reason, "note": note, "return_of_line": line}
         result["lines"].append(out)
         if line is None:
             errors.append({"field": f"{f}.issue_line_id", "message": f"Not a line of {issue.voucher_no}."})
@@ -599,13 +644,12 @@ def _evaluate_return(result, payload, raw_lines, *, lock):
         seen.add(line.id)
         if quantity is None:
             continue
-        # Back into the lots the issue drew, newest first, each no more than
-        # it gave this issue line less what earlier returns already put back.
-        allocs = list(StockAllocation.objects.filter(voucher_line=line).select_related(*("lot__" + r for r in _LOT_RELATED))
+        # Back into the receipts the issue took from, newest first, each no
+        # more than it gave this issue line less what earlier returns put back.
+        allocs = list(StockAllocation.objects.filter(voucher_line=line).select_related(*("lot__" + r for r in LOT_RELATED))
                       .order_by("-lot__received_date", "-lot_id"))
         if lock:
-            from apps.core.models import StockLot
-            list(StockLot.objects.select_for_update().filter(id__in=[a.lot_id for a in allocs]).order_by("id").values_list("id", flat=True))
+            _lock_lots({a.lot_id for a in allocs})
         back = {}
         for a in StockAllocation.objects.filter(voucher_line__return_of_line=line, voucher_line__voucher__status="POSTED"):
             back[a.lot_id] = back.get(a.lot_id, ZERO) + a.qty
@@ -623,76 +667,63 @@ def _evaluate_return(result, payload, raw_lines, *, lock):
                 remaining -= take
             if remaining <= 0:
                 break
-        out["value"] = sum((rules.value(q, lot.rate) for lot, q in out["draws"] if lot.currency == "INR"), Decimal("0.00"))
+        out["value"] = _inr_value(out["draws"])
 
 
-def _evaluate_adjust(result, raw_lines, *, lock):
+# A stock difference on one receipt: "count" (what was counted left of it),
+# "remove" (a write-off) or "gain" (more than the books - what an approved
+# count that found more is re-checked as).
+ADJUST_MODES = ("count", "remove", "gain")
+
+
+def _evaluate_adjust(result, raw_lines):
     from apps.core.models import StockReasonCode
 
     errors, plant, day = result["errors"], result["plant"], result["voucher_date"]
     reasons = {r.code: r for r in StockReasonCode.objects.filter(kind__in=("ADJUST_IN", "ADJUST_OUT"))}
-    seen, held = set(), {}
+    seen: set = set()
     for i, raw in enumerate(raw_lines):
         f = f"lines.{i}"
         mode = raw.get("mode")
-        if mode not in ("add", "remove", "count"):
-            errors.append({"field": f"{f}.mode", "message": "Choose add, write off or count."})
+        if mode not in ADJUST_MODES:
+            errors.append({"field": f"{f}.mode", "message": "Choose a physical count or a write-off. Stock comes in only through a MIR."})
             continue
-        material = _material(raw, f, errors)
-        uom = _text(raw.get("uom"), 20).upper()
+        lot = _receipt(raw, f, plant, errors, seen)
         note = _text(raw.get("note"), 2000)
-        out = {"index": i, "mode": mode, "material": material, "uom": uom, "qty": None, "direction": None, "draws": [],
-               "value": None, "reason": None, "note": note, "rate": None, "counted": None, "book": None}
+        out = _line(i, lot, mode=mode, direction=None, note=note, counted=None, book=None)
         result["lines"].append(out)
-        if material is not None:
-            if (material.id, uom) in seen:
-                errors.append({"field": f"{f}.material_id", "message": "Already on this adjustment - one line per material."})
-                continue
-            seen.add((material.id, uom))
         if mode == "count":
             counted = _dec(raw.get("counted"), f"{f}.counted", errors, places=3)
             if counted is not None and counted < 0:
                 errors.append({"field": f"{f}.counted", "message": "Cannot be negative."})
                 counted = None
             out["counted"] = counted
-            if material is None or plant is None or day is None or counted is None:
+            if lot is None or day is None or counted is None:
                 continue
-            book = _book_on(plant, material, uom, day)
+            book = sum((q for d, q in lot_events([lot])[lot.id] if d <= day), ZERO)
             out["book"] = book
             diff = counted - book
             if diff == 0:
-                errors.append({"field": f"{f}.counted", "message": "That is what the books hold - nothing to adjust."})
+                errors.append({"field": f"{f}.counted", "message": "That is what the books hold - no difference to record."})
                 continue
             out["qty"], out["direction"] = abs(diff), (1 if diff > 0 else -1)
         else:
-            quantity = _dec(raw.get("qty"), f"{f}.qty", errors, places=3)
-            if quantity is not None and quantity <= 0:
-                errors.append({"field": f"{f}.qty", "message": "Must be more than zero."})
-                quantity = None
-            out["qty"], out["direction"] = quantity, (1 if mode == "add" else -1)
-        direction = out["direction"]
-        if direction is None:
+            out["qty"], out["direction"] = _positive(raw, "qty", f, errors), (1 if mode == "gain" else -1)
+        if out["direction"] is None:
             continue
-        out["reason"] = _reason(raw.get("reason"), ("ADJUST_IN",) if direction > 0 else ("ADJUST_OUT",), f"{f}.reason",
+        out["reason"] = _reason(raw.get("reason"), ("ADJUST_IN",) if out["direction"] > 0 else ("ADJUST_OUT",), f"{f}.reason",
                                 note, errors, reasons)
-        if direction > 0:
-            rate = _dec(raw.get("rate"), f"{f}.rate", errors, required=False, places=4)
-            if rate is not None and rate < 0:
-                errors.append({"field": f"{f}.rate", "message": "Cannot be negative."})
-                rate = None
-            if rate is None and material is not None and plant is not None:
-                rate = _latest_rate(plant, material, uom)
-                if rate is None and not any(e["field"] == f"{f}.rate" for e in errors):
-                    errors.append({"field": f"{f}.rate", "message": "No earlier receipt to value it at - enter the rate per unit."})
-            out["rate"] = rate
-            if not uom:
-                errors.append({"field": f"{f}.uom", "message": "Choose the unit."})
-            if out["qty"] is not None and rate is not None:
-                out["value"] = rules.value(out["qty"], rate)
-        elif material is not None and plant is not None and day is not None and out["qty"] is not None:
-            out["draws"] = _draw(plant, material, uom, day, out["qty"], lock=lock, field=f"{f}.qty" if mode != "count" else f"{f}.counted",
-                                 errors=errors, held=held)
-            out["value"] = -sum((rules.value(q, lot.rate) for lot, q in out["draws"] if lot.currency == "INR"), Decimal("0.00"))
+        if lot is None or day is None or out["qty"] is None:
+            continue
+        if out["direction"] < 0:
+            out["draws"] = _take(lot, day, out["qty"], f"{f}.counted" if mode == "count" else f"{f}.qty", errors)
+            value = _inr_value(out["draws"])
+            out["value"] = -value if value is not None else None
+        elif day < lot.received_date:
+            errors.append({"field": f"{f}.lot_id", "message": f"{doc_of(lot)} came in on {lot.received_date:%d-%m-%Y}."})
+        else:
+            out["draws"] = [(lot, out["qty"])]
+            out["value"] = _inr_value(out["draws"])
 
 
 # ── Writing ───────────────────────────────────────────────────────────────
@@ -712,7 +743,7 @@ def _is_admin(user) -> bool:
 
 
 def post_voucher(payload: dict, user):
-    """Validate and save a voucher in one transaction. An adjustment by
+    """Validate and save a voucher in one transaction. A stock difference by
     anyone but an admin is saved PENDING, moving no stock until approved.
     Raises StockValidationError; returns the StockVoucher."""
     from apps.core.models import StockVoucher
@@ -725,16 +756,15 @@ def post_voucher(payload: dict, user):
         fy = prules.financial_year(result["voucher_date"])
         seq = _next_seq(plant, kind, fy)
         pending = kind == "ADJUST" and not _is_admin(user)
-        now = timezone.now()
+        decided = kind == "ADJUST" and not pending
         voucher = StockVoucher.objects.create(
             plant=plant, kind=kind, fy=fy, seq=seq, voucher_no=rules.voucher_number(plant.mir_prefix, KIND_CODES[kind], fy, seq),
             voucher_date=result["voucher_date"], return_of=result["return_of"],
             status=StockVoucher.Status.PENDING if pending else StockVoucher.Status.POSTED,
             created_by=user, created_by_email=getattr(user, "email", ""),
-            decided_by=None if pending or kind != "ADJUST" else user,
-            decided_by_email="" if pending or kind != "ADJUST" else getattr(user, "email", ""),
-            decided_at=None if pending or kind != "ADJUST" else now,
-            decision_note="" if pending or kind != "ADJUST" else "Entered by an admin - no separate approval.",
+            decided_by=user if decided else None, decided_by_email=getattr(user, "email", "") if decided else "",
+            decided_at=timezone.now() if decided else None,
+            decision_note="Entered by an admin - no separate approval." if decided else "",
             **result["header"],
         )
         _save_lines(voucher, result, apply=not pending)
@@ -742,64 +772,54 @@ def post_voucher(payload: dict, user):
 
 
 def _save_lines(voucher, result, *, apply: bool):
-    """The voucher's lines, and - when it moves stock now - their draws and
-    the lots an addition creates."""
-    from apps.core.models import StockAllocation, StockLot, StockVoucherLine
+    """The voucher's lines and - when it moves stock now - their draws."""
+    from apps.core.models import StockAllocation, StockVoucherLine
 
     for n, ln in enumerate(result["lines"], start=1):
         line = StockVoucherLine.objects.create(
-            voucher=voucher, line_no=n, material=ln["material"], uom=ln["uom"], qty=ln["qty"], direction=ln["direction"],
-            reason=ln["reason"], note=ln["note"], rate=ln.get("rate"), counted_qty=ln.get("counted"), book_qty=ln.get("book"),
-            return_of_line=ln.get("return_of_line"),
+            voucher=voucher, line_no=n, lot=ln["lot"], material=ln["material"], uom=ln["uom"], qty=ln["qty"],
+            direction=ln["direction"], reason=ln["reason"], note=ln["note"], counted_qty=ln.get("counted"),
+            book_qty=ln.get("book"), return_of_line=ln.get("return_of_line"),
         )
-        if not apply:
-            continue
-        for lot, q in ln["draws"]:
-            StockAllocation.objects.create(voucher_line=line, lot=lot, qty=q)
-        if voucher.kind == "ADJUST" and ln["direction"] > 0:
-            StockLot.objects.create(plant=voucher.plant, material=ln["material"], uom=ln["uom"], source=StockLot.Source.ADJUSTMENT,
-                                    voucher_line=line, received_date=voucher.voucher_date, factor=1, rate=ln["rate"],
-                                    currency="INR", stocked=True)
+        if apply:
+            for lot, q in ln["draws"]:
+                StockAllocation.objects.create(voucher_line=line, lot=lot, qty=q)
 
 
 def _payload_of(voucher) -> dict:
-    """A pending adjustment as the payload it was entered with, for
+    """A pending difference as the payload it was entered with, for
     re-checking at approval. A count keeps the difference it was entered
     with: the count was true on its day, whatever moved since."""
     lines = []
     for ln in voucher.lines.select_related("reason").order_by("line_no"):
-        mode = "add" if ln.direction > 0 else "remove"
-        lines.append({"mode": mode, "material_id": ln.material_id, "uom": ln.uom, "qty": str(ln.qty),
-                      "reason": ln.reason.code if ln.reason else "", "note": ln.note,
-                      "rate": str(ln.rate) if ln.rate is not None else ""})
+        lines.append({"mode": "gain" if ln.direction > 0 else "remove", "lot_id": ln.lot_id, "qty": str(ln.qty),
+                      "reason": ln.reason.code if ln.reason else "", "note": ln.note})
     return {"kind": "ADJUST", "plant": voucher.plant.code, "voucher_date": voucher.voucher_date.isoformat(), "lines": lines}
 
 
 def approve_adjustment(voucher, user, note: str):
-    """An admin approves a pending adjustment: it is re-checked now (stock
-    may have moved since it was entered) and, if it still fits, posted. The
-    approval date is not a new voucher date - the stock moves on the day the
-    adjustment was entered for, so it may no longer fit the backdating window
-    and is checked against its own day instead."""
+    """An admin approves a pending stock difference: it is re-checked now
+    (stock may have moved since it was entered) and, if it still fits,
+    posted. The stock moves on the day the difference was entered for, so it
+    may be older than the backdating window and is checked against its own
+    day instead."""
     from apps.core.models import StockVoucher
 
     with transaction.atomic():
         voucher = StockVoucher.objects.select_for_update().select_related("plant").get(pk=voucher.pk)
         if voucher.kind != "ADJUST" or voucher.status != "PENDING":
-            raise StockValidationError([{"field": "status", "message": "Only an adjustment waiting for approval can be approved."}])
+            raise StockValidationError([{"field": "status", "message": "Only a difference waiting for approval can be approved."}])
         if voucher.created_by_id is not None and voucher.created_by_id == getattr(user, "pk", None):
             raise StockValidationError([{"field": "status", "message": "Someone other than the person who entered it must approve it."}])
+        if voucher.lines.filter(lot__isnull=True).exists():
+            raise StockValidationError([{"field": "status", "message": (
+                "This was entered before differences named their MIR - turn it down and enter it again against the MIR.")}])
         result = evaluate(_payload_of(voucher), lock=True, earliest=voucher.voucher_date)
         if not result["ok"]:
             raise StockValidationError(result["errors"])
         for saved, ln in zip(voucher.lines.order_by("line_no"), result["lines"], strict=True):
             for lot, q in ln["draws"]:
                 saved.allocations.create(lot=lot, qty=q)
-            if ln["direction"] > 0:
-                from apps.core.models import StockLot
-                StockLot.objects.create(plant=voucher.plant, material=saved.material, uom=saved.uom, source=StockLot.Source.ADJUSTMENT,
-                                        voucher_line=saved, received_date=voucher.voucher_date, factor=1, rate=saved.rate,
-                                        currency="INR", stocked=True)
         voucher.status = StockVoucher.Status.POSTED
         voucher.decided_by, voucher.decided_by_email = user, getattr(user, "email", "")
         voucher.decided_at, voucher.decision_note = timezone.now(), (note or "").strip()
@@ -816,7 +836,7 @@ def reject_adjustment(voucher, user, note: str):
     with transaction.atomic():
         voucher = StockVoucher.objects.select_for_update().get(pk=voucher.pk)
         if voucher.kind != "ADJUST" or voucher.status != "PENDING":
-            raise StockValidationError([{"field": "status", "message": "Only an adjustment waiting for approval can be turned down."}])
+            raise StockValidationError([{"field": "status", "message": "Only a difference waiting for approval can be turned down."}])
         voucher.status = StockVoucher.Status.REJECTED
         voucher.decided_by, voucher.decided_by_email = user, getattr(user, "email", "")
         voucher.decided_at, voucher.decision_note = timezone.now(), note
@@ -825,10 +845,11 @@ def reject_adjustment(voucher, user, note: str):
 
 
 def cancel_voucher(voucher, user, reason: str):
-    """Cancel a posted voucher (or withdraw a pending adjustment). Its draws
-    stop counting at once. Refused when that would leave stock below zero on
-    any day: a return, or an addition, whose stock has been issued again; and
-    an issue with a posted return against it (cancel the return first)."""
+    """Cancel a posted voucher (or withdraw a pending difference). Its draws
+    stop counting at once. Refused when that would leave a receipt below
+    zero on any day: a return, a count that found more, or an old opening
+    balance whose stock has been issued again; and an issue with a posted
+    return against it (cancel the return first)."""
     from apps.core.models import StockLot, StockVoucher
 
     reason = (reason or "").strip()
@@ -837,21 +858,20 @@ def cancel_voucher(voucher, user, reason: str):
     with transaction.atomic():
         voucher = StockVoucher.objects.select_for_update().get(pk=voucher.pk)
         if voucher.status not in ("POSTED", "PENDING"):
-            raise StockValidationError([{"field": "status", "message": "This voucher is not posted."}])
+            raise StockValidationError([{"field": "status", "message": "This entry is not posted."}])
         if voucher.status == "POSTED":
             if voucher.kind == "ISSUE":
                 returns = list(voucher.returns.filter(status="POSTED").values_list("voucher_no", flat=True))
                 if returns:
                     raise StockValidationError([{"field": "status", "message": (
                         "Material from this issue has come back on " + ", ".join(returns) + ". Cancel that return first.")}])
-            gives = voucher.kind == "RETURN" or voucher.kind == "ADJUST"
-            if gives:
-                lot_ids = set(StockLot.objects.filter(allocations__voucher_line__voucher=voucher,
-                                                      allocations__voucher_line__direction=1).values_list("id", flat=True))
+            else:
+                given = set(StockLot.objects.filter(allocations__voucher_line__voucher=voucher,
+                                                    allocations__voucher_line__direction=1).values_list("id", flat=True))
                 created = set(StockLot.objects.filter(voucher_line__voucher=voucher).values_list("id", flat=True))
-                ids = sorted(lot_ids | created)
-                list(StockLot.objects.select_for_update().filter(id__in=ids).order_by("id").values_list("id", flat=True))
-                lots = list(StockLot.objects.filter(id__in=ids).select_related(*_LOT_RELATED))
+                ids = sorted(given | created)
+                _lock_lots(ids)
+                lots = list(StockLot.objects.filter(id__in=ids).select_related(*LOT_RELATED))
                 events = lot_events(lots, exclude_voucher_ids=[voucher.id], in_override={i: ZERO for i in created})
                 bad = [lot for lot in lots if rules.min_running_balance(events[lot.id]) < 0]
                 if bad:

@@ -12,22 +12,26 @@ one is cancelled and entered again).
   StockSetting      per plant and material: whether the store keeps it at
                     all, and its minimum stock level.
   StockSequence     the per-plant, per-kind, per-financial-year counter.
-  StockLot          one receipt into the store: a posted MIR line, or an
-                    adjustment that adds stock (an opening balance, a count
-                    that found more). Its quantity is NOT stored - a MIR
-                    lot holds the MIR line's accepted quantity (received less
+  StockLot          one receipt into the store: a posted MIR line (2026-09-30,
+                    project owner: "if a material has not been entered in the
+                    MIR the RM can't issue it"). Its quantity is NOT stored - it
+                    holds the MIR line's accepted quantity (received less
                     rejected, converted to the stock unit) for as long as the
                     MIR is posted, so a cancelled MIR or a rejection found
                     later changes stock at once, with nothing to keep in step.
-  StockVoucher,     an issue to a department, a return to the store against
-  StockVoucherLine  an issue, or an adjustment - numbered, dated, signed.
-  StockAllocation   which lots a voucher line took stock from (or gave it
-                    back to), and how much: issues and write-offs draw the
-                    oldest lot first (FIFO), a return goes back to the lots
-                    its issue drew.
+                    Source ADJUSTMENT lots were opening balances added by hand
+                    before that rule; none are made any more, the old ones
+                    still count.
+  StockVoucher,     an issue to production, a return to the store against an
+  StockVoucherLine  issue, or a stock difference (a count or a write-off) -
+                    numbered, dated, signed. Each line names the MIR receipt
+                    (`lot`) it acts on: the storekeeper picks the MIR and the
+                    rest comes from it.
+  StockAllocation   how much a voucher line took from (or put back into) a
+                    lot. A line made since 2026-09-30 has one, on its own lot.
 
-A lot's balance = what it received - what posted vouchers drew from it +
-what posted returns gave back (apps/services/stock_service.py). Only POSTED
+A lot's balance = what it received - what posted vouchers took from it +
+what posted vouchers put back (apps/services/stock_service.py). Only POSTED
 vouchers count, so a cancelled one drops out at once, like a cancelled MIR.
 """
 
@@ -93,11 +97,11 @@ class StockVoucher(models.Model):
     class Kind(models.TextChoices):
         ISSUE = "ISSUE", "Issue"
         RETURN = "RETURN", "Return to store"
-        ADJUST = "ADJUST", "Adjustment"
+        ADJUST = "ADJUST", "Stock difference"
 
     class Status(models.TextChoices):
-        # An adjustment entered by an editor waits for an admin's approval
-        # and moves no stock until then.
+        # A stock difference entered by an editor waits for an admin's
+        # approval and moves no stock until then.
         PENDING = "PENDING", "Waiting for approval"
         POSTED = "POSTED", "Posted"
         REJECTED = "REJECTED", "Not approved"
@@ -109,7 +113,8 @@ class StockVoucher(models.Model):
     seq = models.PositiveIntegerField()
     voucher_no = models.CharField(max_length=40, unique=True)
     voucher_date = models.DateField()
-    # Issue: the department the material went to, and the person who took it.
+    # Issue: the department the material went to, and the person who took it
+    # (both optional - the store's own sheet never recorded them).
     department = models.CharField(max_length=60, blank=True, default="")
     issued_to = models.CharField(max_length=120, blank=True, default="")
     # Issue: a production order or batch, when the plant uses one.
@@ -136,7 +141,6 @@ class StockVoucher(models.Model):
             models.UniqueConstraint(fields=["plant", "kind", "fy", "seq"], name="uniq_stock_voucher_seq"),
             models.CheckConstraint(condition=Q(return_of__isnull=True) | Q(kind="RETURN"), name="stock_return_of_only_on_return"),
             models.CheckConstraint(condition=Q(kind="RETURN", return_of__isnull=False) | ~Q(kind="RETURN"), name="stock_return_names_its_issue"),
-            models.CheckConstraint(condition=~Q(kind="ISSUE") | ~Q(department=""), name="stock_issue_has_department"),
             models.CheckConstraint(condition=Q(status="PENDING") | ~Q(kind="ADJUST") | Q(decided_at__isnull=False),
                                    name="stock_adjustment_decided"),
             models.CheckConstraint(condition=~Q(status="CANCELLED") | (Q(cancelled_at__isnull=False) & ~Q(cancel_reason="")),
@@ -154,15 +158,20 @@ class StockVoucher(models.Model):
 class StockVoucherLine(models.Model):
     voucher = models.ForeignKey(StockVoucher, on_delete=models.CASCADE, related_name="lines")
     line_no = models.PositiveSmallIntegerField()
+    # The MIR receipt this line acts on. Null only on lines entered before
+    # 2026-09-30, when an issue drew several lots oldest first.
+    lot = models.ForeignKey("core.StockLot", on_delete=models.PROTECT, null=True, blank=True, related_name="voucher_lines")
     material = models.ForeignKey("core.Material", on_delete=models.PROTECT, related_name="+")
     # The stock unit (stock_rules.stock_unit()).
     uom = models.CharField(max_length=20, blank=True, default="")
     qty = models.DecimalField(max_digits=14, decimal_places=3)
-    # -1 takes stock out (issue, write-off), +1 puts it in (return, addition).
+    # -1 takes stock out (issue, write-off, count short), +1 puts it back
+    # (return, count found more).
     direction = models.SmallIntegerField()
     reason = models.ForeignKey(StockReasonCode, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     note = models.TextField(blank=True, default="")
-    # An addition's value per stock unit (the lot it creates is valued at it).
+    # An old opening-balance addition's value per stock unit (the lot it
+    # created is valued at it). New lines leave it empty.
     rate = models.DecimalField(max_digits=14, decimal_places=4, null=True, blank=True)
     # A physical count: what was counted and what the books said that day;
     # qty is the difference between them.

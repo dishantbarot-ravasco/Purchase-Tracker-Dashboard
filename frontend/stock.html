@@ -1,20 +1,26 @@
 <!--
-  stock.html - RM store entry, the same page at every plant (2026-09-29).
-  Stock comes in through MIR entry (every posted MIR line is a receipt into
-  the receiving plant's store); this page issues material to departments,
-  takes returns, records adjustments, and shows what is on hand, lot by lot.
-  Five views: Stock on hand, Issue, Return, Adjust, and the register.
+  stock.html - the RM store, the same page at every plant. Built like MIR
+  entry (2026-09-30, project owner: "an single form structure like we had for
+  the MIR and the equivalent MIR register and Open mismatch"). Stock comes in
+  ONLY through a posted MIR; this page issues it out of the MIR the
+  storekeeper picks, and everything else about the line (material, unit,
+  vendor, rate, date) comes from that MIR. Three views:
+    Issue from MIR    the one form: pick the MIR, enter the quantity;
+    RM register       one row per MIR receipt, like the store's Stock sheet
+                      (opening, received, issued, closing, rate, value, days),
+                      plus the issue slips, each with its return;
+    Open mismatches   stock differences (a physical count, a write-off)
+                      waiting for an admin, and the form to record one.
   Talks to /api/stock/... (apps/api/routers/stock_views.py) only; every
-  figure, draw and check comes from the server's preview
-  (apps/services/stock_service.py's evaluate()), so this page never decides
-  a quantity or a value itself.
-  Styled with the dashboard's own components (css/style.css) and MIR
-  entry's (css/mir-page.css), plus stock-page.css, so it reads as the same
-  app as MIR entry.
-  Protected page: requireAuth() (js/auth.js). Issuing, returning and
-  adjusting need the Editor or Admin role at the plant; an editor's
-  adjustment waits for an admin's approval. Any role can read stock for the
-  plants it may see.
+  figure and check comes from the server's preview
+  (apps/services/stock_service.py's evaluate()), so this page never decides a
+  quantity or a value itself.
+  Styled with the dashboard's own components (css/style.css) and MIR entry's
+  (css/mir-page.css), plus stock-page.css.
+  Protected page: requireAuth() (js/auth.js). Issuing, returning and recording
+  a difference need the Editor or Admin role at the plant; an editor's
+  difference waits for an admin's approval. Any role can read the plants it
+  may see.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -47,52 +53,52 @@
   <div class="wrap mir-wrap" id="main-content" role="main" tabindex="-1">
     <div class="mir-page-head">
       <h2 class="mir-page-title">Raw Material Store</h2>
-      <p class="mir-page-sub">Material comes into the store through MIR entry. Issue it to departments, take back what is not used,
-        and record counts and write-offs here. Fields marked <span class="req-mark">*</span> are required.</p>
+      <p class="mir-page-sub">Material comes into the store only through a MIR. To issue it, pick the MIR it came on and enter how much is going out -
+        everything else comes from the MIR. Fields marked <span class="req-mark">*</span> are required.</p>
     </div>
 
     <div class="view-tabs" role="tablist" aria-label="Store views">
-      <button type="button" class="view-tab active" id="tabStock" role="tab" aria-selected="true" aria-controls="viewStock">Stock on hand</button>
-      <button type="button" class="view-tab" id="tabIssue" role="tab" aria-selected="false" aria-controls="viewIssue">Issue</button>
-      <button type="button" class="view-tab" id="tabReturn" role="tab" aria-selected="false" aria-controls="viewReturn">Return to store</button>
-      <button type="button" class="view-tab" id="tabAdjust" role="tab" aria-selected="false" aria-controls="viewAdjust">Adjust</button>
-      <button type="button" class="view-tab" id="tabRegister" role="tab" aria-selected="false" aria-controls="viewRegister">Register <span class="mir-count" id="pendingCount" hidden></span></button>
+      <button type="button" class="view-tab active" id="tabIssue" role="tab" aria-selected="true" aria-controls="viewIssue">Issue from MIR</button>
+      <button type="button" class="view-tab" id="tabRegister" role="tab" aria-selected="false" aria-controls="viewRegister">RM register</button>
+      <button type="button" class="view-tab" id="tabMismatch" role="tab" aria-selected="false" aria-controls="viewMismatch">Open mismatches <span class="mir-count" id="pendingCount" hidden></span></button>
     </div>
 
-    <!-- ── Stock on hand ──────────────────────────────────────────── -->
-    <div id="viewStock" role="tabpanel" aria-labelledby="tabStock">
-      <div class="filter-row">
-        <label for="stPlant">Plant</label>
-        <select id="stPlant"></select>
-        <input type="search" id="stSearch" class="mir-filter-search" placeholder="Material name" aria-label="Search materials">
-        <label class="st-check"><input type="checkbox" id="stZero"> Include materials with none left</label>
-      </div>
-      <div id="stockArea"></div>
-      <div id="stockDetail"></div>
-    </div>
-
-    <!-- ── Issue ──────────────────────────────────────────────────── -->
-    <div id="viewIssue" role="tabpanel" aria-labelledby="tabIssue" hidden>
+    <!-- ── Issue from MIR ─────────────────────────────────────────── -->
+    <div id="viewIssue" role="tabpanel" aria-labelledby="tabIssue" data-form-host>
       <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot issue material. Ask an admin for the Editor role at your plant.</div>
-      <form id="issueForm" novalidate data-form="ISSUE">
-        <section class="mir-panel">
-          <h3 class="mir-panel-title"><span class="mir-step">1</span> Who it is for</h3>
-          <p class="mir-help">The plant, the day it left the store, the department it went to and the person who took it.</p>
-          <div class="mir-grid">
+      <ol class="mir-progress" id="issueProgress" aria-label="Progress">
+        <li data-step="1"><button type="button" data-goto="isStep1"><span class="mir-progress-dot">1</span><span>Issue</span></button></li>
+        <li data-step="2"><button type="button" data-goto="isStep2"><span class="mir-progress-dot">2</span><span>Pick the MIR</span></button></li>
+        <li data-step="3"><button type="button" data-goto="isStep3"><span class="mir-progress-dot">3</span><span>How much goes out</span></button></li>
+      </ol>
+      <form id="issueForm" novalidate>
+        <section class="mir-panel" id="isStep1">
+          <h3 class="mir-panel-title"><span class="mir-step">1</span> Issue</h3>
+          <p class="mir-help">The plant and the day the material left the store. Both are filled in for you; change them only if needed.</p>
+          <div class="mir-grid mir-grid-2">
             <div class="form-group"><label class="form-label" for="isPlant">Plant <span class="req-mark">*</span></label><select class="form-control" id="isPlant" data-field="plant"></select></div>
             <div class="form-group"><label class="form-label" for="isDate">Issue date <span class="req-mark">*</span></label><input class="form-control" type="date" id="isDate" data-field="voucher_date"><span class="mir-hint" data-date-hint></span></div>
-            <div class="form-group"><label class="form-label" for="isDept">Department <span class="req-mark">*</span></label><input class="form-control" id="isDept" data-field="department" maxlength="60" list="isDeptList" autocomplete="off" placeholder="e.g. Mixing, Calendering"><datalist id="isDeptList"></datalist></div>
-            <div class="form-group"><label class="form-label" for="isTo">Issued to <span class="req-mark">*</span></label><input class="form-control" id="isTo" data-field="issued_to" maxlength="120" autocomplete="off" placeholder="Name of the person who took it"></div>
-            <div class="form-group"><label class="form-label" for="isRef">Production order / batch</label><input class="form-control" id="isRef" data-field="reference" maxlength="60" autocomplete="off"></div>
           </div>
-          <div class="form-group"><label class="form-label" for="isRemarks">Remarks</label><textarea class="form-control" id="isRemarks" data-field="remarks" rows="2" maxlength="2000"></textarea></div>
+          <details class="mir-more">
+            <summary>Optional details: department, person, production order, remarks</summary>
+            <div class="mir-grid">
+              <div class="form-group"><label class="form-label" for="isDept">Department</label><input class="form-control" id="isDept" data-field="department" maxlength="60" list="isDeptList" autocomplete="off" placeholder="e.g. Mixing"><datalist id="isDeptList"></datalist></div>
+              <div class="form-group"><label class="form-label" for="isTo">Issued to</label><input class="form-control" id="isTo" data-field="issued_to" maxlength="120" autocomplete="off"></div>
+              <div class="form-group"><label class="form-label" for="isRef">Production order / batch</label><input class="form-control" id="isRef" data-field="reference" maxlength="60" autocomplete="off"></div>
+            </div>
+            <div class="form-group"><label class="form-label" for="isRemarks">Remarks</label><textarea class="form-control" id="isRemarks" data-field="remarks" rows="2" maxlength="2000"></textarea></div>
+          </details>
         </section>
-        <section class="mir-panel">
-          <h3 class="mir-panel-title"><span class="mir-step">2</span> What is going out</h3>
-          <p class="mir-help">Find each material in this plant's stock and enter how much is going out, in its stock unit.
-            Stock is taken from the oldest receipt first; the lots it comes from are shown under each line.</p>
-          <div class="mir-search"><input class="form-control" type="search" id="isFind" placeholder="Material in stock, e.g. SBR 1502" autocomplete="off" aria-label="Find a material in stock"></div>
-          <div id="isHits" class="st-hits" aria-live="polite"></div>
+        <section class="mir-panel" id="isStep2">
+          <h3 class="mir-panel-title"><span class="mir-step">2</span> Pick the MIR</h3>
+          <p class="mir-help">Find the MIR the material came in on - by MIR number, material, vendor, invoice or PO - and click its line.
+            Only MIRs with stock left at this plant are shown, oldest first. Lines from several MIRs can go on one issue.</p>
+          <div class="mir-search"><input class="form-control" type="search" id="isFind" placeholder="MIR number or material, e.g. SBR 1502" autocomplete="off" aria-label="Find a MIR with stock left"></div>
+          <div id="isHits" aria-live="polite"></div>
+        </section>
+        <section class="mir-panel" id="isStep3" hidden>
+          <h3 class="mir-panel-title"><span class="mir-step">3</span> How much goes out</h3>
+          <p class="mir-help">Enter the quantity going out of each MIR, in its stock unit. It cannot be more than that MIR still holds on the issue date.</p>
           <div id="isLines"></div>
         </section>
         <div class="mir-savebar" data-savebar hidden>
@@ -106,89 +112,100 @@
       </form>
     </div>
 
-    <!-- ── Return to store ────────────────────────────────────────── -->
-    <div id="viewReturn" role="tabpanel" aria-labelledby="tabReturn" hidden>
-      <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot record returns. Ask an admin for the Editor role at your plant.</div>
-      <form id="returnForm" novalidate data-form="RETURN">
-        <section class="mir-panel">
-          <h3 class="mir-panel-title"><span class="mir-step">1</span> Which issue it comes back from</h3>
-          <p class="mir-help">Material comes back against the issue it went out on, so it returns to the same receipts at the same value.
-            Find the issue by its number, department, person or material.</p>
-          <div class="mir-grid">
-            <div class="form-group"><label class="form-label" for="rtPlant">Plant <span class="req-mark">*</span></label><select class="form-control" id="rtPlant" data-field="plant"></select></div>
-            <div class="form-group"><label class="form-label" for="rtDate">Return date <span class="req-mark">*</span></label><input class="form-control" type="date" id="rtDate" data-field="voucher_date"><span class="mir-hint" data-date-hint></span></div>
-          </div>
-          <div class="mir-search"><input class="form-control" type="search" id="rtFind" placeholder="Issue number, department, person or material" autocomplete="off" aria-label="Find the issue"></div>
-          <div id="rtHits" class="st-hits" aria-live="polite"></div>
-          <div id="rtIssue" data-field="return_of"></div>
-        </section>
-        <section class="mir-panel" id="rtLinesPanel" hidden>
-          <h3 class="mir-panel-title"><span class="mir-step">2</span> What came back</h3>
-          <p class="mir-help">For each material coming back, enter how much and why. Leave a line empty if nothing of it came back.</p>
-          <div id="rtLines"></div>
-          <div class="form-group"><label class="form-label" for="rtRemarks">Remarks</label><textarea class="form-control" id="rtRemarks" data-field="remarks" rows="2" maxlength="2000"></textarea></div>
-        </section>
-        <div class="mir-savebar" data-savebar hidden>
-          <div class="mir-todo" data-todo aria-live="polite"></div>
-          <div class="mir-notices" data-notices aria-live="polite"></div>
-          <div class="mir-savebar-row">
-            <div class="mir-totals" data-totals></div>
-            <div class="mir-savebar-action"><button type="submit" class="btn btn-primary" data-post>Save return</button></div>
-          </div>
-        </div>
-      </form>
-    </div>
-
-    <!-- ── Adjust ─────────────────────────────────────────────────── -->
-    <div id="viewAdjust" role="tabpanel" aria-labelledby="tabAdjust" hidden>
-      <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot adjust stock. Ask an admin for the Editor role at your plant.</div>
-      <div class="mir-explain" id="adjExplain"></div>
-      <form id="adjustForm" novalidate data-form="ADJUST">
-        <section class="mir-panel">
-          <h3 class="mir-panel-title"><span class="mir-step">1</span> Where and when</h3>
-          <div class="mir-grid">
-            <div class="form-group"><label class="form-label" for="adPlant">Plant <span class="req-mark">*</span></label><select class="form-control" id="adPlant" data-field="plant"></select></div>
-            <div class="form-group"><label class="form-label" for="adDate">Date <span class="req-mark">*</span></label><input class="form-control" type="date" id="adDate" data-field="voucher_date"><span class="mir-hint" data-date-hint></span></div>
-          </div>
-          <div class="form-group"><label class="form-label" for="adRemarks">Remarks</label><textarea class="form-control" id="adRemarks" data-field="remarks" rows="2" maxlength="2000"></textarea></div>
-        </section>
-        <section class="mir-panel">
-          <h3 class="mir-panel-title"><span class="mir-step">2</span> What changes</h3>
-          <p class="mir-help">Pick what kind of change each line is, then the material. A <b>physical count</b> takes what you counted and adjusts by the
-            difference from the books; <b>add stock</b> is for an opening balance or stock found; <b>write off</b> is for damage, loss or a sample.</p>
-          <div class="st-modes" role="group" aria-label="Kind of change">
-            <button type="button" class="btn btn-navy btn-small" data-add-mode="count">+ Physical count</button>
-            <button type="button" class="btn btn-navy btn-small" data-add-mode="add">+ Add stock</button>
-            <button type="button" class="btn btn-navy btn-small" data-add-mode="remove">+ Write off</button>
-          </div>
-          <div id="adLines"></div>
-        </section>
-        <div class="mir-savebar" data-savebar hidden>
-          <div class="mir-todo" data-todo aria-live="polite"></div>
-          <div class="mir-notices" data-notices aria-live="polite"></div>
-          <div class="mir-savebar-row">
-            <div class="mir-totals" data-totals></div>
-            <div class="mir-savebar-action"><button type="submit" class="btn btn-primary" data-post>Save adjustment</button><span class="mir-hint" id="adPostHint"></span></div>
-          </div>
-        </div>
-      </form>
-    </div>
-
-    <!-- ── Register ───────────────────────────────────────────────── -->
+    <!-- ── RM register ────────────────────────────────────────────── -->
     <div id="viewRegister" role="tabpanel" aria-labelledby="tabRegister" hidden>
-      <div class="filter-row">
-        <label for="rgPlant">Plant</label>
-        <select id="rgPlant"></select>
-        <label for="rgKind">Kind</label>
-        <select id="rgKind"><option value="">All</option><option value="ISSUE">Issues</option><option value="RETURN">Returns</option><option value="ADJUST">Adjustments</option></select>
-        <label for="rgStatus">Status</label>
-        <select id="rgStatus"><option value="">All</option><option value="PENDING">Waiting for approval</option><option value="POSTED">Posted</option><option value="REJECTED">Not approved</option><option value="CANCELLED">Cancelled</option></select>
-        <label for="rgFrom">From</label><input type="date" id="rgFrom">
-        <label for="rgTo">To</label><input type="date" id="rgTo">
-        <input type="search" id="rgSearch" class="mir-filter-search" placeholder="Number, department, person or material" aria-label="Search the register">
+      <div class="st-switch" role="group" aria-label="Register view">
+        <button type="button" class="btn btn-small btn-navy is-on" id="rgShowStock" aria-pressed="true">Stock by MIR</button>
+        <button type="button" class="btn btn-small btn-navy" id="rgShowSlips" aria-pressed="false">Issue slips</button>
       </div>
-      <div id="registerArea"></div>
-      <div id="voucherDetail"></div>
+
+      <div id="rgStock">
+        <div class="filter-row">
+          <label for="rgPlant">Plant</label><select id="rgPlant"></select>
+          <label for="rgFrom">From</label><input type="date" id="rgFrom">
+          <label for="rgTo">To</label><input type="date" id="rgTo">
+          <label for="rgCategory">Category</label><select id="rgCategory"></select>
+          <input type="search" id="rgSearch" class="mir-filter-search" placeholder="MIR, material, vendor, invoice or PO" aria-label="Search the register">
+          <label class="st-check"><input type="checkbox" id="rgAll"> Include MIRs with nothing left</label>
+        </div>
+        <div id="registerArea"></div>
+        <div id="receiptDetail"></div>
+      </div>
+
+      <div id="rgSlips" hidden>
+        <div class="filter-row">
+          <label for="slPlant">Plant</label><select id="slPlant"></select>
+          <label for="slKind">Kind</label>
+          <select id="slKind"><option value="">All</option><option value="ISSUE">Issues</option><option value="RETURN">Returns</option><option value="ADJUST">Stock differences</option></select>
+          <label for="slFrom">From</label><input type="date" id="slFrom">
+          <label for="slTo">To</label><input type="date" id="slTo">
+          <input type="search" id="slSearch" class="mir-filter-search" placeholder="Slip or MIR number, department, material" aria-label="Search the slips">
+        </div>
+        <div id="slipArea"></div>
+        <div id="slipDetail"></div>
+        <div id="returnHost" data-form-host hidden>
+          <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot record returns.</div>
+          <form id="returnForm" novalidate>
+            <section class="mir-panel">
+              <h3 class="mir-panel-title">Material back from <span id="rtTitle"></span></h3>
+              <p class="mir-help">It goes back into the MIR it was issued from, at that MIR's rate. Leave a line empty if nothing of it came back.</p>
+              <input type="hidden" data-field="plant" id="rtPlant">
+              <div class="mir-grid mir-grid-2">
+                <div class="form-group"><label class="form-label" for="rtDate">Return date <span class="req-mark">*</span></label><input class="form-control" type="date" id="rtDate" data-field="voucher_date"><span class="mir-hint" data-date-hint></span></div>
+              </div>
+              <div id="rtLines"></div>
+              <div class="form-group"><label class="form-label" for="rtRemarks">Remarks</label><textarea class="form-control" id="rtRemarks" data-field="remarks" rows="2" maxlength="2000"></textarea></div>
+            </section>
+            <div class="mir-savebar" data-savebar hidden>
+              <div class="mir-todo" data-todo aria-live="polite"></div>
+              <div class="mir-notices" data-notices aria-live="polite"></div>
+              <div class="mir-savebar-row">
+                <div class="mir-totals" data-totals></div>
+                <div class="mir-savebar-action"><button type="button" class="btn btn-navy" id="rtClose">Close</button> <button type="submit" class="btn btn-primary" data-post>Save return</button></div>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Open mismatches ────────────────────────────────────────── -->
+    <div id="viewMismatch" role="tabpanel" aria-labelledby="tabMismatch" hidden>
+      <div class="mir-explain" id="mmExplain"></div>
+      <div class="filter-row">
+        <label for="mmStatus">Status</label>
+        <select id="mmStatus"><option value="OPEN">Open - waiting for an admin</option><option value="RESOLVED">Resolved</option><option value="CANCELLED">Withdrawn</option><option value="ALL">All</option></select>
+        <label for="mmPlant">Plant</label><select id="mmPlant"></select>
+        <button type="button" class="btn btn-small btn-primary" id="mmNew">+ Record a difference</button>
+      </div>
+      <div id="diffHost" data-form-host hidden>
+        <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot record stock differences. Ask an admin for the Editor role at your plant.</div>
+        <form id="diffForm" novalidate>
+          <section class="mir-panel">
+            <h3 class="mir-panel-title">Record a stock difference</h3>
+            <p class="mir-help">For a MIR whose stock on the floor is not what the register says: a <b>physical count</b> (enter what is left of it - the difference is recorded)
+              or a <b>write-off</b> (damage, loss, a sample). Material that went to production is an issue, not a difference.</p>
+            <div class="mir-grid mir-grid-2">
+              <div class="form-group"><label class="form-label" for="dfPlant">Plant <span class="req-mark">*</span></label><select class="form-control" id="dfPlant" data-field="plant"></select></div>
+              <div class="form-group"><label class="form-label" for="dfDate">Date <span class="req-mark">*</span></label><input class="form-control" type="date" id="dfDate" data-field="voucher_date"><span class="mir-hint" data-date-hint></span></div>
+            </div>
+            <div class="mir-search"><input class="form-control" type="search" id="dfFind" placeholder="MIR number or material" autocomplete="off" aria-label="Find the MIR"></div>
+            <div id="dfHits" aria-live="polite"></div>
+            <div id="dfLines"></div>
+            <div class="form-group"><label class="form-label" for="dfRemarks">Remarks</label><textarea class="form-control" id="dfRemarks" data-field="remarks" rows="2" maxlength="2000"></textarea></div>
+          </section>
+          <div class="mir-savebar" data-savebar hidden>
+            <div class="mir-todo" data-todo aria-live="polite"></div>
+            <div class="mir-notices" data-notices aria-live="polite"></div>
+            <div class="mir-savebar-row">
+              <div class="mir-totals" data-totals></div>
+              <div class="mir-savebar-action"><button type="submit" class="btn btn-primary" data-post>Save difference</button><span class="mir-hint" id="dfPostHint"></span></div>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div id="mismatchArea"></div>
+      <div id="mismatchDetail"></div>
     </div>
   </div>
 

@@ -1,26 +1,31 @@
-/* stock.html (RM store entry, 2026-09-29) - only what the page needs beyond
-   style.css and mir-page.css, whose panels, line cards, save bar, pills and
-   tables it reuses so it reads as the same app as MIR entry. Colours are the
-   shared tokens, so dark mode follows. */
+/* stock.html (RM store) - only what the page needs beyond style.css and
+   mir-page.css, whose panels, line cards, save bar, pills and tables it
+   reuses so it reads as the same app as MIR entry. Colours are the shared
+   tokens, so dark mode follows. */
 
 .st-check { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--slate); cursor: pointer; }
 .filter-row .st-check { text-transform: none; letter-spacing: 0; font-size: 12px; }
 
-/* Material / issue pickers: the hits under the search box. */
-.st-hits { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 12px; }
-.st-hits:empty { display: none; }
-.st-hit { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 9px 12px; border: 1px solid var(--border);
+/* The MIR picker: hits grouped under their MIR. */
+.st-mir-group { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; margin: 8px 0; background: var(--gray-soft); }
+.st-mir-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 13px; margin-bottom: 8px; color: var(--navy); }
+.st-mir-group .st-hit + .st-hit { margin-top: 6px; }
+.st-hit { display: flex; width: 100%; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 9px 12px; border: 1px solid var(--border);
   border-radius: 10px; background: var(--card); color: var(--slate); font: inherit; font-size: 13px; cursor: pointer; }
 .st-hit:hover:not(:disabled) { border-color: var(--gold-accent); background: var(--gold-accent-soft); }
 .st-hit:focus-visible { outline: 2px solid var(--gold-accent); outline-offset: 2px; }
 .st-hit:disabled { opacity: .5; cursor: default; }
 
-/* The receipts a line draws from (or goes back to). */
-.st-draws { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--slate); }
-.st-draws li { margin: 2px 0; }
-.st-draws li.mir-muted { list-style: none; margin-left: -18px; }
-
+/* Register: stock by MIR / issue slips. */
+.st-switch { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+.st-switch .btn.is-on { background: var(--dash-solid); color: var(--dash-solid-fg); border: 1px solid var(--dash-solid); }
+.st-switch .btn:not(.is-on) { background: transparent; color: var(--navy); border: 1px solid var(--border-strong); }
 .st-summary { font-size: 12.5px; font-weight: 700; color: var(--slate-soft); margin: 0 0 8px; }
-.st-modes { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 14px; }
+.st-register { font-size: 12.5px; }
+.st-register th { white-space: nowrap; }
+
 .st-settings { border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 14px; margin: 4px 0 14px; background: var(--gray-soft); }
 .st-settings .mir-grid { align-items: end; }
+.mir-detail-head .btn + .btn { margin-left: 0; }
+/* Text columns in the wide tables keep a readable width; the table scrolls. */
+.st-text { min-width: 170px; }
