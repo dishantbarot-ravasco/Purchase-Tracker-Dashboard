@@ -20,6 +20,7 @@ from rest_framework.decorators import api_view
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView, TokenVerifyView
 
 from .auth_serializers import PTTokenObtainPairSerializer, PTTokenRefreshSerializer
@@ -128,7 +129,15 @@ class PTTokenRefreshView(TokenRefreshView):
             data["refresh"] = request.COOKIES[REFRESH_COOKIE_NAME]
 
         serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
+        # Real bug, found and fixed 2026-09-30: overriding post() dropped
+        # simplejwt's own TokenError -> InvalidToken translation, so a
+        # garbage, expired or tampered refresh token escaped as a bare
+        # TokenError, which apps/api/exceptions.py reports as a 500 (and
+        # logs as an unhandled exception) instead of a 401.
+        try:
+            serializer.is_valid(raise_exception=True)
+        except TokenError as e:
+            raise InvalidToken(e.args[0]) from e
 
         # Body carries only `access` - the refresh token (rotated or not)
         # only ever travels as the httpOnly pt_refresh cookie, never in a

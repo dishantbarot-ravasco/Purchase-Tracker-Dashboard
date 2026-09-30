@@ -261,6 +261,16 @@ without the other and it leaks); `device_verify` reads it from the token object 
 `PTTokenRefreshView.post()` reads the cookie when the body has no `refresh`, returns only `access`,
 and re-cookies the rotated token. A non-browser client can still pass `refresh` in the body.
 
+**An unusable refresh token is a 401, not a 500 (2026-09-30).** Overriding `post()` dropped
+simplejwt's own `except TokenError: raise InvalidToken(...)` around `is_valid()`, so a garbage,
+expired or tampered `pt_refresh` cookie (or body `refresh`) escaped as a bare `TokenError`, which
+`apps/api/exceptions.py` turns into "An unexpected server error occurred." with a 500 and an
+unhandled-exception log line. The view now re-raises it as `InvalidToken` (401,
+`code: token_not_valid`). `auth.js`'s `refreshSession()` treats any non-ok response as a failed
+renewal, so browsers behaved the same before and after; the fix is for the logs and API clients.
+`apps/api/tests/test_refresh_invalid_token_is_401.py` covers garbage cookie, garbage body, expired and
+tampered tokens, plus a hand-built valid token as the control.
+
 **"Log out everywhere"** is `PTUser.token_version` (migration `0021`), embedded as a `ver` claim in
 every JWT. Both `PTJWTAuthentication.get_user()` (checked on every request) and
 `PTTokenRefreshSerializer` reject a token whose `ver` doesn't match (a missing claim reads as 0).
@@ -752,7 +762,8 @@ and the refresh serializer.
   `_refresh` into the `pt_refresh` cookie, writes the `login` audit row ("trusted device") and
   `last_login_at` via `.update()`. The access token stays in the body for non-browser clients.
 - `PTTokenRefreshView` (`POST /api/auth/token/refresh`) - fills `refresh` from the cookie when the body
-  lacks it, returns `{"access": ...}` only, re-sets both cookies. No custom throttle (see
+  lacks it, returns `{"access": ...}` only, re-sets both cookies. A `TokenError` from validation is
+  re-raised as `InvalidToken` (401), as simplejwt's own `post()` does. No custom throttle (see
   [Throttling](#throttling-lockout-and-brute-force-counters)).
 - `PTTokenVerifyView` - simplejwt's stock `TokenVerifyView` (verifies a token string; a browser cannot
   use it because its token is in an httpOnly cookie).
