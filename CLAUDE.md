@@ -136,6 +136,10 @@ Read the linked section before breaking any of these. Each is there because it w
   PO line is never deleted at all (MIR lines point at it).
   [PO diff](docs/data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)
   [retired POs](docs/data-sync.md#purchase-orders-are-retired-not-deleted---and-until-2026-09-18-they-were-neither)
+- The PO CSVs are written upstream by an extraction agent. For Madura fabric it must calculate the
+  weight (KG = GSM x width m x length m x rolls / 1000) into QTY, UOM `KG`, in the fixed description
+  shape; with no GSM printed (HRS's fabric orders) it never guesses one and writes ROLLS.
+  [extraction rules](docs/data-sync.md#rules-for-the-po-extraction-agent---madura-fabric-weight-2026-09-30)
 - Parsers use `read_only=True` + `stream_rows()`, never `ws.max_row`; a layout change raises
   `HeaderMismatch` rather than being guessed around. [parsers](docs/data-sync.md#parser-conventions)
 - Nothing scheduled runs unless `qcluster` is running; missed snapshot days can't be recovered. The

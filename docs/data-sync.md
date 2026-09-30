@@ -267,6 +267,50 @@ position. The projection also cleans on the way in: one `Vendor` per GSTIN, unit
 are unchanged is skipped, so a second run writes nothing. The projection runs after the mirror's own
 commit: if it fails, that run's SyncRun is FAILED but the CSV sync itself stands.
 
+### Rules for the PO extraction agent - Madura fabric weight (2026-09-30)
+
+The PO master CSVs are written upstream, by the agent that extracts each PO PDF into rows; this app
+only reads them. Madura Industrial Textiles' fabric POs do not look like other POs, and the agent
+**must calculate the weight** when it extracts one (project owner, 2026-09-30). Madura sells fabric
+by the kilo but orders it by the roll, and its PO prints a theoretical weight, not a weighed one:
+
+**weight (KG) = GSM x width (m) x length (m) x number of rolls / 1000**
+
+GSM is grams per square metre, so GSM x width x length is grams per roll. Vapi PO `1000001499`:
+EE-400, 198 cm, GSM 1250, 310 m -> 1250 x 1.98 x 310 = 767,250 g = 767.25 KG a roll, x 4 rolls =
+**3,069 KG**. All 527 Madura lines in Vapi's CSV follow this exactly.
+
+What the agent writes for each fabric line:
+
+- **One CSV row per PO line**, even when two lines differ only in length or customer.
+- **Material Description** in this exact shape, the roll count and total weight last:
+  `EE-400 fabric roll, width 198cm, GSM 1250, length 310m, 4 rolls, total weight 3069`. The matcher
+  reads the grade and width (`_fabric_spec()`) and the roll count (`qty_tolerance.rolls_in()`) from
+  it, and the material master keys the material on grade, width and GSM
+  ([procurement.py](architecture.md#appscoremodelsprocurementpy)). Never put the customer or IWO number in the
+  description: it would file the same fabric as a different material for each customer.
+- **QTY** = the calculated total weight at full precision, **UOM** = `KG`. Calculate it from the
+  columns rather than copying the PO's "Total Weight" column, which is rounded to 2 decimals and does
+  not always reconcile with the printed amount (Vapi `1000001635`).
+- **Net Price** = the rate per KG; **Net Value** = QTY x Net Price.
+- **Remarks** - the customer the fabric is for (Vapi prints it in the PO's Remark, "1-DALMIA-9109,
+  2-BTL-9157, ..." by line; HRS in its Party Name and IWO No columns) and anything the PO did not
+  print.
+
+**When the PO prints no GSM, the weight cannot be calculated.** HRS's internal FABRIC ORDERS sheet
+(`PO/26-27/1074` to `1082`) prints code, width, length, rolls and rate, but no GSM. The agent must
+**not** look a GSM up from the grade: one grade is ordered at more than one GSM (EE-160 at 570 and
+590, NN-200 at 500 and 520, NN-315 at 700, 720 and 780 on Vapi's POs). It writes QTY = rolls, UOM =
+`ROLLS`, leaves Net Value blank and says in Remarks that no GSM was printed. Such a line cannot be
+compared by quantity with its MIR receipts, which are weighed in KG (the matcher reports a unit
+mismatch), and cannot be received through MIR entry, which prices qty x rate. The fix is for the
+plant to print GSM on the fabric order, so the agent can calculate the weight like any other
+Madura line.
+
+How the app then matches it: the PO weight is the ordered quantity; a receipt may come in up to 10%
+over it (never under) and still match, and when both the PO line and every receipt state a roll
+count, the count decides ([flag thresholds](matching-engine.md#flag-thresholds)).
+
 ### Parser conventions
 
 Every parser in `apps/services/parsers/` follows the same four rules, and a new one should too:
