@@ -705,4 +705,7 @@ When DRF does not (`response is None`), it logs with traceback and returns 400 w
 `_describe_integrity_error()`'s SQL-free message for `IntegrityError`, else a generic 500 (with the
 exception type appended in DEBUG). `KeyError` is deliberately **not** describable: its message is a
 bare internal key name and it is a server bug, so it is a 500. To show a user a message, raise
-`ValueError` with written text.
+`ValueError` with written text. In DEBUG only, a `ProgrammingError` (a local database behind the code:
+"column ... does not exist" after pulling a change whose migration was not run) is prefixed with the
+names of the unapplied migrations from `_unapplied_migrations()` and "Run: uv run python manage.py
+migrate"; production responses never carry it.

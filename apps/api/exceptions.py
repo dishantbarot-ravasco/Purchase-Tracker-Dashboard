@@ -17,7 +17,9 @@ import logging
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db.utils import IntegrityError
+from django.db import DEFAULT_DB_ALIAS, connections
+from django.db.migrations.executor import MigrationExecutor
+from django.db.utils import IntegrityError, ProgrammingError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler
@@ -66,6 +68,17 @@ def _describe_integrity_error(exc):
     return "Database constraint violation."
 
 
+def _unapplied_migrations():
+    """Names of migrations the code has and the database has not run, e.g.
+    ["core.0085_material_base_unit"]. Empty when it cannot tell."""
+    try:
+        executor = MigrationExecutor(connections[DEFAULT_DB_ALIAS])
+        plan = executor.migration_plan(executor.loader.graph.leaf_nodes())
+    except Exception:  # only a hint on an error already being reported
+        return []
+    return [f"{m.app_label}.{m.name}" for m, _backwards in plan]
+
+
 def custom_exception_handler(exc, context):
     """Called by DRF whenever a view raises an exception."""
     response = exception_handler(exc, context)
@@ -82,6 +95,12 @@ def custom_exception_handler(exc, context):
         detail = "An unexpected server error occurred."
         if settings.DEBUG:
             detail = f"{detail} ({type(exc).__name__}: {exc})"
+            # A pulled change whose migration was not run yet: every query on
+            # the changed table fails with "column ... does not exist". Say so.
+            pending = _unapplied_migrations() if isinstance(exc, ProgrammingError) else []
+            if pending:
+                detail = (f"The database is behind the code - {len(pending)} migration(s) not applied "
+                          f"({', '.join(pending[:3])}). Run: uv run python manage.py migrate. {detail}")
         return Response({"detail": detail}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     if isinstance(response.data, dict) and "detail" not in response.data:

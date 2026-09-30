@@ -30,6 +30,7 @@ import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db.utils import ProgrammingError
 from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework.views import APIView
@@ -156,3 +157,37 @@ class TestExceptionHandlerDoesNotLeakInternals:
         resp = self._handle(RuntimeError("connection string: postgres://user:pw@host/db"))
         assert resp.status_code == 500
         assert "postgres://" not in str(resp.data)
+
+
+class TestUnappliedMigrationHint:
+    """A local database behind the code (a pulled change whose migration was
+    not run) fails every query with "column ... does not exist". In DEBUG the
+    500 says which migrations are missing and how to run them; in production
+    nothing is added."""
+
+    _MISSING = ProgrammingError("column core_material.base_uom does not exist")
+
+    def _handle(self, exc):
+        return custom_exception_handler(exc, {"view": APIView()})
+
+    def test_debug_names_the_missing_migration(self, settings):
+        settings.DEBUG = True
+        with patch("apps.api.exceptions._unapplied_migrations", return_value=["core.0085_material_base_unit"]):
+            resp = self._handle(self._MISSING)
+        assert resp.status_code == 500
+        assert "core.0085_material_base_unit" in resp.data["detail"]
+        assert "manage.py migrate" in resp.data["detail"]
+
+    def test_production_adds_nothing(self, settings):
+        settings.DEBUG = False
+        with patch("apps.api.exceptions._unapplied_migrations", return_value=["core.0085_material_base_unit"]):
+            resp = self._handle(self._MISSING)
+        assert resp.data["detail"] == "An unexpected server error occurred."
+
+    @pytest.mark.django_db
+    def test_a_migrated_database_has_nothing_pending(self, settings):
+        from apps.api.exceptions import _unapplied_migrations
+
+        assert _unapplied_migrations() == []
+        settings.DEBUG = True
+        assert "migrate" not in self._handle(self._MISSING).data["detail"]
