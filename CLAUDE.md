@@ -239,6 +239,10 @@ Read the linked section before breaking any of these. Each is there because it w
   [deep links](docs/frontend.md#search-po-deep-links-into-the-dashboard-rather-than-)
 - Don't merge `brand.css` and `style.css`, and never define the same custom property in both.
   [CSS collisions](docs/frontend.md#css-custom-property-collisions)
+- A selected or primary control uses `--dash-solid` (navy light, gold dark), never `--navy-solid`,
+  which vanishes on the dark page. No `nowrap` on list-cell content: `* { min-width: 0 }` lets a track
+  shrink under it and it paints over the next column (Days Left's "No movement" did).
+  [overlap](docs/frontend.md#nothing-may-paint-over-the-next-column-2026-09-30)
 - Raw Material links each PO line to its best material through `lineLinksFor()`'s token index, built
   over the unfiltered scope; never reintroduce a per-(material x line) loop (it was 1.3M checks).
   [materials.js](docs/frontend.md#frontendjsmaterialsjs)

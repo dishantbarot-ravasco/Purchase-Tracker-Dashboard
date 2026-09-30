@@ -360,16 +360,16 @@ function daysLeftCellHtml(m) {
   // Checked before the band: a negative quantity is a sheet error worth
   // seeing whatever the coverage.
   if (c && c.negativeStock) {
-    return '<span class="days-left-cell"><span class="days-left-value">Stock &lt; 0</span>' +
+    return '<span class="days-left-cell"><span class="days-left-value days-left-text">Stock &lt; 0</span>' +
       '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="The stock sheet shows a negative quantity for this material - a data error to fix in the sheet. Days Left cannot be worked out from it." tabindex="0"></span></span>';
   }
   // An order-only row has no stock at all, so it has no history to lack.
   if (m.orderOnly) {
-    return '<span class="days-left-cell"><span class="days-left-value">-</span>' +
+    return '<span class="days-left-cell"><span class="days-left-value days-left-text">-</span>' +
       '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="On order only - nothing of this material is in stock yet" tabindex="0"></span></span>';
   }
   if (confidence === 'none' || !c) {
-    return '<span class="days-left-cell"><span class="days-left-value">-</span>' +
+    return '<span class="days-left-cell"><span class="days-left-value days-left-text">-</span>' +
       '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="Not enough snapshot history yet" tabindex="0"></span></span>';
   }
   const valueText = c.daysLeft != null ? Math.round(c.daysLeft).toLocaleString('en-IN') + ' d' : 'No movement';
@@ -384,7 +384,8 @@ function daysLeftCellHtml(m) {
   const observed = c.observedDays || 0;
   const tip = coverage + ' of ' + windowDays + ' days covered, ' + observed +
     ' observed directly' + (coverage > observed ? ', the rest averaged across snapshot gaps' : '');
-  return '<span class="days-left-cell"><span class="days-left-value">' + escapeHtml(valueText) + '</span>' +
+  // "No movement" is a state, not a figure - muted like "No open PO".
+  return '<span class="days-left-cell"><span class="days-left-value' + (c.daysLeft == null ? ' days-left-text' : '') + '">' + escapeHtml(valueText) + '</span>' +
     '<span class="info-tooltip conf-dot ' + dotClass + '" data-tooltip="' + escapeHtml(tip) + '" tabindex="0"></span></span>';
 }
 

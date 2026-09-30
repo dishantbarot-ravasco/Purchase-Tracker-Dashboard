@@ -318,6 +318,34 @@ guarded by `:root:not([data-theme="light"])`, and once under `:root[data-theme="
 toggle can force either theme. `--navy` flips light (it is text colour); `--navy-solid` never flips
 (solid backgrounds). Colour must come from tokens for dark mode to follow.
 
+**The dashboard's "selected / primary" fill is `--dash-solid`, not `--navy-solid`.** The active
+view and sub tab, the current page button, Refresh Data, Apply, the correction panel's Save, the MIR
+choice buttons and the MIR page's step dots all use `--dash-solid` / `--dash-solid-fg` /
+`--dash-solid-hover`. It is navy with white text on the light page and gold with navy text on the dark
+one: `--navy-solid` on the dark page (`#1A2535` on `#10151d`) made the active tab look the same as
+an inactive one. Hover tooltips (`.info-tooltip`, `.row-flag-wrap`, `.chart-tooltip`) use
+`--dash-tip-bg` / `--dash-tip-border`, lifted a step above the dark cards so they still read as a layer.
+
+#### Nothing may paint over the next column (2026-09-30)
+
+The dashboard sets `* { min-width: 0 }`, so every grid track and flex item can shrink below its
+content. Anything `white-space: nowrap` inside a narrow track then paints over its neighbour instead of
+wrapping. Found by an overlap audit over every tab, plant and list mode at 1280-1600px, and fixed at
+the source rather than by widening columns:
+
+- Days Left's "No movement" and its dot ran into Pending Delivery's "No open PO" (`.days-left-cell`
+  was nowrap). The value now wraps beside its dot, and a non-numeric state carries `.days-left-text`
+  (muted, smaller), like the other columns' "No open PO".
+- A long `.status-pill` ("Delivery Date Unknown", "On order, none in stock") ran out of its column,
+  over the progress stepper on Purchase Orders. Pills wrap inside their own box now, with a 7px
+  radius so a two-line pill still reads as one tag.
+- The top-nav tabs shrank below their labels between 700px and ~1250px and printed over each other;
+  `.nav-tab` is `flex-shrink: 0` and the strip scrolls.
+- Every direct child of a `.top5-row` / `.list-header-row` has `min-width: 0` and
+  `overflow-wrap: anywhere`, so a long unbroken value wraps inside its track.
+
+Do not reintroduce `nowrap` on a cell's content without a column wide enough for the longest label.
+
 #### Other traps
 
 - **The same global name in two files silently overrides.** `userInitials()` is defined in both
@@ -1449,8 +1477,14 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   stat/action/user cards, search results (`.search-result-badges`, and `.search-result-import` for the Import badge), admin user form (`.uf-*`, also used by the Change Password
   modal), toasts, the global `[hidden]` rule, the closed set of CSP utility classes (add one only for
   a real call site), `.sr-only` / `.sr-only-focusable` / `.skip-link`, and its dark-mode blocks.
+  In dark mode `--green` / `--red` / `--blue` / `--purple` lighten, because nearly every rule reads
+  them as text (Search PO's "Matched" was 2.5:1); the few solid fills under white text (toasts, the
+  editor avatar) use fixed hex values instead. `.btn-navy`, the secondary button beside a gold
+  `.btn-primary`, reads `--btn-secondary-*`: navy on the light page, a raised grey with a visible
+  edge on the dark one. The admin avatar's initials are navy on gold (white was 2.6:1).
   `.nav-tabs` shrinks and scrolls inside itself (no visible scrollbar) and `.nav-user` never shrinks,
-  so a sixth tab never pushes the user badge off the page; tabs tighten below 1200px. **Below 700px
+  so a sixth tab never pushes the user badge off the page; each `.nav-tab` keeps its full label width
+  (`flex-shrink: 0`); tabs tighten below 1200px. **Below 700px
   the top nav wraps into two rows**: brand (subtitle hidden, title ellipsed), theme toggle and avatar
   on the first, the tabs as a full-width strip on the second that scrolls inside itself. Before
   2026-09-28 the brand and badge never shrank, so every page measured 482px on a 375px phone and
@@ -1477,7 +1511,11 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   container query on the panel at 540px, and a bar chart's `.chart-box` grows to its panel's height),
   filter bars (one 32px control height, uppercase labels, stacking per group under 560px), the Raw
   Material list's `.mat-*` cell classes and `.mat-grid-cols` track widths, the Import list's `.imp-grid-cols` track widths and `.imp-*` classes, dark mode. Both lists'
-  rows use tabular figures and lift on hover; `.status-pill` never wraps.
+  rows use tabular figures and lift on hover; `.status-pill` wraps inside its column rather than
+  spilling into the next one (see [Nothing may paint over the next column](#nothing-may-paint-over-the-next-column-2026-09-30)).
+  A mismatched row (`.row-tint-mild` / `-moderate` / `-severe`) gets a faint wash plus a left edge
+  whose strength is the bucket, from the `--tint-*` tokens, so a list where most rows are flagged
+  still reads as a list. The shading key sits beside "View all" on the right of `.list-toggle-row`.
 - **`mir-page.css`** (`mir.html`) - on top of `brand.css` and `style.css`, using their tokens and
   defining no custom property: panels in the dashboard's `.chart-panel` look (`.mir-panel`, gold title
   bar), the progress strip (`.mir-progress`), PO chips and folded facts, line cards with their three

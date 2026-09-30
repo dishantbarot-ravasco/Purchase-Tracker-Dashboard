@@ -96,7 +96,7 @@ remaining blocks back if/when Vapi or auth land.
   --indigo-soft: #e0e7ff;
   --dash-purple: #7c3aed;
   --purple-soft: #f3e8ff;
-  --gray: #64748b;
+  --gray: #5d6b7e; /* muted text; #64748b measured 4.4:1 on --bg, under AA */
   --gray-mid-soft: #eef1f5;
   /* Badge/pill/banner TEXT colors, paired with the -soft backgrounds above -
      these were hardcoded hex literals tuned for light-mode-only pale
@@ -118,6 +118,29 @@ remaining blocks back if/when Vapi or auth land.
   --blue-border-lt: #dbeafe;
   --mono: ui-monospace, SFMono-Regular, 'Roboto Mono', Menlo, Consolas, monospace;
   --dash-shadow: 0 1px 3px rgba(15,23,42,0.07), 0 3px 10px rgba(15,23,42,0.07);
+  /* The "selected / primary" fill: the active view and sub tab, the current
+     page button, Refresh Data, Apply and the correction panel's Save. Navy on
+     a light page; in dark mode --navy-solid sat on a near-identical navy page
+     and an active tab read the same as an inactive one, so the dark blocks
+     below swap it for the brand gold with navy text. */
+  --dash-solid: var(--navy-solid);
+  --dash-solid-hover: var(--navy-hover);
+  --dash-solid-fg: var(--on-accent);
+  /* Hover tooltips (.info-tooltip, .row-flag-wrap, chart tooltip): a dark box
+     in both themes, lifted a step above the dark page's cards so it still
+     reads as a separate layer there. */
+  --dash-tip-bg: #1A2535;
+  --dash-tip-border: rgba(255,255,255,.08);
+  /* Row shading for a mismatched line (flags.js's rowTintClass()): a faint
+     wash plus a left accent whose strength says how big the gap is. */
+  --tint-mild: rgba(220,38,38,.04);
+  --tint-moderate: rgba(220,38,38,.07);
+  --tint-severe: rgba(220,38,38,.11);
+  --tint-edge-mild: rgba(220,38,38,.35);
+  --tint-edge-moderate: rgba(220,38,38,.65);
+  --tint-edge-severe: #dc2626;
+  /* A table row under the pointer. */
+  --row-hover: rgba(15,23,42,.035);
 }
 * { box-sizing: border-box; min-width: 0; }
 html, body { width:100%; overflow-x:hidden; }
@@ -159,8 +182,8 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    .flex-row-gap10 row, with a floor for narrow viewports. */
 #noPoSearch { flex:1 1 auto; min-width:240px; }
 @keyframes badge-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
-.refresh-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--navy-solid); background:var(--navy-solid); color:var(--on-accent); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; box-shadow:var(--dash-shadow); }
-.refresh-btn:hover { background:var(--navy-hover); }
+.refresh-btn { padding:8px 16px; border-radius:8px; border:1px solid var(--dash-solid); background:var(--dash-solid); color:var(--dash-solid-fg); cursor:pointer; font-size:12.5px; font-weight:600; white-space:nowrap; box-shadow:var(--dash-shadow); }
+.refresh-btn:hover { background:var(--dash-solid-hover); border-color:var(--dash-solid-hover); }
 .refresh-btn[disabled] { opacity:.5; cursor:default; }
 /* What the last refresh/sync did and when (main.js's setRefreshStatus()).
    Plain text when idle ("Loaded at 02:14 pm"); a tinted pill once there is
@@ -191,7 +214,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    Ported verbatim from the reference artifact's .view-tabs/.view-tab. */
 .view-tabs { display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap; }
 .view-tab { padding:10px 20px; cursor:pointer; font-size:13.5px; font-weight:700; border-radius:9px; color:var(--slate-soft); background:var(--card); border:1px solid var(--border); }
-.view-tab.active { color:var(--on-accent); background:var(--navy-solid); border-color:var(--navy-solid); }
+.view-tab.active { color:var(--dash-solid-fg); background:var(--dash-solid); border-color:var(--dash-solid); }
 
 /* Level 2 (plant selector: HRS/RTP-Achhad/RTP-Vapi, plus "All Plants" for
    Raw Material Analysis) - underline tabs, NOT filled pills. Deliberately a
@@ -209,7 +232,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    artifact's .sub-tabs/.sub-tab. */
 .sub-tabs { display:flex; gap:4px; margin-bottom:18px; }
 .sub-tab { padding:6px 14px; font-size:12.5px; border-radius:7px; cursor:pointer; background:var(--gray-soft); color:var(--slate-soft); font-weight:600; }
-.sub-tab.active { background:var(--navy-solid); color:var(--on-accent); }
+.sub-tab.active { background:var(--dash-solid); color:var(--dash-solid-fg); }
 
 .load-banner { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:48px 20px; text-align:center; color:var(--slate-soft); font-size:14px; margin-bottom:18px; box-shadow:var(--dash-shadow); }
 .spinner { display:inline-block; width:22px; height:22px; border:3px solid var(--border); border-top-color:var(--gold-accent); border-radius:50%; animation:spin .8s linear infinite; margin-bottom:12px; }
@@ -235,8 +258,8 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .filter-row input:focus-visible, .filter-row select:focus-visible { outline:2px solid var(--gold-accent); outline-offset:1px; border-color:var(--gold-accent); }
 .filter-row button { height:32px; padding:0 14px; border-radius:7px; border:1px solid var(--border-strong); background:var(--card); cursor:pointer; font-size:12px; font-weight:600; color:var(--slate); }
 .filter-row button:hover { border-color:var(--slate-soft); background:var(--gray-soft); }
-.filter-row button.primary { background:var(--navy-solid); color:var(--on-accent); border-color:var(--navy-solid); }
-.filter-row button.primary:hover { background:var(--navy-hover); border-color:var(--navy-hover); }
+.filter-row button.primary { background:var(--dash-solid); color:var(--dash-solid-fg); border-color:var(--dash-solid); }
+.filter-row button.primary:hover { background:var(--dash-solid-hover); border-color:var(--dash-solid-hover); }
 /* Keeps a label glued to its own input/select when a .filter-row wraps onto
    a second line on a narrow viewport - without this, flex-wrap can wrap
    between a label and its control (e.g. "Filter by Sub Category" landing on
@@ -331,13 +354,13 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .kpi-info { position:static; }
 .info-tooltip::after {
   content: attr(data-tooltip); position:absolute; bottom:calc(100% + 9px); left:50%; transform:translateX(-50%);
-  background:var(--navy-solid); color:#fff; font-size:11.5px; font-weight:500; line-height:1.4; white-space:normal; width:max-content; max-width:230px;
+  background:var(--dash-tip-bg); color:#fff; border:1px solid var(--dash-tip-border); font-size:11.5px; font-weight:500; line-height:1.4; white-space:normal; width:max-content; max-width:230px;
   padding:8px 11px; border-radius:8px; opacity:0; visibility:hidden; pointer-events:none; transition:opacity .12s ease; z-index:40;
   text-align:left; text-transform:none; letter-spacing:normal; box-shadow:0 6px 20px rgba(0,0,0,.25);
 }
 .info-tooltip::before {
   content:''; position:absolute; bottom:calc(100% + 4px); left:50%; transform:translateX(-50%);
-  border:5px solid transparent; border-top-color:var(--navy-solid); opacity:0; visibility:hidden; transition:opacity .12s ease; z-index:40;
+  border:5px solid transparent; border-top-color:var(--dash-tip-bg); opacity:0; visibility:hidden; transition:opacity .12s ease; z-index:40;
 }
 .info-tooltip:hover::after, .info-tooltip:hover::before,
 .info-tooltip:focus-visible::after, .info-tooltip:focus-visible::before { opacity:1; visibility:visible; }
@@ -349,8 +372,16 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    circle instead of an "i" glyph - color signals how much snapshot history
    the days-left figure behind it is based on (materials.js's
    daysLeftCellHtml()/CONF_DOT_CLASS). */
-.days-left-cell { display:inline-flex; align-items:center; gap:6px; }
-.days-left-value { font-variant-numeric: tabular-nums; }
+/* The value may wrap ("No movement" in a narrow column); the dot stays
+   beside its first line. A fixed nowrap here pushed the value and its dot
+   out of the Days Left column and over Pending Delivery's "No open PO". */
+.days-left-cell { display:inline-flex; align-items:baseline; gap:6px; max-width:100%; }
+.days-left-cell .conf-dot { align-self:center; }
+.days-left-value { font-variant-numeric: tabular-nums; min-width:0; }
+/* A state rather than a figure ("No movement", "-", "Stock < 0"): muted and
+   smaller, like the other columns' "No open PO", so it never reads as a
+   number at a glance. */
+.days-left-value.days-left-text { font-size:11.5px; font-weight:500; color:var(--slate-soft); }
 .conf-dot { width:8px; height:8px; border-radius:50%; margin-left:0; flex:none; }
 .conf-dot-high { background:var(--dash-green); }
 .conf-dot-medium { background:var(--amber); }
@@ -419,7 +450,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .legend-val { font-weight:700; color:var(--navy); font-variant-numeric:tabular-nums; white-space:nowrap; }
 /* HTML chart tooltip (charts.js's htmlChartTooltip()) - DOM text, so it is
    sharp at any display scaling, unlike the canvas-painted tooltip it replaced. */
-.chart-tooltip { position:absolute; z-index:30; pointer-events:none; opacity:0; transition:opacity .12s ease; background:#1A2535; color:#f8fafc; border:1px solid rgba(255,255,255,.08); border-radius:8px; padding:8px 11px; font-size:12px; line-height:1.5; white-space:nowrap; box-shadow:0 6px 20px rgba(15,23,42,.25); }
+.chart-tooltip { position:absolute; z-index:30; pointer-events:none; opacity:0; transition:opacity .12s ease; background:var(--dash-tip-bg); color:#f8fafc; border:1px solid var(--dash-tip-border); border-radius:8px; padding:8px 11px; font-size:12px; line-height:1.5; white-space:nowrap; box-shadow:0 6px 20px rgba(15,23,42,.25); }
 .chart-tooltip.show { opacity:1; }
 .chart-tooltip-title { font-weight:700; margin-bottom:3px; }
 .chart-tooltip-row { display:flex; align-items:center; gap:7px; font-variant-numeric:tabular-nums; }
@@ -451,12 +482,16 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .chart-breadcrumb .crumb-sep { color:var(--border-strong); }
 
 .list-toggle-row { display:flex; align-items:center; justify-content:space-between; margin: 20px 0 10px; flex-wrap:wrap; gap:10px; }
+/* Title on the left; the shading key sits with the "View all" button on the
+   right rather than floating mid-row between the two. */
+.list-toggle-row > .row-tint-legend { margin-left:auto; margin-right:6px; }
 /* Row-tint legend - see flags.js's rowTintLegendHtml()/rowTintClass(). */
 .row-tint-legend { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--slate-soft); font-weight:600; }
 .row-tint-swatch { width:12px; height:12px; border-radius:3px; border:1px solid var(--border-strong); margin-left:4px; }
-.row-tint-swatch.row-tint-mild { background: rgba(220,38,38,.09); }
-.row-tint-swatch.row-tint-moderate { background: rgba(220,38,38,.18); }
-.row-tint-swatch.row-tint-severe { background: rgba(220,38,38,.32); }
+.row-tint-swatch { border-left-width:3px; }
+.row-tint-swatch.row-tint-mild { background: var(--tint-mild); border-left-color: var(--tint-edge-mild); }
+.row-tint-swatch.row-tint-moderate { background: var(--tint-moderate); border-left-color: var(--tint-edge-moderate); }
+.row-tint-swatch.row-tint-severe { background: var(--tint-severe); border-left-color: var(--tint-edge-severe); }
 .view-all-btn { padding:7px 15px; border-radius:8px; border:1px solid var(--navy); background:var(--card); color:var(--navy); font-size:12px; font-weight:700; cursor:pointer; }
 .view-all-btn:hover { background:var(--gold-accent-soft); }
 
@@ -466,7 +501,7 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
 .page-btn:hover:not(:disabled) { background:var(--gold-accent-soft); border-color:var(--gold-accent); }
 .page-btn:disabled { opacity:.4; cursor:default; }
 .page-btn.page-num { min-width:32px; text-align:center; padding:6px 8px; }
-.page-btn.page-num.active { background:var(--navy-solid); border-color:var(--navy-solid); color:var(--on-accent); cursor:default; }
+.page-btn.page-num.active { background:var(--dash-solid); border-color:var(--dash-solid); color:var(--dash-solid-fg); cursor:default; }
 .page-info { font-size:12px; color:var(--slate-soft); font-weight:600; padding:0 6px; }
 /* "Jump to page" control - see shared.js's jumpToPageHtml()/wireJumpToPage(). */
 .jump-to-page { display:inline-flex; align-items:center; gap:6px; margin-left:8px; padding-left:10px; border-left:1px solid var(--border); font-size:12px; color:var(--slate-soft); font-weight:600; }
@@ -491,24 +526,37 @@ body { margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Rob
    a flagged row already gets a flag badge, but a 0.5% diff and an 80% diff
    read identically without this; a low-opacity red wash pulls the eye
    toward the worst offenders first. Bucketed (mild/moderate/severe), not a
-   continuous gradient - easier to eyeball consistently row-to-row. Applied
-   to both the plain <tr> (View all") table and the .top5-row preview card -
-   tr's background shows through its own td's (no td-level background
-   override exists elsewhere), while top5-row needs its own background
-   replaced outright since it's a styled div, not a table row. */
-tr.row-tint-mild { background: rgba(220,38,38,.045); }
-tr.row-tint-moderate { background: rgba(220,38,38,.09); }
-tr.row-tint-severe { background: rgba(220,38,38,.16); }
-.top5-row.row-tint-mild { background: rgba(220,38,38,.06); }
-.top5-row.row-tint-moderate { background: rgba(220,38,38,.11); }
-.top5-row.row-tint-severe { background: rgba(220,38,38,.18); }
+   continuous gradient - easier to eyeball consistently row-to-row. Each
+   bucket is a faint wash plus a left edge whose strength is the bucket: the
+   edge carries the severity, so the wash can stay light enough that a list
+   where most rows are flagged still reads as a list, not a wall of pink.
+   Tokens (--tint-*), so dark mode gets its own tints. On a <tr> the edge is
+   an inset shadow on the first cell; a .top5-row card gets a real 4px left
+   border (padding trimmed by the same 3px, so its cells stay aligned with
+   the unflagged rows). */
+tr.row-tint-mild { background: var(--tint-mild); }
+tr.row-tint-moderate { background: var(--tint-moderate); }
+tr.row-tint-severe { background: var(--tint-severe); }
+tr.row-tint-mild > td:first-child { box-shadow: inset 3px 0 0 var(--tint-edge-mild); }
+tr.row-tint-moderate > td:first-child { box-shadow: inset 3px 0 0 var(--tint-edge-moderate); }
+tr.row-tint-severe > td:first-child { box-shadow: inset 3px 0 0 var(--tint-edge-severe); }
+.top5-row.row-tint-mild { background: linear-gradient(var(--tint-mild), var(--tint-mild)), var(--card); border-left:4px solid var(--tint-edge-mild); padding-left:11px; }
+.top5-row.row-tint-moderate { background: linear-gradient(var(--tint-moderate), var(--tint-moderate)), var(--card); border-left:4px solid var(--tint-edge-moderate); padding-left:11px; }
+.top5-row.row-tint-severe { background: linear-gradient(var(--tint-severe), var(--tint-severe)), var(--card); border-left:4px solid var(--tint-edge-severe); padding-left:11px; }
 .top5-row .po-num { font-family:var(--mono); font-weight:700; color:var(--navy); }
 /* Figures line up row to row; a row lifts on hover so the eye can track it
    across ten columns (both lists). */
 .top5-row, .table-wrap td { font-variant-numeric:tabular-nums; }
+/* Every cell of a card-row list keeps its content inside its own track: the
+   tracks can shrink to their minimum (style.css's global min-width:0), and a
+   long unbroken value then wraps rather than painting over the next column. */
+.top5-row > *, .list-header-row > * { min-width:0; overflow-wrap:anywhere; }
 .top5-row { transition:border-color .15s, box-shadow .15s; }
 .top5-row:hover { border-color:var(--border-strong); box-shadow:0 4px 14px rgba(15,23,42,.08); }
-.table-wrap tbody tr:hover td { background:rgba(15,23,42,.025); }
+.top5-row.row-tint-mild:hover { border-left-color:var(--tint-edge-mild); }
+.top5-row.row-tint-moderate:hover { border-left-color:var(--tint-edge-moderate); }
+.top5-row.row-tint-severe:hover { border-left-color:var(--tint-edge-severe); }
+.table-wrap tbody tr:hover td { background:var(--row-hover); }
 .top5-row .row-link { font-weight:700; color:var(--gold-accent-text); cursor:pointer; }
 .list-header-row { display:grid; gap:12px; padding:0 14px 6px; font-size:10px; text-transform:uppercase; letter-spacing:0.04em; color:var(--slate-soft); font-weight:700; }
 /* Generic auto-fit column grid, named for what it does (not "po-cols") since
@@ -657,13 +705,13 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
 .row-flag-wrap::after {
   content: attr(data-tooltip);
   position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%);
-  background:var(--navy-solid); color:#fff; font-size:11px; font-weight:600; line-height:1.3; white-space:normal; width:max-content; max-width:240px; text-align:left;
+  background:var(--dash-tip-bg); color:#fff; border:1px solid var(--dash-tip-border); font-size:11px; font-weight:600; line-height:1.3; white-space:normal; width:max-content; max-width:240px; text-align:left;
   padding:5px 9px; border-radius:6px; opacity:0; visibility:hidden; pointer-events:none;
   transition:opacity .1s ease; z-index:30; box-shadow:0 4px 14px rgba(0,0,0,.2);
 }
 .row-flag-wrap::before {
   content:''; position:absolute; bottom:calc(100% + 3px); left:50%; transform:translateX(-50%);
-  border:5px solid transparent; border-top-color:var(--navy-solid); opacity:0; visibility:hidden;
+  border:5px solid transparent; border-top-color:var(--dash-tip-bg); opacity:0; visibility:hidden;
   transition:opacity .1s ease; z-index:30;
 }
 .row-flag-wrap:hover::after, .row-flag-wrap:hover::before { opacity:1; visibility:visible; }
@@ -674,7 +722,13 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    default/fallback before Chart.js's own JS takes over. */
 .chart-box canvas { cursor: pointer; }
 
-.status-pill { display:inline-block; white-space:nowrap; padding:3px 9px; border-radius:99px; font-size:10.5px; font-weight:700; letter-spacing:0.02em; text-transform:uppercase; }
+/* A pill keeps to its column. Nowrap let a long label ("Delivery Date
+   Unknown", "On order, none in stock") run out of a narrow list column into
+   the next one - over the progress stepper on Purchase Orders. It now wraps
+   inside its own box when the column is narrower than the label, and the
+   radius drops from a capsule to a rounded tag so a two-line pill still
+   reads as one shape. */
+.status-pill { display:inline-block; max-width:100%; white-space:normal; overflow-wrap:break-word; vertical-align:middle; padding:3px 9px; border-radius:7px; font-size:10.5px; font-weight:700; line-height:1.35; letter-spacing:0.02em; text-transform:uppercase; }
 .status-received { background:var(--green-soft); color:var(--green-text); }
 /* Partial Delivered - blue, matching .kpi-card.partial's own border/value
    color (a real pre-existing inconsistency this pass fixed: this pill used
@@ -688,7 +742,7 @@ input, select { font-size:13px; padding:7px 10px; border:1px solid var(--border-
    using it here too conflated "we don't have this data" with "here's an
    informational note", a second real pre-existing color inconsistency this
    pass fixed). Matches .kpi-card.unknown's own gray border/value already. */
-.status-unknown { background:var(--gray-soft); color:var(--gray); }
+.status-unknown { background:var(--gray-soft); color:var(--slate-soft); } /* --gray on --gray-soft measured 4.3:1, under AA */
 .flag-badge { display:inline-block; font-size:10px; font-weight:700; border-radius:99px; padding:2px 8px; margin-left:6px; background:var(--red-soft); color:var(--red-text); }
 /* Critical (money/quantity, computed from real PO-vs-MIR diffs) vs info
    (paperwork/process notes, categorized from the PO's own remarks text) -
@@ -905,8 +959,8 @@ tr.po-line-cont > td { border-top-style:dashed; border-bottom-style:dashed; }
 .override-box input, .override-box textarea, .override-box select { padding:7px 10px; border:1px solid var(--border-strong); border-radius:7px; font-size:12.5px; font-family:inherit; }
 .override-box input, .override-box select { flex:1; min-width:140px; }
 .override-box textarea { width:100%; min-height:52px; resize:vertical; }
-.override-box button { padding:7px 16px; border-radius:7px; border:1px solid var(--navy-solid); background:var(--navy-solid); color:var(--on-accent); cursor:pointer; font-size:12px; font-weight:600; }
-.override-box button:hover { background:var(--navy-hover); }
+.override-box button { padding:7px 16px; border-radius:7px; border:1px solid var(--dash-solid); background:var(--dash-solid); color:var(--dash-solid-fg); cursor:pointer; font-size:12px; font-weight:600; }
+.override-box button:hover { background:var(--dash-solid-hover); }
 .override-box button:disabled { opacity:.5; cursor:default; }
 .override-status { font-size:12px; margin-top:8px; font-weight:600; }
 .override-status.ok { color:var(--dash-green); }
@@ -965,7 +1019,7 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mir-choice { margin-top:10px; padding:12px 14px; border:1px solid var(--amber-text); border-radius:8px; background:var(--amber-soft); font-size:12.5px; color:var(--slate); }
 .mir-choice p { margin:0 0 8px; font-weight:600; }
 .mir-choice-buttons { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
-.mir-choice .mir-choice-primary { background:var(--navy-solid); color:var(--on-accent); border-color:var(--navy-solid); }
+.mir-choice .mir-choice-primary { background:var(--dash-solid); color:var(--dash-solid-fg); border-color:var(--dash-solid); }
 .mir-choice ul { margin:0; padding-left:18px; color:var(--slate-soft); }
 /* Capped and scrollable: a plant's MIR file runs to ~1,500 rows and the
    endpoint returns up to 80 documents, which would otherwise push the rest
@@ -998,7 +1052,7 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mir-preview { margin-top:10px; padding:12px 14px; border:1px solid var(--gold-accent-border); border-radius:8px; background:var(--gold-accent-soft); font-size:12.5px; }
 .mir-preview[hidden] { display:none !important; }
 .mir-preview-title { font-weight:700; color:var(--slate); margin-bottom:8px; }
-.mir-preview .mir-choice-primary { background:var(--navy-solid); color:var(--on-accent); border-color:var(--navy-solid); }
+.mir-preview .mir-choice-primary { background:var(--dash-solid); color:var(--dash-solid-fg); border-color:var(--dash-solid); }
 .mir-preview-reason { flex:1; min-width:180px; padding:7px 10px; border:1px solid var(--border-strong); border-radius:7px; font-size:12.5px; font-family:inherit; }
 .mir-prev-table { background:var(--card); }
 .mir-prev-edited td { font-weight:700; }
@@ -1106,7 +1160,6 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 .mat-col-4 { width:9%; } .mat-col-5 { width:6%; } .mat-col-6 { width:9%; } .mat-col-7 { width:10%; }
 .mat-col-8 { width:9%; } .mat-col-9 { width:6%; } .mat-col-10 { width:6%; }
 .mat-plant-split > span { white-space:nowrap; }
-.days-left-cell { white-space:nowrap; }
 .mat-table .days-left-cell { padding-top:1px; }
 /* Import Purchases list (import-po.js's IMPORT_LIST_COLUMNS), same cell
    style: PO Number, Vendor, Material + Rate (.po-lines-block spans both),
@@ -1182,6 +1235,18 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
     --red-border-lt: rgba(220,38,38,.4);
     --blue-border-lt: rgba(37,99,235,.4);
     --dash-shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
+    --dash-solid: #D4940A;
+    --dash-solid-hover: #F0B429;
+    --dash-solid-fg: #1A2535;
+    --dash-tip-bg: #2a3546;
+    --dash-tip-border: rgba(255,255,255,.14);
+    --tint-mild: rgba(248,113,113,.06);
+    --tint-moderate: rgba(248,113,113,.10);
+    --tint-severe: rgba(248,113,113,.15);
+    --tint-edge-mild: rgba(248,113,113,.4);
+    --tint-edge-moderate: rgba(248,113,113,.7);
+    --tint-edge-severe: #f87171;
+    --row-hover: rgba(255,255,255,.045);
   }
 }
 :root[data-theme="dark"] {
@@ -1214,6 +1279,18 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
   --red-border-lt: rgba(220,38,38,.4);
   --blue-border-lt: rgba(37,99,235,.4);
   --dash-shadow: 0 1px 2px rgba(0,0,0,.4), 0 2px 10px rgba(0,0,0,.35);
+  --dash-solid: #D4940A;
+  --dash-solid-hover: #F0B429;
+  --dash-solid-fg: #1A2535;
+  --dash-tip-bg: #2a3546;
+  --dash-tip-border: rgba(255,255,255,.14);
+  --tint-mild: rgba(248,113,113,.06);
+  --tint-moderate: rgba(248,113,113,.10);
+  --tint-severe: rgba(248,113,113,.15);
+  --tint-edge-mild: rgba(248,113,113,.4);
+  --tint-edge-moderate: rgba(248,113,113,.7);
+  --tint-edge-severe: #f87171;
+  --row-hover: rgba(255,255,255,.045);
 }
 .mini-stepper-labels { font-size:9px; color:var(--slate-soft); white-space:nowrap; }
 

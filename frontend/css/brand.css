@@ -65,6 +65,13 @@
   --nav-h:         64px;
   --font-head:     'Montserrat', sans-serif;
   --font-body:     'Inter', sans-serif;
+  /* .btn-navy, the secondary action beside a gold .btn-primary. Navy on the
+     light page; the dark blocks below lift it to a raised grey with a
+     visible edge, since #1A2535 on the dark card (#1a2230) had no edge. */
+  --btn-secondary-bg:     #1A2535;
+  --btn-secondary-border: #1A2535;
+  --btn-secondary-fg:     #FFFFFF;
+  --btn-secondary-hover:  #253349;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -157,6 +164,11 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   padding: 9px 16px; font-family: var(--font-head); font-size: 12.5px; font-weight: 700;
   letter-spacing: .04em; text-transform: uppercase; color: var(--text-dim);
   text-decoration: none; border-radius: var(--radius); transition: all .18s; white-space: nowrap;
+  /* Never narrower than its label. style.css (the dashboard's sheet) sets
+     min-width:0 on every element, so between 700px and ~1250px the tabs
+     shrank below their nowrap text and the labels printed over each other
+     ("HOME DASHBOARD SEARCH PO" as one smudge); the strip scrolls instead. */
+  flex-shrink: 0;
 }
 .nav-tab:hover { color: var(--navy); background: var(--bg-section); }
 .nav-tab.active {
@@ -197,8 +209,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .btn:disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .btn-primary { background: var(--gold-light); border-color: var(--gold-light); color: var(--navy-solid); box-shadow: 0 2px 6px rgba(193,127,10,.25); }
 .btn-primary:hover { background: var(--gold); border-color: var(--gold); color: var(--navy-solid); }
-.btn-navy   { background: var(--navy-solid); border-color: var(--navy-solid); color: #fff; }
-.btn-navy:hover { background: var(--navy-mid); color: #fff; }
+.btn-navy   { background: var(--btn-secondary-bg); border-color: var(--btn-secondary-border); color: var(--btn-secondary-fg); }
+.btn-navy:hover { background: var(--btn-secondary-hover); color: var(--btn-secondary-fg); }
 
 /* ── FORM ───────────────────────────────────────────────── */
 .form-group { display: flex; flex-direction: column; gap: 6px; }
@@ -442,8 +454,9 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   font-size: 12.5px; font-weight: 600; box-shadow: var(--shadow-lg); min-width: 220px;
   animation: toast-in .2s ease-out;
 }
-.toast.success { background: var(--green); }
-.toast.error { background: var(--red); }
+/* Solid fills under white text: fixed, since --green/--red lighten for text in dark mode. */
+.toast.success { background: #1A7A4A; }
+.toast.error { background: #C53030; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ── ACTION CARDS ───────────────────────────────────────── */
@@ -505,11 +518,11 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
    background + white text" spots (buttons, toast, badges) were switched to
    the new --navy-solid token above specifically so they keep working
    unchanged when --navy itself flips light for dark-mode legibility.
-   --gold/--blue/--green/--red/--purple accent colors are deliberately
-   left alone (they're the brand accent, not a light/dark-page token) except
-   for the "-pale" chip backgrounds, which are muted to a translucent tint
-   instead of literal pale-white - the literal light hex values would render
-   as jarring bright rectangles on a dark page. */
+   --gold is left alone (the brand accent). --green/--red/--blue/--purple
+   are read almost only as TEXT colours, so they lighten here for contrast
+   on the dark page; the "-pale" chip backgrounds are muted to a translucent
+   tint instead of literal pale-white - the literal light hex values would
+   render as jarring bright rectangles on a dark page. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
@@ -533,6 +546,14 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
        value (already a light gold meant for dark backgrounds, e.g. the
        hero banner) rather than inventing a third gold shade. */
     --gold-text:     #F0B429;
+    /* Text accents, lifted for the dark page: the light-page values
+       (#1A7A4A etc.) measured 2.5:1 on their own dark "-pale" chips, e.g.
+       Search PO's "Matched". The few solid fills that read these (toasts,
+       the editor avatar) pin their saturated value instead - see below. */
+    --green:         #4ade80;
+    --red:           #f87171;
+    --blue:          #60a5fa;
+    --purple:        #a78bfa;
     --gold-pale:     rgba(240,180,41,.16);
     --gold-dim:      rgba(193,127,10,.16);
     --gold-border:   rgba(193,127,10,.38);
@@ -548,6 +569,10 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
     --shadow:        0 4px 12px rgba(0,0,0,.35), 0 2px 4px rgba(0,0,0,.25);
     --shadow-md:     0 8px 24px rgba(0,0,0,.4), 0 4px 8px rgba(0,0,0,.3);
     --shadow-lg:     0 16px 48px rgba(0,0,0,.45), 0 8px 16px rgba(0,0,0,.3);
+    --btn-secondary-bg:     #2a3546;
+    --btn-secondary-border: #46546b;
+    --btn-secondary-fg:     #e7ecf3;
+    --btn-secondary-hover:  #334158;
   }
 }
 :root[data-theme="dark"] {
@@ -565,6 +590,10 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   --border:        #2c3646;
   --border-mid:    #3d4a5f;
   --gold-text:     #F0B429;
+  --green:         #4ade80;
+  --red:           #f87171;
+  --blue:          #60a5fa;
+  --purple:        #a78bfa;
   --gold-pale:     rgba(240,180,41,.16);
   --gold-dim:      rgba(193,127,10,.16);
   --gold-border:   rgba(193,127,10,.38);
@@ -580,6 +609,10 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   --shadow:        0 4px 12px rgba(0,0,0,.35), 0 2px 4px rgba(0,0,0,.25);
   --shadow-md:     0 8px 24px rgba(0,0,0,.4), 0 4px 8px rgba(0,0,0,.3);
   --shadow-lg:     0 16px 48px rgba(0,0,0,.45), 0 8px 16px rgba(0,0,0,.3);
+  --btn-secondary-bg:     #2a3546;
+  --btn-secondary-border: #46546b;
+  --btn-secondary-fg:     #e7ecf3;
+  --btn-secondary-hover:  #334158;
 }
 
 /* ── Utility classes - CSP style-src hardening (2026-09-08) ──────────────
@@ -633,8 +666,8 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .note-block { margin: 8px 0 12px; }
 .otp-intro { text-align: center; margin-bottom: 24px; }
 .home-page-wrap { padding-top: 36px; }
-.avatar-role-admin { background: var(--gold-light); }
-.avatar-role-editor { background: var(--blue); }
+.avatar-role-admin { background: var(--gold-light); color: var(--navy-solid); } /* white on gold was 2.6:1 */
+.avatar-role-editor { background: #1D64C7; } /* fixed: --blue lightens for text in dark mode */
 .avatar-role-viewer { background: var(--navy-mid); }
 
 .text-red { color: var(--red); }

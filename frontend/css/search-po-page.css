@@ -60,7 +60,7 @@ mark.search-hit { background: var(--gold-pale); color: var(--gold-text); border-
 .list-sort-bar select, .list-sort-editor select, .list-sort-editor input[type=text] { font-size: 12.5px; padding: 6px 9px; border: 1px solid var(--border-mid); border-radius: 7px; background: var(--bg-input); color: var(--text); }
 .list-sort-summary { color: var(--text-muted); font-size: 12px; }
 .list-sort-bar .page-btn, .list-sort-editor .page-btn, .list-sort-editor .view-all-btn { padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border-mid); background: var(--bg-card); color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; }
-.list-sort-editor .view-all-btn { background: var(--navy-solid); border-color: var(--navy-solid); color: #fff; }
+.list-sort-editor .view-all-btn { background: var(--btn-secondary-bg); border-color: var(--btn-secondary-border); color: var(--btn-secondary-fg); }
 .list-sort-bar .page-btn:hover:not(:disabled), .list-sort-editor .page-btn:hover:not(:disabled) { border-color: var(--gold-border); background: var(--gold-pale); }
 .list-sort-editor .page-btn:disabled { opacity: .4; cursor: default; }
 .list-sort-editor { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; border: 1px solid var(--border); background: var(--bg-card); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }

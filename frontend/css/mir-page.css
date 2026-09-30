@@ -12,7 +12,7 @@
   display: inline-block; min-width: 20px; margin-left: 6px; padding: 1px 7px; border-radius: 99px;
   background: var(--amber-soft); color: var(--amber-text); font-size: 11px; font-weight: 800; text-align: center;
 }
-.view-tab.active .mir-count { background: var(--on-accent); color: var(--navy-solid); }
+.view-tab.active .mir-count { background: var(--dash-solid-fg); color: var(--dash-solid); }
 
 /* Panels: the dashboard's .chart-panel look (card, soft shadow, uppercase
    title with the gold bar). */
@@ -27,7 +27,7 @@
 .mir-panel-title::before { content: ''; width: 4px; height: 14px; border-radius: 2px; background: var(--gold-accent); flex: none; }
 .mir-step {
   display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%;
-  background: var(--navy-solid); color: var(--on-accent); font-size: 11px; flex: none;
+  background: var(--dash-solid); color: var(--dash-solid-fg); font-size: 11px; flex: none;
 }
 .mir-subtitle { font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: var(--slate-soft); margin: 18px 0 8px; font-weight: 700; }
 .mir-help { font-size: 12.5px; color: var(--slate-soft); margin: -2px 0 14px; line-height: 1.5; }
@@ -198,8 +198,8 @@
   flex: none; width: 22px; height: 22px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
   background: var(--gray-soft); color: var(--slate-soft); font-size: 11px; font-weight: 800;
 }
-.mir-progress li.is-current button { border-color: var(--navy-solid); color: var(--navy); box-shadow: var(--dash-shadow); }
-.mir-progress li.is-current .mir-progress-dot { background: var(--navy-solid); color: var(--on-accent); }
+.mir-progress li.is-current button { border-color: var(--dash-solid); color: var(--navy); box-shadow: var(--dash-shadow); }
+.mir-progress li.is-current .mir-progress-dot { background: var(--dash-solid); color: var(--dash-solid-fg); }
 .mir-progress li.is-done button { color: var(--green-text); }
 .mir-progress li.is-done .mir-progress-dot { background: var(--green-soft); color: var(--green-text); font-size: 0; }
 .mir-progress li.is-done .mir-progress-dot::after { content: '\2713'; font-size: 12px; }
