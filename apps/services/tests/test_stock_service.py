@@ -55,8 +55,9 @@ def _po(qty="100", rate="50", *, plant="vapi", description="SBR 1502", uom="KG")
     _PO_SEQ[0] += 1
     po = PurchaseOrder.objects.create(plant=Plant.objects.get(code=plant), po_number=f"30000{_PO_SEQ[0]:05d}", vendor=_vendor(),
                                       po_date=_day(60), tax_type="IGST")
+    # As the PO sync makes it: the material first seen with the line's unit.
     return PurchaseOrderLine.objects.create(purchase_order=po, line_no=1, description=description, uom=uom,
-                                            qty_ordered=Decimal(qty), rate=Decimal(rate), material=materials.material_for(description))
+                                            qty_ordered=Decimal(qty), rate=Decimal(rate), material=materials.material_for(description, uom=uom))
 
 
 def _receive(user, qty="100", rate="50", *, days_ago=0, plant="hrs", description="SBR 1502", uom="KG", rejected=None, po_plant="vapi"):
@@ -141,6 +142,18 @@ class TestStockRules:
         assert stock_rules.lot_rate(Decimal("100000"), Decimal("2"), Decimal("1000")) == Decimal("50.0000")
         assert stock_rules.lot_rate(Decimal("5"), Decimal("0"), Decimal("1")) is None
 
+    def test_base_units_convert_exactly_or_by_the_materials_factor(self):
+        assert stock_rules.to_base("MT", "KG", {}) == ("KG", Decimal("1000"))
+        assert stock_rules.to_base("ML", "L", {}) == ("L", Decimal("0.001"))
+        assert stock_rules.to_base("MM", "M", {}) == ("M", Decimal("0.001"))
+        assert stock_rules.to_base("NOS", "NOS", {}) == ("NOS", Decimal("1"))
+        # A unit of another kind is never forced into the base unit.
+        assert stock_rules.to_base("L", "KG", {}) == ("L", Decimal("1"))
+        assert stock_rules.to_base("ROLL", "M", {}) == ("ROLL", Decimal("1"))
+        assert stock_rules.to_base("ROLL", "M", {"ROLL": Decimal("660")}) == ("M", Decimal("660"))
+        assert stock_rules.to_base("MT", "", {}) == ("MT", Decimal("1"))
+        assert (stock_rules.base_of("TO"), stock_rules.base_of("BQ2")) == ("", "")
+
     def test_voucher_numbers(self):
         assert stock_rules.voucher_number("HRS", "ISS", "2026-27", 7) == "HRS/ISS/26-27/0007"
 
@@ -169,12 +182,43 @@ class TestReceipts:
         assert lot.bill_to_plant.code == "vapi"
         assert _on_hand("hrs") == Decimal("100") and _on_hand("vapi") == Decimal("0")
 
-    def test_a_lot_keeps_the_mir_lines_own_unit(self, user):
-        # Owner, 2026-09-30: copy the PO / MIR unit - no conversion to KG.
+    def test_mt_is_received_into_the_materials_base_unit_kg(self, user):
+        # Owner, 2026-09-30: base units KG, L, Nos, m.
         _receive(user, "2", "50000", uom="MT")
         lot = StockLot.objects.get()
-        assert (lot.uom, lot.factor, lot.rate) == ("MT", Decimal("1"), Decimal("50000.0000"))
-        assert _on_hand(uom="MT") == Decimal("2") and _on_hand(uom="KG") == Decimal("0")
+        assert lot.material.base_uom == "KG"
+        assert (lot.uom, lot.factor, lot.rate) == ("KG", Decimal("1000"), Decimal("50.0000"))
+        assert _on_hand() == Decimal("2000")
+
+    def test_a_pack_unit_converts_only_with_the_materials_factor(self, user, admin):
+        _receive(user, "3", "9000", description="NN 250 fabric roll", uom="ROLL")
+        lot = StockLot.objects.get()
+        assert (lot.uom, lot.factor) == ("ROLL", Decimal("1"))  # no base unit, no factor: as the MIR had it
+        materials.set_units(lot.material, "M", {"ROLLS": "660"}, "each roll is 660 m", admin)
+        _receive(user, "2", "9000", description="NN 250 fabric roll", uom="ROLL")
+        new = StockLot.objects.latest("id")
+        assert (new.uom, new.factor, new.rate) == ("M", Decimal("660"), Decimal("13.6364"))
+        assert _left(new) == Decimal("1320")
+        # The receipt already in the store keeps its unit.
+        assert StockLot.objects.get(pk=lot.pk).uom == "ROLL"
+
+    def test_units_are_changed_with_a_reason_and_logged(self, admin):
+        m = _material("Anti Tac")
+        for base, factors, reason, message in (("KG", {}, "", "Say why"), ("TON", {}, "x", "KG, L, NOS or M"),
+                                               ("KG", {"MT": "1000"}, "x", "converts exactly"), ("", {"SET": "2"}, "x", "Choose the base unit"),
+                                               ("KG", {"BAG": "-1"}, "x", "more than zero")):
+            with pytest.raises(materials.MaterialError, match=message):
+                materials.set_units(m, base, factors, reason, admin)
+        materials.set_units(m, "KG", {"BAG": "25"}, "25 kg bags", admin)
+        m.refresh_from_db()
+        assert m.base_uom == "KG" and {f.uom: f.factor for f in m.unit_factors.all()} == {"BAG": Decimal("25")}
+        assert {c.field for c in m.changes.all()} == {"base_uom", "factor BAG"}
+        # Plain figures in the log, never "2.5E+1".
+        assert m.changes.get(field="factor BAG").new_value == "25"
+        materials.set_units(m, "KG", {"BAG": ""}, "sold loose now", admin)
+        assert not m.unit_factors.exists()
+        with pytest.raises(materials.MaterialError, match="Nothing changed"):
+            materials.set_units(m, "KG", {}, "again", admin)
 
     def test_rejected_at_the_gate_never_enters_stock(self, user):
         _receive(user, "100", rejected="30")
@@ -381,9 +425,9 @@ class TestMirChangesAfterIssue:
 
     def test_the_mir_detail_says_what_each_line_put_into_stock(self, user):
         mir = _receive(user, "2", "50000", uom="MT")
-        _issue(user, "0.5", _lot(mir))
+        _issue(user, "500", _lot(mir))
         info = stock_service.mir_line_stock(mir)[mir.lines.get().id]
-        assert (info["uom"], info["in"], info["balance"]) == ("MT", Decimal("2.000"), Decimal("1.500"))
+        assert (info["uom"], info["in"], info["balance"]) == ("KG", Decimal("2000.000"), Decimal("1500.000"))
 
 
 # ── Stock differences: the store's open mismatches ─────────────────────
@@ -544,6 +588,38 @@ class TestLotsBackInTheirMirUnit:
         self._migrate()
         lot.refresh_from_db()
         assert (lot.uom, lot.factor) == ("KG", Decimal("1000"))
+
+
+@pytest.mark.django_db
+class TestLotsIntoBaseUnits:
+    """Migration 0085: a base unit for every material, and lots held in the
+    MIR's unit converted into it."""
+
+    def _migrate(self):
+        mod = importlib.import_module("apps.core.migrations.0085_material_base_unit")
+        mod.base_units(django_apps, None)
+        mod.lots_in_base_units(django_apps, None)
+
+    def test_an_mt_lot_and_its_issue_go_into_kg(self, user):
+        from apps.core.models import Material
+        lot = _lot(_receive(user, "2", "50000", uom="MT"))
+        Material.objects.filter(pk=lot.material_id).update(base_uom="")
+        StockLot.objects.filter(pk=lot.pk).update(uom="MT", factor=1, rate=Decimal("50000"))
+        issue = _issue(user, "0.5", StockLot.objects.get(pk=lot.pk))
+        self._migrate()
+        lot.refresh_from_db()
+        line = issue.lines.get()
+        assert lot.material.base_uom == "KG"
+        assert (lot.uom, lot.factor, lot.rate) == ("KG", Decimal("1000"), Decimal("50.0000"))
+        assert (line.uom, line.qty, line.allocations.get().qty) == ("KG", Decimal("500.000"), Decimal("500.000"))
+        assert _left(lot) == Decimal("1500.000")
+
+    def test_the_base_unit_comes_from_the_po_lines_or_the_reference_list(self):
+        from apps.core.models import Material
+        reference = Material.objects.create(name="Lube", name_key="lube", uom="Liter (L)")
+        pack = Material.objects.create(name="Seal", name_key="seal", uom="SET")
+        self._migrate()
+        assert Material.objects.get(pk=reference.pk).base_uom == "L" and Material.objects.get(pk=pack.pk).base_uom == ""
 
 
 @pytest.mark.django_db

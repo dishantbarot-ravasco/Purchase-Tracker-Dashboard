@@ -101,7 +101,19 @@ class Material(models.Model):
     code-keyed master would merge them. `item_code` is kept for reference.
     Seeded from MaterialCategoryReference; a material the list does not know
     starts without a category, and the first MIR against it sets one
-    (apps/services/materials.py)."""
+    (apps/services/materials.py).
+
+    `base_uom` (2026-09-30) is the unit its RM stock is held in - KG, L, NOS
+    or M (stock_rules.BASE_UNITS), blank when none fits. Set from its PO
+    lines' unit, changed by an editor with a reason (MaterialChange). A MIR
+    receipt converts into it exactly (MT into KG) or by a MaterialUnitFactor
+    (1 ROLL = 660 M); see stock_rules.to_base()."""
+
+    class BaseUnit(models.TextChoices):
+        KG = "KG", "KG - solids, by weight"
+        L = "L", "L - liquids"
+        NOS = "NOS", "Nos - pieces"
+        M = "M", "M - length"
 
     name = models.CharField(max_length=500)
     name_key = models.CharField(max_length=500, unique=True)
@@ -114,6 +126,7 @@ class Material(models.Model):
     # the reference list; blank for a reference-list category.
     category_set_by_email = models.CharField(max_length=255, blank=True, default="")
     category_set_at = models.DateTimeField(null=True, blank=True)
+    base_uom = models.CharField(max_length=10, choices=BaseUnit.choices, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -123,6 +136,28 @@ class Material(models.Model):
 
     def __str__(self):
         return self.name
+
+
+class MaterialUnitFactor(models.Model):
+    """How many of a material's base unit one pack unit is - "1 ROLL of NN 250
+    fabric = 660 M", "1 SET = 2 NOS". Only for a unit nothing exact converts
+    (stock_rules.EXACT); used when a MIR receipt of the material comes into
+    the store, never to rewrite one already made. Changes are logged in
+    MaterialChange."""
+
+    material = models.ForeignKey(Material, on_delete=models.CASCADE, related_name="unit_factors")
+    uom = models.CharField(max_length=20)
+    factor = models.DecimalField(max_digits=16, decimal_places=6)
+    updated_by = models.ForeignKey("core.PTUser", on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    updated_by_email = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["material", "uom"], name="uniq_material_unit_factor"),
+            models.CheckConstraint(condition=Q(factor__gt=0), name="material_unit_factor_positive"),
+        ]
+        ordering = ["material_id", "uom"]
 
 
 class MaterialChange(models.Model):

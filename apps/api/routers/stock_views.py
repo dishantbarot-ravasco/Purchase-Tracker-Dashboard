@@ -34,11 +34,18 @@ from rest_framework.response import Response
 
 from apps.api.permissions import IsAdmin, IsEditor, user_can_access_plant, user_can_edit_plant
 from apps.core.models import Material, Plant, StockLot, StockReasonCode, StockVoucher
-from apps.services import stock_rules, stock_service
+from apps.services import materials, stock_rules, stock_service
+from apps.services import procurement_rules as prules
 
 
 def _s(value):
     return None if value is None else str(value)
+
+
+def _n(value):
+    """A factor without trailing zeros and never in exponent form ("1000",
+    not "1E+3" or "1000.000000")."""
+    return None if value is None else format(value.normalize(), "f")
 
 
 def _d(value):
@@ -94,6 +101,9 @@ def _receipt(lot, balance=None):
         "receivedDate": _d(lot.received_date), "plant": _plant(lot.plant), "material": _material(lot.material), "uom": lot.uom,
         "vendor": lot.vendor.name if lot.vendor else "", "billToPlant": _plant(lot.bill_to_plant),
         "rate": _s(lot.rate), "currency": lot.currency, "stocked": lot.stocked, "batchNo": lot.batch_no,
+        # The MIR line's own unit and how many stock units one of it is, so
+        # a converted receipt can show "2 MT" beside "2,000 KG".
+        "mirUom": mir_line.po_line.uom if mir_line else lot.uom, "factor": _n(lot.factor),
         "balance": _s(balance),
         "days": (timezone.localdate() - lot.received_date).days,
     }
@@ -128,6 +138,11 @@ def meta(request):
         "today": _d(timezone.localdate()), "backdateDays": stock_service.BACKDATE_DAYS,
         "departments": departments, "pendingApprovals": pending, "isAdmin": getattr(user, "role", "") == "admin",
         "categories": categories,
+        "baseUnits": [{"code": c, "label": label} for c, label in Material.BaseUnit.choices],
+        # Units a pack factor may be entered for: every known unit nothing exact converts.
+        "packUnits": [u for u in prules.KNOWN_UOMS if not stock_rules.base_of(u)],
+        # Units that convert exactly: {unit: [base unit, factor]}.
+        "exactUnits": {u: [b, _n(f)] for u, (b, f) in stock_rules.EXACT.items()},
     })
 
 
@@ -192,6 +207,7 @@ def receipt(request, lot_id):
                     "minLevel": _s(setting.min_level) if setting else None,
                     "minLevelUom": setting.min_level_uom if setting else "",
                     "updatedBy": setting.updated_by_email if setting else ""},
+        "units": _material_units(lot.material),
         "movements": [{"date": _d(m["date"]), "kind": m["kind"], "doc": m["doc"], "voucherId": m["voucherId"],
                        "qty": _s(m["qty"]), "balance": _s(m["balance"]), "detail": m["detail"]} for m in detail["movements"]],
     })
@@ -213,6 +229,36 @@ def settings(request):
     except stock_service.StockValidationError as exc:
         return _bad(exc)
     return Response({"ok": True})
+
+
+def _material_units(material):
+    return {
+        "baseUom": material.base_uom,
+        "factors": [{"uom": f.uom, "factor": _n(f.factor), "by": f.updated_by_email} for f in material.unit_factors.all()],
+        "history": [{"field": c.field, "oldValue": c.old_value, "newValue": c.new_value, "reason": c.reason,
+                     "by": c.changed_by_email, "at": c.changed_at.isoformat()}
+                    for c in material.changes.filter(Q(field="base_uom") | Q(field__startswith="factor ")).order_by("-changed_at")[:10]],
+    }
+
+
+@api_view(["POST"])
+@permission_classes([IsEditor])
+def material_units(request, material_id):
+    """A material's base unit and pack factors. Body: {"baseUom", "factors":
+    {unit: factor or ""}, "reason"}. Materials are company-wide, so any
+    Editor or Admin may, like a category; logged with the reason
+    (materials.set_units()). Only MIRs posted afterwards convert by it."""
+    material = get_object_or_404(Material, pk=material_id)
+    data = request.data or {}
+    factors = data.get("factors") or {}
+    if not isinstance(factors, dict):
+        return Response({"error": "factors must be an object."}, status=http.HTTP_400_BAD_REQUEST)
+    try:
+        materials.set_units(material, data.get("baseUom"), factors, data.get("reason"), request.user)
+    except materials.MaterialError as exc:
+        return Response({"error": str(exc)}, status=http.HTTP_400_BAD_REQUEST)
+    material.refresh_from_db()
+    return Response(_material_units(material))
 
 
 # ── Vouchers ──────────────────────────────────────────────────────────────

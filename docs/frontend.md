@@ -1377,6 +1377,10 @@ top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.
   after a save was tried - save, reset); each form's host carries `data-form-host` and a `data-no-write`
   banner, and each form supplies `payload`, `paint`, `lineAt`, `reset`, and optionally `onPlant`,
   `progress`, `saved`.
+- Units: `stConverted()` / `stInMirUnit()` show the MIR's own figure beside a converted one ("2,000 (2 MT)",
+  the issue line's Unit chip); `stUnitsPanel()` / `stWireUnits()` - the receipt detail's company-wide
+  Units panel (base unit select, "1 [ROLL] = [660] M" rows from `meta.packUnits`, a required reason, the
+  change history), posting to `/api/stock/materials/<id>/units`; read-only for a viewer.
 - `stTakePlant(ctl, receipt)` - the plant follows the MIR: the forms start on "All plants", the first MIR
   added sets the plant select (and the issue's department suggestions), and a MIR of another plant is
   refused with an error toast until the entry is saved; `stResetCommon()` goes back to "All plants".

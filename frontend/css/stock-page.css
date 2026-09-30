@@ -40,3 +40,8 @@
 .mir-detail-head .btn + .btn { margin-left: 0; }
 /* Text columns in the wide tables keep a readable width; the table scrolls. */
 .st-text { min-width: 160px; }
+/* Units panel: "1 [ROLL] = [660] M" rows and the change history. */
+.st-factor-row { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; color: var(--slate); }
+.st-factor-row .st-unit { width: 110px; }
+.st-factor-row .st-factor { width: 140px; }
+.st-history { margin: 6px 0 10px; padding-left: 18px; font-size: 12px; color: var(--slate-soft); }

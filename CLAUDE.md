@@ -298,8 +298,11 @@ Read the linked section before breaking any of these. Each is there because it w
 - `stock_service.evaluate()` is the only place a voucher is checked and valued; the page previews through it.
   Vouchers are never edited - cancel and re-enter. A stock difference (count or write-off, the page's "Open
   mismatches") by an editor waits for an admin; the one who entered it cannot approve it.
-- A lot keeps its MIR line's own unit - never convert (MT stays MT); `stock_unit()` is only migration 0082's
-  history. An issue is for one plant, set by the first MIR picked. Values are before GST.
+- Stock is held in the material's base unit (KG / L / NOS / M): exact units convert (`stock_rules.EXACT`: MT
+  into KG), a pack unit (ROLL, SET, BAG) only by the material's `MaterialUnitFactor`, anything else stays as
+  the MIR had it. Never guess a conversion. A unit change applies to MIRs posted afterwards only.
+  `stock_unit()` is only migration 0082's history. An issue is for one plant, set by the first MIR picked.
+  Values are before GST.
 - Stock reasons live only in migration `0082`'s `REASONS` (re-seeded by the root `conftest.py`); a new one
   goes there plus a migration that re-runs its `seed()`. Never delete one.
 

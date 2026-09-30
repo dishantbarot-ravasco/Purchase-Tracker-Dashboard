@@ -5,12 +5,16 @@ No Django imports, like procurement_rules.py, so each rule is tested on its
 own and migration 0082 can use the same unit and rate rules when it turns the
 MIRs posted before stock existed into lots.
 
-STOCK UNITS. A lot keeps its MIR line's own unit (2026-09-30): every issue
-names the MIR receipt it comes out of, so no two receipts are ever added
-together and nothing needs converting. stock_unit() below is the earlier rule
-(weight held in KG, 1 MT = 1000 KG) - kept only because migration 0082 made
-the first lots with it; migration 0084 turned those back into their MIR
-line's unit.
+BASE UNITS (2026-09-30, project owner: "keep the base units as KG, L, Nos,
+m"). Every material has a base unit on the material master - KG for solids, L
+for liquids, NOS for pieces, M for length - and a MIR receipt is held in it,
+converted exactly when the MIR line's unit is of the same kind (1 MT = 1000
+KG, 1 ML = 0.001 L, 1 MM = 0.001 M - EXACT below), or by a factor entered for
+that material when it is a pack unit (1 ROLL = 660 M, 1 SET = 2 NOS; nothing
+general converts those). A unit with neither stays as the MIR line had it.
+The lot records the factor it was converted by, so the MIR's own figure can
+always be shown beside it. stock_unit() is the first rule (weight held in KG)
+- kept only because migration 0082 made the first lots with it.
 
 THE BALANCE CHECK. Stock may never go below zero on ANY day, not only
 today: a backdated issue that fits today's balance can still take a lot
@@ -36,9 +40,41 @@ _CONVERSIONS = {
 }
 
 
+BASE_UNITS = ("KG", "L", "NOS", "M")
+
+# unit -> (base unit, how many base units one of it is). Exact only.
+EXACT = {
+    "KG": ("KG", Decimal("1")), "MT": ("KG", Decimal("1000")), "G": ("KG", Decimal("0.001")),
+    "L": ("L", Decimal("1")), "ML": ("L", Decimal("0.001")), "KL": ("L", Decimal("1000")),
+    "NOS": ("NOS", Decimal("1")),
+    "M": ("M", Decimal("1")), "CM": ("M", Decimal("0.01")), "MM": ("M", Decimal("0.001")),
+}
+
+
+def base_of(uom: str) -> str:
+    """The base unit a unit converts into exactly (KG for MT), or "" for a
+    pack or unknown unit (ROLL, SET, M2, BQ2)."""
+    return EXACT.get((uom or "").strip().upper(), ("", None))[0]
+
+
+def to_base(uom: str, base: str, factors: dict) -> tuple[str, Decimal]:
+    """(unit a receipt is held in, factor) for a MIR line in `uom` of a
+    material whose base unit is `base` and whose entered pack factors are
+    `factors` {unit: base units per one}. Exact first, then the material's
+    factor; otherwise the MIR line's own unit, factor 1."""
+    code = (uom or "").strip().upper()
+    if base:
+        exact = EXACT.get(code)
+        if exact and exact[0] == base:
+            return base, exact[1]
+        if factors.get(code):
+            return base, Decimal(factors[code])
+    return code, Decimal("1")
+
+
 def stock_unit(uom: str) -> tuple[str, Decimal]:
     """(stock unit, factor) as migration 0082 made its lots: weight held in
-    KG, every other unit as it is. Not used for new lots - see STOCK UNITS
+    KG, every other unit as it is. Not used for new lots - see BASE UNITS
     above."""
     code = (uom or "").strip().upper()
     return _CONVERSIONS.get(code, (code, Decimal("1")))

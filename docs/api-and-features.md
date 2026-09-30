@@ -78,6 +78,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `stock/register?plant=&from=&to=&q=&category=&all=` | `register` | Auth, readable plants | The RM register: one row per MIR receipt for the period (default this month to today) - opening, received, issued, returned, adjusted, closing, rate, value, days in store. `all=1` keeps receipts that held nothing all period |
 | GET | `stock/differences?status=&plant=` | `differences` | Auth, readable plants | Stock differences (Open mismatches): `OPEN` (waiting for an admin, default), `RESOLVED`, `CANCELLED`, `ALL` |
 | POST | `stock/settings` | `settings` | IsEditor + plant (403) | Whether the plant keeps a material in store, and its minimum level |
+| POST | `stock/materials/<id>/units` | `material_units` | IsEditor | A material's base unit (KG / L / NOS / M) and pack factors `{unit: factor or ""}`, with a reason; company-wide, logged; used by MIRs posted afterwards |
 | POST | `stock/preview` | `preview` | IsEditor + plant (403) | Check and value an issue / return / difference; saves nothing |
 | POST | `stock/vouchers/new` | `post_voucher` | IsEditor + plant (403) | Save one; 201 (an editor's difference `PENDING`), or 400 with `errors: [{field, message}]` |
 | GET | `stock/vouchers?plant=&kind=&status=&q=&from=&to=` | `vouchers` | Auth, readable plants | The issue slips, returns and differences, newest first; `q` also finds a MIR number |
@@ -1141,14 +1142,31 @@ offers only MIR receipts.
 **Returns** go back into the MIR receipt the issue line took from, at its rate, no more than that line
 still has out, dated on or after the issue, with a reason from the RETURN list.
 
-**Units.** A lot keeps **its MIR line's own unit** - MT stays MT, KG stays KG (2026-09-30, project owner:
-"why can't we copy the same UOM as PO or MIR?"). The first build held all weight in KG because it added a
-material's receipts together for FIFO; now every issue names its receipt, nothing is added across
-receipts, and nothing needs converting. Migration `0084` turned the earlier KG lots back into their MIR
-line's unit, with their voucher lines and allocations, where every figure divided exactly (a lot that
-would round stays in KG and still works). A lot is valued at the line's taxable value (after discount,
-with other charges, **before GST**, which is claimed back) over the quantity received. Values total INR
-only.
+**Base units** (2026-09-30, project owner: "keep the base units as KG, L, Nos, m"). Every material has a
+**base unit** on the material master - KG (solids), L (liquids), NOS (pieces) or M (length) - and its MIR
+receipts are held in it:
+- **exact** units convert by themselves: MT and G into KG, ML and KL into L, CM and MM into M
+  (`stock_rules.EXACT`); NOS aliases (PC, EA, PCS) are already NOS;
+- a **pack unit** (ROLL, SET, BAG, M2, or an unknown one like BQ2) converts only by a factor entered for
+  that material ("1 ROLL = 660 M", `MaterialUnitFactor`) - nothing general converts a roll;
+- anything else, or a material with no base unit, stays as the MIR line had it.
+
+The lot keeps the factor, so the page shows the MIR's own figure beside the stock one ("2,000 KG (2 MT)")
+and the issue line says "KG (MIR in MT: 1 MT = 1,000 KG)"; the quantity is always typed in the stock
+unit. A material's base unit starts as the base of the unit it was first seen in (a PO line's, or the
+reference list's "Kilogram (KG)"); an editor changes it, and the pack factors, in the receipt detail's
+**Units** panel, with a reason logged in `MaterialChange` - materials are company-wide, like a category.
+**A change applies to MIRs posted afterwards only**; receipts already in the store keep their unit (as
+with "kept in store"). The unit on a receipt is never typed at the plant: MIR entry takes the PO line's
+unit. The Drive data behind the choice: KG is 91% of PO lines and 66-99% of MIR rows per plant; litres,
+pieces and metres (belting) the rest; MT only for Achhad's steam coal.
+
+History: the first build held weight in KG; on 2026-09-30 lots briefly kept the MIR's unit (migration
+`0084` turned the KG lots back into it), then base units replaced that the same day (migration `0085`
+sets every material's base unit from its PO lines' most common kind, and converts MIR lots into it where
+every figure stays exact at 3 decimals - any other lot keeps its unit and still works). A lot is valued at
+the line's taxable value (after discount, with other charges, **before GST**, which is claimed back) over
+the quantity received, per stock unit. Values total INR only.
 
 **A receipt never goes below zero on any day** - not only today. Every issue, write-off, cancellation and
 MIR change replays the receipt's dated movements (`stock_rules.min_running_balance()`) and refuses
@@ -1567,7 +1585,8 @@ id order): `post_voucher()` (numbers from `_next_seq()`, row-locked `StockSequen
 
 ### apps/services/stock_rules.py
 
-Pure rules, no Django imports (migration `0082` uses them): `stock_unit()` (weight held in KG - the rule
+Pure rules, no Django imports (migrations `0082` and `0085` use them): `BASE_UNITS`, `EXACT`, `base_of()`,
+`to_base(uom, base, factors)` (exact, then the material's factor, else the MIR unit), `stock_unit()` (weight held in KG - the rule
 `0082` made the first lots with, kept for that migration only; new lots keep the MIR line's unit),
 `lot_rate()` (taxable value over the quantity received),
 `value()`, `voucher_number()`, and `min_running_balance(events, from_date)` - the lowest end-of-day
@@ -1575,8 +1594,8 @@ balance of a lot on or after a day, which every posting checks stays at or above
 
 ### apps/services/procurement_rules.py
 
-Pure rules, no Django imports: `canonical_uom()` (spellings of one unit folded, KG and MT kept apart,
-an unknown unit kept and flagged), `clean_gstin()` / `gstin_state()`, `canonical_tax_type()`,
+Pure rules, no Django imports: `canonical_uom()` (spellings of one unit folded, KG and MT kept apart -
+KG, MT, G, L, ML, KL, M, CM, MM, M2, NOS, ROLL, SET, BAG - an unknown unit kept and flagged), `clean_gstin()` / `gstin_state()`, `canonical_tax_type()`,
 `expected_tax_type()`, `po_gst_rate()`, `GST_SLABS` / `is_gst_slab()`, `financial_year()`,
 `mir_number()`, `invoice_key()`, `vendor_name_key()`, `line_amounts()`, `rate_differs()`, `pct_of()`,
 `INVOICE_ROUNDING_TOLERANCE` (Rs 1).
@@ -1590,6 +1609,13 @@ the reference list names; run by `load_material_category_reference`).
 
 `change_category(material, category, subcategory, reason, user)` corrects a filed material from the
 reference list's categories, with a reason, logged in `MaterialChange`; `MaterialError` for a refusal.
+
+Base units: `base_unit_for(raw_uom)` (the base a PO or reference-list unit converts into, "" for a pack
+unit) sets a new material's `base_uom`, and a blank one from the first PO line with a unit;
+`unit_factor(material, uom)` is what `stock_service.receive_mir()` converts a MIR line by;
+`set_units(material, base_uom, factors, reason, user)` changes both with a reason, one `MaterialChange`
+row per change (`base_uom`, `factor ROLL`), refusing a factor for a unit that converts exactly, a factor
+without a base unit, and a change that changes nothing.
 
 ### apps/services/material_identity.py
 

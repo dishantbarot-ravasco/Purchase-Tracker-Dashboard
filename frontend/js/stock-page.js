@@ -136,7 +136,17 @@ function stReceiptChips(r) {
     chip('MIR date', stDate(r.receivedDate)) + chip('Vendor', r.vendor) + chip('PO', r.poNumber) + chip('Invoice', r.invoiceNo) +
     chip('Item code', r.itemCode) + chip('Category', [r.material.category, r.material.subcategory].filter(Boolean).join(' / ')) +
     chip('Rate', r.rate ? stRate(r.rate) + ' / ' + (r.uom || 'unit') + (r.currency !== 'INR' ? ' ' + r.currency : '') : '') +
+    chip('Unit', stConverted(r) ? r.uom + ' (MIR in ' + r.mirUom + ': 1 ' + r.mirUom + ' = ' + stQty(r.factor) + ' ' + r.uom + ')' : r.uom) +
     chip('In store', stDays(r.days)) + chip('PO of', r.billToPlant ? r.billToPlant.name : '') + '</div>';
+}
+
+// A receipt held in its material's base unit rather than the MIR's (2 MT
+// received, held as 2,000 KG).
+function stConverted(r) { return !!r.mirUom && r.mirUom !== r.uom && Number(r.factor) > 0; }
+
+// "2,000" plus "(2 MT)" when the MIR had it in another unit.
+function stInMirUnit(qty, r) {
+  return stConverted(r) && Number(qty) ? ' <span class="mir-muted">(' + stQty(String(Number(qty) / Number(r.factor)), r.mirUom) + ')</span>' : '';
 }
 
 // ── View tabs ─────────────────────────────────────────────────────────────
@@ -686,7 +696,7 @@ async function stLoadRegister() {
       '<td class="st-text"><b>' + escapeHtml(r.material.name) + '</b><div class="mir-muted">' +
         escapeHtml([r.itemCode, catText(r.material)].filter(Boolean).join(' - ') || 'No category') + '</div></td>' +
       '<td class="st-text">' + escapeHtml(r.vendor || '-') + (r.billToPlant ? '<div class="mir-muted">PO of ' + escapeHtml(r.billToPlant.name) + '</div>' : '') + '</td>' +
-      num(r.opening) + num(r.received) + num(r.issued) + (showReturned ? num(r.returned) : '') + (showAdjusted ? num(r.adjusted) : '') +
+      num(r.opening) + '<td class="num">' + (Number(r.received) ? stQty(r.received) + stInMirUnit(r.received, r) : '<span class="mir-muted">-</span>') + '</td>' + num(r.issued) + (showReturned ? num(r.returned) : '') + (showAdjusted ? num(r.adjusted) : '') +
       '<td class="num st-closing"><b>' + stQty(r.closing) + '</b> <span class="mir-muted">' + escapeHtml(r.uom || '') + '</span></td>' +
       '<td class="num">' + stRate(r.rate) + (r.uom ? '<span class="mir-muted">/' + escapeHtml(r.uom) + '</span>' : '') + '</td>' +
       '<td class="num">' + stMoney(r.value) + '</td>' +
@@ -712,7 +722,8 @@ async function stLoadReceipt(lotId) {
       (canAct ? '<button type="button" class="btn btn-primary btn-small" id="rcIssue">Issue from this MIR</button>' +
         '<button type="button" class="btn btn-navy btn-small" id="rcDiff">Record a difference</button>' : '') + '</div>' +
     stReceiptChips(d) +
-    stFacts([['Plant', d.plant.name], ['Received (accepted)', stQty(d['in'], d.uom)], ['Issued', stQty(d.issued, d.uom)],
+    stFacts([['Plant', d.plant.name], ['Received (accepted)', stQty(d['in'], d.uom) + (stConverted(d) && Number(d['in']) ? ' (' + stQty(String(Number(d['in']) / Number(d.factor)), d.mirUom) + ' on the MIR)' : '')],
+      ['Issued', stQty(d.issued, d.uom)],
       ['Returned', stQty(d.returned, d.uom)], ['Stock differences', Number(d.adjusted) ? stQty(d.adjusted, d.uom) : ''],
       ['Left in store', stQty(d.balance, d.uom)], ['Value (before GST)', stMoney(d.value)], ['Batch', d.batchNo],
       ['Kept in store', d.stocked ? 'Yes' : 'No - went straight to use']]) +
@@ -725,6 +736,7 @@ async function stLoadReceipt(lotId) {
       '<p class="mir-hint">Not kept in store: its future MIRs record the receipt but put nothing into stock (for material that goes straight to use). MIRs already made keep what they are.' +
         (s.updatedBy ? ' Last changed by ' + escapeHtml(s.updatedBy) + '.' : '') + '</p>' +
       '<div class="mir-actions"><button type="button" class="btn btn-navy btn-small" id="setSave">Save settings</button><span class="mir-error-text" id="setErr"></span></div></div>' : '') +
+    stUnitsPanel(d) +
     '<h4 class="mir-subtitle">Movements</h4><div class="table-wrap"><table><thead><tr><th>Date</th><th>Document</th><th>What</th><th>Detail</th><th class="num">In / out</th><th class="num">Balance</th></tr></thead><tbody>' +
       (d.movements.length ? d.movements.map(m => '<tr><td class="nowrap">' + stDate(m.date) + '</td>' +
         '<td class="nowrap">' + (m.voucherId ? '<button type="button" class="mir-link" data-voucher="' + m.voucherId + '">' + escapeHtml(m.doc) + '</button>' : escapeHtml(m.doc)) + '</td>' +
@@ -738,6 +750,7 @@ async function stLoadReceipt(lotId) {
   if (issueBtn) issueBtn.onclick = () => stSendTo(ST_FORMS.ISSUE, 'viewIssue', d);
   const diffBtn = document.getElementById('rcDiff');
   if (diffBtn) diffBtn.onclick = () => { stShowView('viewMismatch'); stOpenDiffForm(); stSendTo(ST_FORMS.ADJUST, null, d); };
+  stWireUnits(d, lotId);
   const save = document.getElementById('setSave');
   if (save) save.onclick = async () => {
     try {
@@ -746,6 +759,73 @@ async function stLoadReceipt(lotId) {
       stToast('Settings saved for ' + d.material.name + '.');
       stLoadReceipt(lotId);
     } catch (e) { document.getElementById('setErr').textContent = e.message; }
+  };
+}
+
+// ── Units (company-wide, on the material) ────────────────────────────────
+// A material's base unit (KG, L, NOS, M) and pack factors ("1 ROLL = 660 M").
+// Exact units convert by themselves; only MIRs posted afterwards convert by a
+// change - receipts already in the store keep their unit.
+function stIsExact(uom) { return Object.prototype.hasOwnProperty.call(ST_META.exactUnits || {}, uom); }
+
+function stUnitsPanel(d) {
+  const u = d.units;
+  const baseLabel = u.baseUom || 'base unit';
+  const factorText = u.factors.map(f => '1 ' + f.uom + ' = ' + stQty(f.factor) + ' ' + (u.baseUom || '')).join(', ');
+  if (!d.canWrite) {
+    return stFacts([['Base unit (every plant)', u.baseUom || 'None - each MIR keeps its unit'], ['Pack units', factorText]]);
+  }
+  const rows = u.factors.map(f => ({ uom: f.uom, factor: f.factor, fixed: true }));
+  if (d.mirUom && !stIsExact(d.mirUom) && !rows.some(r => r.uom === d.mirUom)) rows.push({ uom: d.mirUom, factor: '', fixed: true });
+  const row = (r, i) => '<div class="st-factor-row" data-factor-row="' + i + '"><span>1</span>' +
+    '<input class="form-control st-unit" data-unit aria-label="Pack unit" list="unPackList" maxlength="20" value="' + escapeHtml(r.uom) + '"' + (r.fixed ? ' readonly' : '') + ' placeholder="e.g. ROLL">' +
+    '<span>=</span><input class="form-control st-factor" data-factor aria-label="How many base units" inputmode="decimal" value="' + escapeHtml(r.factor || '') + '" placeholder="Blank = none">' +
+    '<span data-base-label>' + escapeHtml(baseLabel) + '</span></div>';
+  return '<div class="st-settings"><h4 class="mir-subtitle">Units for ' + escapeHtml(d.material.name) + ' (every plant)</h4>' +
+    '<div class="mir-grid"><div class="form-group"><label class="form-label" for="unBase">Base unit - stock is kept in it</label><select class="form-control" id="unBase">' +
+      '<option value="">None - each MIR keeps its own unit</option>' +
+      (ST_META.baseUnits || []).map(b => '<option value="' + escapeHtml(b.code) + '"' + (u.baseUom === b.code ? ' selected' : '') + '>' + escapeHtml(b.label) + '</option>').join('') +
+    '</select></div></div>' +
+    '<div class="form-label">Pack units - how many base units one of them is</div>' +
+    '<div id="unRows">' + rows.map(row).join('') + '</div>' +
+    '<button type="button" class="mir-link" id="unAdd">+ Add a pack unit</button>' +
+    '<datalist id="unPackList">' + (ST_META.packUnits || []).map(x => '<option value="' + escapeHtml(x) + '">').join('') + '</datalist>' +
+    '<div class="form-group"><label class="form-label" for="unReason">Why the change <span class="req-mark">*</span></label><input class="form-control" id="unReason" maxlength="500"></div>' +
+    '<p class="mir-hint">MT, G, ML, KL, CM and MM convert into KG, L or M by themselves. A pack unit (ROLL, SET, BAG, M2, ...) converts only with a factor. ' +
+      'Only MIRs posted from now on use a change; receipts already in the store keep their unit.</p>' +
+    (u.history.length ? '<ul class="st-history">' + u.history.map(h => '<li>' + escapeHtml(h.field.replace('base_uom', 'Base unit') + ': ' + (h.oldValue || 'none') + ' to ' + (h.newValue || 'none') +
+      ' - ' + h.reason + ' (' + h.by + ', ' + new Date(h.at).toLocaleDateString('en-IN') + ')') + '</li>').join('') + '</ul>' : '') +
+    '<div class="mir-actions"><button type="button" class="btn btn-navy btn-small" id="unSave">Save units</button><span class="mir-error-text" id="unErr"></span></div></div>';
+}
+
+function stWireUnits(d, lotId) {
+  const save = document.getElementById('unSave');
+  if (!save) return;
+  const base = document.getElementById('unBase');
+  base.addEventListener('change', () => {
+    document.querySelectorAll('#unRows [data-base-label]').forEach(el => { el.textContent = base.value || 'base unit'; });
+  });
+  document.getElementById('unAdd').onclick = () => {
+    const box = document.getElementById('unRows');
+    const i = box.querySelectorAll('[data-factor-row]').length;
+    box.insertAdjacentHTML('beforeend', '<div class="st-factor-row" data-factor-row="' + i + '"><span>1</span>' +
+      '<input class="form-control st-unit" data-unit aria-label="Pack unit" list="unPackList" maxlength="20" placeholder="e.g. ROLL">' +
+      '<span>=</span><input class="form-control st-factor" data-factor aria-label="How many base units" inputmode="decimal" placeholder="Blank = none">' +
+      '<span data-base-label>' + escapeHtml(base.value || 'base unit') + '</span></div>');
+    box.lastElementChild.querySelector('[data-unit]').focus();
+  };
+  save.onclick = async () => {
+    const factors = {};
+    document.querySelectorAll('#unRows [data-factor-row]').forEach(r => {
+      const unit = r.querySelector('[data-unit]').value.trim().toUpperCase();
+      if (unit) factors[unit] = r.querySelector('[data-factor]').value.trim();
+    });
+    try {
+      await apiStock('/materials/' + d.material.id + '/units', { method: 'POST', body: {
+        baseUom: base.value, factors, reason: document.getElementById('unReason').value.trim() } });
+      stToast('Units saved for ' + d.material.name + '. MIRs posted from now on use them.');
+      stLoadReceipt(lotId);
+    } catch (e) { document.getElementById('unErr').textContent = e.message; }
   };
 }
 

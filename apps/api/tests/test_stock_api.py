@@ -196,6 +196,25 @@ class TestTheRestOfThePage:
         assert data["canWrite"] and data["setting"]["isStocked"] is True
         assert [(m["kind"], m["balance"]) for m in data["movements"]] == [("RECEIPT", "100.000"), ("ISSUE", "70.000")]
 
+    def test_units_are_set_through_the_api_and_shown_on_the_receipt(self):
+        lot = _stock()
+        material = lot.material
+        editor = _client()
+        body = {"baseUom": "KG", "factors": {"BAG": "25"}, "reason": "25 kg bags"}
+        assert _client(role="viewer", email="viewer@ravasco.com").post(
+            f"/api/stock/materials/{material.id}/units", body, format="json").status_code == 403
+        assert editor.post(f"/api/stock/materials/{material.id}/units", dict(body, reason=""), format="json").status_code == 400
+        res = editor.post(f"/api/stock/materials/{material.id}/units", body, format="json")
+        assert res.status_code == 200 and res.json()["factors"] == [{"uom": "BAG", "factor": "25", "by": "e@ravasco.com"}]
+        data = editor.get(f"/api/stock/receipts/{lot.id}").json()
+        assert data["units"]["baseUom"] == "KG" and data["units"]["history"][0]["reason"] == "25 kg bags"
+        assert (data["mirUom"], data["factor"]) == ("KG", "1")
+        meta = editor.get("/api/stock/meta").json()
+        assert [b["code"] for b in meta["baseUnits"]] == ["KG", "L", "NOS", "M"]
+        # Plain figures, never "1E+3".
+        assert meta["exactUnits"]["MT"] == ["KG", "1000"] and meta["exactUnits"]["G"] == ["KG", "0.001"]
+        assert "ROLL" in meta["packUnits"] and "MT" not in meta["packUnits"]
+
     def test_a_bad_register_period_is_a_400(self):
         res = _client().get(f"/api/stock/register?from={TODAY}&to={TODAY - datetime.timedelta(days=1)}")
         assert res.status_code == 400

@@ -584,9 +584,13 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
 - `Material` - the material master: `name`, unique `name_key` (`material_identity.material_key()`),
   `item_code` (reference only - PO sheets reuse a code across grades), `uom`, `hsn`, `category`,
   `subcategory`, and who filed it at MIR entry (`category_set_by_email`, `category_set_at`; blank when
-  the reference list did).
-- `MaterialChange` - a category correction made in the app (`materials.change_category()`): `field`,
-  `old_value`, `new_value`, `reason` (never blank), who and when. Migration `0078`.
+  the reference list did); `base_uom` - KG / L / NOS / M or blank, the unit its RM stock is kept in
+  (migration `0085`).
+- `MaterialUnitFactor` - a pack unit's size in the material's base unit ("1 ROLL = 660 M"): unique
+  `(material, uom)`, `factor > 0`, who changed it. Migration `0085`.
+- `MaterialChange` - a category, base-unit or pack-factor change made in the app
+  (`materials.change_category()`, `materials.set_units()`): `field`, `old_value`, `new_value`, `reason`
+  (never blank), who and when. Migration `0078`.
 - `PurchaseOrderLine` - `material` (`PROTECT`); unique `(purchase_order, line_no)`, `line_no` being the line's position; `uom`
   canonical plus `uom_raw`; `item_code`, `description`, `hsn`, `qty_ordered`, `rate`, `net_value`,
   `delivery_date`; `is_active` (never deleted); `needs_review` / `review_note`; short-close

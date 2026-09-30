@@ -51,6 +51,7 @@ from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.services import materials
 from apps.services import procurement_rules as prules
 from apps.services import stock_rules as rules
 
@@ -95,17 +96,15 @@ def receive_mir(mir) -> list:
         po_line = line.po_line
         if po_line.material_id is None:
             continue
-        # The MIR line's own unit, as received (2026-09-30, project owner: "why
-        # can't we copy the same UOM as PO or MIR"). Every issue names its MIR
-        # receipt, so nothing adds two receipts together and no unit needs
-        # converting; factor stays 1 (only lots made before migration 0084 had
-        # MT/G held in KG).
-        uom = (po_line.uom or "").strip().upper()
+        # In the material's base unit - KG, L, NOS or M - converted exactly
+        # (MT into KG) or by its pack factor (ROLL into M); otherwise the MIR
+        # line's own unit (stock_rules BASE UNITS, materials.unit_factor()).
+        uom, factor = materials.unit_factor(po_line.material, po_line.uom)
         po = po_line.purchase_order
         lots.append(StockLot.objects.create(
             plant=mir.plant, material=po_line.material, uom=uom, source=StockLot.Source.MIR, mir_line=line,
             received_date=mir.mir_date, vendor=mir.vendor, bill_to_plant=po.plant if po.plant_id != mir.plant_id else None,
-            factor=1, rate=rules.lot_rate(line.taxable, line.qty_received, 1), currency=po.currency or "INR",
+            factor=factor, rate=rules.lot_rate(line.taxable, line.qty_received, factor), currency=po.currency or "INR",
             stocked=is_stocked(mir.plant, po_line.material), batch_no=line.batch_no,
         ))
     return lots

@@ -79,6 +79,7 @@ urlpatterns = [
     path("stock/register", stock_views.register, name="stock-register"),
     path("stock/differences", stock_views.differences, name="stock-differences"),
     path("stock/settings", stock_views.settings, name="stock-settings"),
+    path("stock/materials/<int:material_id>/units", stock_views.material_units, name="stock-material-units"),
     path("stock/preview", stock_views.preview, name="stock-preview"),
     path("stock/vouchers", stock_views.vouchers, name="stock-vouchers"),
     path("stock/vouchers/new", stock_views.post_voucher, name="stock-post"),
