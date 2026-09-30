@@ -951,7 +951,7 @@ function resetForm(keepDraft) {
 
 // ── Register ──────────────────────────────────────────────────────────────
 function plantOptions() {
-  return '<option value="">All my plants</option>' +
+  return '<option value="">All plants</option>' +
     META.plants.filter(p => p.canRead).map(p => '<option value="' + escapeHtml(p.code) + '">' + escapeHtml(p.name) + '</option>').join('');
 }
 

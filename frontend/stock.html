@@ -91,9 +91,12 @@
         </section>
         <section class="mir-panel" id="isStep2">
           <h3 class="mir-panel-title"><span class="mir-step">2</span> Pick the MIR</h3>
-          <p class="mir-help">Find the MIR the material came in on - by MIR number, material, vendor, invoice or PO - and click its line.
-            Only MIRs with stock left at this plant are shown, oldest first. Lines from several MIRs can go on one issue.</p>
-          <div class="mir-search"><input class="form-control" type="search" id="isFind" placeholder="MIR number or material, e.g. SBR 1502" autocomplete="off" aria-label="Find a MIR with stock left"></div>
+          <p class="mir-help">Find the MIR the material came in on - by MIR number, material, vendor, invoice or PO - or show every open MIR,
+            and click a line (or "Add all lines"). Only MIRs with stock left at this plant are shown, oldest first. Lines from several MIRs can go on one issue.</p>
+          <div class="st-pick-bar">
+            <div class="mir-search"><input class="form-control" type="search" id="isFind" placeholder="MIR number or material, e.g. SBR 1502" autocomplete="off" aria-label="Find a MIR with stock left"></div>
+            <button type="button" class="btn btn-navy btn-small" id="isAll" aria-expanded="false">Show all open MIRs</button>
+          </div>
           <div id="isHits" aria-live="polite"></div>
         </section>
         <section class="mir-panel" id="isStep3" hidden>
@@ -189,7 +192,10 @@
               <div class="form-group"><label class="form-label" for="dfPlant">Plant <span class="req-mark">*</span></label><select class="form-control" id="dfPlant" data-field="plant"></select></div>
               <div class="form-group"><label class="form-label" for="dfDate">Date <span class="req-mark">*</span></label><input class="form-control" type="date" id="dfDate" data-field="voucher_date"><span class="mir-hint" data-date-hint></span></div>
             </div>
-            <div class="mir-search"><input class="form-control" type="search" id="dfFind" placeholder="MIR number or material" autocomplete="off" aria-label="Find the MIR"></div>
+            <div class="st-pick-bar">
+              <div class="mir-search"><input class="form-control" type="search" id="dfFind" placeholder="MIR number or material" autocomplete="off" aria-label="Find the MIR"></div>
+              <button type="button" class="btn btn-navy btn-small" id="dfAll" aria-expanded="false">Show all open MIRs</button>
+            </div>
             <div id="dfHits" aria-live="polite"></div>
             <div id="dfLines"></div>
             <div class="form-group"><label class="form-label" for="dfRemarks">Remarks</label><textarea class="form-control" id="dfRemarks" data-field="remarks" rows="2" maxlength="2000"></textarea></div>

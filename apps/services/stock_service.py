@@ -246,12 +246,12 @@ def _search(qs, q: str):
 
 def receipts_for_issue(plant, q: str = "", *, limit: int = 80) -> list:
     """[(lot, balance)] - this plant's MIR receipts with stock left, for the
-    issue form's picker: the ones matching `q`, oldest first within a
-    material so the oldest is the obvious pick."""
+    issue form's picker: the ones matching `q` (all of them when `q` is
+    empty), oldest MIR first so the oldest stock is the obvious pick."""
     from apps.core.models import StockLot
 
     qs = _search(StockLot.objects.filter(plant=plant, stocked=True, source="MIR", mir_line__mir__status="POSTED"), q)
-    lots = list(qs.select_related(*LOT_RELATED).order_by("material__name", "received_date", "id")[:1000])
+    lots = list(qs.select_related(*LOT_RELATED).order_by("received_date", "mir_line__mir__mir_no", "mir_line__line_no", "id")[:3000])
     bal = lot_balances(lots)
     return [(lot, bal[lot.id]["balance"]) for lot in lots if bal[lot.id]["balance"] > 0][:limit]
 

@@ -125,6 +125,11 @@ class TestPickingAMir:
         assert (r["invoiceNo"], r["poNumber"], r["itemCode"], r["receivedDate"], r["days"]) == (
             mir.invoice_no, lot.mir_line.po_line.purchase_order.po_number, "22001132", TODAY.isoformat(), 0)
 
+    def test_show_all_lists_every_open_mir_oldest_first(self):
+        first, second = _stock(), _stock()
+        found = _client().get("/api/stock/receipts?plant=hrs&all=1").json()["receipts"]
+        assert [r["id"] for r in found] == [first.id, second.id]
+
     def test_a_receipt_with_nothing_left_is_not_offered(self):
         lot = _stock(qty="10")
         client = _client()

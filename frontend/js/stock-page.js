@@ -95,7 +95,7 @@ function stMinDate() {
   return stIsoDay(d);
 }
 function stPlantOptions(plants, withAll) {
-  return (withAll && plants.length > 1 ? '<option value="">All my plants</option>' : '') +
+  return (withAll && plants.length > 1 ? '<option value="">All plants</option>' : '') +
     plants.map(p => '<option value="' + escapeHtml(p.code) + '">' + escapeHtml(p.name) + '</option>').join('');
 }
 function stDays(n) { return n === null || n === undefined ? '-' : n + ' day' + (n === 1 ? '' : 's'); }
@@ -315,37 +315,73 @@ function stResetCommon(ctl) {
 }
 
 // ── Picking a MIR ─────────────────────────────────────────────────────────
-// The search box and its hits: this plant's MIR receipts with stock left,
-// grouped by MIR, oldest first within a material. Clicking a line adds it.
-function stMirPicker(input, box, plantFn, takenFn, onPick) {
-  const run = stDebounce(async () => {
+// The search box, the "Show all open MIRs" button and the hits: this plant's
+// MIR receipts with stock left, grouped by MIR, oldest MIR first. Clicking a
+// line adds it; "Add all lines" adds every line of that MIR not yet added.
+// The list stays open after a pick (the added lines grey out), so several
+// MIRs can be picked in a row. Returns {clear()} for a plant change.
+function stMirPicker(input, allBtn, box, plantFn, takenFn, onPick) {
+  let rows = [];
+  let showAll = false;
+  const paint = () => {
     const q = input.value.trim();
-    if (q.length < 2) { box.innerHTML = ''; return; }
-    box.innerHTML = '<div class="mir-muted">Searching...</div>';
-    let rows;
-    try {
-      rows = (await apiStock('/receipts?' + new URLSearchParams({ plant: plantFn(), q }).toString())).receipts;
-    } catch (e) { box.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>'; return; }
-    if (input.value.trim() !== q) return;
-    if (!rows.length) { box.innerHTML = '<div class="mir-empty">No MIR at this plant with stock left matches "' + escapeHtml(q) + '".</div>'; return; }
+    if (!rows.length) {
+      box.innerHTML = '<div class="mir-empty">' + (q ? 'No MIR at this plant with stock left matches "' + escapeHtml(q) + '".'
+        : 'No MIR at this plant has stock left. Stock comes in when a MIR is posted.') + '</div>';
+      return;
+    }
     const groups = [];
     rows.forEach(r => {
       let g = groups.find(x => x.key === r.doc);
       if (!g) { g = { key: r.doc, head: r, rows: [] }; groups.push(g); }
       g.rows.push(r);
     });
-    box.innerHTML = groups.map(g => '<div class="st-mir-group"><div class="st-mir-head"><b>' + escapeHtml(g.key) + '</b>' +
-      '<span class="mir-muted">' + escapeHtml([stDate(g.head.receivedDate), g.head.vendor, g.head.invoiceNo ? 'Invoice ' + g.head.invoiceNo : ''].filter(Boolean).join(' - ')) + '</span></div>' +
-      g.rows.map(r => '<button type="button" class="st-hit" data-hit="' + r.id + '"' + (takenFn(r.id) ? ' disabled' : '') + '>' +
-        '<b>' + (r.lineNo ? 'Line ' + r.lineNo + ': ' : '') + escapeHtml(r.material.name) + '</b>' +
-        '<span class="mir-muted">' + escapeHtml(stQty(r.balance, r.uom) + ' left - ' + stDays(r.days) + ' in store' +
-          (r.material.category ? ' - ' + r.material.category : '') + (takenFn(r.id) ? ' - already added' : '')) + '</span></button>').join('') +
-      '</div>').join('');
+    const open = g => g.rows.filter(r => !takenFn(r.id));
+    box.innerHTML = '<div class="st-summary">' + groups.length + ' open MIR' + (groups.length === 1 ? '' : 's') + ', ' + rows.length + ' line' +
+      (rows.length === 1 ? '' : 's') + ' with stock left' + (showAll && !q ? '' : ' matching "' + escapeHtml(q) + '"') + '</div>' +
+      groups.map((g, gi) => '<div class="st-mir-group"><div class="st-mir-head"><b>' + escapeHtml(g.key) + '</b>' +
+        '<span class="mir-muted">' + escapeHtml([stDate(g.head.receivedDate), g.head.vendor, g.head.invoiceNo ? 'Invoice ' + g.head.invoiceNo : ''].filter(Boolean).join(' - ')) + '</span>' +
+        (g.rows.length > 1 ? '<button type="button" class="mir-link st-add-all" data-group="' + gi + '"' + (open(g).length ? '' : ' disabled') + '>Add all ' + g.rows.length + ' lines</button>' : '') +
+        '</div>' +
+        g.rows.map(r => '<button type="button" class="st-hit" data-hit="' + r.id + '"' + (takenFn(r.id) ? ' disabled' : '') + '>' +
+          '<b>' + (r.lineNo ? 'Line ' + r.lineNo + ': ' : '') + escapeHtml(r.material.name) + '</b>' +
+          '<span class="mir-muted">' + escapeHtml(stQty(r.balance, r.uom) + ' left - ' + stDays(r.days) + ' in store' +
+            (r.material.category ? ' - ' + r.material.category : '') + (takenFn(r.id) ? ' - added' : '')) + '</span></button>').join('') +
+        '</div>').join('');
     box.querySelectorAll('[data-hit]').forEach(b => {
-      b.onclick = () => { onPick(rows.find(r => r.id === Number(b.dataset.hit))); box.innerHTML = ''; input.value = ''; };
+      b.onclick = () => { onPick(rows.find(r => r.id === Number(b.dataset.hit)), false); paint(); };
     });
+    box.querySelectorAll('[data-group]').forEach(b => {
+      b.onclick = () => { open(groups[Number(b.dataset.group)]).forEach(r => onPick(r, true)); paint(); };
+    });
+  };
+  const load = stDebounce(async () => {
+    const q = input.value.trim();
+    if (q.length < 2 && !showAll) { rows = []; box.innerHTML = ''; return; }
+    box.innerHTML = '<div class="mir-muted">Loading...</div>';
+    const params = { plant: plantFn() };
+    if (q.length >= 2) params.q = q;
+    else params.all = '1';
+    let found;
+    try {
+      found = (await apiStock('/receipts?' + new URLSearchParams(params).toString())).receipts;
+    } catch (e) { box.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>'; return; }
+    if (input.value.trim() !== q) return;
+    rows = found;
+    paint();
   }, 250);
-  input.addEventListener('input', run);
+  const setAll = on => {
+    showAll = on;
+    allBtn.textContent = on ? 'Hide the list' : 'Show all open MIRs';
+    allBtn.setAttribute('aria-expanded', String(on));
+  };
+  input.addEventListener('input', load);
+  allBtn.onclick = () => {
+    setAll(!showAll);
+    if (showAll) input.value = '';
+    load();
+  };
+  return { clear: () => { rows = []; box.innerHTML = ''; input.value = ''; setAll(false); } };
 }
 
 // ── Issue from MIR ────────────────────────────────────────────────────────
@@ -364,25 +400,27 @@ function stIssueForm() {
     }),
     progress: p => stIssueProgress(ctl, p),
     reset: () => { stResetCommon(ctl); stIssueRender(ctl); stIssueProgress(ctl, null); },
-    onPlant: () => { ctl.lines = []; stIssueRender(ctl); stIssueDepartments(ctl); document.getElementById('isHits').innerHTML = ''; },
+    onPlant: () => { ctl.lines = []; stIssueRender(ctl); stIssueDepartments(ctl); if (ctl.picker) ctl.picker.clear(); },
   };
   ctl = stSetupForm('issueForm', 'ISSUE', hooks);
   ctl.nextKey = 1;
-  ctl.add = r => {
+  // `quiet`: added from "Add all lines" or the register - no jump to the
+  // quantity box, so the list stays where the storekeeper is looking.
+  ctl.add = (r, quiet) => {
     if (ctl.lines.some(l => l.r.id === r.id)) return;
     ctl.lines.push({ key: 'i' + (ctl.nextKey++), r, name: r.material.name, qty: '' });
     stIssueRender(ctl);
     ctl.schedule();
     const inputs = ctl.form.querySelectorAll('[data-key="qty"]');
-    if (inputs.length) inputs[inputs.length - 1].focus();
+    if (!quiet && inputs.length) inputs[inputs.length - 1].focus({ preventScroll: true });
   };
   if (ctl.form.hidden) return ctl;
   stIssueDepartments(ctl);
   document.querySelectorAll('#issueProgress [data-goto]').forEach(b => {
     b.onclick = () => { const t = document.getElementById(b.dataset.goto); if (t && !t.hidden) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
   });
-  stMirPicker(document.getElementById('isFind'), document.getElementById('isHits'), () => stPlantOf(ctl),
-    id => ctl.lines.some(l => l.r.id === id), r => ctl.add(r));
+  ctl.picker = stMirPicker(document.getElementById('isFind'), document.getElementById('isAll'), document.getElementById('isHits'),
+    () => stPlantOf(ctl), id => ctl.lines.some(l => l.r.id === id), (r, quiet) => ctl.add(r, quiet));
   stIssueProgress(ctl, null);
   return ctl;
 }
@@ -499,7 +537,7 @@ function stDiffForm() {
       box.innerHTML = html;
     }),
     reset: () => { stResetCommon(ctl); stDiffRender(ctl); },
-    onPlant: () => { ctl.lines = []; stDiffRender(ctl); document.getElementById('dfHits').innerHTML = ''; },
+    onPlant: () => { ctl.lines = []; stDiffRender(ctl); if (ctl.picker) ctl.picker.clear(); },
     saved: () => { document.getElementById('diffHost').hidden = true; stLoadMismatches(); },
   };
   ctl = stSetupForm('diffForm', 'ADJUST', hooks);
@@ -512,8 +550,8 @@ function stDiffForm() {
   };
   if (ctl.form.hidden) return ctl;
   document.getElementById('dfPostHint').textContent = ST_META.isAdmin ? '' : 'It waits for an admin to approve it.';
-  stMirPicker(document.getElementById('dfFind'), document.getElementById('dfHits'), () => stPlantOf(ctl),
-    id => ctl.lines.some(l => l.r.id === id), r => ctl.add(r));
+  ctl.picker = stMirPicker(document.getElementById('dfFind'), document.getElementById('dfAll'), document.getElementById('dfHits'),
+    () => stPlantOf(ctl), id => ctl.lines.some(l => l.r.id === id), r => ctl.add(r));
   stDiffRender(ctl);
   return ctl;
 }
@@ -603,24 +641,32 @@ async function stLoadRegister() {
   }
   const total = rows.reduce((s, r) => s + Number(r.value || 0), 0);
   const allPlants = !document.getElementById('rgPlant').value && stReadable().length > 1;
-  const num = v => '<td class="num nowrap">' + (Number(v) ? stQty(v) : '<span class="mir-muted">-</span>') + '</td>';
-  area.innerHTML = '<div class="st-summary">' + rows.length + ' MIR line' + (rows.length === 1 ? '' : 's') + ' &middot; ' + stDate(data.from) + ' to ' + stDate(data.to) +
-    ' &middot; closing value ' + stMoney(String(total)) + ' (before GST)</div>' +
-    '<div class="table-wrap"><table class="mir-click st-register"><thead><tr><th>#</th><th>MIR</th><th>Rec. date</th><th>Material</th><th>Category</th><th>UOM</th>' +
-    '<th class="num">Opening</th><th class="num">Received</th><th class="num">Issued</th><th class="num">Returned</th><th class="num">Adjusted</th><th class="num">Closing</th>' +
-    '<th class="num">Rate</th><th class="num">Value</th><th class="num">Days</th><th>Vendor</th>' + (allPlants ? '<th>Plant</th>' : '') + '</tr></thead><tbody>' +
-    rows.map((r, i) => '<tr data-row="' + i + '" tabindex="0"><td>' + (i + 1) + '</td>' +
-      '<td class="nowrap"><b>' + escapeHtml(r.mirNo || r.doc) + '</b>' + (r.lineNo ? '<div class="mir-muted">line ' + r.lineNo + '</div>' : '') + '</td>' +
-      '<td class="nowrap">' + stDate(r.receivedDate) + '</td>' +
-      '<td class="st-text"><b>' + escapeHtml(r.material.name) + '</b>' + (r.itemCode ? '<div class="mir-muted">' + escapeHtml(r.itemCode) + '</div>' : '') + '</td>' +
-      '<td>' + escapeHtml(r.material.category || '-') + (r.material.subcategory ? '<div class="mir-muted">' + escapeHtml(r.material.subcategory) + '</div>' : '') + '</td>' +
-      '<td>' + escapeHtml(r.uom || '-') + '</td>' +
-      num(r.opening) + num(r.received) + num(r.issued) + num(r.returned) + num(r.adjusted) +
-      '<td class="num nowrap"><b>' + stQty(r.closing) + '</b></td>' +
-      '<td class="num nowrap">' + stRate(r.rate) + '</td><td class="num nowrap">' + stMoney(r.value) + '</td>' +
-      '<td class="num">' + r.days + '</td><td>' + escapeHtml(r.vendor || '-') + (r.billToPlant ? '<div class="mir-muted">PO of ' + escapeHtml(r.billToPlant.name) + '</div>' : '') + '</td>' +
-      (allPlants ? '<td>' + escapeHtml(r.plant.name) + '</td>' : '') + '</tr>').join('') +
-    '</tbody></table></div>';
+  // Returned and Adjusted only when something in the period moved that way,
+  // so the usual register is Opening / Received / Issued / Closing.
+  const showReturned = rows.some(r => Number(r.returned));
+  const showAdjusted = rows.some(r => Number(r.adjusted));
+  const num = v => '<td class="num">' + (Number(v) ? stQty(v) : '<span class="mir-muted">-</span>') + '</td>';
+  const catText = m => [m.category, m.subcategory && m.subcategory.toLowerCase() !== (m.category || '').toLowerCase() ? m.subcategory : '']
+    .filter(Boolean).join(' - ');
+  const qtyCols = 4 + (showReturned ? 1 : 0) + (showAdjusted ? 1 : 0);
+  area.innerHTML = '<div class="st-summary">' + rows.length + ' MIR line' + (rows.length === 1 ? '' : 's') + ' &middot; ' + stDate(data.from) + ' to ' + stDate(data.to) + '</div>' +
+    '<div class="table-wrap"><table class="mir-click st-register"><thead><tr><th>MIR</th><th>Material</th><th>Vendor</th>' +
+    '<th class="num">Opening</th><th class="num">Received</th><th class="num">Issued</th>' +
+    (showReturned ? '<th class="num">Returned</th>' : '') + (showAdjusted ? '<th class="num">Adjusted</th>' : '') +
+    '<th class="num">Closing</th><th class="num">Rate</th><th class="num">Value</th><th class="num">In store</th></tr></thead><tbody>' +
+    rows.map((r, i) => '<tr data-row="' + i + '" tabindex="0">' +
+      '<td class="nowrap"><b>' + escapeHtml(r.mirNo || r.doc) + '</b><div class="mir-muted">' +
+        escapeHtml([r.lineNo ? 'Line ' + r.lineNo : '', stDate(r.receivedDate), allPlants ? r.plant.code.toUpperCase() : ''].filter(Boolean).join(' - ')) + '</div></td>' +
+      '<td class="st-text"><b>' + escapeHtml(r.material.name) + '</b><div class="mir-muted">' +
+        escapeHtml([r.itemCode, catText(r.material)].filter(Boolean).join(' - ') || 'No category') + '</div></td>' +
+      '<td class="st-text">' + escapeHtml(r.vendor || '-') + (r.billToPlant ? '<div class="mir-muted">PO of ' + escapeHtml(r.billToPlant.name) + '</div>' : '') + '</td>' +
+      num(r.opening) + num(r.received) + num(r.issued) + (showReturned ? num(r.returned) : '') + (showAdjusted ? num(r.adjusted) : '') +
+      '<td class="num st-closing"><b>' + stQty(r.closing) + '</b> <span class="mir-muted">' + escapeHtml(r.uom || '') + '</span></td>' +
+      '<td class="num">' + stRate(r.rate) + (r.uom ? '<span class="mir-muted">/' + escapeHtml(r.uom) + '</span>' : '') + '</td>' +
+      '<td class="num">' + stMoney(r.value) + '</td>' +
+      '<td class="num">' + stDays(r.days) + '</td></tr>').join('') +
+    '</tbody><tfoot><tr><td colspan="' + (3 + qtyCols) + '">Closing value (before GST)</td><td></td><td class="num"><b>' + stMoney(String(total)) + '</b></td><td></td></tr></tfoot>' +
+    '</table></div>';
   area.querySelectorAll('[data-row]').forEach(tr => {
     const open = () => stLoadReceipt(rows[Number(tr.dataset.row)].id);
     tr.onclick = open;
@@ -685,7 +731,7 @@ function stSendTo(ctl, viewId, receipt) {
     ctl.form.querySelector('[data-field="plant"]').value = receipt.plant.code;
     if (ctl.hooks.onPlant) ctl.hooks.onPlant();
   }
-  ctl.add(receipt);
+  ctl.add(receipt, true);
   ctl.form.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 

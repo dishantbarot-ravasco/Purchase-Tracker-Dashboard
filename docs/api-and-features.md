@@ -73,7 +73,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
 | GET | `stock/meta` | `meta` | Auth | Plants with `canRead` / `canWrite` / `canApprove`, stock reasons (no `OPENING_BALANCE`), today, `backdateDays`, departments used per plant, `pendingApprovals`, the categories held (the register's filter) |
-| GET | `stock/receipts?plant=&q=` | `receipts` | Auth, readable plant (404) | The plant's MIR receipts with stock left, matching a MIR number, material, vendor, invoice, PO or item code - the issue and difference forms' picker. Each carries everything from its MIR line |
+| GET | `stock/receipts?plant=&q=&all=` | `receipts` | Auth, readable plant (404) | The plant's MIR receipts with stock left, oldest MIR first, matching a MIR number, material, vendor, invoice, PO or item code (80 at most), or every open one with `all=1` (500 at most) - the issue and difference forms' picker. Each carries everything from its MIR line |
 | GET | `stock/receipts/<lot_id>` | `receipt` | Auth, readable plant (404) | One MIR receipt: its MIR facts, balances, every movement with the running balance, the plant's store setting for the material |
 | GET | `stock/register?plant=&from=&to=&q=&category=&all=` | `register` | Auth, readable plants | The RM register: one row per MIR receipt for the period (default this month to today) - opening, received, issued, returned, adjusted, closing, rate, value, days in store. `all=1` keeps receipts that held nothing all period |
 | GET | `stock/differences?status=&plant=` | `differences` | Auth, readable plants | Stock differences (Open mismatches): `OPEN` (waiting for an admin, default), `RESOLVED`, `CANCELLED`, `ALL` |
@@ -1111,15 +1111,18 @@ offers only MIR receipts.
 **The three views, like MIR entry's.**
 - **Issue from MIR** - one form: the plant and date (pre-filled; department, person, production order
   and remarks are optional - the Drive sheet never recorded them), then **pick the MIR**: search by MIR
-  number, material, vendor, invoice, PO or item code; hits are grouped by MIR, oldest first within a
-  material, only receipts with stock left at that plant. Clicking a line adds it with everything from the
+  number, material, vendor, invoice, PO or item code, or "Show all open MIRs"; hits are grouped by MIR,
+  oldest MIR first, only receipts with stock left at that plant, and a MIR with several lines offers
+  "Add all lines". The list stays open after a pick, so several MIRs are picked in a row. Clicking a line adds it with everything from the
   MIR (date, vendor, PO, invoice, item code, category, rate, days in store, whose PO); the storekeeper
   enters only the quantity. Lines from several MIRs go on one issue, one line per MIR line. The draw is
   from **that receipt only** - never FIFO across receipts: the Drive sheet showed the store running two
   receipts of SBR 1502 in parallel.
-- **RM register** - "Stock by MIR", one row per MIR receipt like the Drive Stock tab: MIR and line, receipt
-  date, material and item code, category, unit, opening (at the start of the period), received, issued,
-  returned, adjusted, closing, rate, value, days in store, vendor and whose PO. A receipt that held nothing
+- **RM register** - "Stock by MIR", one row per MIR receipt like the Drive Stock tab, laid out like the MIR
+  register: MIR (line, receipt date), material (item code, category), vendor (whose PO), opening (at the
+  start of the period), received, issued, returned and adjusted (those two only when something in the
+  period moved that way), closing with its unit, rate per unit, value and days in store, with the closing
+  value totalled in the footer. A receipt that held nothing
   all period and moved nothing is left out unless "Include MIRs with nothing left". A row opens the
   receipt's movements with the running balance, its store settings, and **Issue from this MIR** /
   **Record a difference**. "Issue slips" lists the vouchers; an issue offers **Take material back**.
@@ -1541,7 +1544,7 @@ RM stock entry's rules (see [RM stock entry](#rm-stock-entry-2026-09-29)). The M
 `record_rejection()`, which turn the refusal into a `MirValidationError`), `mir_line_stock(mir)`.
 Reading: `lot_events()` (a lot's dated movements, with overrides for a change being checked),
 `lot_balances()` (in, issued, returned, adjusted, balance), `receipts_for_issue(plant, q)` (the picker),
-`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, `lot_detail(lot)` (movements with
+`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, the picker ordered oldest MIR first, `lot_detail(lot)` (movements with
 the running balance), `differences(plant_codes, status)`, `returnable_lines(issue)`, `departments(plant)`,
 `doc_of(lot)`. `LOT_RELATED` is the `select_related` a lot needs for all of that.
 `evaluate(payload, lock=False, earliest=None)` - the one check-and-value of an issue, return or difference;

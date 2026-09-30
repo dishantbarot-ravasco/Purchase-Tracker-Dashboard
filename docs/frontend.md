@@ -1377,13 +1377,16 @@ top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.
   after a save was tried - save, reset); each form's host carries `data-form-host` and a `data-no-write`
   banner, and each form supplies `payload`, `paint`, `lineAt`, `reset`, and optionally `onPlant`,
   `progress`, `saved`.
-- `stMirPicker()` - the MIR search shared by the issue and difference forms: `/api/stock/receipts`, hits
-  grouped by MIR, a line added with everything from its MIR (`stReceiptChips()`); the quantity is the
-  only thing typed.
+- `stMirPicker(input, allBtn, box, ...)` - the MIR search shared by the issue and difference forms:
+  `/api/stock/receipts` (`all=1` behind "Show all open MIRs"), hits grouped by MIR with "Add all lines", the
+  list kept open after a pick with added lines greyed; returns `{clear()}` for a plant change. A line is
+  added with everything from its MIR (`stReceiptChips()`); the quantity is the only thing typed.
 - Issue (`stIssueForm()`, `stIssueRender()`, `stIssueProgress()`): the three-step strip like MIR entry's,
   optional department / person / production order in a `<details>`.
 - RM register (`stInitRegister()`, `stLoadRegister()`, `stLoadReceipt()`): the Drive-sheet-shaped table
-  per MIR receipt for a period (this month by default), category filter from `meta.categories`; a row
+  per MIR receipt for a period (this month by default) in the MIR register's style - details folded under
+  the MIR, material and vendor, Returned / Adjusted only when used, a closing-value footer - with the
+  category filter from `meta.categories`; plant filters read "All plants"; a row
   opens the receipt's movements, store settings, and Issue from this MIR / Record a difference
   (`stSendTo()`). Issue slips (`stLoadSlips()`, `stLoadVoucher(id, areaId)`): detail with approve /
   turn down, cancel or withdraw, and Take material back (`stReturnOpen()`, the return form under the
