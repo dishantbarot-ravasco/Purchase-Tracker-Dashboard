@@ -828,6 +828,10 @@ helpers.
 Django views for login/callback (DRF's request wrapper interfered with session saves before a
 redirect). No auto-registration: the Google address must already be an active `PTUser`.
 
+The Google Cloud OAuth consent screen's audience is **Internal** (confirmed by the owner, 2026-10-01):
+Google itself admits only the company's Workspace accounts, so the app needs no Google verification
+and no published privacy-policy link. Switching it to External would need both.
+
 - `_make_flow()` - builds the `google_auth_oauthlib` `Flow` from `GOOGLE_CLIENT_ID`/`SECRET`/
   `GOOGLE_OAUTH_REDIRECT_URI` with scopes `openid email` only - the verified email is all sign-in
   reads, so `profile` (name, photo) is not requested (data-minimisation pass, 2026-10-01). The module sets
