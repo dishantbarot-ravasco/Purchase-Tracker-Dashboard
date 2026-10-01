@@ -143,6 +143,32 @@ class TestPeriodRoll:
         assert intervals_for_lot(points)[0].classification == RESTATEMENT
 
 
+
+class TestBrokenSnapshotRead:
+    """A sync that reads ISSUE / Today Stock blank or as an error stores 0
+    for that day. Kept, the dip read as a period roll (excluded) and the
+    recovery as one day's consumption of the whole period-to-date total."""
+
+    def test_a_dip_that_recovers_is_skipped_not_booked_as_one_day(self):
+        points = [_p(0, 1000, 0, 1000, 0), _p(1, 1000, 0, 0, 0), _p(2, 1000, 50, 1010, 40)]
+        intervals = intervals_for_lot(points)
+        assert [(i.start, i.end) for i in intervals] == [(D(2026, 9, 1), D(2026, 9, 3))]
+        assert intervals[0].quantity == Decimal(10)
+
+    def test_two_broken_days_in_a_row_are_skipped_too(self):
+        points = [_p(0, 1000, 0, 500, 500), _p(1, 0, 0, 0, 0), _p(2, 0, 0, 0, 0), _p(3, 1000, 0, 520, 480)]
+        assert sum(i.quantity for i in intervals_for_lot(points) if i.counts_toward_rate) == Decimal(20)
+
+    def test_a_real_roll_that_stays_reset_is_still_a_roll(self):
+        points = [_p(0, 1000, 0, 800, 200), _p(1, 200, 0, 50, 150), _p(2, 200, 0, 90, 110)]
+        intervals = intervals_for_lot(points)
+        assert [i.classification for i in intervals] == [PERIOD_ROLL, COUNTED]
+
+    def test_a_dip_on_the_newest_snapshot_is_kept_until_the_next_one(self):
+        points = [_p(0, 1000, 0, 1000, 0), _p(1, 1000, 0, 0, 0)]
+        assert [i.classification for i in intervals_for_lot(points)] == [PERIOD_ROLL]
+
+
 class TestCloseout:
     def test_a_dormant_lot_zeroed_in_one_step_is_excluded(self):
         # HRS lot 4 (SBR 1502) shape: 75,600 untouched for days, then

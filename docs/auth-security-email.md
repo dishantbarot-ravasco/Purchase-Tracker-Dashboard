@@ -470,6 +470,9 @@ SQL/eval/exec in `apps/`, ORM-only DB access, the Drive query escaped, and the f
 running dynamic content through `escapeHtml()`/`textContent` before touching `innerHTML`. Keep it that
 way. Every URL segment in `shared.js`/`material-modal.js` is `encodeURIComponent()`-wrapped even where
 the value is backend-issued today, so a future reuse of that URL-building code can't silently regress.
+Encoding does not survive for "/": the WSGI server decodes `%2F` before Django resolves the URL, so the
+per-PO routes take the PO number with a `<path:po_number>` converter (legacy numbers such as
+`HRS/HO/26-27/003` contain slashes).
 Email bodies are HTML-escaped by `render_email()`, and the User-Agent-derived device name has control
 characters stripped before it reaches an email.
 
@@ -880,7 +883,8 @@ is the admin `PATCH /api/auth/users/<id>`.
 - `request_password_change` (`POST /api/auth/change-password/request`, `IsAuthenticated`) - emails a
   code to the caller's own address and always answers 202 `{"status": "sent"}`.
 - `confirm_password_change` (`POST /api/auth/change-password/confirm`, body `{"otp", "newPassword"}`)
-  - verifies the OTP, applies `_validate_password_strength`, saves the new hash, `revoke_all_tokens()`
+  - applies `_validate_password_strength` first (verifying the OTP uses it up, so a weak password
+  checked afterwards cost the user their code), then verifies the OTP, saves the new hash, `revoke_all_tokens()`
   (device trust kept), re-reads the user and re-issues both cookies, writes a `user_updated` audit row,
   returns `{"status": "ok", "sessionsRevoked": true}`.
 

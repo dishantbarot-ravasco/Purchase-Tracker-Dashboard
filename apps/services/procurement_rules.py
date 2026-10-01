@@ -203,7 +203,14 @@ def rate_differs(po_rate, invoice_rate) -> bool:
     return Decimal(po_rate).quantize(RATE, rounding=ROUND_HALF_UP) != Decimal(invoice_rate).quantize(RATE, rounding=ROUND_HALF_UP)
 
 
+# MirMismatch.difference_pct is numeric(9, 2). A tiny open quantity against
+# a full truck (0.010 left, 1000.02 received) is ~1e7 %, which overflowed it
+# and turned a MIR that previewed fine into a 500 on posting.
+MAX_PCT = Decimal("9999999.99")
+
+
 def pct_of(diff, base) -> Decimal | None:
     if not base:
         return None
-    return (Decimal(diff) / Decimal(base) * 100).quantize(MONEY, rounding=ROUND_HALF_UP)
+    pct = (Decimal(diff) / Decimal(base) * 100).quantize(MONEY, rounding=ROUND_HALF_UP)
+    return max(-MAX_PCT, min(MAX_PCT, pct))

@@ -12,6 +12,7 @@ sync_*_po_csv tests following this same call_command pattern.
 
 import csv
 import io
+from decimal import Decimal
 
 import pytest
 from django.core.management import call_command
@@ -117,3 +118,40 @@ class TestSyncHrsImportsPoCsv:
         run = SyncRun.objects.filter(source=SyncRun.Source.IMPORT_PO_CSV).latest("started_at")
         assert run.status == SyncRun.Status.FAILED
         assert not HRSImportPurchaseOrder.objects.exists()
+
+    def test_a_changed_order_keeps_its_line_ids_so_dismissals_survive(self, tmp_path):
+        """Import match dismissals are keyed on the PO line's pk
+        (match_pairs.py). The sync used to delete and rebuild every line of a
+        changed order, so a routine update - here the BOE number and exchange
+        rate filled in - gave every line a new pk and silently dropped the
+        dismissals. Lines are now diffed in place by position."""
+        line_2 = dict(_ROW_TEMPLATE, **{"Item Id": "2", "Material Description": "PTFE Tape", "PO Number | Item Id": "IMP001|2"})
+        fixture_path = tmp_path / "imports.csv"
+        fixture_path.write_text(_write_csv([_ROW_TEMPLATE, line_2]), encoding="utf-8")
+        call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+        before = list(HRSImportPOLineItem.objects.filter(purchase_order__po_number="IMP001").order_by("pk").values_list("pk", flat=True))
+
+        cleared = dict(_ROW_TEMPLATE, **{"BOE Number": "BOE777", "Exchange Rate": "94.10"})
+        fixture_path.write_text(_write_csv([cleared, line_2]), encoding="utf-8")
+        call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+
+        lines = list(HRSImportPOLineItem.objects.filter(purchase_order__po_number="IMP001").order_by("pk"))
+        assert [line.pk for line in lines] == before
+        assert lines[0].boe_number == "BOE777" and lines[0].exchange_rate == Decimal("94.10")
+        assert lines[1].description == "PTFE Tape"
+
+    def test_a_dropped_line_is_removed_and_a_new_one_appended(self, tmp_path):
+        line_2 = dict(_ROW_TEMPLATE, **{"Item Id": "2", "Material Description": "PTFE Tape", "PO Number | Item Id": "IMP001|2"})
+        fixture_path = tmp_path / "imports.csv"
+        fixture_path.write_text(_write_csv([_ROW_TEMPLATE, line_2]), encoding="utf-8")
+        call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+        first_pk = HRSImportPOLineItem.objects.filter(purchase_order__po_number="IMP001").order_by("pk").first().pk
+
+        fixture_path.write_text(_write_csv([_ROW_TEMPLATE]), encoding="utf-8")
+        call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+        assert list(HRSImportPOLineItem.objects.filter(purchase_order__po_number="IMP001").values_list("pk", flat=True)) == [first_pk]
+
+        fixture_path.write_text(_write_csv([_ROW_TEMPLATE, line_2]), encoding="utf-8")
+        call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+        lines = list(HRSImportPOLineItem.objects.filter(purchase_order__po_number="IMP001").order_by("pk"))
+        assert lines[0].pk == first_pk and lines[1].description == "PTFE Tape"

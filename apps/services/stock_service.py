@@ -253,14 +253,30 @@ def receipts_for_issue(plant_codes, q: str = "", *, limit: int = 80) -> list:
     for the issue form's picker: the ones matching `q` (all of them when `q`
     is empty), oldest MIR first so the oldest stock is the obvious pick. The
     form takes its plant from the MIR picked, so it searches every plant the
-    storekeeper may issue at."""
+    storekeeper may issue at.
+
+    Read in batches until `limit` receipts with stock are found: a fixed
+    cap on the oldest lots, taken before the balance filter, filled up with
+    fully issued receipts once a plant had a few thousand and newer stock
+    vanished from the picker."""
     from apps.core.models import StockLot
 
     qs = _search(StockLot.objects.filter(plant__code__in=list(plant_codes), stocked=True, source="MIR",
                                          mir_line__mir__status="POSTED"), q)
-    lots = list(qs.select_related(*LOT_RELATED).order_by("received_date", "mir_line__mir__mir_no", "mir_line__line_no", "id")[:3000])
-    bal = lot_balances(lots)
-    return [(lot, bal[lot.id]["balance"]) for lot in lots if bal[lot.id]["balance"] > 0][:limit]
+    qs = qs.select_related(*LOT_RELATED).order_by("received_date", "mir_line__mir__mir_no", "mir_line__line_no", "id")
+    out: list = []
+    start = 0
+    while len(out) < limit:
+        lots = list(qs[start:start + _PICKER_BATCH])
+        if not lots:
+            break
+        bal = lot_balances(lots)
+        out += [(lot, bal[lot.id]["balance"]) for lot in lots if bal[lot.id]["balance"] > 0]
+        start += _PICKER_BATCH
+    return out[:limit]
+
+
+_PICKER_BATCH = 500
 
 
 def _receipt_kind(lot) -> str:
@@ -617,7 +633,11 @@ def _evaluate_return(result, payload, raw_lines, *, lock):
 
     errors, plant, day = result["errors"], result["plant"], result["voucher_date"]
     reasons = {r.code: r for r in StockReasonCode.objects.filter(kind="RETURN")}
-    issue = StockVoucher.objects.filter(pk=_int(payload.get("return_of")), kind="ISSUE").select_related("plant").first()
+    issues = StockVoucher.objects.filter(pk=_int(payload.get("return_of")), kind="ISSUE").select_related("plant")
+    # Posting locks the issue row, the one cancel_voucher() locks: otherwise
+    # a return and the issue's cancellation could both commit, and the return
+    # would add back stock that never left the store.
+    issue = (issues.select_for_update(of=("self",)) if lock else issues).first()
     if issue is None:
         errors.append({"field": "return_of", "message": "Choose the issue the material is coming back from."})
         return

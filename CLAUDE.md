@@ -133,7 +133,8 @@ Read the linked section before breaking any of these. Each is there because it w
   back-to-back syncs must report 0 changed.
   [change detection](docs/data-sync.md#change-detection-must-compare-quantized-decimals-rounded-the-way-postgres-rounds)
 - POs are deactivated, never deleted; a hash-skip must check `existing.is_active`. PO lines are
-  written as a diff keyed on position (`sync_line_items()`), never delete-and-rebuild; a procurement
+  written as a diff keyed on position (`sync_line_items()`), never delete-and-rebuild - import lines
+  too (their pks key the match dismissals); a procurement
   PO line is never deleted at all (MIR lines point at it).
   [PO diff](docs/data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)
   [retired POs](docs/data-sync.md#purchase-orders-are-retired-not-deleted---and-until-2026-09-18-they-were-neither)
@@ -426,6 +427,10 @@ Read the linked section before breaking any of these. Each is there because it w
 | Header check stripping whitespace, row lookup not → `KeyError` on a resaved CSV (both PO parsers now re-key rows) | [architecture](docs/architecture.md#per-plant-models-not-a-shared-schema---deliberate-dont-fix-it) |
 | Comparing pre-tax PO value to post-tax MIR value → bogus ~18% gap | [matching](docs/matching-engine.md#po--mir) |
 | Vendors with no PO looking like matcher failures on every run | [matching](docs/matching-engine.md#some-vendors-never-have-a-po---that-is-registered-not-inferred) |
+| `<str:po_number>` 404ing every per-PO edit, pin and flag dismissal on a PO number with "/" (the server decodes `%2F`); now `<path:>`, detail route last | [api](docs/api-and-features.md#appsapiurlspy) |
+| Import PO lines deleted and rebuilt on every CSV change, silently dropping the match dismissals keyed on their pks | [data-sync](docs/data-sync.md#appsservicesimport_syncpy) |
+| BOE settlement ignoring manual receipt edits: a removed BOE receipt came back, an added one vanished unreported | [matching](docs/matching-engine.md#file-reference) |
+| An over-long domestic PO CSV row (`None` key) crashing the whole plant's PO sync on `.strip()` | [data-sync](docs/data-sync.md#appsservicesparserspo_csvpy) |
 | `?format=csv` silently 404ing - DRF reserves `format` | [matching](docs/matching-engine.md#no-purchase-order-behind-it-is-three-questions-not-one-2026-09-21) |
 | Exact vendor equality → zero MIR↔Stock matches (city suffix) | [matching](docs/matching-engine.md#vendor-name-is-a-hard-gate-on-mirstock-one-of-three-votes-on-pomir-everywhere-now) |
 | Letter-for-letter material equality as MIR↔Stock's only rule → 1.6-27% coverage | [matching](docs/matching-engine.md#three-tiers-not-one-equality-test-2026-09-21) |

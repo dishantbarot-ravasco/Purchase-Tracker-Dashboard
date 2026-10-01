@@ -121,7 +121,7 @@ _CELL_SEPARATORS = re.compile(r"[\/,;|\n\r]+")
 # plant key -> (line item model, display label). Same keys and labels
 # imports_views._PLANTS uses, kept here so this module stays importable from
 # anywhere (a service must not import from the API layer).
-_PLANT_LINE_ITEMS = (
+PLANT_LINE_ITEMS = (
     ("hrs", HRSImportPOLineItem, "HRS-Silvassa"),
     ("achhad", RTPAchhadImportPOLineItem, "RTP-Achhad"),
     ("vapi", RTPVapiImportPOLineItem, "RTP-Vapi"),
@@ -209,7 +209,7 @@ def collect_citations(scheme: str | None = None) -> list[LicenseCitation]:
     one scheme or for all of them. Three queries total - one per plant, with
     the PO joined in - not one per line item."""
     citations: list[LicenseCitation] = []
-    for plant_key, model, plant_label in _PLANT_LINE_ITEMS:
+    for plant_key, model, plant_label in PLANT_LINE_ITEMS:
         items = (
             model.objects
             .filter(purchase_order__is_active=True)

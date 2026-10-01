@@ -11,24 +11,27 @@ stays a thin ~30-line shell (plant enum + Drive file title + this call).
 
 import hashlib
 
-from apps.services.sync_utils import deactivate_missing_orders
+from apps.services.sync_utils import deactivate_missing_orders, sync_line_items
 from django.db import transaction
 from django.utils import timezone
+
+
+# Every parsed column an import line carries, written by sync_line_items().
+IMPORT_LINE_FIELDS = (
+    "item_id", "description", "hsn", "qty_as_per_po", "qty_as_per_boe", "uom", "delivery_date",
+    "delivery_date_raw", "net_price", "net_value", "tax_type", "currency_after_taxes", "exchange_rate",
+    "total_inclusive_value", "boe_number", "bill_of_lading_number", "laden_on_board_date",
+    "country_of_origin", "license_type", "license_number",
+)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _order_hash(order) -> str:
     """Hash of every order + line-item field the parser produces, used by
-    _upsert_order() as the "did anything actually change" check - same
-    change-detection idea as apps/services/sync_utils.py's unchanged(), but
-    a plain hash instead of a per-field Decimal-quantizing comparison. That
-    difference is deliberate, not an oversight: an Import PO's line items
-    are always fully deleted and recreated on any change (see
-    _upsert_order() below), so there's no persisted row to compare a single
-    field against field-by-field the way sync_utils.unchanged() can against
-    an existing model instance - hashing the whole parsed shape is the only
-    way to tell "changed" from "unchanged" before touching the DB at all."""
+    _upsert_order() as the "did anything actually change" check, so an
+    unchanged order is skipped without touching a row. A changed order's
+    lines are then diffed field-by-field by sync_utils.sync_line_items()."""
     parts = [
         order.po_drive_folder_name, order.po_number, str(order.po_created_date),
         order.vendor_name, order.vendor_address, order.vendor_gstin, order.vendor_email,
@@ -79,14 +82,10 @@ def sync_orders(po_model, line_item_model, parsed_orders: list) -> tuple[int, in
 
 def _upsert_order(po_model, line_item_model, parsed) -> bool:
     """Upserts one order + its line items, skipping the write entirely if
-    the row hash is unchanged. Line items have no stable natural key on
-    their own within a PO the way the PO itself does (po_number) - see
-    CLAUDE.md's "Domestic line items have no stable natural key" section
-    for the same limitation on the domestic side - so on any real change
-    every existing item under this PO is deleted and bulk-recreated rather
-    than diffed and updated in place; simpler and safe since Import line
-    items aren't individually FK'd from anywhere that would orphan on
-    delete."""
+    the row hash is unchanged. A changed order's header is written in place
+    and its lines as a diff keyed on position (sync_utils.sync_line_items()),
+    the same rule as the domestic syncs: a line keeps its pk, so the match
+    dismissals keyed on it (match_pairs.py) survive."""
     row_hash = _order_hash(parsed)
     existing = po_model.objects.filter(po_number=parsed.po_number).first()
     # `existing.is_active and` matters: without it an order that was
@@ -117,31 +116,8 @@ def _upsert_order(po_model, line_item_model, parsed) -> bool:
             last_synced_at=timezone.now(),
         ),
     )
-    order.items.all().delete()
-    line_item_model.objects.bulk_create([
-        line_item_model(
-            purchase_order=order,
-            item_id=item.item_id,
-            description=item.description,
-            hsn=item.hsn,
-            qty_as_per_po=item.qty_as_per_po,
-            qty_as_per_boe=item.qty_as_per_boe,
-            uom=item.uom,
-            delivery_date=item.delivery_date,
-            delivery_date_raw=item.delivery_date_raw,
-            net_price=item.net_price,
-            net_value=item.net_value,
-            tax_type=item.tax_type,
-            currency_after_taxes=item.currency_after_taxes,
-            exchange_rate=item.exchange_rate,
-            total_inclusive_value=item.total_inclusive_value,
-            boe_number=item.boe_number,
-            bill_of_lading_number=item.bill_of_lading_number,
-            laden_on_board_date=item.laden_on_board_date,
-            country_of_origin=item.country_of_origin,
-            license_type=item.license_type,
-            license_number=item.license_number,
-        )
-        for item in parsed.items
-    ])
+    # A diff keyed on line position, never delete-and-rebuild: a line's pk
+    # keys its match dismissals (match_pairs.py), so a rebuild on a routine
+    # change (a BOE number or exchange rate filled in) silently dropped them.
+    sync_line_items(order, parsed.items, line_item_model, IMPORT_LINE_FIELDS)
     return True

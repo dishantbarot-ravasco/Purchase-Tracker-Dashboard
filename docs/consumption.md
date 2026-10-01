@@ -306,7 +306,13 @@ but is not. Safe to import from a migration; unit-tested as plain Python in
   except `period_roll` (balance estimate, floored at 0).
 - **`intervals_for_lot(points, *, max_dated_gap_days=1)`** - sorts the points (so unordered input and
   same-date duplicates are harmless) and classifies each consecutive pair, tracking whether the lot has
-  already moved (a positive counted interval) for the closeout rule.
+  already moved (a positive counted interval) for the closeout rule. First it drops broken reads
+  (`_without_broken_reads()`): a run of up to `_MAX_BROKEN_RUN` (3) snapshots whose `issued` dips below
+  the one before and is back at or above it right after. The stock parser turns a blank or error cell
+  into 0, and kept, the dip read as an excluded `period_roll` and the recovery booked the lot's whole
+  period-to-date issues as one interval (1000 -> 0 -> 1010 counted 1010, not 10). A real roll resets
+  the book and stays reset, so it is untouched; a dip on the newest snapshot stays a roll until the next
+  one arrives, and the ledger's lookback rebuild then corrects it.
 - **`allocate_daily(interval)`** - spreads an interval over the days *after* `start` through `end`.
   One-day intervals keep their own classification as the quality; wider ones split evenly, quantized
   to 0.001, all marked `spread`, remainder on the last day so the sum is exact. Zero or negative

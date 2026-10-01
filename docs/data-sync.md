@@ -182,10 +182,10 @@ for p in entries:
         print(p.source_row_ref, [(f, getattr(e, f), getattr(p, f)) for f in _FIELDS if getattr(e, f) != getattr(p, f)])
 ```
 
-Whole-object hashes are the deliberate exception, used wherever child rows are always deleted and
-recreated together so there is no persisted row to diff field-by-field: `import_sync.py`'s
-`_order_hash` (Import POs), `sync_po_csv.py`'s `_po_hash` (and its Achhad/Vapi copies), and
-`sync_advance_license.py`'s `_license_hash`. Each stores the hash on the parent row as
+Whole-object hashes are the deliberate exception, used to skip an unchanged parent and its child
+rows in one check: `import_sync.py`'s `_order_hash` (Import POs), `sync_po_csv.py`'s `_po_hash` (and
+its Achhad/Vapi copies), and `sync_advance_license.py`'s `_license_hash`. A changed PO's lines are then
+diffed field-by-field by `sync_utils.sync_line_items()`. Each stores the hash on the parent row as
 `synced_from_row_hash`.
 
 ### Purchase orders are retired, not deleted - and until 2026-09-18 they were neither
@@ -524,6 +524,11 @@ tested against local files with no credentials.
 
 Shared, DB-light helpers for the sync commands.
 
+- `fit_to_columns(model_cls, parsed, fields) -> list[str]` - cuts every text value longer than its
+  column's `max_length` to fit, in place, and returns the fields cut. The three MIR syncs call it before
+  `unchanged()`: they write a plant's rows in one transaction, so one over-long cell (a free-text state
+  over HRS's 10 characters) failed the plant's whole MIR sync every hour until the sheet was edited.
+
 - `unchanged(model_cls, existing, parsed, fields) -> bool` - field-by-field equality, quantizing any
   Decimal side to the model field's `decimal_places` with `ROUND_HALF_UP` after coercing ints/floats
   through `Decimal(str(x))`. See
@@ -534,8 +539,9 @@ Shared, DB-light helpers for the sync commands.
   every *active* order absent from the CSV and returns the sorted numbers it retired **this run**
   (not the standing list, which would repeat the same names forever). Materializes the queryset before
   the UPDATE because its own filter is `is_active=True`.
-- `sync_line_items(order, parsed_items, item_model) -> dict` - applies a changed PO's line items as a
-  diff keyed on position (`PO_LINE_FIELDS`): update in place only where `unchanged()` says a field
+- `sync_line_items(order, parsed_items, item_model, fields=PO_LINE_FIELDS) -> dict` - applies a
+  changed PO's line items as a diff keyed on position (`fields`: `PO_LINE_FIELDS` for the domestic
+  mirrors, `import_sync.IMPORT_LINE_FIELDS` for import lines): update in place only where `unchanged()` says a field
   differs, create new trailing lines, delete lines past the new end. Returns
   `{"updated", "created", "deleted"}`. See
   [PO CSV into the procurement tables](#po-csv-into-the-procurement-tables-2026-09-28).
@@ -549,8 +555,10 @@ duplicate theirs per plant instead).
   upserts each order in its own `transaction.atomic()` (one bad order does not roll back the rest),
   then calls `deactivate_missing_orders()`.
 - `_upsert_order()` - skips when the order is active and `synced_from_row_hash` matches; otherwise
-  `update_or_create` on `po_number` with `is_active=True` in the defaults, then deletes and
-  bulk-recreates every line item.
+  `update_or_create` on `po_number` with `is_active=True` in the defaults, then writes the lines as a
+  diff through `sync_utils.sync_line_items(..., IMPORT_LINE_FIELDS)`. Never delete-and-rebuild: an
+  import line's pk keys its match dismissals (`match_pairs.py`), and a rebuild on a routine change (a
+  BOE number or exchange rate filled in) silently dropped every dismissal on the order.
 - `_order_hash()` - SHA-256 over every order and line-item field the parser produces, including the
   BOE/BL/licence columns.
 
@@ -693,7 +701,10 @@ in first-seen order, each order carrying `ParsedLineItem`s. Header check strips 
 are re-keyed by stripped header (see [Parser conventions](#parser-conventions)). `currency` defaults
 to `"INR"`. `is_old_format_template` is a heuristic (`/`, `HRS` or `HO` in the PO number). The
 `PO Number | Item Id` column is only header-checked, never read. The PO number is stored verbatim,
-annotations such as `(Changed Purchase Order)` included.
+annotations such as `(Changed Purchase Order)` included. A row with more cells than the header
+(`DictReader` keys the extras on `None`) is accepted when the extras are blank - an export artifact -
+and otherwise refused with `HeaderMismatch` naming the CSV line and PO number: the columns have shifted
+(an unquoted comma in a text cell), and reading on would put every later field in the wrong column.
 
 ### [apps/services/parsers/import_po_csv.py](../apps/services/parsers/import_po_csv.py)
 
@@ -790,7 +801,8 @@ was not seen. A row number is not a real identity - inserting a row mid-sheet re
 onto their neighbours' identities - but MIR has no reliably unique column, so this is accepted and
 matching simply recomputes. After the transaction, `mir_tax_arithmetic` flags over active rows
 (Vapi's GST sum includes `others_with_gst` and its discount is zero). `_FIELDS` differs per plant
-exactly as the parsers' column sets do.
+exactly as the parsers' column sets do. Each row goes through `sync_utils.fit_to_columns()` before the
+comparison, so an over-long cell is cut to its column rather than failing the whole sync.
 
 ### Stock syncs: [sync_stock.py](../apps/core/management/commands/sync_stock.py), [sync_achhad_stock.py](../apps/core/management/commands/sync_achhad_stock.py), [sync_vapi_stock.py](../apps/core/management/commands/sync_vapi_stock.py)
 

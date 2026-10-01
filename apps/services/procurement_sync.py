@@ -152,12 +152,17 @@ def _project_lines(po, legacy_items, result: ProjectionResult) -> None:
             + ([PurchaseOrderLineChange(po_line=line, field="is_active", old_value="False", new_value="True")] if reactivated else [])
         )
         identity = [f for f, _o, _n in changes if f in _IDENTITY_FIELDS]
+        written = [f for f, _o, _n in changes] + (["is_active"] if reactivated else [])
         if received and identity:
             line.needs_review = True
             line.review_note = (f"The PO sheet changed {', '.join(identity)} after receipts were posted against this "
                                 f"line on {timezone.localdate():%d-%m-%Y}. Confirm the receipts still belong here.")
             result.lines_flagged.append(f"{po.po_number} line {position}")
-        line.save()
+            written += ["needs_review", "review_note"]
+        # Only what the sheet changed: the row was read without a lock, so a
+        # whole-row save put back a short-close or review a person had just
+        # committed on this line (closed_at and the rest).
+        line.save(update_fields=written)
         result.lines_updated += 1
     for line_no, line in existing.items():
         if line_no > len(legacy_items) and line.is_active:

@@ -559,6 +559,17 @@ class TestRegister:
         # Across plants: the form takes its plant from the MIR picked.
         assert len(stock_service.receipts_for_issue(["hrs", "vapi"])) == 3
 
+    def test_the_picker_reads_past_fully_issued_receipts_to_newer_stock(self, user, monkeypatch):
+        """It used to take the oldest 3,000 lots and only then drop the
+        empty ones, so a plant with thousands of fully issued receipts got a
+        short or empty picker. Batches of 2 stand in for that here."""
+        monkeypatch.setattr(stock_service, "_PICKER_BATCH", 2)
+        for days in (9, 8, 7):
+            _issue(user, "100", _lot(_receive(user, "100", days_ago=days)))
+        newer = [_lot(_receive(user, "100", days_ago=d)) for d in (3, 2, 1)]
+        assert [lot for lot, _bal in stock_service.receipts_for_issue(["hrs"])] == newer
+        assert [lot for lot, _bal in stock_service.receipts_for_issue(["hrs"], limit=2)] == newer[:2]
+
 
 @pytest.mark.django_db
 class TestLotsBackInTheirMirUnit:
@@ -664,3 +675,15 @@ class TestConcurrentIssues:
         results = _in_parallel(lambda: _issue(user, "70", lot), lambda: _issue(user, "70", lot))
         assert sum(isinstance(r, StockVoucher) for r in results) == 1, results
         assert _on_hand() == Decimal("30")
+
+    def test_a_return_and_the_issues_cancellation_at_once_do_not_both_commit(self):
+        """The return read the issue without a lock, so it and the issue's
+        cancellation could both pass their checks and commit - adding back
+        stock that, with the issue cancelled, never left the store."""
+        user = make_user(email="k2@ravasco.com", role="editor")
+        lot = _lot(_receive(user, "100"))
+        issue = _issue(user, "60", lot)
+        results = _in_parallel(lambda: _return(user, issue, "10"),
+                               lambda: stock_service.cancel_voucher(issue, user, "wrong entry"))
+        assert sum(not isinstance(r, Exception) for r in results) == 1, results
+        assert _on_hand() in (Decimal("50"), Decimal("100"))

@@ -44,6 +44,28 @@ def unchanged(model_cls, existing, parsed, fields: list[str]) -> bool:
     return True
 
 
+def fit_to_columns(model_cls, parsed, fields) -> list[str]:
+    """Cut every text value on `parsed` that is longer than its model
+    column's max_length down to fit, in place; returns the field names cut.
+
+    A MIR sync writes every row of a plant inside one transaction, so a
+    single over-long cell (a free-text state such as "Netherlands" into
+    HRS's 10-character `state`) raised a DataError and rolled back the whole
+    plant's MIR sync, every hour, until someone edited the sheet. Call it
+    before unchanged(), so the cut value is what gets compared and a re-sync
+    of the same sheet still reports nothing changed."""
+    cut = []
+    for f in fields:
+        value = getattr(parsed, f)
+        if not isinstance(value, str):
+            continue
+        limit = getattr(model_cls._meta.get_field(f), "max_length", None)
+        if limit and len(value) > limit:
+            setattr(parsed, f, value[:limit])
+            cut.append(f)
+    return cut
+
+
 def orphaned_orders(order_model, parsed_orders):
     """Purchase orders stored from an earlier revision of the master CSV that
     the CSV no longer contains.
@@ -75,7 +97,7 @@ def orphaned_orders(order_model, parsed_orders):
 PO_LINE_FIELDS = ("item_id", "description", "hsn", "qty", "uom", "delivery_date", "net_price", "net_value")
 
 
-def sync_line_items(order, parsed_items, item_model) -> dict:
+def sync_line_items(order, parsed_items, item_model, fields=PO_LINE_FIELDS) -> dict:
     """Apply a changed PO's line items as a DIFF, keyed on each line's
     position in the order (project owner, 2026-09-28: change only what was
     altered, never delete-and-rebuild the whole order).
@@ -91,20 +113,24 @@ def sync_line_items(order, parsed_items, item_model) -> dict:
     the same pipeline's match step rebuilds. The procurement tables, which
     DO carry receipts, never delete a line (apps/services/procurement_sync.py).
 
+    `fields` is the parsed columns a line carries - PO_LINE_FIELDS for the
+    domestic mirrors, import_sync.IMPORT_LINE_FIELDS for import lines, whose
+    pks key the match dismissals (match_pairs.py) and so must survive a sync.
+
     Returns {"updated", "created", "deleted"} counts."""
     existing = list(order.items.order_by("pk"))
     counts = {"updated": 0, "created": 0, "deleted": 0}
     for position, parsed in enumerate(parsed_items):
         if position < len(existing):
             row = existing[position]
-            if unchanged(item_model, row, parsed, list(PO_LINE_FIELDS)):
+            if unchanged(item_model, row, parsed, list(fields)):
                 continue
-            for field in PO_LINE_FIELDS:
+            for field in fields:
                 setattr(row, field, getattr(parsed, field))
-            row.save(update_fields=list(PO_LINE_FIELDS))
+            row.save(update_fields=list(fields))
             counts["updated"] += 1
         else:
-            item_model.objects.create(purchase_order=order, **{f: getattr(parsed, f) for f in PO_LINE_FIELDS})
+            item_model.objects.create(purchase_order=order, **{f: getattr(parsed, f) for f in fields})
             counts["created"] += 1
     extra = [row.pk for row in existing[len(parsed_items):]]
     if extra:

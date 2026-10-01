@@ -95,11 +95,11 @@ urlpatterns = [
     path("stock/vouchers/<int:voucher_id>/reject", stock_views.reject_voucher, name="stock-reject"),
     path("purchase-orders", hrs_views.purchase_orders, name="hrs-purchase-orders"),
     path("purchase-orders/summary", hrs_views.purchase_order_summary, name="hrs-purchase-order-summary"),
-    path("purchase-orders/<str:po_number>/fields", hrs_views.correct_field, name="hrs-correct-field"),
-    path("purchase-orders/<str:po_number>/mir-candidates", hrs_views.mir_candidates, name="hrs-mir-candidates"),
-    path("purchase-orders/<str:po_number>/mir-match", hrs_views.set_mir_match, name="hrs-set-mir-match"),
-    path("purchase-orders/<str:po_number>/mir-match/preview", hrs_views.preview_mir_match, name="hrs-preview-mir-match"),
-    path("purchase-orders/<str:po_number>/manual-changes", hrs_views.manual_changes, name="hrs-manual-changes"),
+    path("purchase-orders/<path:po_number>/fields", hrs_views.correct_field, name="hrs-correct-field"),
+    path("purchase-orders/<path:po_number>/mir-candidates", hrs_views.mir_candidates, name="hrs-mir-candidates"),
+    path("purchase-orders/<path:po_number>/mir-match", hrs_views.set_mir_match, name="hrs-set-mir-match"),
+    path("purchase-orders/<path:po_number>/mir-match/preview", hrs_views.preview_mir_match, name="hrs-preview-mir-match"),
+    path("purchase-orders/<path:po_number>/manual-changes", hrs_views.manual_changes, name="hrs-manual-changes"),
     path("mir-match-previews/<str:preview_id>", hrs_views.preview_mir_match_status, name="hrs-preview-mir-match-status"),
     path("materials", hrs_views.materials, name="hrs-materials"),
     path("materials/<int:lot_id>/fields", hrs_views.correct_material_field, name="hrs-correct-material-field"),
@@ -133,18 +133,18 @@ urlpatterns = [
     # Manual dismiss/reinstate for a PO-level flag (Quantity/Rate-Value
     # Discrepancy, Data Quality Flag category) shown in the Flags &
     # Corrections tab - see apps/services/flag_dismiss.py.
-    path("purchase-orders/<str:po_number>/flags/dismiss", hrs_views.dismiss_flag, name="hrs-dismiss-flag"),
+    path("purchase-orders/<path:po_number>/flags/dismiss", hrs_views.dismiss_flag, name="hrs-dismiss-flag"),
     # RTP-Achhad/RTP-Vapi - same shape as the HRS routes above, each under
     # its own /achhad/ or /vapi/ prefix (rather than a ?plant= query param)
     # so every plant's URLs stay trivially cacheable/greppable/bookmarkable
     # on their own.
     path("achhad/purchase-orders", achhad_views.purchase_orders, name="achhad-purchase-orders"),
     path("achhad/purchase-orders/summary", achhad_views.purchase_order_summary, name="achhad-purchase-order-summary"),
-    path("achhad/purchase-orders/<str:po_number>/fields", achhad_views.correct_field, name="achhad-correct-field"),
-    path("achhad/purchase-orders/<str:po_number>/mir-candidates", achhad_views.mir_candidates, name="achhad-mir-candidates"),
-    path("achhad/purchase-orders/<str:po_number>/mir-match", achhad_views.set_mir_match, name="achhad-set-mir-match"),
-    path("achhad/purchase-orders/<str:po_number>/mir-match/preview", achhad_views.preview_mir_match, name="achhad-preview-mir-match"),
-    path("achhad/purchase-orders/<str:po_number>/manual-changes", achhad_views.manual_changes, name="achhad-manual-changes"),
+    path("achhad/purchase-orders/<path:po_number>/fields", achhad_views.correct_field, name="achhad-correct-field"),
+    path("achhad/purchase-orders/<path:po_number>/mir-candidates", achhad_views.mir_candidates, name="achhad-mir-candidates"),
+    path("achhad/purchase-orders/<path:po_number>/mir-match", achhad_views.set_mir_match, name="achhad-set-mir-match"),
+    path("achhad/purchase-orders/<path:po_number>/mir-match/preview", achhad_views.preview_mir_match, name="achhad-preview-mir-match"),
+    path("achhad/purchase-orders/<path:po_number>/manual-changes", achhad_views.manual_changes, name="achhad-manual-changes"),
     path("achhad/mir-match-previews/<str:preview_id>", achhad_views.preview_mir_match_status, name="achhad-preview-mir-match-status"),
     path("achhad/materials", achhad_views.materials, name="achhad-materials"),
     path("achhad/materials/<int:lot_id>/fields", achhad_views.correct_material_field, name="achhad-correct-material-field"),
@@ -157,14 +157,14 @@ urlpatterns = [
     path("achhad/sync-trigger", achhad_views.sync_trigger, name="achhad-sync-trigger"),
     path("achhad/matches/po-mir/<int:match_id>/dismiss", achhad_views.dismiss_po_mir_match, name="achhad-dismiss-po-mir"),
     path("achhad/matches/mir-stock/<int:match_id>/dismiss", achhad_views.dismiss_mir_stock_match, name="achhad-dismiss-mir-stock"),
-    path("achhad/purchase-orders/<str:po_number>/flags/dismiss", achhad_views.dismiss_flag, name="achhad-dismiss-flag"),
+    path("achhad/purchase-orders/<path:po_number>/flags/dismiss", achhad_views.dismiss_flag, name="achhad-dismiss-flag"),
     path("vapi/purchase-orders", vapi_views.purchase_orders, name="vapi-purchase-orders"),
     path("vapi/purchase-orders/summary", vapi_views.purchase_order_summary, name="vapi-purchase-order-summary"),
-    path("vapi/purchase-orders/<str:po_number>/fields", vapi_views.correct_field, name="vapi-correct-field"),
-    path("vapi/purchase-orders/<str:po_number>/mir-candidates", vapi_views.mir_candidates, name="vapi-mir-candidates"),
-    path("vapi/purchase-orders/<str:po_number>/mir-match", vapi_views.set_mir_match, name="vapi-set-mir-match"),
-    path("vapi/purchase-orders/<str:po_number>/mir-match/preview", vapi_views.preview_mir_match, name="vapi-preview-mir-match"),
-    path("vapi/purchase-orders/<str:po_number>/manual-changes", vapi_views.manual_changes, name="vapi-manual-changes"),
+    path("vapi/purchase-orders/<path:po_number>/fields", vapi_views.correct_field, name="vapi-correct-field"),
+    path("vapi/purchase-orders/<path:po_number>/mir-candidates", vapi_views.mir_candidates, name="vapi-mir-candidates"),
+    path("vapi/purchase-orders/<path:po_number>/mir-match", vapi_views.set_mir_match, name="vapi-set-mir-match"),
+    path("vapi/purchase-orders/<path:po_number>/mir-match/preview", vapi_views.preview_mir_match, name="vapi-preview-mir-match"),
+    path("vapi/purchase-orders/<path:po_number>/manual-changes", vapi_views.manual_changes, name="vapi-manual-changes"),
     path("vapi/mir-match-previews/<str:preview_id>", vapi_views.preview_mir_match_status, name="vapi-preview-mir-match-status"),
     path("vapi/materials", vapi_views.materials, name="vapi-materials"),
     path("vapi/materials/<int:lot_id>/fields", vapi_views.correct_material_field, name="vapi-correct-material-field"),
@@ -177,22 +177,25 @@ urlpatterns = [
     path("vapi/sync-trigger", vapi_views.sync_trigger, name="vapi-sync-trigger"),
     path("vapi/matches/po-mir/<int:match_id>/dismiss", vapi_views.dismiss_po_mir_match, name="vapi-dismiss-po-mir"),
     path("vapi/matches/mir-stock/<int:match_id>/dismiss", vapi_views.dismiss_mir_stock_match, name="vapi-dismiss-mir-stock"),
-    path("vapi/purchase-orders/<str:po_number>/flags/dismiss", vapi_views.dismiss_flag, name="vapi-dismiss-flag"),
+    path("vapi/purchase-orders/<path:po_number>/flags/dismiss", vapi_views.dismiss_flag, name="vapi-dismiss-flag"),
 
     # Import Purchase Dashboard - cross-plant combined (see imports_views.py's
     # module docstring for why this doesn't split into per-plant routers).
     path("imports/purchase-orders", imports_views.purchase_orders, name="imports-purchase-orders"),
-    path("imports/purchase-orders/<str:plant>/<str:po_number>", imports_views.purchase_order_detail, name="imports-purchase-order-detail"),
-    path("imports/purchase-orders/<str:plant>/<str:po_number>/fields", imports_views.correct_field, name="imports-correct-field"),
-    path("imports/purchase-orders/<str:plant>/<str:po_number>/mir-candidates", imports_views.mir_candidates, name="imports-mir-candidates"),
-    path("imports/purchase-orders/<str:plant>/<str:po_number>/mir-match", imports_views.set_mir_match, name="imports-set-mir-match"),
-    path("imports/purchase-orders/<str:plant>/<str:po_number>/mir-match/preview", imports_views.preview_mir_match, name="imports-preview-mir-match"),
-    path("imports/purchase-orders/<str:plant>/<str:po_number>/manual-changes", imports_views.manual_changes_view, name="imports-manual-changes"),
+    path("imports/purchase-orders/<str:plant>/<path:po_number>/fields", imports_views.correct_field, name="imports-correct-field"),
+    path("imports/purchase-orders/<str:plant>/<path:po_number>/mir-candidates", imports_views.mir_candidates, name="imports-mir-candidates"),
+    path("imports/purchase-orders/<str:plant>/<path:po_number>/mir-match", imports_views.set_mir_match, name="imports-set-mir-match"),
+    path("imports/purchase-orders/<str:plant>/<path:po_number>/mir-match/preview", imports_views.preview_mir_match, name="imports-preview-mir-match"),
+    path("imports/purchase-orders/<str:plant>/<path:po_number>/manual-changes", imports_views.manual_changes_view, name="imports-manual-changes"),
     path("imports/mir-match-previews/<str:plant>/<str:preview_id>", imports_views.preview_mir_match_status, name="imports-preview-mir-match-status"),
     path("imports/sync-status", imports_views.sync_status, name="imports-sync-status"),
     path("imports/sync-trigger/<str:plant>", imports_views.sync_trigger, name="imports-sync-trigger"),
     path("imports/matches/po-mir/<str:plant>/<int:match_id>/dismiss", imports_views.dismiss_import_po_mir_match, name="imports-dismiss-po-mir"),
-    path("imports/purchase-orders/<str:plant>/<str:po_number>/flags/dismiss", imports_views.dismiss_flag, name="imports-dismiss-flag"),
+    path("imports/purchase-orders/<str:plant>/<path:po_number>/flags/dismiss", imports_views.dismiss_flag, name="imports-dismiss-flag"),
+    # After every suffixed per-PO import route: <path:> lets a PO number
+    # carry "/" (HRS/HO/26-27/003), so this bare form placed above them would
+    # read "X/fields" as a PO number and swallow the suffix.
+    path("imports/purchase-orders/<str:plant>/<path:po_number>", imports_views.purchase_order_detail, name="imports-purchase-order-detail"),
     path("imports/track-bl", imports_views.track_bl, name="imports-track-bl"),
 
     # RoDTEP scrip ledger (added 2026-09-09) - company-wide, not per-plant

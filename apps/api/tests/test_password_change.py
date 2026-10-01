@@ -82,6 +82,17 @@ class TestChangePasswordConfirm:
         # a way that changed anything - the original hash must still stand.
         assert not bcrypt.checkpw(b"1234567890", self.user.password_hash.encode())
 
+    def test_a_weak_password_leaves_the_code_usable(self):
+        """verify_otp() uses the code up, and it used to run before the
+        strength check - so a rejected password cost the user their code."""
+        code = self._real_otp_code()
+        weak = self.client.post("/api/auth/change-password/confirm",
+                                {"otp": code, "newPassword": "1234567890"}, format="json")
+        assert weak.status_code == 400
+        retry = self.client.post("/api/auth/change-password/confirm",
+                                 {"otp": code, "newPassword": "BrandNewPassw0rd!"}, format="json")
+        assert retry.status_code == 200
+
     def test_confirm_otp_is_single_use(self):
         code = self._real_otp_code()
         first = self.client.post(

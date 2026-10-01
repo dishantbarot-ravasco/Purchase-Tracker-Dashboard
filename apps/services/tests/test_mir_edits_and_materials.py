@@ -130,6 +130,15 @@ class TestEditMir:
         with pytest.raises(MirValidationError):
             mir_service.edit_mir(mir, user, {}, {1: {field: "1"}}, "Mistake")
 
+    def test_a_field_sent_in_the_wrong_set_is_refused_not_a_500(self, user):
+        """The two sets were checked together, so a header field under
+        `lines` (or the reverse) passed and then raised a KeyError."""
+        mir = _posted(user)
+        with pytest.raises(MirValidationError):
+            mir_service.edit_mir(mir, user, {}, {1: {"vehicle_no": "X"}}, "Mistake")
+        with pytest.raises(MirValidationError):
+            mir_service.edit_mir(mir, user, {"dept_use": "X"}, {}, "Mistake")
+
     def test_a_reason_is_required_and_an_empty_edit_refused(self, user):
         mir = _posted(user)
         with pytest.raises(MirValidationError):

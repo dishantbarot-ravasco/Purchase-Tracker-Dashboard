@@ -104,3 +104,18 @@ def test_an_active_pdf_upload_is_refused_and_nothing_is_stored(monkeypatch):
     assert not Document.objects.exists() and fake.stored == {}
 
     assert _upload(client, body=PLAIN_PDF).status_code == 201
+
+
+@pytest.mark.django_db
+class TestOddRequestBodiesAre400sNot500s:
+    def setup_method(self):
+        cache.clear()
+
+    def test_a_json_array_login_body(self):
+        response = APIClient().post("/api/auth/login", [1, 2], format="json")
+        assert response.status_code == 400
+
+    def test_a_numeric_device_code(self):
+        response = APIClient().post("/api/auth/device-verify", {"code": 123456}, format="json")
+        # No pending sign-in in this session: the 401 the view gives, not a 500 from .strip().
+        assert response.status_code == 401

@@ -112,3 +112,19 @@ class TestOrdinaryParsing:
         orders = parse_po_csv(csv_text)
         assert len(orders) == 1
         assert [i.item_id for i in orders[0].items] == ["ITEM1", "ITEM2"]
+
+
+class TestRowWithMoreCellsThanTheHeader:
+    """csv.DictReader keeps an over-long row's extra cells under the key
+    None, and `None.strip()` crashed the whole plant's PO sync with an
+    AttributeError."""
+
+    def test_blank_trailing_cells_are_dropped(self):
+        csv_text = _row_csv({"PO Number": "3000001104", "Item Id": "1"}) + ',"",""'
+        orders = parse_po_csv(csv_text)
+        assert [o.po_number for o in orders] == ["3000001104"]
+
+    def test_a_shifted_row_is_refused_by_name_not_misread(self):
+        csv_text = _row_csv({"PO Number": "3000001104", "Item Id": "1"}) + ',"stray text"'
+        with pytest.raises(HeaderMismatch, match=r"3000001104.*more cell"):
+            parse_po_csv(csv_text)

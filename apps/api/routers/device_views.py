@@ -75,7 +75,8 @@ def device_verify(request):
     Requires a valid Django session containing `pending_user_id` (set by
     PTTokenObtainPairSerializer.validate() on a new-device login attempt).
     """
-    code = request.data.get("code", "").strip()
+    # str(): a JSON number ({"code": 123456}) crashed .strip() with a 500.
+    code = str(request.data.get("code") or "").strip()
     if not code:
         return Response({"detail": "Verification code is required."}, status=400)
 

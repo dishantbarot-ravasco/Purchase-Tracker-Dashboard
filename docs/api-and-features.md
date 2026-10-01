@@ -13,7 +13,7 @@ roles, plant scoping, sessions and email in [auth-security-email.md](auth-securi
 All paths are under `/api/`. "Auth" means the project default (`IsAuthenticated`, any role). "Plant"
 means the view also calls `user_can_access_plant()` (reads) or `user_can_edit_plant()` (writes).
 Domestic endpoints exist three times: HRS has no prefix, RTP-Achhad is under `achhad/`, RTP-Vapi under
-`vapi/`, written below as `[<p>/]`. Every `/api/` response defaults to `Cache-Control: no-store`
+`vapi/`, written below as `[<p>/]`. `<po>` may contain "/" (see [urls.py](#appsapiurlspy)). Every `/api/` response defaults to `Cache-Control: no-store`
 (`ApiNoStoreMiddleware`, see [architecture.md](architecture.md)).
 
 **Auth-flow endpoints are documented in [auth-security-email.md](auth-security-email.md):**
@@ -804,7 +804,11 @@ download before starting the other. Their response is `{"status": "ok"}` (200), 
 
 **Citations are plant-scoped (2026-09-25).** The RoDTEP and Advance Licence ledgers are company-wide,
 but each citation names an import PO, its plant and its landed value, so `_license_citations()` keeps
-only the plants the caller may read (`user_can_access_plant()`).
+only the plants the caller may read (`user_can_access_plant()`). The Advance Licence workbook rows carry
+no plant, so `_workbook_row_filter()` scopes them through what they name: a plant-scoped account sees
+the usage rows whose BOE or import PO is on its own plants' import lines, plus the rows recording no
+usage (the licence's authorised materials, company-wide). The licence's usage totals and BOE cross-check
+are computed over those rows only, so another plant's BOE is never reported as a workbook-only gap.
 
 Both panels were built (2026-09-09) believing the import side of a licence was not knowable from any
 synced source. `RodtepScrollEntry`'s docstring still says *"Drive has no structured link between a script
@@ -1302,9 +1306,13 @@ deleted, devices revoked) is kept for good. A test fails if a new action type ha
 ### apps/api/urls.py
 
 Wires every `/api/` path to its view (table above). Domestic plants each get their own URL prefix rather
-than a `?plant=` parameter, so URLs stay greppable and bookmarkable; Imports and Review are cross-plant.
-Includes `device_urls`, `google_oauth_urls` and `users_urls` at the root. `review/stats` is declared
-before `review` for readability only; ordering is not load-bearing.
+than a `?plant=` parameter, so URLs stay greppable and bookmarkable; Imports is cross-plant.
+Includes `device_urls`, `google_oauth_urls` and `users_urls` at the root. Every per-PO route takes
+`<path:po_number>`, never `<str:>`: legacy PO numbers carry "/" (`HRS/HO/26-27/003`,
+`RTP2/HO/26-27/001`), the WSGI server decodes the frontend's `%2F` before Django resolves the URL, and
+`<str:>` 404'd every edit, receipt change and flag dismissal on those orders. For the same reason the
+bare `imports/purchase-orders/<plant>/<po>` detail route is declared after its suffixed siblings -
+that ordering IS load-bearing, or it would read `X/fields` as a PO number.
 
 ### apps/api/routers/_domestic_base.py
 
@@ -1624,7 +1632,10 @@ same invoice as `notices`, tax type, lines, categories, mismatches, invoice tota
 notices and figures, never saves; a line's category is its material's when filed. `category_options()` -
 {category: [sub-categories]} from `MaterialCategoryReference`. `edit_window(mir)`, `edit_mir()`,
 `record_rejection()` - the limited edits above (`EDIT_WINDOW_DAYS`, `REJECTION_WINDOW_DAYS`,
-`EDITABLE_HEADER`, `ANYTIME_HEADER`, `EDITABLE_LINE`), each row-locked and logged to `MirChange`.
+`EDITABLE_HEADER`, `ANYTIME_HEADER`, `EDITABLE_LINE`), each row-locked and logged to `MirChange`;
+`edit_mir()` checks header keys against `EDITABLE_HEADER` and line keys against `EDITABLE_LINE`
+separately, so a field sent in the wrong set is refused, not a `KeyError`. `evaluate()` cuts each header
+text to its own column (`EDITABLE_HEADER`'s lengths).
 `post_mir(payload, user)` - `evaluate(lock=True)` then saves `Mir`, `MirLine`s, `MirMismatch`es and any
 line closure in one transaction, then the MIR's stock lots (`stock_service.receive_mir()`), and files an unfiled material with the category picked; the MIR number comes from `_next_seq()` (row-locked `MirSequence`), so
 two MIRs posted at once at one plant get consecutive numbers. `cancel_mir()` (refused while
@@ -1641,8 +1652,11 @@ RM stock entry's rules (see [RM stock entry](#rm-stock-entry-2026-09-29)). The M
 `check_mir_rejection(line, new_rejected)` (refuse removing issued stock; called by `cancel_mir()` /
 `record_rejection()`, which turn the refusal into a `MirValidationError`), `mir_line_stock(mir)`.
 Reading: `lot_events()` (a lot's dated movements, with overrides for a change being checked),
-`lot_balances()` (in, issued, returned, adjusted, balance), `receipts_for_issue(plant, q)` (the picker),
-`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, `receipts_for_issue(plant_codes, q)` ordered oldest MIR first, `lot_detail(lot)` (movements with
+`lot_balances()` (in, issued, returned, adjusted, balance),
+`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, `receipts_for_issue(plant_codes, q, limit=80)`
+(the picker: oldest MIR first, read in `_PICKER_BATCH` (500) batches until `limit` receipts with stock
+are found - never a fixed cap taken before the balance filter, which let fully issued receipts crowd
+newer stock out), `lot_detail(lot)` (movements with
 the running balance), `differences(plant_codes, status)`, `returnable_lines(issue)`, `departments(plant)`,
 `doc_of(lot)`. `LOT_RELATED` is the `select_related` a lot needs for all of that.
 `evaluate(payload, lock=False, earliest=None)` - the one check-and-value of an issue, return or difference;
@@ -1650,7 +1664,9 @@ every line names its MIR receipt (`lot_id`), checked by `_receipt()` (this plant
 posted, once per voucher) and drawn by `_take()`, which respects every later day's balance. A line's value
 is `None` until its quantity fits. Writes, each in one transaction with the lots locked (`_lock_lots()`,
 id order): `post_voucher()` (numbers from `_next_seq()`, row-locked `StockSequence`),
-`approve_adjustment()` / `reject_adjustment()`, `cancel_voucher()`, `update_setting()`.
+`approve_adjustment()` / `reject_adjustment()`, `cancel_voucher()`, `update_setting()`. Posting a return
+also row-locks the issue it names (`_evaluate_return(lock=True)`), the row `cancel_voucher()` locks, so a
+return and that issue's cancellation can never both commit.
 `StockValidationError.errors` is `[{field, message}]` in the payload's own terms (`lines.0.qty`).
 `BACKDATE_DAYS` (7), `MAX_LINES` (50), `ADJUST_MODES`.
 
@@ -1668,7 +1684,8 @@ balance of a lot on or after a day, which every posting checks stays at or above
 Pure rules, no Django imports: `canonical_uom()` (spellings of one unit folded, KG and MT kept apart -
 KG, MT, G, L, ML, KL, M, CM, MM, M2, NOS, ROLL, SET, BAG - an unknown unit kept and flagged), `clean_gstin()` / `gstin_state()`, `canonical_tax_type()`,
 `expected_tax_type()`, `po_gst_rate()`, `GST_SLABS` / `is_gst_slab()`, `financial_year()`,
-`mir_number()`, `invoice_key()`, `vendor_name_key()`, `line_amounts()`, `rate_differs()`, `pct_of()`,
+`mir_number()`, `invoice_key()`, `vendor_name_key()`, `line_amounts()`, `rate_differs()`, `pct_of()`
+(clamped to +-`MAX_PCT`, `MirMismatch.difference_pct`'s numeric(9, 2) ceiling),
 `INVOICE_ROUNDING_TOLERANCE` (Rs 1).
 
 ### apps/services/materials.py
@@ -1699,7 +1716,9 @@ length / roll count / total weight parts; `material_key()` is `normalize_materia
 Each projected line is linked to its `Material` (`materials.material_for()`). `upsert_vendor()` - one `Vendor` per GSTIN (or cleaned name without one); the newest PO's details win,
 a blank never erases. `LEGACY_PO_MODELS` names each plant's CSV mirror model. An order with
 `source = app` is skipped and listed in `ProjectionResult.orders_held` - see
-[data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28).
+[data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28). A changed line is saved
+with `update_fields` naming only what the sheet changed: the line is read unlocked, and a whole-row save
+put back a short-close or review a person committed meanwhile.
 
 ### apps/services/rematch.py
 

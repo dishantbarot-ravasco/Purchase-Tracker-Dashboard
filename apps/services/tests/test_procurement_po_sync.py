@@ -146,6 +146,29 @@ class TestProjection:
         assert logged == {"rate": (Decimal("1000"), Decimal("1050")), "net_value": (Decimal("100000"), Decimal("105000"))}
         assert not after[2].needs_review, "a rate change without receipts needs no review"
 
+    def test_a_sheet_change_does_not_undo_a_close_made_while_it_ran(self, tmp_path, monkeypatch):
+        """The projection read the line unlocked and saved the whole row, so a
+        short-close committed between that read and the save was put back to
+        open. The close is committed here at exactly that point."""
+        from apps.services import procurement_sync
+
+        _sync(tmp_path, _three_lines())
+        target = _lines()[2]
+        real = procurement_sync._has_receipts
+
+        def close_meanwhile(line):
+            type(line).objects.filter(pk=target.pk).update(closed_at=datetime.datetime(2026, 9, 30, tzinfo=datetime.UTC))
+            return real(line)
+
+        monkeypatch.setattr(procurement_sync, "_has_receipts", close_meanwhile)
+        rows = _three_lines()
+        rows[2] = _row("3", "Carbon N330", 100, 1050)
+        _sync(tmp_path, rows)
+
+        line = _lines()[2]
+        assert line.rate == Decimal("1050")
+        assert line.closed_at is not None
+
     def test_a_dropped_line_is_deactivated_never_deleted(self, tmp_path):
         _sync(tmp_path, _three_lines())
         dropped = _lines()[2]

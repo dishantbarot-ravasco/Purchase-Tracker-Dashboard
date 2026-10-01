@@ -206,6 +206,24 @@ class TestQuantity:
 
 
 @pytest.mark.django_db
+class TestOutsizedFigures:
+    def test_a_huge_over_receipt_posts_with_its_percentage_capped(self, user):
+        """0.010 KG open against 1000.02 KG received is ~1e7 %, past
+        MirMismatch.difference_pct's numeric(9, 2) - preview passed and the
+        post raised a numeric overflow (a 500)."""
+        line = _line(_po(lines=((Decimal("0.010"), Decimal("50")),)))
+        mir = mir_service.post_mir(_payload([_ln(line, qty="1000.02", qty_reason="EXCESS_ACCEPTED")]), user)
+        assert MirMismatch.objects.get(mir=mir).difference_pct == Decimal("9999999.99")
+
+    def test_header_fields_are_cut_to_their_own_column(self, user):
+        line = _line(_po())
+        mir = mir_service.post_mir(_payload([_ln(line)], vehicle_no="V" * 50, eway_bill_no="E" * 50,
+                                            gate_entry_no="G" * 50, weighbridge_slip_no="W" * 50), user)
+        mir.refresh_from_db()
+        assert (len(mir.vehicle_no), len(mir.eway_bill_no), len(mir.gate_entry_no), len(mir.weighbridge_slip_no)) == (30, 30, 40, 40)
+
+
+@pytest.mark.django_db
 class TestRate:
     def test_higher_and_lower_rates_need_a_reason(self, user):
         po = _po(lines=((Decimal("100"), Decimal("50")), (Decimal("100"), Decimal("50"))))

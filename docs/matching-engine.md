@@ -316,10 +316,14 @@ based on PO numbers only."*
   add it by hand.
 - **Receipts added or removed by hand** (`ManualReceiptEdit`, 2026-09-29). `_load_receipt_edits()`
   resolves them like pins. A removed document is dropped from that line's candidates in `collect()`,
-  before any stage. An added one is claimed right after the pins (not for "Keep both", nor for an
-  import line's own BOE receipt, which BOE settlement shares) while the line stays in every automatic
-  stage, and is merged into the line's match after the last one (dropping a BOE share, since the line
-  now counts the rows in full). Lines with an edit stay out of pooling. Unplaceable adds are
+  before any stage, and `_boe_settlement()` is handed the same removals, so a receipt citing the
+  line's BOE never comes back through it. An added one is claimed right after the pins (not for "Keep
+  both", nor for an import line's own BOE receipt, which BOE settlement shares) while the line stays in
+  every automatic stage, and is merged into the line's match after the last one (dropping a BOE share,
+  since the line now counts the rows in full). A deferred BOE add is offered to its line by settlement
+  with no vote needed and past the contradiction gate, goes to that line rather than a sibling when
+  the BOE's receipts are shared one per line, and when settlement could not place it falls back to an
+  ordinary claim - which takes a free row or reports it unfilled, never dropping it silently. Lines with an edit stay out of pooling. Unplaceable adds are
   `manual_edits_unfilled`, stale ones `manual_edits_stale`. Every run writes `receipt_notes` (who
   pinned, added or - on the line that took it - removed each receipt). See
   [api-and-features](api-and-features.md#editing-a-lines-receipts-one-at-a-time-2026-09-29).
@@ -1285,7 +1289,10 @@ below); trust the code.
 - In `run_full_match()`, `claim_pin()` applies one pin: an exclusive pin takes a free row of its
   document, a shared one (`ManualMirMatch.shared`) the best row whoever holds it, claiming nothing
   (`shared_pin_keys`). `deferred_pins` are the import pins `_pin_defers_to_boe()` hands to BOE
-  settlement; one it could not place goes through `claim_pin()` after it.
+  settlement; one it could not place goes through `claim_pin()` after it. `claim_add()` does the same
+  for an added receipt; `deferred_adds` are the import adds of the line's own BOE receipt, passed to
+  `_boe_settlement()` as `added_to` (with every removal as `removed_from`), and one settlement did not
+  put on its line goes through `claim_add()` after it.
 - A pin whose MIR document has no free row (a newer pin took it, or the number is gone from MIR)
   leaves its line unmatched - never an automatic fallback - and is reported in
   `manual_pins_unfilled`, not counted in `manual_pins_applied`.

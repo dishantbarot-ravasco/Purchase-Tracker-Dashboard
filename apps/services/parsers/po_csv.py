@@ -124,7 +124,21 @@ def parse_po_csv(csv_text: str) -> list[ParsedPurchaseOrder]:
         # EXPECTED_HEADER and the check both agree on - so a header that
         # passes validation can never again fail the row lookup right below
         # it.
-        row = {k.strip(): v for k, v in raw_row.items()}
+        #
+        # A row with more cells than the header keeps the extras under the
+        # key None (`None.strip()` used to crash the whole sync with an
+        # AttributeError). Blank extras are an export artifact and are
+        # dropped; a non-blank one means the columns have shifted (an
+        # unquoted comma in a text cell), so the row is refused by name
+        # rather than read with every later field in the wrong column.
+        extra = [c for c in (raw_row.get(None) or []) if (c or "").strip()]
+        if extra:
+            raise HeaderMismatch(
+                f"CSV line {reader.line_num} (PO Number {(raw_row.get(reader.fieldnames[1]) or '').strip()!r}) has "
+                f"{len(raw_row[None])} more cell(s) than the header, e.g. {extra[0]!r} - most likely an unquoted "
+                "comma in a text field; fix that row in the master CSV."
+            )
+        row = {k.strip(): v for k, v in raw_row.items() if k is not None}
 
         po_number = to_str(row["PO Number"])
         if not po_number:

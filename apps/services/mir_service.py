@@ -468,8 +468,10 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         "plant": plant, "vendor": vendor, "mir_date": mir_date, "invoice_no": invoice_no, "invoice_key": invoice_key,
         "invoice_date": invoice_date, "invoice_fy": invoice_fy, "invoice_total": invoice_total, "tcs_amount": tcs,
         "tax_type": tax_type, "tax_type_expected": expected_tax, "computed_total": computed_total,
-        "header": {k: _text(payload.get(k), 60) for k in ("challan_no", "lr_no", "vehicle_no", "eway_bill_no",
-                                                           "gate_entry_no", "weighbridge_slip_no")}
+        # Each cut to its own column (EDITABLE_HEADER): a flat 60 let a
+        # 31-60 character vehicle or e-way bill number through to a 500.
+        "header": {k: _text(payload.get(k), EDITABLE_HEADER[k]) for k in (
+            "challan_no", "lr_no", "vehicle_no", "eway_bill_no", "gate_entry_no", "weighbridge_slip_no")}
                   | {"sap_grn_number": _text(payload.get("sap_grn_number"), 50)},
         "notices": notices,
         "remarks": _text(payload.get("remarks"), 2000),
@@ -696,9 +698,12 @@ def edit_mir(mir, user, header: dict, lines: dict, reason: str):
     errors: list[dict] = []
     if not reason:
         errors.append({"field": "reason", "message": "Say why the MIR is being changed."})
-    for key in list(header) + [k for fields in lines.values() for k in fields]:
-        if key not in EDITABLE_HEADER and key not in EDITABLE_LINE:
-            errors.append({"field": key, "message": "This cannot be edited. Cancel the MIR and enter it again."})
+    # Each set checked on its own: a header field sent as a line field (or
+    # the reverse) passed a combined check and then raised a KeyError below.
+    wrong = [k for k in header if k not in EDITABLE_HEADER] + [
+        k for fields in lines.values() for k in fields if k not in EDITABLE_LINE]
+    for key in wrong:
+        errors.append({"field": key, "message": "This cannot be edited. Cancel the MIR and enter it again."})
     if errors:
         raise MirValidationError(errors)
     changed = 0

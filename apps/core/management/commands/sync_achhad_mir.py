@@ -29,7 +29,7 @@ from apps.core.models import DataQualityFlag, RTPAchhadMIREntry, SyncRun
 from apps.services.arithmetic_checks import check_mir_entry
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.achhad_mir import HeaderMismatch, parse_achhad_mir_xlsx
-from apps.services.sync_utils import unchanged
+from apps.services.sync_utils import fit_to_columns, unchanged
 
 _FIELDS = [
     "month", "mir_no", "mir_date", "po_number_raw", "party_name", "state",
@@ -120,6 +120,8 @@ class Command(BaseCommand):
     def _upsert_entry(self, parsed) -> bool:
         """See sync_mir.py's _upsert_entry - same unchanged()-and-skip logic."""
         existing = RTPAchhadMIREntry.objects.filter(source_row_ref=parsed.source_row_ref).first()
+        # One over-long cell must not fail the plant's whole sync - see fit_to_columns().
+        fit_to_columns(RTPAchhadMIREntry, parsed, _FIELDS)
         if existing and existing.is_active and unchanged(RTPAchhadMIREntry, existing, parsed, _FIELDS):
             return False
 

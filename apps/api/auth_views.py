@@ -49,7 +49,10 @@ class LoginRateThrottle(AnonRateThrottle):
     scope = "login"
 
     def get_cache_key(self, request, view):
-        email = str(request.data.get("email", "")).strip().lower()
+        # A JSON array as the body has no .get(); it crashed here with a 500
+        # instead of reaching the serializer's own 400.
+        data = request.data if isinstance(request.data, dict) else {}
+        email = str(data.get("email", "")).strip().lower()
         if not email:
             return super().get_cache_key(request, view)
         return self.cache_format % {"scope": self.scope, "ident": f"email:{email}"}

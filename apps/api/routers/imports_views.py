@@ -1110,11 +1110,40 @@ def _material_rollup(materials) -> list:
     return list(rollup.values())
 
 
-def _advance_license_dict(lic, citations: list, today, known_boes: frozenset | None = None) -> dict:
+def _workbook_row_filter(user):
+    """None when `user` reads every plant; otherwise a predicate saying
+    which of a licence's workbook rows (AdvanceLicenseMaterial) they may see.
+
+    The rows carry no plant, but a usage row names a BOE and an import PO,
+    and those belong to one plant's import lines. A plant-scoped account sees
+    the usage rows of its own plants' BOEs or POs, plus the rows that record
+    no usage at all (the licence's authorised materials, company-wide).
+    Unscoped, it saw every plant's imports here, and the BOE cross-check
+    reported every other plant's BOE as a workbook-only gap."""
+    allowed = [model for key, model, _label in license_links.PLANT_LINE_ITEMS if user_can_access_plant(user, key)]
+    if len(allowed) == len(license_links.PLANT_LINE_ITEMS):
+        return None
+    boes, pos = set(), set()
+    for model in allowed:
+        for boe, po in model.objects.values_list("boe_number", "purchase_order__po_number"):
+            if boe:
+                boes.add(boe.strip())
+            pos.add(po.strip())
+
+    def visible(row) -> bool:
+        if not (row.boe_number or row.import_po_number or row.qty_imported is not None or row.value_imported is not None):
+            return True
+        return (row.boe_number or "").strip() in boes or (row.import_po_number or "").strip() in pos
+
+    return visible
+
+
+def _advance_license_dict(lic, citations: list, today, known_boes: frozenset | None = None, materials=None) -> dict:
     # Field order matches the project owner's own requested view order:
     # License Number -> Export Product Description -> CIF Value Authorized
     # -> FOB Export Target -> Export Validity -> Material Description(s).
-    materials = list(lic.materials.all())
+    # `materials`: the workbook rows the caller may see (_workbook_row_filter()).
+    materials = list(lic.materials.all()) if materials is None else materials
     material_rows = _material_rollup(materials)
     value_imported = sum((m.value_imported for m in materials if m.value_imported is not None), Decimal("0"))
     cif_authorized = lic.cif_value_authorized or Decimal("0")
@@ -1188,10 +1217,12 @@ def advance_license_ledger(request):
 
     rows, known_numbers = [], set()
     known_boes = _known_boe_numbers()
+    visible = _workbook_row_filter(request.user)
     for lic in licenses:
         number = license_links.normalize_license_number(lic.license_number)
         known_numbers.add(number)
-        rows.append(_advance_license_dict(lic, by_license.get(number, []), today, known_boes))
+        materials = [m for m in lic.materials.all() if visible(m)] if visible else None
+        rows.append(_advance_license_dict(lic, by_license.get(number, []), today, known_boes, materials))
 
     last_run = (
         SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.ADVANCE_LICENSE)

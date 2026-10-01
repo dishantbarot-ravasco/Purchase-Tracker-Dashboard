@@ -73,15 +73,16 @@ def request_password_change(request):
 def confirm_password_change(request):
     """POST /api/auth/change-password/confirm
     Body: {"otp": "123456", "newPassword": "..."}."""
-    otp = (request.data.get("otp") or "").strip()
+    otp = str(request.data.get("otp") or "").strip()
     new_password = request.data.get("newPassword") or ""
 
     if not otp:
         return Response({"detail": "OTP code is required."}, status=400)
+    # Strength first: verify_otp() uses the code up, so a weak password
+    # checked after it cost the user their code and a new email.
+    _validate_password_strength(new_password, request.user.email)
     if not verify_otp(request.user.email, otp):
         return Response({"detail": "Invalid or expired code."}, status=400)
-
-    _validate_password_strength(new_password, request.user.email)
 
     request.user.password_hash = _hash_password(new_password)
     request.user.save(update_fields=["password_hash"])

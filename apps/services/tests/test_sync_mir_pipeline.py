@@ -137,3 +137,24 @@ class TestSyncMirHeaderMismatch:
         run = SyncRun.objects.filter(source=SyncRun.Source.MIR).latest("started_at")
         assert run.status == SyncRun.Status.FAILED
         assert not HRSMIREntry.objects.exists()
+
+
+@pytest.mark.django_db
+class TestOverLongCell:
+    def test_a_cell_longer_than_its_column_is_cut_not_fatal(self, tmp_path):
+        """Every row is written in one transaction, so one free-text state
+        longer than HRS's 10-character column raised a DataError and failed
+        the plant's whole MIR sync until the sheet was edited."""
+        wb = openpyxl.load_workbook(io.BytesIO(_build_workbook([_ROW_A, _ROW_B])))
+        wb[SHEET_NAME][f"F{DATA_START_ROW}"] = "Netherlands"
+        fixture_path = tmp_path / "mir.xlsx"
+        wb.save(fixture_path)
+
+        call_command("sync_mir", file=str(fixture_path))
+
+        assert SyncRun.objects.filter(source=SyncRun.Source.MIR).latest("started_at").status == SyncRun.Status.SUCCESS
+        assert HRSMIREntry.objects.filter(is_active=True).count() == 2
+        assert HRSMIREntry.objects.filter(state="Netherland").count() == 1
+
+        call_command("sync_mir", file=str(fixture_path))
+        assert SyncRun.objects.filter(source=SyncRun.Source.MIR).latest("started_at").rows_changed == 0

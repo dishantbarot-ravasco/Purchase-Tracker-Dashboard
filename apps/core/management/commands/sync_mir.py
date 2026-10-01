@@ -46,7 +46,7 @@ from apps.core.models import DataQualityFlag, HRSMIREntry, SyncRun
 from apps.services.arithmetic_checks import check_mir_entry
 from apps.services.data_quality import sync_data_quality_flags
 from apps.services.parsers.mir import HeaderMismatch, parse_mir_xlsx
-from apps.services.sync_utils import unchanged
+from apps.services.sync_utils import fit_to_columns, unchanged
 
 _FIELDS = [
     "month", "mir_no", "mir_date", "sap_grn_number", "po_number_raw", "party_name", "state",
@@ -143,6 +143,8 @@ class Command(BaseCommand):
         """Upsert one parsed MIR row by source_row_ref; returns False (no-op)
         when the row is unchanged and still active."""
         existing = HRSMIREntry.objects.filter(source_row_ref=parsed.source_row_ref).first()
+        # One over-long cell must not fail the plant's whole sync - see fit_to_columns().
+        fit_to_columns(HRSMIREntry, parsed, _FIELDS)
         if existing and existing.is_active and unchanged(HRSMIREntry, existing, parsed, _FIELDS):
             return False
 

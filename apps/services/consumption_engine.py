@@ -247,6 +247,29 @@ def classify_interval(
     )
 
 
+def _without_broken_reads(ordered: list[ConsumptionPoint]) -> list[ConsumptionPoint]:
+    """`ordered` less every dip-and-recover run of up to _MAX_BROKEN_RUN
+    points - see intervals_for_lot()."""
+    out: list[ConsumptionPoint] = []
+    i = 0
+    while i < len(ordered):
+        if out and ordered[i].issued < out[-1].issued:
+            j = i
+            while j < len(ordered) and j - i < _MAX_BROKEN_RUN and ordered[j].issued < out[-1].issued:
+                j += 1
+            if j < len(ordered) and ordered[j].issued >= out[-1].issued:
+                i = j
+                continue
+        out.append(ordered[i])
+        i += 1
+    return out
+
+
+# Snapshots a sync can read broken in a row (the 12 daily runs overwrite one
+# row per day, so this is days) before a dip is taken for a real period roll.
+_MAX_BROKEN_RUN = 3
+
+
 def intervals_for_lot(
     points: Sequence[ConsumptionPoint],
     *,
@@ -264,8 +287,15 @@ def intervals_for_lot(
     run every day: anything wider is already an interpolation, and the
     caller should know that. It is a parameter rather than a constant so a
     plant whose sheet genuinely only updates weekly can say so explicitly.
+
+    A snapshot whose `issued` dips below the one before it and is back at or
+    above it on the next is a broken read, not a period roll (the parser
+    turns a blank or error cell into 0), and is left out: kept, the dip read
+    as an excluded roll and the recovery booked the lot's whole
+    period-to-date issues as one interval's consumption (1000 -> 0 -> 1010
+    counted 1010, not 10). A real roll resets the book and stays reset.
     """
-    ordered = sorted(points, key=lambda p: p.date)
+    ordered = _without_broken_reads(sorted(points, key=lambda p: p.date))
     out: list[ConsumptionInterval] = []
     moved = False
     # strict=False is deliberate: this is the pairwise idiom, so the two

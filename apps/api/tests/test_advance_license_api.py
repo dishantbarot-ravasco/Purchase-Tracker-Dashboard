@@ -18,6 +18,8 @@ from apps.core.models import (
     AdvanceLicenseMaterial,
     HRSImportPOLineItem,
     HRSImportPurchaseOrder,
+    RTPAchhadImportPOLineItem,
+    RTPAchhadImportPurchaseOrder,
 )
 
 LEDGER_URL = "/api/imports/advance-license"
@@ -278,3 +280,39 @@ class TestAdvanceLicenseDerivedInsights:
         assert data["licenses"] == []
         assert data["summary"]["licenseCount"] == 0
         assert data["summary"]["cifUtilisedPct"] is None
+
+
+@pytest.mark.django_db
+class TestWorkbookRowsArePlantScoped:
+    """The workbook rows carry no plant, but each usage row names a BOE and
+    an import PO of one plant. A plant-scoped account used to see every
+    plant's usage rows, and every other plant's BOE as a workbook-only gap."""
+
+    def setup_method(self):
+        lic = _make_license(license_number="0311051817")
+        _make_import_line(po_number="1000001519", license_number="0311051817", boe_number="HRS-BOE")
+        achhad_po = RTPAchhadImportPurchaseOrder.objects.create(
+            po_number="ACH-IMP-1", po_drive_folder_name="ACH-IMP-1", vendor_name="Test Vendor")
+        RTPAchhadImportPOLineItem.objects.create(
+            purchase_order=achhad_po, item_id="1", description="SBR", license_type="ADVANCE",
+            license_number="0311051817", boe_number="ACH-BOE", qty_as_per_boe="10", uom="KG")
+        for boe, po, value in (("HRS-BOE", "", "100"), ("ACH-BOE", "", "200"), ("", "ACH-IMP-1", "300"),
+                               ("UNKNOWN-BOE", "", "400"), ("", "", None)):
+            AdvanceLicenseMaterial.objects.create(license=lic, material_description="SBR 1502", boe_number=boe,
+                                                  import_po_number=po, value_imported=value)
+
+    def _get(self, **user_extra):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="scoped@ravasco.com", role="viewer", **user_extra))
+        return client.get(LEDGER_URL).data
+
+    def test_an_unscoped_account_sees_every_row(self):
+        data = self._get()
+        assert len(data["licenses"][0]["materials"]) == 5
+
+    def test_a_plant_scoped_account_sees_its_own_usage_and_the_authorisation(self):
+        data = self._get(plants=["hrs"])
+        row = data["licenses"][0]
+        assert sorted((m["boeNumber"], m["importPoNumber"]) for m in row["materials"]) == [("", ""), ("HRS-BOE", "")]
+        assert row["usage"]["valueImported"] == Decimal("100")
+        assert row["boeCrossCheck"]["workbookOnly"] == []

@@ -2367,7 +2367,7 @@ def _pin_defers_to_boe(config: _MatchConfig, import_line_item, rows) -> bool:
 
 
 def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys, claimed_mir_ids, *,
-                    scorer, known_pos, pinned_to=None) -> dict:
+                    scorer, known_pos, pinned_to=None, added_to=None, removed_from=None) -> dict:
     """Pairs import lines with the MIR receipts that cite their Bill of
     Entry number. Returns {("import", item.id): (candidates, share,
     matchable)} - every MIR row the line takes, with the _Candidate evidence
@@ -2404,7 +2404,16 @@ def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys,
     A BOE number shared by lines with DIFFERENT Bills of Lading is not
     trusted: those are separate shipments, which one BOE cannot clear
     (1000001560's second shipment carries its first's BOE in the CSV, while
-    its MIR receipt cites another). Such a BOE is left to ordinary matching."""
+    its MIR receipt cites another). Such a BOE is left to ordinary matching.
+
+    Receipts edited by hand (`added_to` / `removed_from`: key -> MIR
+    numbers, ManualReceiptEdit): a document removed from a line is never
+    offered to it here, and one added to it needs no vote and passes the
+    contradiction gate, like a pin's - but the line still takes its other
+    receipts. When the BOE's receipts are shared out one per line, an added
+    receipt goes to the line it was added to, never a sibling."""
+    added_to = added_to or {}
+    removed_from = removed_from or {}
     lines_by_boe: dict[str, list] = {}
     for item in import_items:
         key = ("import", item.id)
@@ -2434,14 +2443,18 @@ def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys,
             # vendor or material vote, and no contradiction gate, exactly as
             # an ordinary pin's forced candidate is never gated.
             target_no = (pinned_to or {}).get(key)
+            added, removed = added_to.get(key, ()), removed_from.get(key, ())
             for mir in rows:
+                mir_no = (mir.mir_no or "").strip()
+                if mir_no in removed:
+                    continue
                 if target_no is not None:
-                    if (mir.mir_no or "").strip() != target_no:
+                    if mir_no != target_no:
                         continue
-                elif _po_number_contradicts(po.po_number, mir.po_number_raw, known_pos):
+                elif mir_no not in added and _po_number_contradicts(po.po_number, mir.po_number_raw, known_pos):
                     continue
                 cand = _forced_candidate(config, items_by_key[key], mir, po, scorer=scorer, known_pos=known_pos)
-                if target_no is not None or cand.vendor_matched or cand.material_matched:
+                if target_no is not None or mir_no in added or cand.vendor_matched or cand.material_matched:
                     evidence[(key, mir.id)] = cand
         usable = sorted({mir_id for _k, mir_id in evidence}, key=int)
         if not usable:
@@ -2452,12 +2465,23 @@ def _boe_settlement(config: _MatchConfig, import_items, items_by_key, skip_keys,
                 [evidence[(keys[0], m)] for m in usable if (keys[0], m) in evidence], None, items_by_key[keys[0]])
             continue
         if len(usable) >= len(keys):
+            # A receipt added to one of these lines by hand is that line's
+            # before the assignment shares out the rest.
+            no_of = {mir.id: (mir.mir_no or "").strip() for mir in rows}
+            forced: dict = {}  # mir id -> key
+            for k in keys:
+                for m in usable:
+                    if (k, m) in evidence and no_of[m] in added_to.get(k, ()):
+                        forced.setdefault(m, k)
             taken = _assign_pairs({
-                k: [(m, _pair_weight(evidence[(k, m)])) for m in usable if (k, m) in evidence] for k in keys
+                k: [(m, _pair_weight(evidence[(k, m)])) for m in usable if (k, m) in evidence and m not in forced]
+                for k in keys if k not in forced.values()
             })
             chosen: dict = {k: [evidence[(k, m)]] for k, m in taken.items()}
+            for m, k in forced.items():
+                chosen.setdefault(k, []).append(evidence[(k, m)])
             for m in usable:
-                if m in taken.values():
+                if m in taken.values() or m in forced:
                     continue
                 options = [k for k in keys if (k, m) in evidence]
                 if not options:
@@ -4092,6 +4116,27 @@ def run_full_match(config: _MatchConfig, dry_run: bool = False) -> dict:
     added_edit_of: dict[tuple, object] = {}  # (key, mir id) -> the edit
     shared_add_keys: set = set()
     unfilled_edits = []
+    deferred_adds: dict = {}  # key -> [(edit, the document's rows)]
+
+    def claim_add(key, item, matchable, edit, doc_rows):
+        held = {c.mir.id for c in added_rows.get(key, [])}
+        rows = [r for r in doc_rows if r.id not in held and (edit.shared or r.id not in claimed_mir_ids)]
+        if not rows:
+            unfilled_edits.append(edit)
+            return
+        best = max(
+            (_forced_candidate(config, matchable, r, item.purchase_order, scorer=scorer, known_pos=known_pos)
+             for r in rows),
+            key=lambda c: (_pair_weight(c), c.mir.id),
+        )
+        candidates_by_key[(key[0], key[1], best.mir.id)] = best
+        added_rows.setdefault(key, []).append(best)
+        added_edit_of[(key, best.mir.id)] = edit
+        if edit.shared:
+            shared_add_keys.add(key)
+        else:
+            claimed_mir_ids.add(best.mir.id)
+
     for key, key_edits in added_by_key.items():
         item = items_by_kind_id.get(key)
         matchable = items_by_key.get(key)
@@ -4102,26 +4147,12 @@ def run_full_match(config: _MatchConfig, dry_run: bool = False) -> dict:
             # Booked under this import line's own Bill of Entry: BOE
             # settlement below gives the line its share of it, which is what
             # the person asked for - claiming it here would take it from the
-            # BOE's other lines. Same rule as _pin_defers_to_boe() for pins.
+            # BOE's other lines. Same rule as _pin_defers_to_boe() for pins,
+            # and the same fallback once settlement has run.
             if key[0] == "import" and _pin_defers_to_boe(config, item, doc_rows):
+                deferred_adds.setdefault(key, []).append((edit, doc_rows))
                 continue
-            held = {c.mir.id for c in added_rows.get(key, [])}
-            rows = [r for r in doc_rows if r.id not in held and (edit.shared or r.id not in claimed_mir_ids)]
-            if not rows:
-                unfilled_edits.append(edit)
-                continue
-            best = max(
-                (_forced_candidate(config, matchable, r, item.purchase_order, scorer=scorer, known_pos=known_pos)
-                 for r in rows),
-                key=lambda c: (_pair_weight(c), c.mir.id),
-            )
-            candidates_by_key[(key[0], key[1], best.mir.id)] = best
-            added_rows.setdefault(key, []).append(best)
-            added_edit_of[(key, best.mir.id)] = edit
-            if edit.shared:
-                shared_add_keys.add(key)
-            else:
-                claimed_mir_ids.add(best.mir.id)
+            claim_add(key, item, matchable, edit, doc_rows)
 
     # BILL OF ENTRY NUMBERS SETTLE NEXT (2026-09-25) - an import receipt whose
     # MIR invoice_no is a line's BOE number belongs to that line; see
@@ -4134,6 +4165,8 @@ def run_full_match(config: _MatchConfig, dry_run: bool = False) -> dict:
     for key, (cands, share, matchable) in _boe_settlement(
         config, import_items, items_by_key, pinned_keys, claimed_mir_ids, scorer=scorer, known_pos=known_pos,
         pinned_to=deferred_pins,
+        added_to={key: {edit.mir_no.strip() for edit, _rows in adds} for key, adds in deferred_adds.items()},
+        removed_from={key: set(removed) for key, removed in removed_by_key.items()},
     ).items():
         items_by_key[key] = matchable
         rows = sorted((c.mir for c in cands), key=lambda m: m.id)
@@ -4161,6 +4194,21 @@ def run_full_match(config: _MatchConfig, dry_run: bool = False) -> dict:
         pinned_keys.add(key)
         if key not in assigned:
             claim_pin(key, pins[key], items_by_kind_id[key], target_no)
+
+    # A deferred add is carried out when settlement put a row of its document
+    # on its line; otherwise it falls back to an ordinary add, which takes a
+    # free row or reports the edit unfilled - never dropped without a word.
+    for key, adds in deferred_adds.items():
+        held = set()
+        if key in boe_keys:
+            _mir, _score, _cov, group = assigned[key]
+            held = {m.id for m in (group.entries if group is not None else [_mir])}
+        for edit, doc_rows in adds:
+            settled_row = next((r for r in doc_rows if r.id in held), None)
+            if settled_row is not None:
+                added_edit_of[(key, settled_row.id)] = edit
+            else:
+                claim_add(key, items_by_kind_id[key], items_by_key[key], edit, doc_rows)
 
     # PO-NUMBER GROUPS SETTLE NEXT (2026-09-24) - every MIR row whose own PO
     # column names exactly one order we hold is that order's, all of them.
