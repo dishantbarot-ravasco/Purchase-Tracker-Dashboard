@@ -89,7 +89,8 @@ DJANGO_DEBUG=false uv run python manage.py check --deploy --fail-level WARNING
 #        compute_*_consumption takes --all | --since YYYY-MM-DD (default 45-day lookback)
 # Read-only: report_retired_pos, backfill_achhad_po_numbers
 # Procurement (MIR entry): sync_procurement_pos [--plant x] - DB-only projection, also in release.sh
-# Maintenance: prune_revoked_tokens; backup_database (pg_dump to R2 now - the nightly job by hand)
+# Maintenance: prune_revoked_tokens; backup_database (pg_dump to R2 now - the nightly job by hand);
+#              verify_backup (restore the newest R2 dump into <db>_restore_check, compare, drop)
 ```
 
 Full reference: [data-sync.md#commands](docs/data-sync.md#commands) and
@@ -506,8 +507,9 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **PO and invoice uploads are not yet checked in production** - R2 is set up and the first
   production backup uploaded (2026-10-01, 1.4 MB); the upload flow awaits the check described in
   [checking uploads](docs/testing-deployment.md#checking-uploads-in-production-2026-10-01).
-- **No backup has been restored yet.** The nightly dump to R2 is built and tested against a local
-  database; restore the first production dump into a scratch database before relying on it.
+- **No production backup has been restored yet.** `verify_backup` does it safely (scratch database,
+  dropped afterwards) and was rehearsed on the local database; run it on the worker's Shell against
+  the real nightly dump, then monthly.
 - **`cache_page` infrastructure exists and nothing uses it** - every endpoint is business data behind auth.
 - **A day where qcluster was down has no stock snapshot**, deliberately not backfilled; `sync-status`
   exposes `snapshotGapDays` as a badge.

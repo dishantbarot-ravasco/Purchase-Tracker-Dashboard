@@ -297,8 +297,17 @@ major version**, or every nightly backup fails with a version-mismatch error.
 pg_restore --no-owner --no-privileges --dbname "$NEW_DATABASE_URL" purchase_tracker-YYYYMMDD-HHMMSS.dump
 ```
 
-A backup nobody has restored is a hope, not a backup: restore one into a scratch database after the
-first nightly run, and again after any major upgrade.
+A backup nobody has restored is a hope, not a backup. **`python manage.py verify_backup`** (on the
+worker's Shell) proves one: it downloads the newest dump from R2 (or `--key` / `--file`), restores it
+with `pg_restore --exit-on-error` into a scratch database `<app database>_restore_check` on the same
+server, compares row counts of the key tables (users, MIRs, stock, files, POs, corrections) with the
+live database, reports both newest migrations, and drops the scratch database - pass or fail
+(`--keep` leaves it). It never writes to the app database: the scratch name is fixed, refused if it
+equals the app's, and the live side is only counted. A table with rows live but none in the backup
+fails it; small differences are normal, the dump being from the night before. Run it after the first
+nightly backup, monthly, and after any Postgres major upgrade. Rehearsed 2026-10-01 against the local
+database (97 tables, every count matched); `test_backup_restore_check.py` runs real round trips in
+CI.
 
 ### Checking uploads in production (2026-10-01)
 
@@ -493,6 +502,16 @@ plain values, and `sync: false` for every secret (`GOOGLE_SERVICE_ACCOUNT_JSON`,
 (web only) and must be copied into the external cron-job.org jobs. The worker gets
 `DJANGO_SECRET_KEY` and `JWT_SIGNING_KEY` via `fromService`; `SENTRY_DSN` is not shared
 automatically and must be set to the same value on both services.
+
+### [apps/services/backup_restore_check.py](../apps/services/backup_restore_check.py)
+
+`check(dump_file=None, key=None, keep=False)` - the restore check behind `verify_backup` (see
+[Backups](#backups-2026-09-30)). `scratch_name()` is the app database plus `SCRATCH_SUFFIX`;
+`_admin_exec()` runs `CREATE` / `DROP DATABASE` on the app connection and refuses any name but the
+scratch one; `_restore()` reuses `db_backup._pg_env_and_args()` with the database swapped;
+`_inspect()` counts `KEY_MODELS` tables on both sides with psycopg. Raises `RestoreCheckFailed` only
+when it cannot start (empty bucket, no right to create a database); restore and content failures are
+`report.problems`.
 
 ### [apps/services/db_backup.py](../apps/services/db_backup.py)
 
@@ -721,6 +740,7 @@ Configuration is `pyproject.toml` plus these:
 | test_reports_views.py | yes | Shared-secret report cron endpoints: 503/403/200/502 behaviour. |
 | test_response_compression.py | yes | `SelectiveGZipMiddleware`: API gzipped, `/api/auth/` and admin never. |
 | test_rodtep_api.py | yes | RoDTEP scrip ledger API and import citations. |
+| test_backup_restore_check.py | yes | Real pg_dump / pg_restore round trips into the scratch database: counts match and the live DB is untouched, rows missing from a backup fail it, a corrupt dump fails and the scratch DB is still dropped, `--keep`, the newest R2 dump is the one checked, create/drop refuse any other database. |
 | test_security_hardening.py | yes | A request over 25 MB is a 413 before the view (and the cap stays above the 20 MB upload limit); Django admin sign-in locks after 5 failures per username or IP, even with the right password, success not counted, failures logged; PDFs with JavaScript / launch / embedded files / rich media (hex-escaped too) are refused and nothing is stored, a plain PDF passes. |
 | test_security_headers_and_csrf_scope.py | yes | CSP contents, Permissions-Policy, CSRF only under `/admin/`. |
 | test_sort_presets.py | yes | Sort presets: owner-only (another user reads 404), viewers may save, every bad level/name/view refused, same name saves over, per-view cap, presets kept per view, picked values and "show only" round-trip and are validated (only on pickable columns), each list's frontend columns and `pick` columns equal the server's. |

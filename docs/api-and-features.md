@@ -1582,7 +1582,7 @@ one transaction. `DocumentError` is a `ValueError`, shown to the user as it is.
 The Cloudflare R2 wrapper: boto3 against `https://<account>.r2.cloudflarestorage.com` (or
 `R2_ENDPOINT_URL`). A bucket is named by kind - `po`, `invoice`, `backup` - never by its real name.
 `require_configured()` / `is_configured()` name every missing setting; `upload_file()` (multipart
-for large files on its own), `list_objects()` (every page), `delete_objects()` (1000 keys per call),
+for large files on its own), `download_file()` (the restore check), `list_objects()` (every page), `delete_objects()` (1000 keys per call),
 `presigned_url()`. Nothing here makes an object public. Tested with botocore's `Stubber`
 (`test_object_storage.py`).
 

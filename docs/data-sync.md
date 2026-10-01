@@ -65,6 +65,7 @@ uv run python manage.py backfill_achhad_po_numbers --mir-file in.xlsx --output o
 # Maintenance
 uv run python manage.py prune_revoked_tokens
 uv run python manage.py backup_database    # pg_dump to the R2 backup bucket now (the nightly job, by hand)
+uv run python manage.py verify_backup      # restore the newest R2 dump into a scratch DB, check it, drop it
 ```
 
 Every `sync_*` command accepts `--file <path>` to parse a local copy instead of fetching from Drive
@@ -861,6 +862,12 @@ create a second job. Run by `release.sh` on every deploy.
 One `db_backup.run_backup()` now - the nightly job run by hand, after setting up R2 or before a risky
 migration. A missing R2 setting or a failed `pg_dump` becomes a `CommandError` naming the cause.
 See [testing-deployment.md](testing-deployment.md#backups-2026-09-30).
+
+### [apps/core/management/commands/verify_backup.py](../apps/core/management/commands/verify_backup.py)
+
+Prints `backup_restore_check.check()`'s report - source, tables restored, newest migration in the dump
+and live, and live vs backup rows per key table - and fails with every problem listed. `--file`,
+`--key`, `--keep`. See [testing-deployment.md](testing-deployment.md#backups-2026-09-30).
 
 ### [apps/core/management/commands/report_retired_pos.py](../apps/core/management/commands/report_retired_pos.py)
 

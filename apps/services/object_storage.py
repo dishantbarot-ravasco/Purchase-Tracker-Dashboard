@@ -83,6 +83,11 @@ def upload_file(kind: str, key: str, path: str, content_type: str = "application
     _client().upload_file(path, bucket, key, ExtraArgs={"ContentType": content_type})
 
 
+def download_file(kind: str, key: str, path: str) -> None:
+    """Download one object to a local file (verify_backup's restore check)."""
+    _client().download_file(_bucket(kind), key, path)
+
+
 def list_objects(kind: str, prefix: str = "") -> list[StoredObject]:
     bucket = _bucket(kind)
     paginator = _client().get_paginator("list_objects_v2")
