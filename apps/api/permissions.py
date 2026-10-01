@@ -96,6 +96,15 @@ class SyncTriggerThrottle(UserRateThrottle):
     scope = "sync_trigger"
 
 
+class BlTrackThrottle(UserRateThrottle):
+    """The BL "Track" lookup (imports_views.track_bl) makes a synchronous
+    SafeCube call that can hold a gunicorn worker for its whole timeout, and
+    production runs two sync workers - so a few repeated clicks could leave
+    the app unresponsive. See DEFAULT_THROTTLE_RATES' "bl_track"."""
+
+    scope = "bl_track"
+
+
 class AdminWriteThrottle(UserRateThrottle):
     """Stricter than the generic 200/min "user" bucket for admin-only writes
     that create/modify accounts (apps/api/routers/users_views.py) - see

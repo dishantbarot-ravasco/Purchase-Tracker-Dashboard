@@ -28,7 +28,9 @@ from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
-from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
+from apps.api.permissions import (
+    BlTrackThrottle, IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant,
+)
 from apps.core.models import (
     AdvanceLicense,
     FlagDismissal,
@@ -639,6 +641,7 @@ def sync_status(request):
 
 
 @api_view(["GET"])
+@throttle_classes([BlTrackThrottle])
 def track_bl(request):
     """GET /api/imports/track-bl?bl=<BL number> - live shipment lookup via
     SafeCube's Container Tracking API (apps/services/bl_tracking.py),
@@ -1110,6 +1113,23 @@ def _material_rollup(materials) -> list:
     return list(rollup.values())
 
 
+def _plant_import_refs(user):
+    """None when `user` reads every plant; otherwise (BOE numbers, import PO
+    numbers) on the import lines of the plants they may read - how a ledger
+    row that carries no plant of its own (an Advance Licence workbook row) is
+    placed in one."""
+    allowed = [model for key, model, _label in license_links.PLANT_LINE_ITEMS if user_can_access_plant(user, key)]
+    if len(allowed) == len(license_links.PLANT_LINE_ITEMS):
+        return None
+    boes, pos = set(), set()
+    for model in allowed:
+        for boe, po in model.objects.values_list("boe_number", "purchase_order__po_number"):
+            if boe:
+                boes.add(boe.strip())
+            pos.add(po.strip())
+    return boes, pos
+
+
 def _workbook_row_filter(user):
     """None when `user` reads every plant; otherwise a predicate saying
     which of a licence's workbook rows (AdvanceLicenseMaterial) they may see.
@@ -1120,15 +1140,10 @@ def _workbook_row_filter(user):
     no usage at all (the licence's authorised materials, company-wide).
     Unscoped, it saw every plant's imports here, and the BOE cross-check
     reported every other plant's BOE as a workbook-only gap."""
-    allowed = [model for key, model, _label in license_links.PLANT_LINE_ITEMS if user_can_access_plant(user, key)]
-    if len(allowed) == len(license_links.PLANT_LINE_ITEMS):
+    refs = _plant_import_refs(user)
+    if refs is None:
         return None
-    boes, pos = set(), set()
-    for model in allowed:
-        for boe, po in model.objects.values_list("boe_number", "purchase_order__po_number"):
-            if boe:
-                boes.add(boe.strip())
-            pos.add(po.strip())
+    boes, pos = refs
 
     def visible(row) -> bool:
         if not (row.boe_number or row.import_po_number or row.qty_imported is not None or row.value_imported is not None):

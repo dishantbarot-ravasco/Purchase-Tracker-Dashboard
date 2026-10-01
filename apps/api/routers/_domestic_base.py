@@ -750,8 +750,11 @@ def make_purchase_orders(cfg: _PlantConfig):
         # lists is retired, not shown. Without this the dashboard kept
         # displaying a renamed PO's old spelling alongside its
         # replacement, which is how this bug was reported.
+        # dismissed_by too: _line_item_dict() reads its email, one query per
+        # dismissed match without it (the import list already prefetched it).
         qs = cfg.po_model.objects.filter(is_active=True).prefetch_related(
             "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries",
+            "items__mir_match__dismissed_by",
         )
         pos = list(qs)
 
@@ -1490,6 +1493,10 @@ def make_dismiss_flag(cfg: _PlantConfig):
         flag_key = (request.data.get("flagKey") or "").strip()
         if not flag_key:
             return Response({"error": "flagKey is required."}, status=400)
+        # Same 404 as the import side: without it any string saved a
+        # FlagDismissal row for a PO this plant does not hold.
+        if not cfg.po_model.objects.filter(po_number=po_number, is_active=True).exists():
+            return Response({"error": "Purchase order not found."}, status=404)
         dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
         fd = dismiss_po_flag(cfg.syncrun_plant, po_number, flag_key, request.user, dismissed, reason)

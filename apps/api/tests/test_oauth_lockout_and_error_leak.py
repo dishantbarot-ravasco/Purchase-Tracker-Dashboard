@@ -191,3 +191,24 @@ class TestUnappliedMigrationHint:
         assert _unapplied_migrations() == []
         settings.DEBUG = True
         assert "migrate" not in self._handle(self._MISSING).data["detail"]
+
+
+@pytest.mark.django_db
+class TestGoogleNewDeviceRenewsTheSession:
+    def test_the_half_signed_in_session_gets_a_fresh_id(self):
+        """The password path cycles the session key before storing
+        pending_user_id; the Google path did not, so a session id planted
+        before sign-in rode along into the half-signed-in state."""
+        user = make_user(email="newdevice@ravasco.com", role="viewer")
+        client = APIClient()
+        session = client.session
+        session["planted"] = True
+        session.save()
+        planted_key = session.session_key
+
+        with patch("apps.services.device_service.send_device_otp"):
+            response = _callback(client, "newdevice@ravasco.com")
+
+        assert response.status_code == 302 and "step=device_verify" in response["Location"]
+        assert client.session.session_key != planted_key
+        assert client.session["pending_user_id"] == user.user_id

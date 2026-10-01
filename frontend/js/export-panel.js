@@ -17,14 +17,11 @@
 // than a bespoke panel - see charts.js's closeModal()/delegated close-btn
 // listener.
 //
-// Download mechanism: a plain same-origin GET via window.open(), not a
-// fetch()+blob dance - this app's auth is httpOnly-cookie-based for browser
-// clients (see CLAUDE.md's "Auth & security architecture"), so the cookie
-// rides along on a normal navigation with no extra JS needed; the backend's
-// Content-Disposition: attachment header does the rest. Opened in a new tab
-// (not the current one) so a same-tab navigation failure (e.g. a stale
-// session) can't blow away the whole SPA - it would just show a JSON error
-// in that new tab instead, which the user can close.
+// Download mechanism: auth.js's downloadWithSession() - a plain same-origin
+// GET through an <a download> click, not a fetch()+blob dance. Auth is an
+// httpOnly cookie, so it rides along, and the backend's Content-Disposition:
+// attachment header does the rest; the helper renews an expired session
+// first, which a bare window.open() never did.
 
 function exportPlantRowHtml(key) {
   const allowed = canEditField(key);
@@ -76,6 +73,6 @@ function openExportPanel() {
     if (from) params.push('from=' + encodeURIComponent(from));
     if (to) params.push('to=' + encodeURIComponent(to));
     const qs = params.length ? '?' + params.join('&') : '';
-    window.open(PLANTS[key].apiPrefix + '/stock-snapshots/export' + qs, '_blank');
+    downloadWithSession(PLANTS[key].apiPrefix + '/stock-snapshots/export' + qs);
   });
 }

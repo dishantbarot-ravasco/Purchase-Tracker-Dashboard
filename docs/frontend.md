@@ -479,6 +479,11 @@ would never fire). Replaces the old inline `onerror` attributes.
 
 ### frontend/js/auth.js
 
+`downloadWithSession(url)` is how every CSV export downloads: it renews the session through
+`authFetch('/api/auth/me')`, then clicks a hidden `<a download>` - no new tab (so no popup blocker after
+the await) and the page never navigates; a session that cannot be renewed goes to `/login.html`. A bare
+`window.open()` skipped the renewal, so after 12 idle hours the new tab showed a 401 JSON page.
+
 `requireAuth()` sends the reader to `/login.html` only for a 401/403. A network failure or a 5xx
 (a deploy, a restart) shows `showAuthUnavailable()`'s notice with a Retry button instead - it used to
 bounce everyone to the login page on every blip, and they signed in again.
@@ -498,7 +503,7 @@ cookie; nothing here holds a token.
   the spent one is revoked, so concurrent callers share the one in-flight promise.
 - `authFetch(url, opts)` - drop-in `fetch()`; on a 401 it awaits `refreshSession()` and replays the
   request once, **even if renewal failed** (another tab may already have rotated the shared cookie).
-  Every wrapper in the app (`apiForPlant`, `apiImports`, `apiReview`, `savePoField`, the
+  Every wrapper in the app (`apiForPlant`, `apiImports`, `apiMir`, `savePoField`, the
   password-change calls, every `admin-page.js` call) goes through it. Rationale:
   [auth-security-email.md](auth-security-email.md).
 - `requireAuth()` - GET `/api/auth/me`, fills `CURRENT_USER`; any failure logs and redirects to
@@ -1226,9 +1231,9 @@ values in `sv`, so `psSortValue()` only reads them; the per-plant columns (`hrsS
 ### frontend/js/export-panel.js
 
 `openExportPanel()` - the "Export Data" panel (button shown only when `PLANT_KEYS.some(canEditField)`;
-each plant row gated by `canEditField`). Download is `window.open('<prefix>/stock-snapshots/export?from=&to=')`
-in a new tab: the httpOnly cookie rides along and `Content-Disposition` does the rest, and a stale
-session shows JSON in that tab instead of replacing the dashboard. Export rules:
+each plant row gated by `canEditField`). Download is `auth.js`'s
+`downloadWithSession('<prefix>/stock-snapshots/export?from=&to=')`: the session is renewed first, the
+httpOnly cookie rides along and `Content-Disposition` does the rest. Export rules:
 [api-and-features.md](api-and-features.md).
 
 ### frontend/js/no-po-panel.js
@@ -1239,7 +1244,7 @@ hidden at zero; they are never summed, since the buckets have different owners).
 `po_unknown`, `po_known_unmatched`); the server decides the bucket and this file never re-derives it.
 `NO_PO_CTX` holds the loaded rows; `renderNoPoPanel()` re-renders from memory on tab switch (the
 search text is reset per tab) or search (`rerenderNoPoPanelDebounced`, built once at load, which also
-restores focus and caret). CSV via `window.open('<prefix>/mir-without-po?download=csv&bucket=...')` -
+restores focus and caret). CSV via `downloadWithSession('<prefix>/mir-without-po?download=csv&bucket=...')` -
 **never `?format=csv`**, which DRF reserves. Read-only.
 
 ### frontend/js/rodtep-panel.js
@@ -1359,7 +1364,7 @@ again. `runSearch()` awaits both sorters' presets with the data. The sort styles
 `stock.html`'s page ("RM Store"), built like MIR entry (2026-09-30): three views - **Issue from MIR**,
 **RM register** (Stock by MIR / Issue slips) and **Open mismatches**. Like `mir-page.js` it never draws
 stock or values a line: every input change sends the form to `/api/stock/preview` (debounced, stale
-responses dropped) and paints the value, what the MIR has left after it, the "Still to do" list and
+responses dropped; the register, slips and mismatch lists drop theirs too, through `stLoadTicket()`) and paints the value, what the MIR has left after it, the "Still to do" list and
 notices; saving re-runs the same check server-side. Inputs are not re-rendered on a preview. Every
 top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.js`).
 
@@ -1399,7 +1404,8 @@ top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.
 `mir.html`, self-contained (no `main.js`): `apiMir(path, opts)` wraps `/api/mir` (JSON body
 encoded for it, `err.errors` carries the server's `[{field, message}]`). **It never prices a line or
 decides a mismatch**: every input change runs the debounced `schedulePreview` -> `runPreview()` (POST
-`/api/mir/preview`, a sequence number drops a stale reply) -> `paintPreview()`, and Save posts the same
+`/api/mir/preview`, a sequence number drops a stale reply; the register and mismatch lists drop
+theirs through `mirLoadTicket()`) -> `paintPreview()`, and Save posts the same
 `payload()` to `/api/mir/entries/new`. Inputs are rendered once per line change (`renderLines()`) and
 never re-rendered while typing; `paintPreview()` repaints only the computed figures (`#fig-<i>`), the
 difference cards (`#reasons-<i>`, rebuilt only when the difference or its chosen reason changes, so
@@ -1515,7 +1521,8 @@ with `act` / `ACT_` (one global scope with `auth.js`, `shared.js`, `admin-page.j
 - `actRenderRows()` / `actToggleDetail()` - the log table; a row (click, Enter or Space) opens a detail
   row with the request, IP, browser, duration and the redacted body as pretty JSON. **The detail is
   built with `textContent`, never `innerHTML`** - the body is whatever the user typed.
-- `actExport()` - opens `/api/activity/export?<filters>` in a new tab, like the stock snapshot export.
+- `actExport()` - downloads `/api/activity/export?<filters>` through `auth.js`'s `downloadWithSession()`,
+  like every export.
 
 ### frontend/js/login.js
 

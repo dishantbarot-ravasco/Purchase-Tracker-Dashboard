@@ -39,6 +39,11 @@ _PENDING_TTL_SECONDS = 900
 # qcluster is not running: a re-match normally starts within seconds.
 _STALL_SECONDS = 120
 
+# A run still "running" after this long died with its worker (Q_CLUSTER's
+# timeout is 900 s, so no live run lasts longer): it is reported failed,
+# rather than the page showing "re-matching" until the next save.
+_RUNNING_TTL_SECONDS = 1200
+
 _PENDING_KEY = "pt:rematch-pending:{}"
 _RESULT_KEY = "pt:rematch-result:{}"
 
@@ -103,6 +108,14 @@ def status(plant_key: str) -> dict:
     the page stops waiting and says so), and the last run's outcome with the
     pins it could not apply - for sync-status and the save responses."""
     last = cache.get(_RESULT_KEY.format(plant_key)) or {"state": "idle"}
+    if last.get("state") == "running":
+        try:
+            ran = (timezone.now() - datetime.fromisoformat(last["startedAt"])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            ran = 0
+        if ran > _RUNNING_TTL_SECONDS:
+            last = {**last, "state": "failed",
+                    "error": "The re-match stopped without finishing (the worker restarted). Save again to re-run it."}
     queued_at = cache.get(_PENDING_KEY.format(plant_key))
     stalled = False
     if queued_at:

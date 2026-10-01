@@ -93,6 +93,21 @@ class TestActions:
         assert not ManualMirMatch.objects.exists()
         assert list(ManualReceiptEdit.objects.values_list("action", flat=True)) == ["add"]
 
+    def test_a_failed_add_leaves_the_line_s_decisions_as_they_were(self, monkeypatch):
+        from apps.services import manual_receipts
+
+        ManualMirMatch.objects.create(plant=SyncRun.Plant.HRS, po_number=PO, item_ref="1", mir_no="")
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("database went away")
+
+        monkeypatch.setattr(manual_receipts, "_save_edit", broken)
+        with pytest.raises(RuntimeError):
+            manual_receipts.apply_change(plant=SyncRun.Plant.HRS, po_kind="domestic", po_number=PO, item_ref="1",
+                                         item_description="Reclaim Rubber - 7 MPA", action="add",
+                                         mir_model=HRSMIREntry, mir_no="59/09")
+        assert ManualMirMatch.objects.filter(mir_no="").exists()
+
     def test_remove_drops_a_pin_naming_that_receipt(self):
         ManualMirMatch.objects.create(plant=SyncRun.Plant.HRS, po_number=PO, item_ref="1", mir_no="20/09")
         assert self.patch({"action": "remove", "mirNo": "20/09"}).status_code == 200

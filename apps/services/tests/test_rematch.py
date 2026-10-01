@@ -80,6 +80,17 @@ class TestQueueing:
         assert status["state"] == "done" and status["queued"] is False
         assert status["unfilledPins"] == unfilled
 
+    def test_a_run_whose_worker_died_is_reported_failed_not_running_forever(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        started = (timezone.now() - timedelta(minutes=30)).isoformat()
+        cache.set(rematch._RESULT_KEY.format("vapi"), {"state": "running", "startedAt": started}, None)
+        assert rematch.status("vapi")["state"] == "failed"
+        cache.set(rematch._RESULT_KEY.format("vapi"), {"state": "running", "startedAt": timezone.now().isoformat()}, None)
+        assert rematch.status("vapi")["state"] == "running"
+
     def test_a_failed_run_is_reported_not_raised(self, monkeypatch):
         def boom():
             raise RuntimeError("db went away")

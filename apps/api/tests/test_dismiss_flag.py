@@ -76,6 +76,14 @@ class TestDismissDomesticFlag:
         response = client.patch(self.url, {"dismissed": True}, format="json")
         assert response.status_code == 400
 
+    def test_an_unknown_po_number_is_404_and_saves_nothing(self):
+        client = APIClient()
+        client.force_authenticate(user=make_user(email="e3@ravasco.com", role="editor"))
+        response = client.patch("/api/purchase-orders/NO-SUCH-PO/flags/dismiss",
+                                {"flagKey": "QTY_DISCREPANCY", "dismissed": True}, format="json")
+        assert response.status_code == 404
+        assert not FlagDismissal.objects.exists()
+
     def test_editor_scoped_to_a_different_plant_is_forbidden(self):
         """An editor whose PTUser.plants list doesn't include this PO's plant
         (HRS) must be forbidden, even though their role is otherwise

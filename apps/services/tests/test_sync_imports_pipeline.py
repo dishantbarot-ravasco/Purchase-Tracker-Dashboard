@@ -155,3 +155,21 @@ class TestSyncHrsImportsPoCsv:
         call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
         lines = list(HRSImportPOLineItem.objects.filter(purchase_order__po_number="IMP001").order_by("pk"))
         assert lines[0].pk == first_pk and lines[1].description == "PTFE Tape"
+
+    def test_blank_extra_cells_on_a_row_are_ignored(self, tmp_path):
+        fixture_path = tmp_path / "imports.csv"
+        fixture_path.write_text(_write_csv([_ROW_TEMPLATE]).rstrip("\r\n") + ',"",""\r\n', encoding="utf-8")
+        call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+        assert HRSImportPurchaseOrder.objects.filter(po_number="IMP001").exists()
+
+    def test_a_shifted_row_fails_the_sync_by_name_not_misread(self, tmp_path):
+        """A non-blank cell past the header means the columns moved (an
+        unquoted comma); it used to be dropped and the row read with every
+        later field in the wrong column."""
+        fixture_path = tmp_path / "imports.csv"
+        fixture_path.write_text(_write_csv([_ROW_TEMPLATE]).rstrip("\r\n") + ',"stray"\r\n', encoding="utf-8")
+        with pytest.raises(SystemExit):
+            call_command("sync_hrs_imports_po_csv", file=str(fixture_path))
+        run = SyncRun.objects.filter(source=SyncRun.Source.IMPORT_PO_CSV).latest("started_at")
+        assert run.status == SyncRun.Status.FAILED and "IMP001" in run.error_detail
+        assert not HRSImportPurchaseOrder.objects.exists()

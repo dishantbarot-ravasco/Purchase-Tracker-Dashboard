@@ -32,7 +32,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | POST | `[<p>/]purchase-orders/<po>/mir-match/preview` | `preview_mir_match` | IsEditor + plant | Queue a dry run of that change; returns `previewId` |
 | GET | `[<p>/]mir-match-previews/<id>` | `preview_mir_match_status` | IsEditor + plant | The preview's state and the lines it moves |
 | GET | `[<p>/]purchase-orders/<po>/manual-changes` | `manual_changes` | Auth + plant (403) | The order's manual receipt decisions, who and when, plus its receipts placed on other orders |
-| PATCH | `[<p>/]purchase-orders/<po>/flags/dismiss` | `dismiss_flag` | IsEditor + plant | Dismiss / reinstate a PO-level flag (`FlagDismissal`) |
+| PATCH | `[<p>/]purchase-orders/<po>/flags/dismiss` | `dismiss_flag` | IsEditor + plant | Dismiss / reinstate a PO-level flag (`FlagDismissal`); 404 for a PO the plant does not hold |
 | GET | `[<p>/]materials` | `materials` | Auth + plant (403) | Every active Stock lot with consumption, MSL, MIR↔Stock matches, flags |
 | PATCH | `[<p>/]materials/<lot_id>/fields` | `correct_material_field` | IsEditor + plant | Inline correction of one lot field |
 | GET | `[<p>/]materials/<lot_id>/stock-trend` | `stock_trend` | Auth + plant (403) | One lot's snapshot history |
@@ -61,7 +61,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | PATCH | `imports/matches/po-mir/<plant>/<id>/dismiss` | `dismiss_import_po_mir_match` | IsEditor + plant | Dismiss / reinstate an import PO↔MIR match |
 | GET | `imports/sync-status` | `sync_status` | Auth, plants silently narrowed | Latest `IMPORT_PO_CSV` run per plant, plus `rodtepInProgress` / `advanceLicenseInProgress` |
 | POST | `imports/sync-trigger/<plant>` | `sync_trigger` | IsAdmin, `SyncTriggerThrottle` | Queue that plant's import CSV sync + match |
-| GET | `imports/track-bl?bl=` | `track_bl` | Auth | Live SafeCube container-tracking passthrough; 502 on any failure |
+| GET | `imports/track-bl?bl=` | `track_bl` | Auth, `BlTrackThrottle` | Live SafeCube container-tracking passthrough, successes cached 10 min per BL; 502 on any failure |
 | GET | `imports/rodtep` | `rodtep_ledger` | Auth | RoDTEP scrip ledger joined to import citations |
 | POST | `imports/rodtep/sync-trigger` | `rodtep_sync_trigger` | IsAdmin | Run `sync_rodtep` synchronously; 200 or 409 |
 | GET | `imports/rodtep/<script_no>` | `rodtep_script_detail` | Auth | Export side, import side and legacy usage rows for one scrip |
@@ -655,7 +655,8 @@ number, `item_ref`, `item_description` as the staleness tripwire), unique on
 **`manual_receipts.apply_change()`** is the only writer of pins and edits, for both routers, and keeps
 them consistent: add clears a "not received" pin and a removal of the same document; remove clears an
 add of it and a pin naming it; `notReceived` clears the line's adds; `auto` ("Back to automatic")
-clears every pin and edit on the line; `undo` deletes one pin or edit by id, only on that line.
+clears every pin and edit on the line; `undo` deletes one pin or edit by id, only on that line. It is
+one transaction, so a failure part way never leaves a line with neither its old decision nor the new one.
 
 **Who did it** - every run writes `receipt_notes` on the six `*POMirMatch` models (derived, like
 `manually_pinned`): one `{mirNo, how, by, byName, at, reason}` per receipt a person placed (`pinned`,
@@ -786,9 +787,11 @@ row's `qtyInPoUnit` / `value` and the `received` totals by it, leaving the row's
 same as it is missing from the list, matching the domestic routers.
 
 **BL tracking**: `bl_tracking.py` is a thin, single-call passthrough to SafeCube's (Sinay's) Container
-Tracking API v2, behind `GET imports/track-bl?bl=`. **Nothing is stored** - every call hits the API live,
-with no caching or rate-limit tracking. If the trial key's quota becomes a problem, add a short-TTL cache
-keyed on `bl_number` then; caching before would be guessing.
+Tracking API v2, behind `GET imports/track-bl?bl=`. **Nothing is stored in the DB.** The call is
+synchronous and can hold one of production's two gunicorn workers for its 15 s timeout, so a successful
+lookup is kept in Django's cache for 10 minutes per BL number (failures never are), and the endpoint has
+its own throttle (`BlTrackThrottle`, `bl_track`: 10/minute per user) - a few repeated clicks used to be
+able to leave the whole app unresponsive.
 
 **RoDTEP** (`RodtepScrollEntry`, `RodtepUsage`) and **Advance Licence** (`AdvanceLicense`,
 `AdvanceLicenseMaterial`) are company-wide ledgers surfaced by `rodtep-panel.js` /
@@ -1729,7 +1732,9 @@ the old data; it records `{state, startedAt, finishedAt, unfilledPins, stalePins
 unfilledEdits, staleEdits}`
 (or `error`) for `status(plant_key)`, which `sync-status` serves as `rematch`. `status()` also carries
 `queuedAt` and `stalled`: True once a queued run has waited more than `_STALL_SECONDS` (120) without
-the worker starting it - the qcluster is down - so the page stops waiting and says so. `_inline()` runs it in
+the worker starting it - the qcluster is down - so the page stops waiting and says so. A run still
+`running` after `_RUNNING_TTL_SECONDS` (1200, past Q_CLUSTER's 900 s timeout) died with its worker and is
+reported `failed` with a "save again" message, rather than showing as re-matching forever. `_inline()` runs it in
 process under pytest. Two runs of one plant never overlap: `matching_core.run_full_match()` takes a
 per-plant `pg_advisory_xact_lock` (`_lock_plant_match()`), so a queued re-match and the hourly sync's
 match of the same plant run one after the other.
@@ -1737,8 +1742,8 @@ match of the same plant run one after the other.
 ### apps/services/manual_receipts.py
 
 The one writer of manual receipt decisions (pins and `ManualReceiptEdit`s) for both routers.
-`apply_change()` applies one `add` / `remove` / `notReceived` / `auto` / `undo` / `set` to one line,
-keeping pins and edits consistent, and raises `ValueError` with the reader's message.
+`apply_change()` applies one `add` / `remove` / `notReceived` / `auto` / `undo` / `set` to one line in
+one transaction, keeping pins and edits consistent, and raises `ValueError` with the reader's message.
 `manual_changes()` lists a PO's decisions plus `elsewhere` (decisions on other orders naming a receipt
 that cites this one, confirmed with `_names_this_po()`). `candidate_insights()` groups each offered
 MIR document and explains, from `_forced_candidate()` evidence, why the matcher is not counting it on

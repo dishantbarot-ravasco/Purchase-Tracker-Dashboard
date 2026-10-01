@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import re
 
+from django.db import transaction
 from django.db.models import Q
 
 from apps.core.models import ManualMirMatch, ManualReceiptEdit
@@ -59,6 +60,7 @@ def _user_fields(user) -> dict:
     }
 
 
+@transaction.atomic
 def apply_change(*, plant: str, po_kind: str, po_number: str, item_ref: str, item_description: str,
                  action: str, mir_model, mir_no: str = "", shared: bool = False, reason: str = "",
                  user=None, undo_type: str = "", undo_id=None) -> dict:
@@ -66,7 +68,11 @@ def apply_change(*, plant: str, po_kind: str, po_number: str, item_ref: str, ite
     the reader when the change cannot be made. Returns {"action", "mirNo"}.
 
     `set` is the older "this document is the line's receipt" pin, kept for
-    the callers that still send it (a PATCH with a mirNo and no action)."""
+    the callers that still send it (a PATCH with a mirNo and no action).
+
+    One transaction: an add deletes the line's "not received" pin and any
+    removal of the same receipt before saving the edit, so a failure part way
+    used to leave the line with neither the old decision nor the new one."""
     if action not in ACTIONS:
         raise ValueError(f"Unknown action {action!r}.")
     mir_no = (mir_no or "").strip()

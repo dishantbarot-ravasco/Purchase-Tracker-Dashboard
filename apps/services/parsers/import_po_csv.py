@@ -147,8 +147,19 @@ def parse_import_po_csv(csv_text: str) -> list[ParsedImportPurchaseOrder]:
         # compares stripped names, but DictReader keys each row by the file's
         # ACTUAL header, so a re-saved CSV with "PO Number " passed the check
         # and then raised KeyError on the lookup below. A None key holds the
-        # extra cells of an over-long row; nothing reads it, so it is dropped.
+        # extra cells of an over-long row: blank ones are an export artifact
+        # and are dropped; a non-blank one means the columns have shifted (an
+        # unquoted comma in a text cell), so the row is refused by name rather
+        # than read with every later field in the wrong column - the same
+        # rule as po_csv.py.
+        extra = [c for c in (raw_row.get(None) or []) if (c or "").strip()]
         row = {k.strip(): v for k, v in raw_row.items() if k is not None}
+        if extra:
+            raise HeaderMismatch(
+                f"CSV line {reader.line_num} (PO Number {(row.get('PO Number') or '').strip()!r}) has "
+                f"{len(raw_row[None])} more cell(s) than the header, e.g. {extra[0]!r} - most likely an unquoted "
+                "comma in a text field; fix that row in the master CSV."
+            )
         po_number = to_str(row["PO Number"])
         if not po_number:
             continue

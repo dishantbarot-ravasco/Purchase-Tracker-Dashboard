@@ -80,10 +80,10 @@ function actClearFilters() {
 }
 
 function actExport() {
-  // Same pattern as the stock snapshot export: the session cookie rides
-  // along on a plain navigation, and the server sends an attachment.
+  // Same as every export: auth.js's downloadWithSession() renews the
+  // session first, and the server sends an attachment.
   const qs = actFilters().toString();
-  window.open('/api/activity/export' + (qs ? '?' + qs : ''), '_blank');
+  downloadWithSession('/api/activity/export' + (qs ? '?' + qs : ''));
 }
 
 // ── People ───────────────────────────────────────────────────────

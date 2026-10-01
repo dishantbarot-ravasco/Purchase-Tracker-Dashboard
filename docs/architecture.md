@@ -277,7 +277,7 @@ The single settings module, driven by environment variables (loaded from `.env` 
   time (the one runtime write under `BASE_DIR`). `apps.*` loggers are DEBUG when `DEBUG`, else INFO.
 - **DRF**: `PTCookieJWTAuthentication`, default `IsAuthenticated`, the custom exception handler,
   JSON renderer only (no Browsable API), throttle scopes `anon` 60/min, `user` 200/min, `login`
-  5/min, `otp_verify` 10/min, `sync_trigger` 10/min, `admin_write` 30/min,
+  5/min, `otp_verify` 10/min, `sync_trigger` 10/min, `bl_track` 10/min, `admin_write` 30/min,
   `password_change_request` 5/min.
 - **SimpleJWT**: access 12 h, refresh 30 days, HS256 signed with `JWT_SIGNING_KEY` (defaults to
   `SECRET_KEY`; the deploy check warns), rotate + "blacklist" after rotation (backed by the app's

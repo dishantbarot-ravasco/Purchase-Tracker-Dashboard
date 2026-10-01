@@ -207,7 +207,7 @@ IP-pooled bucket left in the auth flow.
 
 Scoped rates (all in `REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"]`): `login` 5/min, `otp_verify` 10/min
 (device-verify, and reused by `PasswordChangeConfirmThrottle`, keyed per user),
-`password_change_request` 5/min, `sync_trigger` 10/min, `admin_write` 30/min. Higher-blast-radius
+`password_change_request` 5/min, `sync_trigger` 10/min, `bl_track` 10/min, `admin_write` 30/min. Higher-blast-radius
 writes have their own scopes rather than the generic "user" bucket: `SyncTriggerThrottle` (each
 request queues a real Drive-sync job) and `AdminWriteThrottle` (user create, update/delete, and the
 admin "log out everywhere"; listing and revoking devices use the default).
@@ -313,7 +313,7 @@ ever called `/api/auth/token/refresh`: every 401 went straight to `/login.html`,
 `pt_refresh` cookie never extended a browser session and everyone was signed out 12 hours after
 signing in - often mid-edit, with the freshness watcher's next poll doing the bouncing. `auth.js` now
 has `authFetch()`, a drop-in for `fetch()` that on a 401 calls `refreshSession()` and replays the
-request once; `apiForPlant()`, `apiImports()`, `apiReview()`, `savePoField()`, `requireAuth()`, the
+request once; `apiForPlant()`, `apiImports()`, `apiMir()`, `savePoField()`, `requireAuth()`, the
 password-change calls and every `admin-page.js` call go through it. Callers keep their own 401 ->
 login redirect, which now fires only when renewal genuinely failed. Three details are load-bearing:
 
@@ -804,7 +804,8 @@ helpers.
   `ALLOWED_EMAIL_DOMAINS` (case-insensitive), with a non-empty local part. `allowed_domains_text()`
   renders "@ravasco.com or @hindustanrubbers.com" for refusal messages.
 - `IsEditor` (admin or editor) / `IsAdmin` (admin) - both also require `is_active`.
-- `SyncTriggerThrottle` (scope `sync_trigger`, 10/min) / `AdminWriteThrottle` (scope `admin_write`,
+- `SyncTriggerThrottle` (scope `sync_trigger`, 10/min) / `BlTrackThrottle` (scope `bl_track`, 10/min:
+  the BL lookup holds a worker for a live SafeCube call) / `AdminWriteThrottle` (scope `admin_write`,
   30/min) - `UserRateThrottle` subclasses, keyed per user.
 - `user_can_access_plant(user, plant_key)` - True when `plants` is empty or contains the key. Called
   from view bodies (not a `BasePermission`) because the plant is only known inside the view.
@@ -861,7 +862,9 @@ and no published privacy-policy link. Switching it to External would need both.
   verifier"), `userinfo_failed`, `unverified_email`, `domain_not_allowed`, `not_registered`,
   `account_locked`, `login_failed`, `email_failed`. Trusted device: mints tokens, sets both cookies,
   stashes the JWT payload in `session["oauth_delivery"]`, audits and redirects to
-  `/login.html?oauth_ready=1`. New device: sends the OTP, sets `pending_user_id`, redirects to
+  `/login.html?oauth_ready=1`. New device: sends the OTP, cycles the session key (as the password path
+  does, so a session id planted before sign-in cannot carry into the half-signed-in state), sets
+  `pending_user_id`, redirects to
   `/login.html?step=device_verify`, after which `device_verify` completes it.
 - `oauth_session_token` (`GET /api/auth/google/session-token`, `AllowAny`) - pops and returns
   `oauth_delivery` once, so the token never travels in a URL (history, logs, Referer). 400 when

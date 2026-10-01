@@ -209,10 +209,10 @@ function renderNoPoPanel() {
 
   const exportBtn = document.getElementById('noPoExportBtn');
   if (exportBtn) exportBtn.onclick = () => {
-    // Plain window.open(), not fetch+blob: auth here is an httpOnly cookie,
-    // so it rides along on an ordinary same-origin navigation and
-    // Content-Disposition does the rest. Same reasoning as export-panel.js.
-    window.open(PLANTS[NO_PO_CTX.plantKey].apiPrefix
-      + '/mir-without-po?download=csv&bucket=' + encodeURIComponent(NO_PO_CTX.bucket), '_blank');
+    // auth.js's downloadWithSession(), not fetch+blob: the httpOnly cookie
+    // rides along and Content-Disposition does the rest, after the session
+    // is renewed. Same as export-panel.js.
+    downloadWithSession(PLANTS[NO_PO_CTX.plantKey].apiPrefix
+      + '/mir-without-po?download=csv&bucket=' + encodeURIComponent(NO_PO_CTX.bucket));
   };
 }

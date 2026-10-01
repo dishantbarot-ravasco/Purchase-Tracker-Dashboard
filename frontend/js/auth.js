@@ -77,6 +77,35 @@ async function authFetch(url, opts) {
 }
 
 /**
+ * Downloads an attachment GET (a CSV export) with a live session. A plain
+ * window.open() never went through authFetch(), so once the 12-hour access
+ * token had expired the new tab showed a 401 JSON page until the main page
+ * happened to make a call. This renews the session first (through
+ * /api/auth/me), then downloads through an <a download> click - no new tab,
+ * so no popup blocker after the await, and the page itself never navigates.
+ * A session that cannot be renewed goes to the login page, as everywhere.
+ */
+async function downloadWithSession(url) {
+  let res;
+  try {
+    res = await authFetch('/api/auth/me', { credentials: 'same-origin' });
+  } catch (e) {
+    res = null;
+  }
+  if (res && res.status === 401) {
+    window.location.href = '/login.html';
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = '';
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+/**
  * Confirms the browser's httpOnly session cookie is still valid by asking
  * the server (GET /api/auth/me), populating CURRENT_USER on success.
  * Any failure - real 401, or a genuine network error - bounces to

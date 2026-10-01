@@ -660,8 +660,9 @@ Live Bill-of-Lading lookup behind the Import Purchases "Track" links; not part o
 (`/container-tracking/api/v2/shipment`, `shipmentType=BL`, `API_KEY` header, 15 s timeout) and
 **never raises**: it returns `{"ok": True, "data": ...}` or `{"ok": False, "error": "..."}` for an
 unset `SAFECUBE_API_KEY`, a blank number, a network failure or a non-200 (SafeCube's own `message`
-and `details` joined). Nothing is stored or cached; add a short-TTL cache keyed on `bl_number` only
-if the trial key's quota becomes a real problem. Many real BL numbers legitimately return "not
+and `details` joined). Nothing is stored in the DB; a success is cached for `_CACHE_SECONDS` (600)
+under a hash of the BL number, failures never - see
+[api-and-features.md](api-and-features.md) "BL tracking" for why. Many real BL numbers legitimately return "not
 found" (carrier coverage, completed shipments) - that is expected, not a bug.
 
 ### [apps/services/parsers/common.py](../apps/services/parsers/common.py)
@@ -716,7 +717,9 @@ are dropped before the header comparison (a sheet-editing artifact that broke Va
 2026-09-07); any real header change still raises. An unparseable delivery date keeps its verbatim
 text in `delivery_date_raw`. Like `po_csv.py`, every row is re-keyed by its stripped header right
 after validation, so a stray space in a column name (" PO Number ") passes the check and still
-reads; the `None` key DictReader uses for an over-long row's extra cells is dropped.
+reads. An over-long row's extra cells (DictReader's `None` key) are dropped when blank and refused with
+`HeaderMismatch` naming the CSV line and PO number otherwise - the columns have shifted, the same rule as
+`po_csv.py`.
 
 ### [apps/services/parsers/mir.py](../apps/services/parsers/mir.py), [achhad_mir.py](../apps/services/parsers/achhad_mir.py), [vapi_mir.py](../apps/services/parsers/vapi_mir.py)
 

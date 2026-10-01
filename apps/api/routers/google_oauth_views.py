@@ -251,6 +251,10 @@ def google_callback(request):
             log.error("Google OAuth: failed to send OTP to user_id=%s", user.user_id, exc_info=True)
             return HttpResponseRedirect(f"{_FRONTEND_LOGIN}?oauth_error=email_failed")
 
+        # A fresh session id for the half-signed-in state, as the password
+        # path does (auth_serializers.py), so a session id planted before
+        # sign-in cannot ride along into it.
+        request.session.cycle_key()
         request.session["pending_user_id"] = user.user_id
         request.session.modified = True
 

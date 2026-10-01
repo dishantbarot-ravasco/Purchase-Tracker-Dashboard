@@ -404,6 +404,9 @@ REST_FRAMEWORK = {
         # generic 200/min "user" bucket. See apps/api/permissions.py's
         # SyncTriggerThrottle/AdminWriteThrottle.
         "sync_trigger": "10/minute",
+        # The BL "Track" lookup holds a worker for a live SafeCube call
+        # (apps/api/permissions.py's BlTrackThrottle).
+        "bl_track": "10/minute",
         "admin_write": "30/minute",
         # Self-service "Change Password" (apps/api/routers/password_views.py)
         # - requesting a fresh code, same cadence as login's own throttle.

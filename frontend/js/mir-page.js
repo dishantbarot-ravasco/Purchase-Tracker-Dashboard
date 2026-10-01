@@ -1,5 +1,5 @@
-// mir.html's page script - see mir.html's header comment. Self-contained
-// like review-page.js: its own fetch wrapper, no dependency on main.js.
+// mir.html's page script - see mir.html's header comment. Self-contained:
+// its own fetch wrapper, no dependency on main.js.
 //
 // The page never prices a line or decides a mismatch itself. Every input
 // change sends the whole form to /api/mir/preview (debounced) and paints
@@ -58,7 +58,7 @@ const DIFF = {
   offerDraft();
 })();
 
-/** /api/mir/... fetch wrapper - same shape as review-page.js's apiReview(). */
+/** /api/mir/... fetch wrapper: authFetch(), JSON in and out, an error carries the server's message. */
 async function apiMir(path, opts) {
   const o = Object.assign({ credentials: 'same-origin' }, opts || {});
   if (o.body && typeof o.body !== 'string') {
@@ -105,6 +105,16 @@ function qty(s) {
 function trimZeros(s) { return s === null || s === undefined ? '' : String(s).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, ''); }
 function dateIN(iso) { return iso ? formatDateIN(iso) : '-'; }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// Each list's newest request: debouncing spaces the requests out but they can
+// still overlap, and a slower earlier response must not paint over a newer one.
+// mirLoadTicket(name) returns a check that is true only while no later load of
+// that list has started.
+const MIR_LOAD_SEQ = {};
+function mirLoadTicket(name) {
+  const n = (MIR_LOAD_SEQ[name] = (MIR_LOAD_SEQ[name] || 0) + 1);
+  return () => MIR_LOAD_SEQ[name] === n;
+}
 function bannerEl(text) { const d = document.createElement('div'); d.className = 'mir-banner mir-banner-warn'; d.textContent = text; return d; }
 function reasonsOf(kind) { return META.reasons.filter(r => r.kind === kind); }
 function reasonByCode(code) { return META.reasons.find(r => r.code === code); }
@@ -999,8 +1009,10 @@ async function loadRegister() {
     if (v) params.set(k, v);
   });
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
+  const current = mirLoadTicket('register');
   try {
     const data = await apiMir('/entries?' + params.toString());
+    if (!current()) return;
     if (!data.entries.length) { area.innerHTML = '<div class="mir-empty">No MIRs match these filters.</div>'; return; }
     area.innerHTML = '<div class="table-wrap"><table class="mir-click"><thead><tr><th>MIR no.</th><th>MIR date</th><th>Plant</th><th>Vendor</th><th>Invoice</th>' +
       '<th class="num">Total</th><th>Status</th><th>Entered by</th></tr></thead><tbody>' +
@@ -1015,7 +1027,7 @@ async function loadRegister() {
       tr.onkeydown = ev => { if (ev.key === 'Enter') open(); };
     });
   } catch (e) {
-    area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
+    if (current()) area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
   }
 }
 
@@ -1264,8 +1276,10 @@ async function loadMismatches() {
   const plant = document.getElementById('mmPlant').value;
   if (plant) params.set('plant', plant);
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
+  const current = mirLoadTicket('mismatches');
   try {
     const data = await apiMir('/mismatches?' + params.toString());
+    if (!current()) return;
     if (!data.mismatches.length) { area.innerHTML = '<div class="mir-empty">Nothing here.</div>'; return; }
     area.innerHTML = mismatchListHtml(data.mismatches, true);
     area.querySelectorAll('[data-resolve]').forEach(b => { b.onclick = async () => {
@@ -1279,6 +1293,6 @@ async function loadMismatches() {
       } catch (e) { window.alert(e.message); }
     }; });
   } catch (e) {
-    area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
+    if (current()) area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
   }
 }

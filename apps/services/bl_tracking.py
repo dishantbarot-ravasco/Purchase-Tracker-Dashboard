@@ -7,22 +7,31 @@ app's own synced data 2026-09-07 (see track_bl()'s docstring for what that
 confirmed).
 
 This is a thin, single-call passthrough, not a persistence layer - nothing
-here is stored in the DB. Every call hits SafeCube live; there's no caching
-or rate-limit tracking on this side. If the trial key's own quota becomes a
-problem, that's the point to revisit this (e.g. a short-TTL cache keyed on
-bl_number), not before - premature caching would just be guessing at a
-problem that may never materialize.
+here is stored in the DB. A successful lookup is kept in Django's cache for
+_CACHE_SECONDS, keyed on the BL number: the call is synchronous and can hold
+one of production's two gunicorn workers for the whole timeout, so a second
+"Track" click on the same shipment should not pay for it again. Failures are
+never cached (SafeCube downtime should clear on the next click). The view
+also has its own throttle (permissions.BlTrackThrottle).
 """
 
 import logging
 
+import hashlib
+
 import requests
 from django.conf import settings
+from django.core.cache import cache
 
 log = logging.getLogger(__name__)
 
 _SHIPMENT_URL = "https://api.sinay.ai/container-tracking/api/v2/shipment"
 _TIMEOUT_SECONDS = 15
+_CACHE_SECONDS = 600
+
+
+def _cache_key(bl_number: str) -> str:
+    return "bl_tracking:" + hashlib.sha256(bl_number.upper().encode("utf-8")).hexdigest()
 
 
 def track_bl(bl_number: str) -> dict:
@@ -54,6 +63,10 @@ def track_bl(bl_number: str) -> dict:
     if not bl_number:
         return {"ok": False, "error": "No BL number to track."}
 
+    cached = cache.get(_cache_key(bl_number))
+    if cached is not None:
+        return {"ok": True, "data": cached}
+
     try:
         resp = requests.get(
             _SHIPMENT_URL,
@@ -77,4 +90,5 @@ def track_bl(bl_number: str) -> dict:
             message = message + " - " + "; ".join(str(d) for d in details)
         return {"ok": False, "error": message}
 
+    cache.set(_cache_key(bl_number), payload, _CACHE_SECONDS)
     return {"ok": True, "data": payload}

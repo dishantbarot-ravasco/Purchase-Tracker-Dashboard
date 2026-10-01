@@ -80,6 +80,16 @@ function stRate(s) {
 }
 function stDate(iso) { return iso ? formatDateIN(iso) : '-'; }
 function stDebounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
+
+// Each list's newest request: debouncing spaces the requests out but they can
+// still overlap, and a slower earlier response must not paint over a newer one.
+// stLoadTicket(name) returns a check that is true only while no later load of
+// that list has started.
+const ST_LOAD_SEQ = {};
+function stLoadTicket(name) {
+  const n = (ST_LOAD_SEQ[name] = (ST_LOAD_SEQ[name] || 0) + 1);
+  return () => ST_LOAD_SEQ[name] === n;
+}
 function stBanner(text) { const d = document.createElement('div'); d.className = 'mir-banner mir-banner-warn'; d.textContent = text; return d; }
 function stPill(text, tone) { return '<span class="status-pill mir-pill-' + tone + '">' + escapeHtml(text) + '</span>'; }
 function stWritable() { return ST_META.plants.filter(p => p.canWrite); }
@@ -668,8 +678,13 @@ async function stLoadRegister() {
   });
   if (document.getElementById('rgAll').checked) params.set('all', '1');
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
+  const current = stLoadTicket('register');
   let data;
-  try { data = await apiStock('/register?' + params.toString()); } catch (e) { area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>'; return; }
+  try { data = await apiStock('/register?' + params.toString()); } catch (e) {
+    if (current()) area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
+    return;
+  }
+  if (!current()) return;
   const rows = data.rows;
   if (!rows.length) {
     area.innerHTML = '<div class="mir-empty">No stock for these filters. Stock comes into the store when a MIR is posted at the plant.</div>';
@@ -853,8 +868,10 @@ async function stLoadSlips() {
     if (v) params.set(k, v);
   });
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
+  const current = stLoadTicket('slips');
   try {
     const list = (await apiStock('/vouchers?' + params.toString())).vouchers;
+    if (!current()) return;
     if (!list.length) { area.innerHTML = '<div class="mir-empty">Nothing matches these filters.</div>'; return; }
     area.innerHTML = '<div class="table-wrap"><table class="mir-click"><thead><tr><th>Number</th><th>Date</th><th>Kind</th><th>Plant</th><th>Department / why</th><th>Materials</th><th>Status</th><th>Entered by</th></tr></thead><tbody>' +
       list.map(v => '<tr data-voucher="' + v.id + '" tabindex="0"><td class="nowrap"><b>' + escapeHtml(v.voucherNo) + '</b></td><td class="nowrap">' + stDate(v.date) + '</td>' +
@@ -868,7 +885,7 @@ async function stLoadSlips() {
       tr.onkeydown = ev => { if (ev.key === 'Enter') open(); };
     });
   } catch (e) {
-    area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
+    if (current()) area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
   }
 }
 
@@ -967,8 +984,13 @@ async function stLoadMismatches() {
   const plant = document.getElementById('mmPlant').value;
   if (plant) params.set('plant', plant);
   area.innerHTML = '<div class="mir-muted">Loading...</div>';
+  const current = stLoadTicket('mismatches');
   let list;
-  try { list = (await apiStock('/differences?' + params.toString())).differences; } catch (e) { area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>'; return; }
+  try { list = (await apiStock('/differences?' + params.toString())).differences; } catch (e) {
+    if (current()) area.innerHTML = '<div class="mir-error-text">' + escapeHtml(e.message) + '</div>';
+    return;
+  }
+  if (!current()) return;
   if (!list.length) { area.innerHTML = '<div class="mir-empty">Nothing here.</div>'; return; }
   area.innerHTML = '<div class="table-wrap"><table class="mir-click"><thead><tr><th>Number</th><th>Date</th><th>MIR</th><th>Material</th><th>Kind</th>' +
     '<th class="num">Register</th><th class="num">Counted</th><th class="num">Difference</th><th class="num">Value</th><th>Reason</th><th>Entered by</th><th>Status</th></tr></thead><tbody>' +
