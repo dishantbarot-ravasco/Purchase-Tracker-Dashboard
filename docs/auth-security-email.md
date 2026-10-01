@@ -193,7 +193,8 @@ generic `429 {"detail": "Request was throttled..."}` indistinguishable from a re
 as sign-in "misbehaving very much even [with] correct credentials".
 
 Fixed: `LoginRateThrottle.get_cache_key()` keys on the submitted `email` (lower-cased; falling back to
-the IP key only when no email was submitted); `DeviceVerifyThrottle.get_cache_key()` keys on the
+the IP key only when no email was submitted, or the body is not a JSON object - a JSON array has no
+`.get()` and used to 500 here); `DeviceVerifyThrottle.get_cache_key()` keys on the
 session's `pending_user_id`, which is unique per in-flight login attempt. Per-account strength is
 unchanged; it just no longer pools unrelated accounts. **If you add another `AnonRateThrottle`
 subclass anywhere in the auth flow, key it the same way or this exact bug reappears.**
