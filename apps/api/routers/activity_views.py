@@ -6,9 +6,12 @@ Access:
   - POST activity/page-view: every signed-in account, for its own visits
     only (the row is always credited to request.user). auth.js calls it once
     per page load.
-  - Everything else: admins only. The log spans every plant and every
-    account - it is about people, not plant data, so there is no plant
-    scoping beyond the role.
+  - Everything else: ONLY the account named by
+    settings.ACTIVITY_LOG_OWNER_EMAIL (owner, 2026-10-01: "I need the
+    activity log only for me and private"). Every other account, other
+    admins included, gets a 404 (permissions.IsActivityLogOwner). The log
+    spans every plant and every account, so there is no plant scoping
+    beyond that.
 """
 
 import io
@@ -19,7 +22,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from apps.api.permissions import IsAdmin
+from apps.api.permissions import IsActivityLogOwner
 from apps.api.routers._domestic_base import SafeCsvWriter
 from apps.services import activity_log
 
@@ -37,7 +40,7 @@ def page_view(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsActivityLogOwner])
 def activity(request):
     """One page of the log, newest first. Filters: ?actor= ?group= ?q=
     ?since= ?until= (see activity_log.filtered()); ?page= from 1."""
@@ -57,14 +60,14 @@ def activity(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsActivityLogOwner])
 def activity_people(request):
     """Every account with its last sign-in, last activity and 30-day counts."""
     return Response({"people": activity_log.people(days=30), "days": 30})
 
 
 @api_view(["GET"])
-@permission_classes([IsAdmin])
+@permission_classes([IsActivityLogOwner])
 def activity_export(request):
     """The filtered log as CSV (same filters as `activity`), newest first,
     at most EXPORT_LIMIT rows."""

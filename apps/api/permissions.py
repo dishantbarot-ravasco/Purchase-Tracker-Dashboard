@@ -13,6 +13,7 @@ users).
 """
 
 from django.conf import settings
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import BasePermission
 from rest_framework.throttling import UserRateThrottle
 
@@ -50,6 +51,27 @@ class IsAdmin(BasePermission):
             and bool(getattr(user, "is_active", False))
             and getattr(user, "role", None) == "admin"
         )
+
+
+def is_activity_log_owner(user) -> bool:
+    """True only for the active account named by
+    settings.ACTIVITY_LOG_OWNER_EMAIL - the activity log is private to it."""
+    return (
+        user is not None
+        and bool(getattr(user, "is_authenticated", False))
+        and bool(getattr(user, "is_active", False))
+        and (getattr(user, "email", "") or "").strip().lower() == settings.ACTIVITY_LOG_OWNER_EMAIL
+    )
+
+
+class IsActivityLogOwner(BasePermission):
+    """The activity log's reads. Anyone else gets a 404, not a 403, so the
+    log's existence is not confirmed to other admins either."""
+
+    def has_permission(self, request, view):
+        if not is_activity_log_owner(request.user):
+            raise NotFound()
+        return True
 
 
 class SyncTriggerThrottle(UserRateThrottle):

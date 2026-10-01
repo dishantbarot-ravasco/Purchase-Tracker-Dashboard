@@ -669,7 +669,8 @@ Django Admin as a debugging surface, not the user-facing admin (that is `admin.h
 registrations for every plant model, `SyncRun`, `DataQualityFlag`, `OTPCode` and the
 import tables. Custom classes where the default would fight the design:
 `MaterialCategoryReferenceAdmin` (search/filter, `normalized_description` read-only),
-`ImportPOCorrectionAdmin` and `PTAuditLogAdmin` (all fields read-only, add/change/delete disabled),
+`ImportPOCorrectionAdmin` and `PTAuditLogAdmin` (all fields read-only, add/change/delete disabled;
+`PTAuditLogAdmin` is also hidden from every account but `ACTIVITY_LOG_OWNER_EMAIL`),
 `PTUserAdmin` (excludes `password_hash`), `TrustedDeviceAdmin` (hash read-only; revoke in the app).
 Not registered at all: `DomesticPOCorrection`, `MaterialCorrection`, `FlagDismissal`,
 `ManualMirMatch`, `RTPAchhadRMDailyMovement`, the ledger, consumption, `ReportSendLog` and

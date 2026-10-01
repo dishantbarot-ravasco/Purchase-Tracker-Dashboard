@@ -109,7 +109,7 @@ full command list is in CLAUDE.md.
 | `po-files.html` | Uploaded PO files per plant |
 | `mir.html` | MIR entry, the MIR register and open mismatches |
 | `stock.html` | RM store - issue from a MIR, the RM register, stock differences |
-| `admin.html` | Admin only - sync status, user management, and the activity log (who signed in, changed, downloaded or opened what) |
+| `admin.html` | Admin only - sync status, user management, and (for the owner account only) the activity log of who signed in, changed, downloaded or opened what |
 
 Roles are `admin`, `editor`, `viewer`. Writes (inline field corrections, dismissing a flag, user
 management) are role-gated and audited; `PTUser.plants` can additionally scope an account to

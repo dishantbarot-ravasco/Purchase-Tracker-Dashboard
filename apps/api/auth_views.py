@@ -24,6 +24,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView, TokenVerifyView
 
 from .auth_serializers import PTTokenObtainPairSerializer, PTTokenRefreshSerializer
+from .permissions import is_activity_log_owner
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,9 @@ def whoami(request):
         # frontend uses this to decide which pencil icons to render for the
         # inline "Edit Everywhere" feature (shared.js's canEditField()).
         "plants": user.plants or [],
+        # Only the activity log's owner sees admin.html's Activity Log tab;
+        # the endpoints enforce it (permissions.IsActivityLogOwner).
+        "canViewActivityLog": is_activity_log_owner(user),
     })
 
 

@@ -1497,7 +1497,9 @@ open). `showToast(message, kind)` targets `#toastStack`. Redefines `userInitials
 
 admin.html's **Activity Log** tab (2026-10-01; rules in
 [api-and-features.md](api-and-features.md#activity-log-2026-10-01)). Loaded after `admin-page.js`;
-nothing is fetched until `openActivityLog()` runs on the tab's first open. Every top-level name starts
+nothing is fetched until `openActivityLog()` runs on the tab's first open. The sidebar button ships
+`hidden`; `admin-page.js` reveals it only when `CURRENT_USER.canViewActivityLog` is true - the log is
+private to one account, and the server answers 404 to anyone else regardless. Every top-level name starts
 with `act` / `ACT_` (one global scope with `auth.js`, `shared.js`, `admin-page.js`).
 
 - `actLoadPeople()` - GET `/api/activity/people`: the People table (last sign-in, last active via

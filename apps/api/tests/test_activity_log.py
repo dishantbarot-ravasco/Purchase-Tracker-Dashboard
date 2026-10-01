@@ -5,8 +5,8 @@ apps/api/routers/activity_views.py.
 
 Each test drives a real request through the middleware stack and reads back
 the PTAuditLog rows it left, so the tests fail if the middleware is taken out
-of MIDDLEWARE, if a secret reaches the stored payload, or if a rule about
-what is (not) logged changes.
+of MIDDLEWARE, if a secret reaches the stored payload, if a rule about what
+is (not) logged changes, or if anyone but the owner can read the log.
 """
 
 import datetime
@@ -20,6 +20,14 @@ from rest_framework.test import APIClient
 from apps.api.tests.factories import make_user
 from apps.core.audit_log import PTAuditLog
 from apps.services import activity_log, object_storage
+
+
+OWNER = "dishant.barot@ravasco.com"
+
+
+def _owner(**extra):
+    """The account settings.ACTIVITY_LOG_OWNER_EMAIL names - the only reader."""
+    return make_user(email=OWNER, role="admin", **extra)
 
 
 def _client(user=None):
@@ -100,7 +108,7 @@ class TestWhatIsRecorded:
         assert "secret contents" not in str(row.payload)
 
     def test_a_csv_export_is_a_download(self):
-        admin = make_user(email="admin@ravasco.com", role="admin")
+        admin = _owner()
         response = _client(admin).get("/api/activity/export")
         assert response.status_code == 200
         assert "attachment" in response["Content-Disposition"]
@@ -181,13 +189,42 @@ class TestReadingTheLog:
         return a, b
 
     @pytest.mark.parametrize("path", ["/api/activity", "/api/activity/people", "/api/activity/export"])
-    def test_only_admins_may_read_it(self, path):
-        for role in ("viewer", "editor"):
-            assert _client(make_user(email=f"{role}@ravasco.com", role=role)).get(path).status_code == 403
+    def test_only_the_owner_may_read_it_everyone_else_gets_a_404(self, path):
+        # Other admins included: the log is private to one account.
+        for role in ("viewer", "editor", "admin"):
+            assert _client(make_user(email=f"{role}@ravasco.com", role=role)).get(path).status_code == 404
+        assert _client(_owner()).get(path).status_code == 200
+
+    def test_an_inactive_owner_account_cannot_read_it(self):
+        owner = _owner()
+        owner.is_active = False
+        owner.save(update_fields=["is_active"])
+        assert _client(owner).get("/api/activity").status_code == 404
+
+    def test_the_owner_can_be_changed_by_setting(self, settings):
+        settings.ACTIVITY_LOG_OWNER_EMAIL = "auditor@ravasco.com"
+        assert _client(_owner()).get("/api/activity").status_code == 404
+        assert _client(make_user(email="auditor@ravasco.com")).get("/api/activity").status_code == 200
+
+    def test_whoami_shows_the_tab_only_to_the_owner(self):
+        assert _client(_owner()).get("/api/auth/me").json()["canViewActivityLog"] is True
+        other = make_user(email="admin@ravasco.com", role="admin")
+        assert _client(other).get("/api/auth/me").json()["canViewActivityLog"] is False
+
+    def test_django_admin_shows_it_only_to_the_owner(self):
+        from django.contrib import admin as django_admin
+        from django.test import RequestFactory
+
+        model_admin = django_admin.site._registry[PTAuditLog]
+        request = RequestFactory().get("/admin/")
+        for email, allowed in ((OWNER, True), ("someone.else@ravasco.com", False)):
+            request.user = type("U", (), {"email": email, "is_active": True, "is_staff": True})()
+            assert model_admin.has_module_permission(request) is allowed
+            assert model_admin.has_view_permission(request) is allowed
 
     def test_filters_by_person_type_and_text(self):
         a, b = self._seed()
-        client = _client(make_user(email="admin@ravasco.com", role="admin"))
+        client = _client(_owner())
 
         rows = client.get(f"/api/activity?actor={a.pk}").json()["rows"]
         assert {r["action"] for r in rows} == {"login", "change"}
@@ -207,15 +244,15 @@ class TestReadingTheLog:
         PTAuditLog.objects.create(action=PTAuditLog.ACTION_CHANGE, actor_id=a.pk, actor_email=a.email, detail="old")
         PTAuditLog.objects.filter(detail="old").update(timestamp=timezone.now() - datetime.timedelta(days=40))
 
-        people = {p["email"]: p for p in _client(make_user(email="admin@ravasco.com", role="admin"))
+        people = {p["email"]: p for p in _client(_owner())
                   .get("/api/activity/people").json()["people"]}
         assert (people["a@ravasco.com"]["signins"], people["a@ravasco.com"]["changes"]) == (1, 1)
         assert (people["b@ravasco.com"]["visits"], people["b@ravasco.com"]["failed"]) == (1, 1)
-        assert people["admin@ravasco.com"]["lastSeen"] is None
+        assert people[OWNER]["lastSeen"] is None
 
     def test_the_export_is_formula_safe(self):
         PTAuditLog.objects.create(action=PTAuditLog.ACTION_CHANGE, actor_email="x@ravasco.com", detail="=HYPERLINK(1)")
-        body = _client(make_user(email="admin@ravasco.com", role="admin")).get("/api/activity/export").content.decode()
+        body = _client(_owner()).get("/api/activity/export").content.decode()
         assert "'=HYPERLINK(1)" in body
 
 

@@ -12,6 +12,7 @@ day; only the models where the default read/write behavior would actively
 work against the model's own design (append-only audit logs, the password
 hash field) get a custom ModelAdmin below.
 """
+from django.conf import settings
 from django.contrib import admin
 
 from apps.core.audit_log import PTAuditLog
@@ -188,3 +189,15 @@ class PTAuditLogAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+    # Private to the activity log's owner (settings.ACTIVITY_LOG_OWNER_EMAIL),
+    # here as in the app: another Django-admin account does not see it at all.
+    def _is_owner(self, request):
+        email = (getattr(request.user, "email", "") or "").strip().lower()
+        return bool(email) and email == settings.ACTIVITY_LOG_OWNER_EMAIL
+
+    def has_module_permission(self, request):
+        return self._is_owner(request)
+
+    def has_view_permission(self, request, obj=None):
+        return self._is_owner(request)

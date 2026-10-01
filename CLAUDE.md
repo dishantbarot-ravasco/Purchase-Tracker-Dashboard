@@ -350,7 +350,9 @@ Read the linked section before breaking any of these. Each is there because it w
 ### Activity log (2026-10-01)
 - Every `/api/` write, download and refused sign-in is recorded by `ActivityLogMiddleware` (last in
   `MIDDLEWARE`) through `activity_log.record_request()`, which never raises; page visits come from
-  `auth.js`'s `recordPageView()`. Admins read it in admin.html's Activity Log tab.
+  `auth.js`'s `recordPageView()`. **Only `ACTIVITY_LOG_OWNER_EMAIL` may read it** (owner: "only for me
+  and private"): `IsActivityLogOwner` 404s everyone else, other admins included - never widen it to
+  `IsAdmin`.
   [activity log](docs/api-and-features.md#activity-log-2026-10-01)
 - **Never store a secret in it**: bodies go through `activity_log.redact()` (any key naming a password,
   code, OTP, token or secret, at every depth); a multipart body is never read by the middleware, and a

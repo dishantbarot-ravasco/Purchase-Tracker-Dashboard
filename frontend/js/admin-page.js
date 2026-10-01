@@ -45,6 +45,8 @@ const DELETE_USER_ALLOWED_EMAIL = 'dishant.barot@ravasco.com';
     return;
   }
   document.getElementById('mainContent').hidden = false;
+  // The Activity Log is private to one account (server: IsActivityLogOwner).
+  document.querySelector('[data-admin-tab="activity"]').hidden = !user.canViewActivityLog;
   document.getElementById('sysinfoEmail').textContent = user.email;
   document.getElementById('sysinfoRole').textContent = user.role;
 

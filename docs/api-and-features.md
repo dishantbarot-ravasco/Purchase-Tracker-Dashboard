@@ -119,9 +119,9 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
 | POST | `activity/page-view` | `activity_views.page_view` | Auth (any role), own visits only | Body `{"page"}` (an `auth.js` nav key); 202 `{"recorded"}`, false for a repeat within 5 minutes; 400 for an unknown page |
-| GET | `activity?actor=&group=&q=&since=&until=&page=` | `activity_views.activity` | IsAdmin, every plant on purpose | 100 log rows a page, newest first, plus `total` and the type `groups` |
-| GET | `activity/people` | `activity_views.activity_people` | IsAdmin | Every account: last sign-in, last seen, 30-day sign-ins / changes / downloads / page visits / refused sign-ins |
-| GET | `activity/export?...` | `activity_views.activity_export` | IsAdmin | The filtered log as CSV (`SafeCsvWriter`, at most 50,000 rows) |
+| GET | `activity?actor=&group=&q=&since=&until=&page=` | `activity_views.activity` | Owner only (`IsActivityLogOwner`), 404 for anyone else, every plant on purpose | 100 log rows a page, newest first, plus `total` and the type `groups` |
+| GET | `activity/people` | `activity_views.activity_people` | Owner only (`IsActivityLogOwner`), 404 for anyone else | Every account: last sign-in, last seen, 30-day sign-ins / changes / downloads / page visits / refused sign-ins |
+| GET | `activity/export?...` | `activity_views.activity_export` | Owner only (`IsActivityLogOwner`), 404 for anyone else | The filtered log as CSV (`SafeCsvWriter`, at most 50,000 rows) |
 | GET | `auth/users` | `users_views.list_users` | IsAdmin | All users with `correctionsCount` |
 | POST | `auth/users/create` | `users_views.create_user` | IsAdmin, `AdminWriteThrottle` | Create a user; 409 on duplicate email |
 | PATCH / DELETE | `auth/users/<id>` | `users_views.update_user` | IsAdmin, `AdminWriteThrottle`; DELETE also needs `DELETE_USER_ALLOWED_EMAIL` | Update fields / reset password, or permanently delete |
@@ -1233,8 +1233,16 @@ Opening Stock, Received, Issued, Today's Stock, Rate, Value, Lot Currently Activ
 ### Activity log (2026-10-01)
 
 Project owner: "keep track of users, how's their activity, what are changing or interacting with the
-dashboard". Admins see it in admin.html's **Activity Log** tab: a People table (last sign-in, last
+dashboard". It is shown in admin.html's **Activity Log** tab: a People table (last sign-in, last
 active, 30-day counts) and a filterable, paged log whose rows open to show the request behind them.
+
+**Private to one account** (owner, same day: "I need the activity log only for me and private").
+`settings.ACTIVITY_LOG_OWNER_EMAIL` (env `ACTIVITY_LOG_OWNER_EMAIL`, default
+`dishant.barot@ravasco.com`) names the only reader. `permissions.IsActivityLogOwner` answers **404**
+to everyone else - other admins included - so the log's existence is not confirmed to them;
+`/api/auth/me`'s `canViewActivityLog` is true only for that account, and admin.html's tab stays hidden
+otherwise. Django admin's `PTAuditLogAdmin` is restricted to the same email. Everyone's activity is
+still recorded; only reading it is private.
 
 **One table, two writers.** `PTAuditLog` ([auth-security-email.md](auth-security-email.md#alerts-audit-log-and-logs))
 already held sign-ins and user management, written explicitly by the auth views. It now also holds:
@@ -1448,8 +1456,8 @@ The four `activity/...` endpoints ([Activity log](#activity-log-2026-10-01)); ga
 serializes only. `page_view` (`IsAuthenticated`, written down so the permission guard sees the
 decision) credits the visit to `request.user`, never to anything in the body. `activity` pages with
 `PAGE_SIZE = 100`; `activity_export` caps at `EXPORT_LIMIT = 50_000` rows and names the file
-`activity-log-<date>.csv`. The admin endpoints read every plant: the log is about people, not plant
-data, so there is no plant scoping beyond `IsAdmin`. A bad filter (`group`, `actor`, a date) is a
+`activity-log-<date>.csv`. The read endpoints are `IsActivityLogOwner` (404 for every other
+account) and read every plant: the log is about people, not plant data, so there is no plant scoping. A bad filter (`group`, `actor`, a date) is a
 `ValueError`, so a 400 with its message.
 
 ### apps/services/activity_log.py

@@ -563,7 +563,7 @@ disables it, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`), database (`DATA
 or `_FILE`, never both), Drive folder ids, auth (`ALLOWED_EMAIL_DOMAIN`, `JWT_SIGNING_KEY`), SMTP,
 Google OAuth client, `SAFECUBE_API_KEY`, `REPORT_CRON_SECRET` (blank makes every report endpoint
 refuse with 503), `MISMATCH_REPORT_PLANT_HEADS_ENABLED` (killswitch, default `false`),
-`DELETE_USER_ALLOWED_EMAIL`, `EMAIL_OTP_POOL_WORKERS`/`EMAIL_BULK_POOL_WORKERS`, and Cloudflare R2
+`DELETE_USER_ALLOWED_EMAIL`, `ACTIVITY_LOG_OWNER_EMAIL` (the one account that reads the activity log; defaults to the owner), `EMAIL_OTP_POOL_WORKERS`/`EMAIL_BULK_POOL_WORKERS`, and Cloudflare R2
 (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, the three `R2_BUCKET_*` names, the
 local-only `R2_ENDPOINT_URL`, and `BACKUP_RETENTION_DAYS`). The file is
 covered by the em dash guard. Never read or paste the real `.env`.
@@ -666,7 +666,7 @@ Configuration is `pyproject.toml` plus these:
 | File | DB | Covers |
 |---|---|---|
 | test_achhad_correct_field.py | yes | Achhad inline "Edit Everywhere": roles, plant scoping, audit row, validation. |
-| test_activity_log.py | yes | Activity log: a refused write is a change row with who / what / status / plant / payload; reads and previews are not logged; a refused sign-in is credited to the email tried with the password masked; a successful auth action is not logged twice; an upload keeps field names and file name and size, never bytes (R2 stubbed); exports are downloads; a failed log write never breaks the request; redaction at depth; page visits deduped per 5 minutes; admin-only reads and filters; 30-day people counts; formula-safe CSV; 90-day prune keeps sign-ins. |
+| test_activity_log.py | yes | Activity log: only the owner account reads it (404 for other admins, setting override, inactive owner refused, `/auth/me` flag, Django admin hidden); a refused write is a change row with who / what / status / plant / payload; reads and previews are not logged; a refused sign-in is credited to the email tried with the password masked; a successful auth action is not logged twice; an upload keeps field names and file name and size, never bytes (R2 stubbed); exports are downloads; a failed log write never breaks the request; redaction at depth; page visits deduped per 5 minutes; admin-only reads and filters; 30-day people counts; formula-safe CSV; 90-day prune keeps sign-ins. |
 | test_achhad_dismiss_flag.py | yes | Achhad PO-level flag dismiss/reinstate. |
 | test_achhad_dismiss_match.py | yes | Achhad PO<->MIR / MIR<->Stock match dismissal, survives rematch. |
 | test_admin_overview.py | yes | `GET /api/auth/admin-overview` admin-only aggregates. |

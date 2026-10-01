@@ -677,6 +677,11 @@ EMAIL_TIMEOUT = 10
 # ---------------------------------------------------------------------------
 ALLOWED_EMAIL_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN", "ravasco.com")
 
+# The one account that may read the activity log (owner, 2026-10-01: "I need
+# the activity log only for me and private"). Every other account - other
+# admins included - gets a 404 from /api/activity/... and never sees the tab.
+ACTIVITY_LOG_OWNER_EMAIL = (os.environ.get("ACTIVITY_LOG_OWNER_EMAIL") or "dishant.barot@ravasco.com").strip().lower()
+
 # ---------------------------------------------------------------------------
 # Security headers
 # ---------------------------------------------------------------------------

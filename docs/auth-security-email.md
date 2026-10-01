@@ -780,7 +780,8 @@ and the refresh serializer.
 - `PTTokenVerifyView` - simplejwt's stock `TokenVerifyView` (verifies a token string; a browser cannot
   use it because its token is in an httpOnly cookie).
 - `whoami` (`GET /api/auth/me`, default `IsAuthenticated`) - `userId`, `email`, `fullName`, `role`,
-  `plants`. `auth.js`'s `requireAuth()` calls it on every protected page load; the frontend uses
+  `plants`, and `canViewActivityLog` (`permissions.is_activity_log_owner()`: only the account named by
+  `ACTIVITY_LOG_OWNER_EMAIL`). `auth.js`'s `requireAuth()` calls it on every protected page load; the frontend uses
   `plants` to decide which pencils to render.
 
 ### apps/api/permissions.py
