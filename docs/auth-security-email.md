@@ -1029,9 +1029,6 @@ submodule.
   `last_seen_at` (any signed-in `/api/` request, at most every 5 minutes, by
   `activity_log.touch_last_seen()` - a session lasts up to 30 days, so `last_login_at` alone said
   nothing about whether someone used the app this week),
-  `last_seen_at` (any signed-in `/api/` request, at most every 5 minutes, by
-  `activity_log.touch_last_seen()` - a session lasts up to 30 days, so `last_login_at` alone said
-  nothing about whether someone used the app this week),
   `failed_login_attempts`, `locked_until`, `token_version`. Declares `is_authenticated`/`is_anonymous`.
   Its docstring's claim that `plants` "has no bearing on read access" predates read scoping and is
   stale.
