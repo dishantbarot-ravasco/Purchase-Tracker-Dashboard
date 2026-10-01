@@ -92,10 +92,13 @@ async function actLoadPeople() {
   const area = document.getElementById('actPeopleArea');
   area.innerHTML = '<div class="no-data-note">Loading&hellip;</div>';
   let people;
+  let trackingSince = null;
   try {
     const res = await authFetch('/api/activity/people', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    people = (await res.json()).people || [];
+    const data = await res.json();
+    people = data.people || [];
+    trackingSince = data.trackingSince;
   } catch (e) {
     console.error('activity: people failed:', e);
     area.innerHTML = '<div class="no-data-note">Couldn\'t load right now.</div>';
@@ -112,7 +115,15 @@ async function actLoadPeople() {
     area.innerHTML = '<div class="no-data-note">No accounts yet.</div>';
     return;
   }
-  const head = '<tr><th>Person</th><th>Role</th><th>Last sign-in</th><th>Last active</th>' +
+  // Counts of changes, downloads and visits start when the log did; say so,
+  // rather than let a zero read as "did nothing" for the days before it.
+  document.getElementById('actPeopleNote').textContent = trackingSince
+    ? 'Changes, downloads and page visits are counted from ' + actWhen(trackingSince) + ', when the log started.'
+    : 'Changes, downloads and page visits are counted from when the log started.';
+  const head = '<tr><th>Person</th><th>Role</th>' +
+    '<th title="The latest of: any use of the app, the activity log, and saved work">Last active</th>' +
+    '<th title="The newest MIR, voucher, upload, correction or other saved change - reaches back before the log">Last saved work</th>' +
+    '<th title="A full sign-in. A session lasts up to 30 days, so someone working every day may not sign in again for weeks">Last full sign-in</th>' +
     '<th class="num">Sign-ins</th><th class="num">Changes</th><th class="num">Downloads</th>' +
     '<th class="num">Page visits</th><th class="num">Refused sign-ins</th></tr>';
   const body = people.map(p => {
@@ -120,9 +131,13 @@ async function actLoadPeople() {
       escapeHtml(p.name || p.email) + '</button>' +
       (p.name ? '<div class="act-sub">' + escapeHtml(p.email) + '</div>' : '') +
       (p.active ? '' : '<span class="plants-pill">Inactive</span>');
+    const work = p.lastWork
+      ? escapeHtml(actAgo(p.lastWork)) + '<div class="act-sub">' + escapeHtml(p.lastWorkWhat) + '</div>'
+      : '-';
     return '<tr><td>' + who + '</td><td>' + escapeHtml(p.role) + '</td>' +
+      '<td title="' + escapeHtml(actWhen(p.lastActive)) + '">' + escapeHtml(actAgo(p.lastActive)) + '</td>' +
+      '<td title="' + escapeHtml(actWhen(p.lastWork)) + '">' + work + '</td>' +
       '<td>' + escapeHtml(actWhen(p.lastLogin)) + '</td>' +
-      '<td title="' + escapeHtml(actWhen(p.lastSeen)) + '">' + escapeHtml(actAgo(p.lastSeen)) + '</td>' +
       '<td class="num">' + p.signins + '</td><td class="num">' + p.changes + '</td>' +
       '<td class="num">' + p.downloads + '</td><td class="num">' + p.visits + '</td>' +
       '<td class="num' + (p.failed ? ' act-warn' : '') + '">' + p.failed + '</td></tr>';

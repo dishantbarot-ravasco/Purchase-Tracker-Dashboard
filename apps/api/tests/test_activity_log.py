@@ -19,6 +19,7 @@ from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
 from apps.core.audit_log import PTAuditLog
+from apps.core.models import PTUser, SortPreset
 from apps.services import activity_log, object_storage
 
 
@@ -272,3 +273,50 @@ class TestRetention:
         assert PTAuditLog.objects.filter(detail="recent").count() == 6
         assert set(PTAuditLog.objects.filter(detail="old").values_list("action", flat=True)) == {
             PTAuditLog.ACTION_LOGIN, PTAuditLog.ACTION_AUTH_FAILED, PTAuditLog.ACTION_USER_CREATED}
+
+
+@pytest.mark.django_db
+class TestLastActive:
+    """A sign-in lasts up to 30 days, so last_login_at alone said a person
+    who works every day was last seen weeks ago (owner, 2026-10-01)."""
+
+    def test_any_signed_in_request_stamps_last_seen_at_most_every_five_minutes(self):
+        viewer = make_user(email="viewer@ravasco.com")
+        client = _client(viewer)
+        assert client.get("/api/mir/entries").status_code == 200
+        viewer.refresh_from_db()
+        first = viewer.last_seen_at
+        assert first is not None
+
+        client.get("/api/mir/entries")
+        viewer.refresh_from_db()
+        assert viewer.last_seen_at == first  # throttled: no write inside five minutes
+
+        PTUser.objects.filter(pk=viewer.pk).update(last_seen_at=first - datetime.timedelta(minutes=6))
+        client.get("/api/mir/entries")
+        viewer.refresh_from_db()
+        assert viewer.last_seen_at > first - datetime.timedelta(minutes=6)
+
+    def test_last_active_is_not_the_last_sign_in(self):
+        worker = make_user(email="worker@ravasco.com", role="editor")
+        PTUser.objects.filter(pk=worker.pk).update(
+            last_login_at=timezone.now() - datetime.timedelta(days=21), last_seen_at=timezone.now())
+
+        people = {p["email"]: p for p in _client(_owner()).get("/api/activity/people").json()["people"]}
+        row = people["worker@ravasco.com"]
+        assert row["lastActive"] == row["lastSeen"]
+        assert row["lastActive"] > row["lastLogin"]
+
+    def test_saved_work_from_before_the_log_counts_as_activity(self):
+        worker = make_user(email="worker@ravasco.com", role="editor")
+        SortPreset.objects.create(user=worker, view="po_list", name="Mine", levels=[])
+        SortPreset.objects.filter(user=worker).update(updated_at=timezone.now() - datetime.timedelta(days=1))
+
+        row = {p["email"]: p for p in _client(_owner()).get("/api/activity/people").json()["people"]}["worker@ravasco.com"]
+        assert row["lastWorkWhat"] == "Sort preset saved"
+        assert row["lastActive"] == row["lastWork"]
+
+    def test_people_says_when_tracking_started(self):
+        PTAuditLog.objects.create(action=PTAuditLog.ACTION_PAGE_VIEW, detail="Opened Home")
+        data = _client(_owner()).get("/api/activity/people").json()
+        assert data["trackingSince"] is not None

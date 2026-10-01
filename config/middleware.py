@@ -205,7 +205,8 @@ class ActivityLogMiddleware:
                     body = None
         started = time.monotonic()
         response = self.get_response(request)
-        from apps.services.activity_log import record_request
+        from apps.services.activity_log import record_request, touch_last_seen
 
         record_request(request, response, body=body, started=started, now=time.monotonic())
+        touch_last_seen(request)
         return response

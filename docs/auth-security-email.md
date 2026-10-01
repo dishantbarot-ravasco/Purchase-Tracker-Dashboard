@@ -829,10 +829,14 @@ Django views for login/callback (DRF's request wrapper interfered with session s
 redirect). No auto-registration: the Google address must already be an active `PTUser`.
 
 - `_make_flow()` - builds the `google_auth_oauthlib` `Flow` from `GOOGLE_CLIENT_ID`/`SECRET`/
-  `GOOGLE_OAUTH_REDIRECT_URI` with scopes `openid email profile`. The module sets
+  `GOOGLE_OAUTH_REDIRECT_URI` with scopes `openid email` only - the verified email is all sign-in
+  reads, so `profile` (name, photo) is not requested (data-minimisation pass, 2026-10-01). The module sets
   `OAUTHLIB_RELAX_TOKEN_SCOPE=1` because Google sometimes returns full-URI scope names.
 - `google_login` (`GET /api/auth/google/login/`) - stores `state` and the PKCE `code_verifier` in the
-  session and force-saves it before redirecting to Google. Any failure redirects to
+  session and force-saves it before redirecting to Google, with `access_type="online"`: no Google
+  refresh token is asked for, because the app never calls Google for the user after sign-in. The
+  Google access token is used once (the userinfo call) and never stored.
+  `test_google_oauth_minimal_scopes.py` pins both. Any failure redirects to
   `/login.html?oauth_error=start_failed` instead of a raw 500.
 - `google_callback` (`GET /api/auth/google/callback/`, `csrf_exempt`) - each failure redirects to
   `/login.html?oauth_error=<code>`: `cancelled`, `state_mismatch` (the `state` check is the CSRF
@@ -1022,6 +1026,12 @@ submodule.
   serialized, excluded from the Admin form), `full_name`, `role` (`admin`/`editor`/`viewer`, default
   `viewer`), `designation`, `plants` (JSON list, empty = all plants, scopes reads and writes),
   `is_active`, `created_at`, `last_login_at` (written by all three login paths via `.update()`),
+  `last_seen_at` (any signed-in `/api/` request, at most every 5 minutes, by
+  `activity_log.touch_last_seen()` - a session lasts up to 30 days, so `last_login_at` alone said
+  nothing about whether someone used the app this week),
+  `last_seen_at` (any signed-in `/api/` request, at most every 5 minutes, by
+  `activity_log.touch_last_seen()` - a session lasts up to 30 days, so `last_login_at` alone said
+  nothing about whether someone used the app this week),
   `failed_login_attempts`, `locked_until`, `token_version`. Declares `is_authenticated`/`is_anonymous`.
   Its docstring's claim that `plants` "has no bearing on read access" predates read scoping and is
   stale.

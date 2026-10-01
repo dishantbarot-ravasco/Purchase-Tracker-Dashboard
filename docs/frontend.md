@@ -456,7 +456,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | `mir.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `mir-page.js` |
 | `po-files.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `po-files-page.js` |
 | `stock.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css`, `stock-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `stock-page.js` |
-| `login.html` | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
+| `login.html` (footer `.privacy-note`: what is recorded, and that Google shares only the work email) | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
 
 Every protected page has the same static `.topnav` markup (brand link, `#navTabs`, `#navUser`) that
 `auth.js` fills, a skip link, and a `role="main" tabindex="-1"` container. `index.html`'s `#root` is
@@ -1502,8 +1502,11 @@ nothing is fetched until `openActivityLog()` runs on the tab's first open. The s
 private to one account, and the server answers 404 to anyone else regardless. Every top-level name starts
 with `act` / `ACT_` (one global scope with `auth.js`, `shared.js`, `admin-page.js`).
 
-- `actLoadPeople()` - GET `/api/activity/people`: the People table (last sign-in, last active via
-  `actAgo()`, 30-day counts, refused sign-ins in red) and the Person filter's options. A name is a
+- `actLoadPeople()` - GET `/api/activity/people`: the People table - Last active (`lastActive`, via
+  `actAgo()`), Last saved work (`lastWork` and what it was), Last full sign-in, 30-day counts,
+  refused sign-ins in red - with header tooltips saying what each means, `#actPeopleNote` naming
+  `trackingSince` (counts before it are not zero activity, just unrecorded), and the Person filter's
+  options. A name is a
   button that filters the log to that person.
 - `actGo(page)` - GET `/api/activity` with `actFilters()` (person, type, from, to, search; the search
   box debounced 300 ms). `actRequestId` drops a reply that a newer filter change has overtaken. Fills

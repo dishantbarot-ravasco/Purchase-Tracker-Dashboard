@@ -62,8 +62,11 @@ def activity(request):
 @api_view(["GET"])
 @permission_classes([IsActivityLogOwner])
 def activity_people(request):
-    """Every account with its last sign-in, last activity and 30-day counts."""
-    return Response({"people": activity_log.people(days=30), "days": 30})
+    """Every account: last active, last saved work, last full sign-in and
+    30-day counts, plus `trackingSince` - the counts start there."""
+    since = activity_log.tracking_since()
+    return Response({"people": activity_log.people(days=30), "days": 30,
+                     "trackingSince": since.isoformat() if since else None})
 
 
 @api_view(["GET"])

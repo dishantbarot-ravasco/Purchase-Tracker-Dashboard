@@ -52,7 +52,12 @@ os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 log = logging.getLogger(__name__)
 
-_SCOPES = ["openid", "email", "profile"]
+# Only what sign-in needs (2026-10-01, data-minimisation pass): the
+# verified email identifies an existing PTUser and nothing else from Google
+# is read. "profile" (name, photo) was requested and never used, so it is
+# no longer asked for. The Google access token is used once, for the
+# userinfo call, and never stored.
+_SCOPES = ["openid", "email"]
 _FRONTEND_LOGIN = "/login.html"
 
 
@@ -92,8 +97,11 @@ def google_login(request):
         flow = _make_flow()
         flow.redirect_uri = settings.GOOGLE_OAUTH_REDIRECT_URI
 
+        # access_type="online": no Google refresh token. The app never calls
+        # Google on the user's behalf after sign-in, so it must not ask for
+        # standing offline access to their account.
         auth_url, state = flow.authorization_url(
-            access_type="offline",
+            access_type="online",
             include_granted_scopes="true",
             prompt="select_account",
         )

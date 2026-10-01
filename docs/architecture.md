@@ -325,7 +325,8 @@ Five middleware classes and one WhiteNoise hook.
   `/api/` it reads `request.body` (up to `BODY_LIMIT`, 256 KB) before the view - safe because Django
   caches the body and DRF's JSON parser reads that cached copy - and never reads a multipart body
   (the file would be held twice). After the view it hands the request and response to
-  `activity_log.record_request()`, which decides whether to keep a row and never raises. Last in
+  `activity_log.record_request()`, which decides whether to keep a row and never raises, then
+  `touch_last_seen()`, which stamps `PTUser.last_seen_at` at most every 5 minutes. Last in
   `MIDDLEWARE` so `request.user` is the PTUser DRF set and the duration is the view's own.
   Rules and redaction: [api-and-features.md](api-and-features.md#activity-log-2026-10-01).
 

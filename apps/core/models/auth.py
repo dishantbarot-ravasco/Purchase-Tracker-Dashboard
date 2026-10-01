@@ -56,6 +56,12 @@ class PTUser(models.Model):
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_login_at = models.DateTimeField(null=True, blank=True)
+    # When the account last used the app at all (2026-10-01). A sign-in
+    # lasts up to REFRESH_TOKEN_LIFETIME (30 days) and renews itself, so
+    # last_login_at can be weeks old for someone working every day. Set by
+    # activity_log.touch_last_seen() from ActivityLogMiddleware on any
+    # signed-in /api/ request, at most once per LAST_SEEN_EVERY.
+    last_seen_at = models.DateTimeField(null=True, blank=True)
 
     # Account lockout (added 2026-09-05, hardening pass) - the existing
     # LoginRateThrottle (apps/api/auth_views.py, 5/minute per email) is a

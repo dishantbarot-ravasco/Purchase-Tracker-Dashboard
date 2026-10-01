@@ -80,6 +80,7 @@ body { display: flex; flex-direction: column; min-height: 100vh; }
 .login-error.show { display: flex; }
 
 .login-footer { text-align: center; padding: 18px 20px; font-size: 12px; color: var(--text-muted); border-top: 1px solid var(--border); background: var(--bg-section); }
+.privacy-note { margin: 6px auto 0; max-width: 360px; font-size: 11px; line-height: 1.45; }
 .iso-ribbon {
   display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px;
   border: 1px solid var(--green-border); background: var(--green-pale);

@@ -348,6 +348,31 @@ def record_page_view(request, page: str) -> bool:
     return True
 
 
+# ── Last seen ─────────────────────────────────────────────────────────────
+
+LAST_SEEN_EVERY = datetime.timedelta(minutes=5)
+
+
+def touch_last_seen(request) -> None:
+    """Stamp PTUser.last_seen_at for a signed-in /api/ request - reads
+    included, since reading the dashboard is using it. One conditional
+    UPDATE that matches nothing while the stamp is under LAST_SEEN_EVERY
+    old, so a busy page costs at most one write per five minutes. Never
+    raises."""
+    try:
+        user = getattr(request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False) or not getattr(user, "pk", None):
+            return
+        from apps.core.models import PTUser
+
+        now = timezone.now()
+        PTUser.objects.filter(pk=user.pk).filter(
+            Q(last_seen_at__isnull=True) | Q(last_seen_at__lt=now - LAST_SEEN_EVERY)
+        ).update(last_seen_at=now)
+    except Exception:
+        logger.exception("activity_log: failed to stamp last_seen_at")
+
+
 # ── Retention ─────────────────────────────────────────────────────────────
 
 
@@ -429,17 +454,77 @@ def user_names(ids) -> dict:
     return {u.pk: (u.full_name or "") for u in PTUser.objects.filter(pk__in=ids).only("user_id", "full_name")}
 
 
+# Records the app already keeps of someone's saved work: (model, user FK,
+# timestamp, what it was). people() reads the newest per account as "last
+# saved work", which reaches back before the activity log existed. Reading
+# the app leaves no record anywhere before 2026-10-01 and is never guessed.
+WORK_SOURCES = (
+    ("Mir", "created_by", "created_at", "MIR posted"),
+    ("Mir", "cancelled_by", "cancelled_at", "MIR cancelled"),
+    ("MirChange", "changed_by", "changed_at", "MIR edited"),
+    ("MirMismatch", "resolved_by", "resolved_at", "MIR mismatch resolved"),
+    ("PurchaseOrderLine", "closed_by", "closed_at", "PO line closed"),
+    ("MaterialChange", "changed_by", "changed_at", "Material changed"),
+    ("MaterialUnitFactor", "updated_by", "updated_at", "Material units changed"),
+    ("Document", "uploaded_by", "uploaded_at", "File uploaded"),
+    ("StockVoucher", "created_by", "created_at", "Stock voucher posted"),
+    ("StockVoucher", "decided_by", "decided_at", "Stock difference decided"),
+    ("StockVoucher", "cancelled_by", "cancelled_at", "Stock voucher cancelled"),
+    ("StockSetting", "updated_by", "updated_at", "Stock setting changed"),
+    ("DomesticPOCorrection", "corrected_by", "corrected_at", "PO field corrected"),
+    ("ImportPOCorrection", "corrected_by", "corrected_at", "Import PO field corrected"),
+    ("MaterialCorrection", "corrected_by", "corrected_at", "Material field corrected"),
+    ("FlagDismissal", "dismissed_by", "dismissed_at", "Flag dismissed"),
+    ("MatchDismissal", "dismissed_by", "dismissed_at", "Match dismissed"),
+    ("ManualMirMatch", "created_by", "created_at", "MIR pinned to a PO line"),
+    ("ManualReceiptEdit", "created_by", "created_at", "PO line receipts edited"),
+    ("RodtepUsage", "entered_by", "created_at", "RoDTEP usage entered"),
+    ("SortPreset", "user", "updated_at", "Sort preset saved"),
+)
+
+
+def last_work() -> dict:
+    """{user id: (when, what)} - each account's newest saved work across
+    WORK_SOURCES. One grouped query per source."""
+    from django.apps import apps as django_apps
+
+    out: dict = {}
+    for model_name, user_field, time_field, label in WORK_SOURCES:
+        model = django_apps.get_model("core", model_name)
+        rows = (model.objects.filter(**{f"{user_field}__isnull": False, f"{time_field}__isnull": False})
+                .values(user_field).annotate(last=Max(time_field)))
+        for row in rows:
+            uid, when = row[user_field], row["last"]
+            if uid not in out or when > out[uid][0]:
+                out[uid] = (when, label)
+    return out
+
+
+def tracking_since():
+    """When the activity log started recording changes, downloads and page
+    visits - the first routine row, or None before any."""
+    from apps.core.audit_log import PTAuditLog
+
+    first = PTAuditLog.objects.filter(action__in=PTAuditLog.ROUTINE_ACTIONS).order_by("timestamp").first()
+    return first.timestamp if first else None
+
+
 def people(days: int = 30) -> list[dict]:
-    """One row per account: last sign-in, last seen, and how many changes,
-    downloads, page visits and refused sign-ins in the last `days`. Inactive
-    accounts are included (an admin wants to see they stopped)."""
+    """One row per account: when it was last active, its last saved work,
+    its last full sign-in, and how many changes, downloads, page visits and
+    refused sign-ins in the last `days`. Inactive accounts are included (an
+    admin wants to see they stopped).
+
+    lastActive is the newest of: PTUser.last_seen_at (any signed-in
+    request), the newest activity-log row, and the last saved work. It is
+    NOT the last sign-in - a sign-in lasts up to 30 days."""
     from apps.core.audit_log import PTAuditLog
     from apps.core.models import PTUser
 
     since = timezone.now() - datetime.timedelta(days=days)
     stats = {
         r["actor_id"]: r for r in PTAuditLog.objects.filter(actor_id__isnull=False).values("actor_id").annotate(
-            last_seen=Max("timestamp"),
+            last_logged=Max("timestamp"),
             changes=Count("id", filter=Q(action=PTAuditLog.ACTION_CHANGE, timestamp__gte=since)),
             downloads=Count("id", filter=Q(action=PTAuditLog.ACTION_DOWNLOAD, timestamp__gte=since)),
             visits=Count("id", filter=Q(action=PTAuditLog.ACTION_PAGE_VIEW, timestamp__gte=since)),
@@ -450,16 +535,23 @@ def people(days: int = 30) -> list[dict]:
         PTAuditLog.objects.filter(action=PTAuditLog.ACTION_AUTH_FAILED, timestamp__gte=since)
         .values_list("actor_email").annotate(n=Count("id")).values_list("actor_email", "n")
     )
+    work = last_work()
+
+    def iso(value):
+        return value.isoformat() if value else None
+
     out = []
     for u in PTUser.objects.all().order_by("email"):
         s = stats.get(u.pk, {})
-        last_seen = s.get("last_seen")
+        work_at, work_what = work.get(u.pk, (None, ""))
+        candidates = [t for t in (u.last_seen_at, s.get("last_logged"), work_at, u.last_login_at) if t]
         out.append({
             "id": u.pk, "email": u.email, "name": u.full_name or "", "role": u.role, "active": u.is_active,
-            "lastLogin": u.last_login_at.isoformat() if u.last_login_at else None,
-            "lastSeen": last_seen.isoformat() if last_seen else None,
+            "lastLogin": iso(u.last_login_at), "lastSeen": iso(u.last_seen_at),
+            "lastActive": iso(max(candidates)) if candidates else None,
+            "lastWork": iso(work_at), "lastWorkWhat": work_what,
             "signins": s.get("signins", 0), "changes": s.get("changes", 0), "downloads": s.get("downloads", 0),
             "visits": s.get("visits", 0), "failed": failed.get(u.email, 0),
         })
-    out.sort(key=lambda p: p["lastSeen"] or "", reverse=True)
+    out.sort(key=lambda p: p["lastActive"] or "", reverse=True)
     return out

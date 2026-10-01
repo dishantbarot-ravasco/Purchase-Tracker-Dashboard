@@ -363,6 +363,10 @@ Read the linked section before breaking any of these. Each is there because it w
 - Changes, downloads and page visits are kept 90 days (`RETENTION_DAYS`, owner's choice), pruned by
   the nightly `activity-log-prune` schedule; sign-ins and user management are kept for good.
 - `auth.js`'s `renderNavTabs()` page keys must equal `activity_log.PAGES`, or visits are refused.
+- "Last active" is never `last_login_at` (sessions last 30 days): it is the newest of `last_seen_at`, the
+  log, saved work (`WORK_SOURCES`) and the sign-in. Never estimate use the app did not record.
+- Google sign-in asks only for `openid email` with `access_type="online"` - don't add scopes or offline
+  access without a feature that needs them.
 
 ### Auth, security, email
 - Never call `get_user_model()` in auth code (`PTUser` is not `auth.User`); never add simplejwt's

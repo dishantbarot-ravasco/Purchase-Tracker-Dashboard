@@ -120,7 +120,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | --- | --- | --- | --- | --- |
 | POST | `activity/page-view` | `activity_views.page_view` | Auth (any role), own visits only | Body `{"page"}` (an `auth.js` nav key); 202 `{"recorded"}`, false for a repeat within 5 minutes; 400 for an unknown page |
 | GET | `activity?actor=&group=&q=&since=&until=&page=` | `activity_views.activity` | Owner only (`IsActivityLogOwner`), 404 for anyone else, every plant on purpose | 100 log rows a page, newest first, plus `total` and the type `groups` |
-| GET | `activity/people` | `activity_views.activity_people` | Owner only (`IsActivityLogOwner`), 404 for anyone else | Every account: last sign-in, last seen, 30-day sign-ins / changes / downloads / page visits / refused sign-ins |
+| GET | `activity/people` | `activity_views.activity_people` | Owner only (`IsActivityLogOwner`), 404 for anyone else | Every account: `lastActive`, `lastWork` / `lastWorkWhat`, `lastLogin`, `lastSeen`, 30-day sign-ins / changes / downloads / page visits / refused sign-ins; plus `trackingSince` |
 | GET | `activity/export?...` | `activity_views.activity_export` | Owner only (`IsActivityLogOwner`), 404 for anyone else | The filtered log as CSV (`SafeCsvWriter`, at most 50,000 rows) |
 | GET | `auth/users` | `users_views.list_users` | IsAdmin | All users with `correctionsCount` |
 | POST | `auth/users/create` | `users_views.create_user` | IsAdmin, `AdminWriteThrottle` | Create a user; 409 on duplicate email |
@@ -1266,6 +1266,22 @@ at any depth. An uploaded file is recorded by name and size, never its bytes. Th
 tables (`MirChange`, `DomesticPOCorrection`, `MaterialCorrection`, `MatchDismissal`, ...) stay the record
 of a field's old and new values; this log says who did what and when, across the whole dashboard.
 
+**"Last active" is not "last sign-in"** (owner, 2026-10-01: the first People table showed people
+who worked yesterday as last active weeks ago). A sign-in lasts up to 30 days and renews itself
+(12-hour access token, rotating 30-day refresh), so `last_login_at` only moves on a fresh sign-in, and
+before the log existed nothing else recorded use. Three fixes: `PTUser.last_seen_at`, stamped by
+`touch_last_seen()` on any signed-in `/api/` request (reads included) at most every 5 minutes;
+**Last saved work**, the newest row across `WORK_SOURCES` (MIRs, vouchers, uploads, corrections,
+dismissals, pins, receipt edits, material and stock changes, sort presets) - records of work the app
+already kept, which reach back before the log; and `trackingSince`, so the page says counts start
+when the log did. `lastActive` is the newest of those, the log and the last sign-in. Reading the
+dashboard before 2026-10-01 left no record and is never estimated.
+
+**Privacy.** Employees' activity is personal data; the log follows data minimisation and purpose
+limitation: it exists for security and audit, one account may read it, routine rows go after 90 days,
+secrets are masked, files are kept by name only, and the login page says what is recorded. Google
+sign-in requests only `openid email` with online access ([auth-security-email.md](auth-security-email.md)).
+
 **Never breaks a request.** `record_request()` swallows its own failures (logged to `logs/app.log`); a
 test makes the write fail and checks the request still answers normally.
 
@@ -1477,7 +1493,9 @@ the route's plant prefix, else a `plant` URL argument or body field. **`request_
 secret, credential, exactly `code` or `key`) masked as `***` at every depth; strings cut at 500
 characters, lists at 50 items, a body over 8,000 characters reduced to its field names.
 **`record_page_view()`**: one row per user per page per `PAGE_VIEW_DEDUPE` (5 minutes); a page outside
-`PAGES` is a `ValueError`. **`prune_routine()`** / **`scheduled_prune()`**: delete
+`PAGES` is a `ValueError`. **`touch_last_seen()`**: the throttled `last_seen_at` stamp (a conditional
+`UPDATE`, never raises). **`WORK_SOURCES`** / **`last_work()`** / **`tracking_since()`**: see "Last
+active" above. **`prune_routine()`** / **`scheduled_prune()`**: delete
 `PTAuditLog.ROUTINE_ACTIONS` rows older than `RETENTION_DAYS`. **`filtered()`**, **`serialize()`**,
 **`user_names()`**, **`people()`** back the admin reads; `GROUPS` maps the filter's types to actions.
 
