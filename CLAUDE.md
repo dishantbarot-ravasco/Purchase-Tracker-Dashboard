@@ -298,6 +298,13 @@ Read the linked section before breaking any of these. Each is there because it w
   deleted** (row or object). [files](docs/api-and-features.md#po-and-invoice-files-2026-09-30)
 - A file opens through `/api/documents/<id>/open` (302 to a five-minute link) in a new tab - never
   fetch the link and navigate a blank tab: the app's COOP header leaves it on `about:blank`.
+- **Check uploads in production with real documents or a `TEST-` PO number - never anything else.**
+  An upload writes only `Document` rows and R2 objects (no PO, MIR, stock or match data), but
+  nothing can be deleted, so: the normal flow is checked with a real PO's PDF under its real number
+  and a real MIR's real invoice; the edge cases (revision, duplicate, withdraw) only under a dummy
+  PO number such as `TEST-0001`, withdrawn afterwards with a reason. Never replace a real MIR's
+  invoice with a test file - the replaced copy stays in its history. Take or confirm a fresh backup
+  first. [checking uploads](docs/testing-deployment.md#checking-uploads-in-production-2026-10-01)
 - The nightly `nightly-db-backup` schedule dumps the database to R2. `pg_dump` must be at least the
   server's major version: raise the Dockerfile's `postgresql-client-18` BEFORE upgrading Render's
   Postgres major version. [backups](docs/testing-deployment.md#backups-2026-09-30)
@@ -466,6 +473,9 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git history** with 4 dev/test `pt_users`
   bcrypt hashes. History was deliberately not rewritten - rotate any reused password.
 - **`prune_revoked_tokens` has a trigger endpoint but no fixed cadence.**
+- **PO and invoice uploads are not yet checked in production** - R2 is set up and the first
+  production backup uploaded (2026-10-01, 1.4 MB); the upload flow awaits the check described in
+  [checking uploads](docs/testing-deployment.md#checking-uploads-in-production-2026-10-01).
 - **No backup has been restored yet.** The nightly dump to R2 is built and tested against a local
   database; restore the first production dump into a scratch database before relying on it.
 - **`cache_page` infrastructure exists and nothing uses it** - every endpoint is business data behind auth.

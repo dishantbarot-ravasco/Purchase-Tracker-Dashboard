@@ -300,6 +300,32 @@ pg_restore --no-owner --no-privileges --dbname "$NEW_DATABASE_URL" purchase_trac
 A backup nobody has restored is a hope, not a backup: restore one into a scratch database after the
 first nightly run, and again after any major upgrade.
 
+### Checking uploads in production (2026-10-01)
+
+There is no staging environment, so the PO and invoice uploads are checked on production. That is
+safe because an upload writes **only** a `Document` row and an R2 object: it never changes a PO, MIR,
+stock movement, match or anything synced from Drive. What makes it need care is that **nothing can
+be deleted** - a file can only be withdrawn, and the withdrawn row and object stay as an audit record.
+So:
+
+1. **Confirm a fresh backup first** (`python manage.py backup_database` on the worker's Shell, or the
+   night's file in `pt-db-backups`).
+2. **The normal flow uses real documents** - it is the first real use, not a test: a real PO's PDF
+   uploaded under its real plant and PO number, opened with **Open**; a real posted MIR's real
+   invoice attached from the MIR register, opened with **Open**; the MIR form's PO view showing the
+   PO copy.
+3. **The edge cases use a dummy PO number** such as `TEST-0001`, which can never match a real PO:
+   upload a file, upload a different file under the same number (revision 2), upload the same file
+   again (refused), withdraw revision 2 (revision 1 comes back), then withdraw revision 1 with the
+   reason "Test - not a real PO". It then shows only under the list's "Withdrawn" filter.
+4. **Never replace a real MIR's invoice with a test file**: the replaced copy stays in that MIR's
+   history for good.
+
+The production R2 setup was finished on 2026-10-01: the three buckets, an account API token limited
+to them, the R2 variables on both Render services, `BACKUP_RETENTION_DAYS=90` with a 100-day
+lifecycle rule on `pt-db-backups` (always longer than the app's retention), and Cloudflare's default
+abort-incomplete-multipart rule kept on every bucket. The first production dump was 1.4 MB.
+
 ### Docker (local dev)
 
 The same image, plus a Postgres 16, via `docker-compose.yml`. It exists so a developer can run the
