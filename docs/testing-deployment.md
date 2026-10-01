@@ -666,6 +666,7 @@ Configuration is `pyproject.toml` plus these:
 | File | DB | Covers |
 |---|---|---|
 | test_achhad_correct_field.py | yes | Achhad inline "Edit Everywhere": roles, plant scoping, audit row, validation. |
+| test_activity_log.py | yes | Activity log: a refused write is a change row with who / what / status / plant / payload; reads and previews are not logged; a refused sign-in is credited to the email tried with the password masked; a successful auth action is not logged twice; an upload keeps field names and file name and size, never bytes (R2 stubbed); exports are downloads; a failed log write never breaks the request; redaction at depth; page visits deduped per 5 minutes; admin-only reads and filters; 30-day people counts; formula-safe CSV; 90-day prune keeps sign-ins. |
 | test_achhad_dismiss_flag.py | yes | Achhad PO-level flag dismiss/reinstate. |
 | test_achhad_dismiss_match.py | yes | Achhad PO<->MIR / MIR<->Stock match dismissal, survives rematch. |
 | test_admin_overview.py | yes | `GET /api/auth/admin-overview` admin-only aggregates. |
@@ -683,7 +684,7 @@ Configuration is `pyproject.toml` plus these:
 | test_dismiss_match.py | yes | HRS match dismissal with reason, survives rematch; string `"false"` reinstates, a missing flag dismisses. |
 | test_dockerignore_mirrors_gitignore.py | no | `.dockerignore` covers every `.gitignore` pattern. |
 | test_endpoint_permission_guard.py | no | Source scan: write endpoints declare permissions, plant endpoints scope by plant. |
-| test_ensure_schedules.py | yes | `ensure_schedules` is idempotent and never resets `next_run`. |
+| test_ensure_schedules.py | yes | `ensure_schedules` is idempotent and never resets `next_run`; creates the sync, backup and activity-log-prune rows once each. |
 | test_error_visibility.py | yes | No silent failures: OTP generation error, SyncRun rows and error detail. |
 | test_hrs_correct_field.py | yes | HRS inline "Edit Everywhere" with plant scoping. |
 | test_imports_api.py | yes | Import dashboard API: combined plants, derived fields, correct_field, retired POs 404 on detail and correction. |
@@ -717,9 +718,6 @@ Configuration is `pyproject.toml` plus these:
 | test_refresh_token_never_in_body.py | yes | Refresh token only ever in the httpOnly cookie. |
 | test_reports_views.py | yes | Shared-secret report cron endpoints: 503/403/200/502 behaviour. |
 | test_response_compression.py | yes | `SelectiveGZipMiddleware`: API gzipped, `/api/auth/` and admin never. |
-| test_review_card_payload.py | yes | Match-review card identifiers, UOM, signals, converted rate. |
-| test_review_plant_scoping.py | yes | Review queue respects plant scoping. |
-| test_review_stats_and_undo.py | yes | Precision/recall figures, latest verdict wins, undo, CSV export. |
 | test_rodtep_api.py | yes | RoDTEP scrip ledger API and import citations. |
 | test_security_headers_and_csrf_scope.py | yes | CSP contents, Permissions-Policy, CSRF only under `/admin/`. |
 | test_sort_presets.py | yes | Sort presets: owner-only (another user reads 404), viewers may save, every bad level/name/view refused, same name saves over, per-view cap, presets kept per view, picked values and "show only" round-trip and are validated (only on pickable columns), each list's frontend columns and `pick` columns equal the server's. |

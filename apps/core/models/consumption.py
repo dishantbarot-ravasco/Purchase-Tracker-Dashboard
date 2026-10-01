@@ -45,7 +45,7 @@ class MaterialConsumptionDaily(models.Model):
       2026-09-21, between Sep 2 and Sep 3 fifty-six HRS lots' `opening_stock`
       changed and 54% of those picked up the PREVIOUS lot's opening - a
       reshuffle that splices two materials' histories together. A wrong
-      MATCH is visible and reviewable (MatchReview); a spliced consumption
+      MATCH is visible and dismissable on the dashboard; a spliced consumption
       series just quietly produces a confident wrong number.
     - A material code would be better than a description if all three plants
       had one. They don't: Vapi's Stock sheet carries `hsn_code`, a tariff

@@ -253,7 +253,8 @@ The single settings module, driven by environment variables (loaded from `.env` 
   (**must** precede WhiteNoise), `WhiteNoiseMiddleware`, `SelectiveGZipMiddleware` (after
   WhiteNoise so static files keep their own compression and ETags), `ApiNoStoreMiddleware`,
   sessions, common, `AdminOnlyCsrfMiddleware` (instead of the global `CsrfViewMiddleware`), auth,
-  messages, clickjacking. When `DEBUG` is on, `NoCacheMiddleware` is inserted at index 1.
+  messages, clickjacking, and `ActivityLogMiddleware` last (it times only the view and reads the
+  user DRF authenticated). When `DEBUG` is on, `NoCacheMiddleware` is inserted at index 1.
 - **Database**: Postgres only. `DATABASE_URL` via `dj_database_url` (`conn_max_age=600`,
   health checks), else discrete `PG*` vars.
 - **Cloudflare R2**: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`
@@ -303,7 +304,7 @@ suite on it: SQLite loses Decimal scale in `SUM()` and produces false failures (
 
 ### config/middleware.py
 
-Four middleware classes and one WhiteNoise hook.
+Five middleware classes and one WhiteNoise hook.
 
 - `frontend_cache_headers(headers, path, url)` - WhiteNoise add-headers hook. Sets
   `Cache-Control: no-cache, public` on `.html`/`.js`/`.mjs`/`.css` so a browser revalidates every
@@ -320,6 +321,13 @@ Four middleware classes and one WhiteNoise hook.
 - `ApiNoStoreMiddleware` - `setdefault("Cache-Control", "no-store")` on every `/api/` response, so
   a view's own header still wins. Invisible in dev because `NoCacheMiddleware` already stamps
   no-store; `test_api_no_store.py` tests the class directly for that reason.
+- `ActivityLogMiddleware` - the activity log's request rows (2026-10-01). For a JSON write under
+  `/api/` it reads `request.body` (up to `BODY_LIMIT`, 256 KB) before the view - safe because Django
+  caches the body and DRF's JSON parser reads that cached copy - and never reads a multipart body
+  (the file would be held twice). After the view it hands the request and response to
+  `activity_log.record_request()`, which decides whether to keep a row and never raises. Last in
+  `MIDDLEWARE` so `request.user` is the PTUser DRF set and the duration is the view's own.
+  Rules and redaction: [api-and-features.md](api-and-features.md#activity-log-2026-10-01).
 
 ### config/security_headers.py
 
@@ -490,15 +498,11 @@ Cross-plant human decisions and reference data, all with a `plant` column.
 - `DataQualityFlag` - one row per source-sheet arithmetic inconsistency (`source_type` +
   `source_id` generic pointer, `check_name`, `expected`, `actual`), unique on all four keys;
   `data_quality.py` deletes rows that stop mismatching.
-- `MatchReview` - one reviewer verdict (`correct`/`incorrect`/`unsure`) on a pair identified by
-  `plant` + `match_type` (`po_mir`/`import_po_mir`/`mir_stock`) + `left_id` / `right_id` (the PO line
-  and primary MIR row, or the MIR row and lot - `apps/services/match_pairs.py`; plain ids, not FKs,
-  since the targets are per-plant classes). `match_id` is the match row it was recorded on, kept for
-  the notes list only - the matcher recreates rows under new ids. Pair columns are null only for a
-  verdict whose row was gone before migration `0075` backfilled them. No unique constraint: latest
-  verdict wins.
 - `MatchDismissal` - the durable half of a match dismissal: one row per dismissed pair, unique on
-  (`plant`, `match_type`, `left_id`, `right_id`), with `dismissed_by` / `dismissed_reason` /
+  (`plant`, `match_type`, `left_id`, `right_id`). `MatchDismissal.MatchType` (`po_mir` /
+  `import_po_mir` / `mir_stock`) names the pairing; `left_id` / `right_id` are the PO line and primary
+  MIR row, or the MIR row and lot (`apps/services/match_pairs.py`; plain ids, not FKs, since the
+  targets are per-plant classes), with `dismissed_by` / `dismissed_reason` /
   `dismissed_at`. The `dismissed_*` columns on the match rows stay what readers filter on;
   `run_full_match()` restores them from here onto a recreated row. Written only by `match_dismiss.py`.
 
@@ -646,20 +650,23 @@ no plant data, so it has no plant scope; it is read and written only as its owne
 
 ### apps/core/audit_log.py
 
-- `PTAuditLog` (`pt_audit_log`) - append-only auth/account events: `ACTION_LOGIN`, `LOGOUT`,
-  `USER_CREATED`, `USER_UPDATED`, `USER_DELETED`, `DEVICE_REVOKED`, `SESSIONS_REVOKED`; `actor_id`
-  is a plain integer, `actor_email` denormalised. Lives outside the `models` package but is still an
-  `apps.core` model (import it from `apps.core.audit_log`).
+- `PTAuditLog` (`pt_audit_log`) - the append-only activity log: auth/account events (`ACTION_LOGIN`,
+  `LOGOUT`, `USER_CREATED`, `USER_UPDATED`, `USER_DELETED`, `DEVICE_REVOKED`, `SESSIONS_REVOKED`,
+  `AUTH_FAILED`) and the request rows (`CHANGE`, `DOWNLOAD`, `PAGE_VIEW` - `ROUTINE_ACTIONS`, pruned
+  after `RETENTION_DAYS = 90`). `actor_id` is a plain integer, `actor_email` denormalised; request
+  rows also fill `method`, `path`, `route`, `status_code`, `plant`, `user_agent`, `duration_ms` and the
+  redacted `payload`. Lives outside the `models` package but is still an `apps.core` model (import it
+  from `apps.core.audit_log`).
 - `log_pt_action(request, action, detail="", actor=None)` - writes one row, taking the IP from
   `device_service.get_client_ip()`. Never raises (logs and swallows) so a broken audit write cannot
   block a login. Pass `actor` at login sites, where `request.user` is still anonymous. Add an action
   type only when a real endpoint needs it; field corrections and dismissals have their own tables and
-  are not duplicated here.
+  are not duplicated here. The request rows are written by `apps/services/activity_log.py`, not here.
 
 ### apps/core/admin.py
 
 Django Admin as a debugging surface, not the user-facing admin (that is `admin.html`). Plain
-registrations for every plant model, `SyncRun`, `MatchReview`, `DataQualityFlag`, `OTPCode` and the
+registrations for every plant model, `SyncRun`, `DataQualityFlag`, `OTPCode` and the
 import tables. Custom classes where the default would fight the design:
 `MaterialCategoryReferenceAdmin` (search/filter, `normalized_description` read-only),
 `ImportPOCorrectionAdmin` and `PTAuditLogAdmin` (all fields read-only, add/change/delete disabled),

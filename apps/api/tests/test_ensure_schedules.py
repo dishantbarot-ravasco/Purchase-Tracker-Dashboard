@@ -90,3 +90,13 @@ class TestEnsureSchedules:
         assert schedule.schedule_type == Schedule.CRON
         assert schedule.cron == "13 2 * * *"
         assert Schedule.objects.filter(name="nightly-db-backup").count() == 1
+
+    def test_creates_the_activity_log_prune_schedule_once(self):
+        call_command("ensure_schedules")
+        call_command("ensure_schedules")
+
+        schedule = Schedule.objects.get(name="activity-log-prune")
+        assert schedule.func == "apps.services.activity_log.scheduled_prune"
+        assert schedule.schedule_type == Schedule.CRON
+        assert schedule.cron == "41 3 * * *"
+        assert Schedule.objects.filter(name="activity-log-prune").count() == 1

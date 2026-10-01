@@ -12,8 +12,8 @@ it also runs synchronously after an "Edit Everywhere" save that touches a matchi
 [api-and-features.md](api-and-features.md)).
 
 Every match is a **suggestion, not a fact** - there is no labelled ground truth behind any
-threshold here. See the Match accuracy section in [api-and-features.md](api-and-features.md) before
-trusting a count.
+threshold here, and no review sample (the Review Matches page was removed 2026-10-01). See the
+Match accuracy section in [api-and-features.md](api-and-features.md) before trusting a count.
 
 ## Overview: what `run_full_match()` does
 
@@ -263,8 +263,8 @@ Industrial Textiles, whose ~100 concurrent orders are priced nearly identically 
 EE-series codes), so qty/rate tie-breaking there was always weak. Most of what this removed was
 already flagged `severity=material` and bound to a MIR row whose own PO column named a *specific,
 different* order; most re-pointed items land on the row that names their own PO number. Shipped
-without a labelled-ground-truth check - review a sample of Madura's re-pointed pairs through
-`review.html` before trusting the new count over the old one. **Don't quote a single Vapi
+without a labelled-ground-truth check - check a sample of Madura's re-pointed pairs against the
+source sheets before trusting the new count over the old one. **Don't quote a single Vapi
 before/after without saying which of the two 2026-09-19 changes it includes** - they move the same
 count in opposite directions.
 
@@ -1121,7 +1121,7 @@ below); trust the code.
   `value_flag_epsilon`; financial weights; `material_match_threshold`; `mir_value` /
   `mir_taxable_value` / `mir_final_value` accessors; `plant_key`; `manual_match_model` /
   `receipt_edit_model` / `syncrun_plant` (empty means no pins or receipt edits); `stock_rate_field`, `stock_vendor_field` (None = no vendor
-  gate), `stock_code_field` / `stock_uom_field` (display only, for `review_views.py`);
+  gate);
   `stock_material_threshold` (0 = equality only), `stock_date_rate_path`,
   `stock_rate_identity_tolerance_pct`; `import_extended_fields`, `stock_extended_fields` (write the
   extended columns - a model without them raises `FieldError`); `date_grace_days` (7) /
@@ -1318,7 +1318,7 @@ below); trust the code.
 
 HRS's `MATCH_CONFIG` plus the four re-exported entry points (`run_full_match`,
 `match_po_mir_line_item`, `match_import_po_mir_line_item`, `match_mir_entry_stock`), which is how
-`match_hrs`, `_domestic_base.py`, `imports_views.py` and `review_views.py` (via `MATCH_CONFIG`) reach
+`match_hrs`, `_domestic_base.py` and `imports_views.py` (via `MATCH_CONFIG`) reach
 the engine. Values: `MATCH_THRESHOLD` 0.55, `FLAG_DIFF_PCT` 0, `VALUE_FLAG_EPSILON` 1.00, weights
 0.29/0.29/0.42, `MATERIAL_MATCH_THRESHOLD` 0.3, `mir_value = mir.net`, `plant_key="hrs"`, lot
 `basic_rate` / `party_name` / `sap_item_code` / `uom`, stock threshold 0.45, date+rate path on, all
@@ -1328,7 +1328,7 @@ blank" is stale - it compares `net` only.
 ### apps/services/matching_achhad.py
 
 Achhad's config: same numbers as HRS except `plant_key="achhad"`, lot `rate` field, **no stock vendor
-field** (material-only MIR↔Stock gate), `stock_code_field="sap_code"`, no stock UOM column. Its
+field** (material-only MIR↔Stock gate). Its
 comment on `import_extended_fields` ("Vapi excluded for now") is stale.
 
 ### apps/services/matching_vapi.py

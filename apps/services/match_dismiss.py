@@ -28,7 +28,7 @@ from apps.services.match_pairs import pair_of
 def dismiss_match(model_cls, match_id, user, dismissed: bool, reason: str, *, plant: str, match_type: str):
     """Set/clear dismissed_by_override on a *POMirMatch, *ImportPOMirMatch
     or *MirStockMatch row, and record or delete the pair's MatchDismissal.
-    `plant` is the SyncRun.Plant value, `match_type` a MatchReview.MatchType
+    `plant` is the SyncRun.Plant value, `match_type` a MatchDismissal.MatchType
     value. Returns the updated instance, or None if match_id doesn't exist.
 
     Clearing a dismissal (dismissed=False) also clears dismissed_by/

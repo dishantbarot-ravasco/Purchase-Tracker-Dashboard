@@ -1,19 +1,15 @@
 """
-Review verdicts and match dismissals are about the PAIR a match joins, not
-the match row (apps/services/match_pairs.py, 2026-09-29).
+Match dismissals are about the PAIR a match joins, not the match row
+(apps/services/match_pairs.py, 2026-09-29).
 
 run_full_match() deletes a match row when its line matches nothing on a run
 and creates a new one, with a new id, when the same pair matches again. A
-verdict keyed on the row id then scored as stale and the pair was served for
-review again; a dismissal stored only on the row came back undismissed.
-Every test here recreates a row for the same pair under a new id, so each
-fails if a decision is tied to the row id again.
+dismissal stored only on the row came back undismissed. Every test here
+recreates a row for the same pair under a new id, so each fails if a
+dismissal is tied to the row id again.
 """
 
-import importlib
-
 import pytest
-from django.apps import apps as django_apps
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
@@ -25,14 +21,10 @@ from apps.core.models import (
     HRSPOMirMatch,
     HRSRMLot,
     MatchDismissal,
-    MatchReview,
     SyncRun,
 )
 from apps.services import match_pairs
-from apps.services.match_accuracy import build_report
 from apps.services.matching import MATCH_CONFIG, run_full_match
-
-_MIGRATION = "apps.core.migrations.0075_match_decisions_keyed_on_pair"
 
 
 def _client(user):
@@ -73,49 +65,6 @@ def _recreate(match, **changes):
     return fresh
 
 
-def _submit(client, match, verdict="correct"):
-    response = client.post("/api/review", {
-        "plant": SyncRun.Plant.HRS, "matchType": MatchReview.MatchType.PO_MIR,
-        "matchId": match.id, "verdict": verdict,
-    }, format="json")
-    assert response.status_code == 201
-    return response
-
-
-@pytest.mark.django_db
-class TestVerdictFollowsPair:
-    def test_submit_records_the_pair(self):
-        match = _po_mir_match()
-        _submit(_client(make_user(email="r@ravasco.com")), match)
-        review = MatchReview.objects.get()
-        assert (review.left_id, review.right_id) == (match.po_line_item_id, match.mir_entry_id)
-
-    def test_verdict_survives_its_row_being_recreated(self):
-        match = _po_mir_match()
-        client = _client(make_user(email="r@ravasco.com"))
-        _submit(client, match)
-        _recreate(match)
-
-        report = build_report()
-        assert report["staleVerdicts"] == 0
-        assert report["overall"]["correct"] == 1
-
-        # Still reviewed: the queue does not serve the same pair again.
-        response = client.get("/api/review/next")
-        assert response.json().get("done") is True
-        assert response.json()["progress"]["reviewed"] == 1
-
-    def test_verdict_on_a_pair_the_matcher_no_longer_makes_is_stale(self):
-        match = _po_mir_match()
-        _submit(_client(make_user(email="r@ravasco.com")), match)
-        other = HRSMIREntry.objects.create(mir_no="MIR-9", material_description="Widget", source_row_ref="99")
-        _recreate(match, mir_entry_id=other.id)
-
-        report = build_report()
-        assert report["staleVerdicts"] == 1
-        assert report["overall"]["n"] == 0
-
-
 @pytest.mark.django_db
 class TestDismissalFollowsPair:
     def _dismiss(self, match, dismissed=True):
@@ -128,7 +77,7 @@ class TestDismissalFollowsPair:
         match = _po_mir_match()
         self._dismiss(match)
         dismissal = MatchDismissal.objects.get()
-        assert (dismissal.plant, dismissal.match_type) == (SyncRun.Plant.HRS, MatchReview.MatchType.PO_MIR)
+        assert (dismissal.plant, dismissal.match_type) == (SyncRun.Plant.HRS, MatchDismissal.MatchType.PO_MIR)
         assert (dismissal.left_id, dismissal.right_id) == (match.po_line_item_id, match.mir_entry_id)
         assert dismissal.dismissed_reason == "Partial delivery, fine"
 
@@ -154,7 +103,7 @@ class TestDismissalFollowsPair:
         assert not MatchDismissal.objects.exists()
 
         fresh = _recreate(match)
-        match_pairs.restore_dismissals(MATCH_CONFIG, [MatchReview.MatchType.PO_MIR])
+        match_pairs.restore_dismissals(MATCH_CONFIG, [MatchDismissal.MatchType.PO_MIR])
         fresh.refresh_from_db()
         assert fresh.dismissed_by_override is False
 
@@ -164,7 +113,7 @@ class TestDismissalFollowsPair:
         other = HRSMIREntry.objects.create(mir_no="MIR-9", material_description="Widget", source_row_ref="99")
         fresh = _recreate(match, mir_entry_id=other.id)
 
-        match_pairs.restore_dismissals(MATCH_CONFIG, [MatchReview.MatchType.PO_MIR])
+        match_pairs.restore_dismissals(MATCH_CONFIG, [MatchDismissal.MatchType.PO_MIR])
         fresh.refresh_from_db()
         assert fresh.dismissed_by_override is False
 
@@ -177,30 +126,8 @@ class TestDismissalFollowsPair:
 
         match.delete()
         fresh = HRSMirStockMatch.objects.create(mir_entry=mir, stock_lot=lot, rate_diff_pct="8.00", is_flagged=True)
-        restored = match_pairs.restore_dismissals(MATCH_CONFIG, [MatchReview.MatchType.MIR_STOCK])
+        restored = match_pairs.restore_dismissals(MATCH_CONFIG, [MatchDismissal.MatchType.MIR_STOCK])
         fresh.refresh_from_db()
         assert restored == 1
         assert fresh.dismissed_by_override is True
 
-
-@pytest.mark.django_db
-class TestBackfill:
-    def test_existing_reviews_and_dismissals_are_carried_over(self):
-        match = _po_mir_match()
-        reviewer = make_user(email="r@ravasco.com")
-        kept = MatchReview.objects.create(plant=SyncRun.Plant.HRS, match_type=MatchReview.MatchType.PO_MIR,
-                                          match_id=match.id, reviewer=reviewer, verdict="correct")
-        gone = MatchReview.objects.create(plant=SyncRun.Plant.HRS, match_type=MatchReview.MatchType.PO_MIR,
-                                          match_id=999999, reviewer=reviewer, verdict="incorrect")
-        HRSPOMirMatch.objects.filter(pk=match.pk).update(dismissed_by_override=True, dismissed_reason="ok")
-
-        importlib.import_module(_MIGRATION).backfill(django_apps, None)
-
-        kept.refresh_from_db()
-        gone.refresh_from_db()
-        assert (kept.left_id, kept.right_id) == (match.po_line_item_id, match.mir_entry_id)
-        assert gone.left_id is None
-        dismissal = MatchDismissal.objects.get()
-        assert (dismissal.left_id, dismissal.right_id) == (match.po_line_item_id, match.mir_entry_id)
-        assert dismissal.dismissed_reason == "ok"
-        assert dismissal.dismissed_at is not None

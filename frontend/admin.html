@@ -1,7 +1,7 @@
 <!--
   admin.html - Admin Panel: Overview analytics, sync status for every plant,
   real in-app user management (create/edit/activate/deactivate), and system
-  info - redesigned 2026-09-07 to match the layout of the TDS Automation
+  info, and the Activity Log (2026-10-01, js/activity-log.js) - redesigned 2026-09-07 to match the layout of the TDS Automation
   App's own Admin Panel (sidebar nav: Overview / Users / Sync Status /
   System Info), adapted to this app's real data rather than copied
   literally - see js/admin-page.js's own header comment and
@@ -94,6 +94,7 @@
           <nav class="admin-sidebar-nav">
             <button type="button" class="admin-sidebar-item active" data-admin-tab="overview">Overview</button>
             <button type="button" class="admin-sidebar-item" data-admin-tab="users">Users <span class="admin-sidebar-badge" id="sidebarUserCount">-</span></button>
+            <button type="button" class="admin-sidebar-item" data-admin-tab="activity">Activity Log</button>
             <button type="button" class="admin-sidebar-item" data-admin-tab="sync">Sync Status</button>
             <button type="button" class="admin-sidebar-item" data-admin-tab="system">System Info</button>
           </nav>
@@ -168,6 +169,52 @@
               To create the very first account (before any admin exists to use this panel), run <code>manage.py create_pt_user</code> on the server - see CLAUDE.md. Every account after that, including password resets, can be managed right here via Edit.
             </div>
             <div id="usersArea"></div>
+          </div>
+
+          <!-- ── Activity Log (2026-10-01) - js/activity-log.js ────────── -->
+          <div class="admin-tab-panel" id="adminTabActivity" hidden>
+            <div class="section-title-row">
+              <div class="section-title">Activity Log</div>
+              <button type="button" class="btn" id="actExportBtn">Export CSV</button>
+            </div>
+            <div class="stat-sub stat-sub-tight">
+              Who signed in, what they changed or downloaded, and which pages they opened. Changes, downloads and page visits are kept for 90 days; sign-ins and user management for good. Passwords, codes and tokens are never recorded.
+            </div>
+
+            <div class="admin-panel">
+              <h4>People</h4>
+              <div class="admin-panel-sub">Last 30 days. Pick a person to see only their activity.</div>
+              <div id="actPeopleArea" class="act-scroll"></div>
+            </div>
+
+            <div class="admin-panel">
+              <h4>Log</h4>
+              <div class="act-filters">
+                <label class="act-field">Person
+                  <select id="actActor" class="uf-input"><option value="">Everyone</option></select>
+                </label>
+                <label class="act-field">Type
+                  <select id="actGroup" class="uf-input"><option value="">Everything</option></select>
+                </label>
+                <label class="act-field">From
+                  <input type="date" id="actSince" class="uf-input">
+                </label>
+                <label class="act-field">To
+                  <input type="date" id="actUntil" class="uf-input">
+                </label>
+                <label class="act-field act-field-wide">Search
+                  <input type="search" id="actQ" class="uf-input" placeholder="MIR or PO number, page, email, IP" autocomplete="off">
+                </label>
+                <button type="button" class="btn" id="actClearBtn">Clear</button>
+              </div>
+              <div class="admin-panel-sub" id="actSummary" aria-live="polite"></div>
+              <div id="actLogArea" class="act-scroll"></div>
+              <div class="act-pager">
+                <button type="button" class="btn" id="actNewerBtn">&larr; Newer</button>
+                <span id="actPageInfo"></span>
+                <button type="button" class="btn" id="actOlderBtn">Older &rarr;</button>
+              </div>
+            </div>
           </div>
 
           <!-- ── Sync Status ──────────────────────────────────────────── -->
@@ -263,5 +310,6 @@
   <script src="js/auth.js"></script>
   <script src="js/shared.js"></script>
   <script src="js/admin-page.js"></script>
+  <script src="js/activity-log.js"></script>
 </body>
 </html>

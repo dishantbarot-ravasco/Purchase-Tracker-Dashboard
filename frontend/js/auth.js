@@ -226,12 +226,14 @@ function renderUserBadge(container) {
 // admin.html's own access-denied state is defense in depth for anyone who
 // navigates there directly, not the primary gate.
 /**
- * Renders the 4 shared nav tabs into `container`, marking `activePage`
- * (e.g. 'home', 'dashboard', 'search', 'admin') as the active one. The
- * Admin tab is only added to the list at all for role === 'admin'.
+ * Renders the shared nav tabs into `container`, marking `activePage`
+ * (e.g. 'home', 'dashboard', 'search', 'admin') as the active one, and
+ * records the visit (recordPageView()). The Admin tab is only added to the
+ * list at all for role === 'admin'.
  */
 function renderNavTabs(container, activePage) {
   if (!container || !CURRENT_USER) return;
+  recordPageView(activePage);
   const tabs = [
     { key: 'home', href: '/home.html', label: 'Home' },
     { key: 'dashboard', href: '/', label: 'Dashboard' },
@@ -245,15 +247,30 @@ function renderNavTabs(container, activePage) {
     // RM store entry (2026-09-29) - issues, returns and adjustments against
     // the stock MIR entry brings in; every role reads stock for its plants.
     { key: 'stock', href: '/stock.html', label: 'RM Store' },
-    // Match Accuracy Programme, Phase 1 (doc 03) - any authenticated role
-    // can review, not just admin/editor, since throughput (~200 reviews)
-    // matters more than gating here (see review_views.py's own docstring).
-    { key: 'review', href: '/review.html', label: 'Review Matches' },
   ];
   if (CURRENT_USER.role === 'admin') tabs.push({ key: 'admin', href: '/admin.html', label: 'Admin' });
   container.innerHTML = tabs.map(t =>
     '<a class="nav-tab' + (t.key === activePage ? ' active' : '') + '" href="' + t.href + '">' + escapeHtmlAuth(t.label) + '</a>'
   ).join('');
+}
+
+/**
+ * Records that the signed-in user opened `page` (one of renderNavTabs()'s
+ * keys) in the admin Activity Log (2026-10-01). Called from
+ * renderNavTabs(), which every protected page runs exactly once after
+ * requireAuth(). Fire-and-forget: the server drops a repeat within five
+ * minutes, and a failure here must never touch the page.
+ */
+function recordPageView(page) {
+  try {
+    fetch('/api/activity/page-view', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page: page }),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) { /* never block the page on the activity log */ }
 }
 
 // ── Theme toggle (dark mode) ────────────────────────────────────────────

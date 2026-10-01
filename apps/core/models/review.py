@@ -1,6 +1,6 @@
 """
 apps/core/models/review.py - Cross-plant human decisions and reference data: corrections, dismissals, manual MIR pins,
-the material category reference, data-quality flags and match reviews.
+the material category reference, data-quality flags and match dismissals.
 
 Part of the apps.core.models package - see its __init__.py for the layout and
 why it was split. Import from `apps.core.models`, not from this module.
@@ -423,74 +423,6 @@ class DataQualityFlag(models.Model):
         return f"{self.plant}/{self.source_type}/{self.source_id}: {self.check_name} expected={self.expected} actual={self.actual}"
 
 
-class MatchReview(models.Model):
-    """One human judgement on one algorithmic match, for the Match Accuracy
-    Programme's measurement harness (doc 03, Phase 1) - CLAUDE.md's "Match
-    accuracy: manual validation is required, not optional" section is the
-    reason this exists: MATCH_THRESHOLD and the four scoring weights were
-    picked by judgement, never validated, because there was no accuracy
-    measurement anywhere in this codebase. report_match_accuracy (the
-    management command that reads this table) is what finally makes that
-    number falsifiable.
-
-    Not a real FK to the underlying match row - `match_id` is a plain
-    PositiveIntegerField, resolved against whichever of the 9 *POMirMatch/
-    *ImportPOMirMatch/*MirStockMatch model classes `plant` + `match_type`
-    implies (see review_views.py). Same "generic pointer by id" shape
-    FlagDismissal's own `flag_key` already uses above, for the same reason:
-    the target lives in one of several different model classes depending on
-    context, not one fixed table a real FK could point at.
-
-    `match_type` splits PO<->MIR, import PO<->MIR, and MIR<->Stock because
-    their error profiles genuinely differ (doc 03, 1.1) - a single blended
-    accuracy figure would hide that. One reviewer can review the same match
-    more than once (no unique constraint) - report_match_accuracy uses the
-    most recent verdict per match, so a reviewer correcting their own earlier
-    call isn't stuck with it."""
-
-    class MatchType(models.TextChoices):
-        PO_MIR = "po_mir", "PO <-> MIR"
-        IMPORT_PO_MIR = "import_po_mir", "Import PO <-> MIR"
-        MIR_STOCK = "mir_stock", "MIR <-> Stock"
-
-    class Verdict(models.TextChoices):
-        CORRECT = "correct", "Correct"
-        INCORRECT = "incorrect", "Incorrect"
-        UNSURE = "unsure", "Unsure"
-
-    plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
-    match_type = models.CharField(max_length=20, choices=MatchType.choices)
-    # The match row this verdict was recorded against - kept for the notes
-    # list only. It is NOT the identity: the matcher deletes a match row
-    # when its line stops matching and creates a new one (new id) when it
-    # matches again, so a verdict keyed on this id was lost every time a
-    # pair dropped out for one run. The pair below is the identity.
-    match_id = models.PositiveIntegerField()
-    # The two rows the verdict is about (2026-09-29) - see
-    # apps/services/match_pairs.py. PO<->MIR and import PO<->MIR: the PO
-    # line item and the primary MIR entry. MIR<->Stock: the MIR entry and
-    # the stock lot. Both ids outlive the match row (lines are updated in
-    # place, MIR rows and lots are deactivated, never deleted). Null only
-    # for a verdict whose match row was already gone when this column was
-    # backfilled - that pair cannot be recovered and scores as stale.
-    left_id = models.PositiveIntegerField(null=True, blank=True)
-    right_id = models.PositiveIntegerField(null=True, blank=True)
-
-    reviewer = models.ForeignKey("PTUser", on_delete=models.CASCADE, related_name="match_reviews")
-    verdict = models.CharField(max_length=10, choices=Verdict.choices)
-    note = models.TextField(blank=True)
-    reviewed_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["plant", "match_type", "match_id"]),
-            models.Index(fields=["plant", "match_type", "left_id", "right_id"]),
-        ]
-
-    def __str__(self):
-        return f"{self.plant}/{self.match_type}/{self.left_id}-{self.right_id} -> {self.verdict}"
-
-
 class MatchDismissal(models.Model):
     """The durable record of "this flagged pair was reviewed and is fine"
     (2026-09-29).
@@ -501,7 +433,7 @@ class MatchDismissal(models.Model):
     when its line matches nothing on a run and creates a fresh one when the
     same pair matches again, and the fresh row came back undismissed: a
     person's decision silently undone by a re-match. This table holds the
-    decision on the pair itself (same left/right ids as MatchReview, see
+    decision on the pair itself (the PO line / MIR row / stock lot ids, see
     apps/services/match_pairs.py), and run_full_match() copies it back onto
     whichever row currently holds that pair.
 
@@ -511,8 +443,13 @@ class MatchDismissal(models.Model):
     Written only by apps/services/match_dismiss.py; undismissing deletes the
     row."""
 
+    class MatchType(models.TextChoices):
+        PO_MIR = "po_mir", "PO <-> MIR"
+        IMPORT_PO_MIR = "import_po_mir", "Import PO <-> MIR"
+        MIR_STOCK = "mir_stock", "MIR <-> Stock"
+
     plant = models.CharField(max_length=20, choices=SyncRun.Plant.choices)
-    match_type = models.CharField(max_length=20, choices=MatchReview.MatchType.choices)
+    match_type = models.CharField(max_length=20, choices=MatchType.choices)
     left_id = models.PositiveIntegerField()
     right_id = models.PositiveIntegerField()
 

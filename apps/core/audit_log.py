@@ -1,40 +1,39 @@
 """
-apps/core/audit_log.py - Lightweight audit trail for authentication and
-user-management events.
+apps/core/audit_log.py - the activity log: who signed in, what they changed,
+what they downloaded and which pages they opened.
 
-Ported from the TDS Automation App's apps/core/audit_log.py, originally
-scoped down to just ACTION_LOGIN/ACTION_LOGOUT on the reasoning that
-Purchase Tracker had no create/approve/decline/delete workflow the way TDS
-does. That premise no longer holds: in-app user management (create/edit/
-role-change/password-reset, apps/api/routers/users_views.py) and trusted-
-device revocation both now exist and are real, security-sensitive mutating
-endpoints - exactly the case this file's own original docstring said
-warranted adding a new action type. PO/material field corrections and flag/
-match dismissals already have their own dedicated audit tables
-(DomesticPOCorrection, MaterialCorrection, the *_dismissed_by/_at/_reason
-columns, etc. - see CLAUDE.md's "Inline 'Edit Everywhere'"/"Dismiss/
-override a flagged match" sections) and deliberately are NOT duplicated
-into PTAuditLog too - this file's remaining job is auth-and-account-level
-events that had no audit trail anywhere else. Still don't add a new
-ACTION_* speculatively for something with no real endpoint behind it yet.
+One append-only table, PTAuditLog, written from two places:
 
-WHAT IT LOGS
-  Every successful login (trusted-device fast path, new-device email-OTP
-  verify, and Google OAuth trusted-device path), every logout, and every
-  admin user-management mutation (account created, account updated -
-  role/status/password/plants/name changes, detail text says which -
-  and a trusted device revoked). The log is append-only - rows are never
-  updated or deleted.
+  1. Explicit calls to log_pt_action() for authentication and account events
+     - every successful login (trusted-device fast path, new-device email-OTP
+     verify, Google OAuth trusted-device path), every logout, password
+     change, "log out everywhere", and every admin user-management mutation
+     (account created/updated/deleted, trusted device revoked). These rows
+     are kept for good.
 
-SETUP
-  1. Migration already created for this table (apps/core/migrations/) -
-     run `manage.py migrate` if it hasn't been applied yet.
-  2. Call log_pt_action() from the three login call sites, the logout
-     view, and every users_views.py mutation - already wired in
-     apps/api/auth_views.py, apps/api/routers/device_views.py,
-     apps/api/routers/google_oauth_views.py, and
-     apps/api/routers/users_views.py.
-  3. Registered read-only in apps/core/admin.py.
+  2. apps/services/activity_log.py, fed by config.middleware.
+     ActivityLogMiddleware and the page-visit beacon (2026-10-01, owner:
+     "keep track of users, their activity, what they are changing or
+     interacting with on the dashboard"):
+       ACTION_CHANGE      every POST/PUT/PATCH/DELETE under /api/ - what was
+                          sent (passwords, codes and tokens redacted), the
+                          status that came back, the plant, how long it took;
+       ACTION_DOWNLOAD    a CSV export or an opened PO/invoice file;
+       ACTION_PAGE_VIEW   a page opened (one row per page per five minutes);
+       ACTION_AUTH_FAILED a refused sign-in, verification code or password
+                          change, with the email that was tried.
+     These ROUTINE_ACTIONS are pruned after RETENTION_DAYS (owner's choice,
+     2026-10-01) by the nightly activity-log-prune schedule.
+
+The per-feature history tables (MirChange, DomesticPOCorrection,
+MaterialCorrection, MatchDismissal, ManualReceiptEdit, ...) stay the record
+of WHAT a field was before and after. This log is the record of WHO did WHAT
+WHEN across the whole dashboard; it links the two by time and user, it does
+not copy their old/new values.
+
+Rows are never updated. Only activity_log.prune_routine() deletes, and only routine rows
+past the retention window. Shown to admins in admin.html's Activity Log tab
+(apps/api/routers/activity_views.py) and read-only in Django admin.
 """
 
 import logging
@@ -48,17 +47,22 @@ logger = logging.getLogger(__name__)
 # ── Model ────────────────────────────────────────────────────────────────
 
 class PTAuditLog(models.Model):
-    """Append-only audit trail - one row per login/logout event.
+    """Append-only activity log - one row per sign-in, change, download or
+    page visit.
 
     Fields:
       timestamp    - UTC datetime of the action
       action       - one of the ACTION_* constants below
       actor_id     - PTUser.pk of the person who triggered the action
-      actor_email  - denormalised for readability (survives account changes)
+      actor_email  - denormalised for readability (survives account changes);
+                     for ACTION_AUTH_FAILED, the email that was tried
       ip_address   - from X-Forwarded-For or REMOTE_ADDR (see
                      apps/services/device_service.py's get_client_ip)
-      detail       - free-text (e.g. which login path: trusted device,
-                     new device OTP, Google OAuth)
+      detail       - one readable sentence ("Posted MIR HRS/MIR/26-27/0012",
+                     "Login - trusted device")
+    Request rows (ACTION_CHANGE / DOWNLOAD / PAGE_VIEW / AUTH_FAILED) also
+    fill method, path, route (the URL name), status_code, plant, user_agent,
+    duration_ms and payload (the redacted request body).
     """
 
     ACTION_LOGIN = "login"
@@ -68,6 +72,10 @@ class PTAuditLog(models.Model):
     ACTION_USER_DELETED = "user_deleted"
     ACTION_DEVICE_REVOKED = "device_revoked"
     ACTION_SESSIONS_REVOKED = "sessions_revoked"
+    ACTION_AUTH_FAILED = "auth_failed"
+    ACTION_CHANGE = "change"
+    ACTION_DOWNLOAD = "download"
+    ACTION_PAGE_VIEW = "page_view"
 
     ACTION_CHOICES = [
         (ACTION_LOGIN, "Login"),
@@ -77,7 +85,15 @@ class PTAuditLog(models.Model):
         (ACTION_USER_DELETED, "User deleted"),
         (ACTION_DEVICE_REVOKED, "Trusted device revoked"),
         (ACTION_SESSIONS_REVOKED, "All sessions revoked (log out everywhere)"),
+        (ACTION_AUTH_FAILED, "Sign-in refused"),
+        (ACTION_CHANGE, "Change"),
+        (ACTION_DOWNLOAD, "Download"),
+        (ACTION_PAGE_VIEW, "Page visit"),
     ]
+
+    # Pruned after RETENTION_DAYS; every other action is kept for good.
+    ROUTINE_ACTIONS = (ACTION_CHANGE, ACTION_DOWNLOAD, ACTION_PAGE_VIEW)
+    RETENTION_DAYS = 90
 
     timestamp = models.DateTimeField(default=timezone.now, db_index=True)
     action = models.CharField(max_length=32, choices=ACTION_CHOICES, db_index=True)
@@ -85,6 +101,14 @@ class PTAuditLog(models.Model):
     actor_email = models.CharField(max_length=254, blank=True)
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     detail = models.TextField(blank=True)
+    method = models.CharField(max_length=8, blank=True)
+    path = models.CharField(max_length=300, blank=True)
+    route = models.CharField(max_length=80, blank=True)
+    status_code = models.PositiveSmallIntegerField(null=True, blank=True)
+    plant = models.CharField(max_length=20, blank=True)
+    user_agent = models.CharField(max_length=300, blank=True)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    payload = models.JSONField(null=True, blank=True)
 
     class Meta:
         db_table = "pt_audit_log"
@@ -92,6 +116,7 @@ class PTAuditLog(models.Model):
         ordering = ["-timestamp"]
         indexes = [
             models.Index(fields=["actor_id", "timestamp"]),
+            models.Index(fields=["action", "timestamp"]),
         ]
 
     def __str__(self):

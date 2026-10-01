@@ -60,6 +60,11 @@ as the sync row. Its first run fires on the first deploy that creates it, so
 a missing R2 setting shows up as a failed task straight away rather than
 the next night.
 
+A third row, `activity-log-prune` (2026-10-01), runs
+apps/services/activity_log.scheduled_prune() at 03:41 IST, after the backup:
+it deletes activity-log changes, downloads and page visits older than 90
+days (sign-ins and user management are kept).
+
 Usage:
     python manage.py ensure_schedules
 """
@@ -74,12 +79,14 @@ _SCHEDULES = (
     # kept - see module docstring.
     ("daily-sync-all-plants", "apps.services.sync_trigger.run_daily_sync_all_plants", "0 9-20 * * *"),
     ("nightly-db-backup", "apps.services.db_backup.scheduled_backup", "13 2 * * *"),
+    # 03:41 IST, after the backup: the dump still holds yesterday's rows.
+    ("activity-log-prune", "apps.services.activity_log.scheduled_prune", "41 3 * * *"),
 )
 _SCHEDULE_TYPE = Schedule.CRON
 
 
 class Command(BaseCommand):
-    help = "Idempotently create/update the app's django-q2 Schedule rows (hourly sync, nightly backup)."
+    help = "Idempotently create/update the app's django-q2 Schedule rows (hourly sync, nightly backup, activity-log prune)."
 
     def handle(self, *args, **options):
         for name, func, cron in _SCHEDULES:

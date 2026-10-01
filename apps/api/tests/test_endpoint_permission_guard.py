@@ -35,16 +35,12 @@ from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parents[1]
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-PLANT_SCOPE_CALLS = {"user_can_access_plant", "user_can_edit_plant", "_can_review"}
+PLANT_SCOPE_CALLS = {"user_can_access_plant", "user_can_edit_plant"}
 
 # Rule 1 exceptions: unsafe method, deliberately no @permission_classes.
 WRITES_OPEN_TO_ANY_ROLE = {
     ("device_views.py", "logout_everywhere_view"):
         "Self-service 'log out everywhere' - every account must be able to revoke its own sessions.",
-    ("review_views.py", "submit_review"):
-        "Any role may review by recorded decision (data collection, not a privileged write); plant-scoped in the body.",
-    ("review_views.py", "undo_review"):
-        "Deletes only the caller's OWN verdict (filtered on reviewer=request.user), whatever their role.",
 }
 
 # Rule 2 exceptions: handles a plant, deliberately no scoping call.
@@ -117,7 +113,7 @@ def test_the_scanner_actually_finds_the_endpoints():
     assert len(endpoints) > 50
     names = {(f, n) for f, n, _, _ in endpoints}
     assert ("_domestic_base.py", "correct_field") in names  # nested in a make_* factory
-    assert ("review_views.py", "submit_review") in names
+    assert ("mir_views.py", "post_entry") in names
 
 
 _PRE_FIX_REVIEW_ROUTER = '''

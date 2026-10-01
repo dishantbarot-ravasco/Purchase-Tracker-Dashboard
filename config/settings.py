@@ -139,6 +139,10 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Last on purpose: the activity log (who changed / downloaded what) times
+    # only the view, and reads request.user after DRF has authenticated it.
+    # See the class docstring in config/middleware.py.
+    "config.middleware.ActivityLogMiddleware",
 ]
 
 # Dev: force browser to always fetch fresh assets instead of trusting

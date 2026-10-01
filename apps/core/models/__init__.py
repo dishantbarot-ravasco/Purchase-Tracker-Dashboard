@@ -107,7 +107,6 @@ from .review import (  # noqa: F401
     ManualReceiptEdit,
     MaterialCategoryReference,
     DataQualityFlag,
-    MatchReview,
     MatchDismissal,
 )
 from .auth import (  # noqa: F401
@@ -201,7 +200,6 @@ __all__ = [
     "ManualReceiptEdit",
     "MaterialCategoryReference",
     "DataQualityFlag",
-    "MatchReview",
     "MatchDismissal",
     "PTUser",
     "OTPCode",

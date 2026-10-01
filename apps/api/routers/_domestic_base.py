@@ -40,7 +40,7 @@ from apps.core.models import (
     DomesticPOCorrection,
     FlagDismissal,
     ManualMirMatch,
-    MatchReview,
+    MatchDismissal,
     MaterialCategoryReference,
     MaterialCorrection,
 )
@@ -1441,7 +1441,7 @@ def make_dismiss_po_mir_match(cfg: _PlantConfig):
         reason = (request.data.get("reason") or "").strip()
         match = dismiss_match(
             cfg.po_mir_match_model, match_id, request.user, dismissed, reason,
-            plant=cfg.syncrun_plant, match_type=MatchReview.MatchType.PO_MIR,
+            plant=cfg.syncrun_plant, match_type=MatchDismissal.MatchType.PO_MIR,
         )
         if not match:
             return Response({"error": "Match not found."}, status=404)
@@ -1466,7 +1466,7 @@ def make_dismiss_mir_stock_match(cfg: _PlantConfig):
         reason = (request.data.get("reason") or "").strip()
         match = dismiss_match(
             cfg.mir_stock_match_model, match_id, request.user, dismissed, reason,
-            plant=cfg.syncrun_plant, match_type=MatchReview.MatchType.MIR_STOCK,
+            plant=cfg.syncrun_plant, match_type=MatchDismissal.MatchType.MIR_STOCK,
         )
         if not match:
             return Response({"error": "Match not found."}, status=404)

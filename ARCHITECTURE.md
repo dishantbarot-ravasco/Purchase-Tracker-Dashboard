@@ -52,8 +52,7 @@ flowchart LR
 | `hrs_views.py` / `achhad_views.py` / `vapi_views.py` | one domestic plant each |
 | `_domestic_base.py` | the shared HTTP-layer code all three are built from |
 | `imports_views.py` | import POs, RoDTEP and Advance Licence - cross-plant, plant as a path segment |
-| `review_views.py` | the match-accuracy review queue - cross-plant |
-| `users_views.py` / `admin_overview_views.py` | admin panel |
+| `users_views.py` / `admin_overview_views.py` / `activity_views.py` | admin panel, and the activity log |
 | `auth_views.py` / `device_views.py` / `google_oauth_views.py` / `password_views.py` | auth |
 | `reports_views.py` | shared-secret endpoints the external scheduler triggers |
 
@@ -89,7 +88,7 @@ Shared, plant-agnostic tables:
 - Auth: `PTUser` (`pt_users`), `OTPCode` (`pt_otp_codes`), `TrustedDevice` (`pt_trusted_devices`),
   `RevokedRefreshToken`, `PTAuditLog` (`pt_audit_log`).
 - Corrections and overrides: `DomesticPOCorrection`, `ImportPOCorrection`, `MaterialCorrection`,
-  `FlagDismissal`, `MatchReview`, `DataQualityFlag`.
+  `FlagDismissal`, `MatchDismissal`, `DataQualityFlag`.
 - Company-wide ledgers and reference data: `RodtepScrollEntry`, `RodtepUsage`, `AdvanceLicense`,
   `AdvanceLicenseMaterial`, `MaterialCategoryReference`, `ReportSendLog`.
 

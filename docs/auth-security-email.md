@@ -371,8 +371,10 @@ without alerting.
 
 [apps/core/audit_log.py](../apps/core/audit_log.py) defines `PTAuditLog` (`pt_audit_log`) and
 `log_pt_action(request, action, detail='', actor=None)`. Actions: login, logout, user created/updated/
-deleted, device revoked, sessions revoked. **Don't add action types speculatively - add one only when
-a real mutating endpoint exists to log.** Wired into all three login paths (trusted-device fast path,
+deleted, device revoked, sessions revoked - and, since the activity log (2026-10-01), `auth_failed`,
+`change`, `download` and `page_view`, written by `apps/services/activity_log.py` from
+`ActivityLogMiddleware` and the page-visit beacon ([activity log](api-and-features.md#activity-log-2026-10-01)).
+**Don't add action types speculatively - add one only when a real mutating endpoint exists to log.** Wired into all three login paths (trusted-device fast path,
 new-device OTP verify, Google OAuth trusted-device path; a Google login on a new device is logged by
 the OTP verify), logout, both "log out everywhere" endpoints, the self-service password change (as
 `user_updated`), and every `users_views.py` mutation. Browsable read-only in Django Admin with add/
@@ -380,12 +382,22 @@ change/delete disabled, matching the append-only intent. `log_pt_action()` never
 audit write must not block a real login/logout. Field corrections and dismissals have their own
 audit tables and are deliberately not duplicated here.
 
+**The explicit calls stay, and the middleware skips what they cover.** A successful `/api/auth/`
+request writes no middleware row, because its view already logged the login, logout or account change;
+removing a `log_pt_action()` call would silently drop that event from the log. A *refused* sign-in step
+(login, device verify, Google session token, password change) has no explicit row, so the middleware
+writes it as `auth_failed`, credited to the email that was typed, with the password masked. **The
+activity log must never hold a secret**: `activity_log.redact()` masks any key naming a password,
+code, OTP, token or secret at every depth before a body is stored, and a test checks the typed password
+is nowhere in the row. Routine rows (changes, downloads, page visits) are pruned after 90 days; sign-in
+and account rows are kept for good.
+
 Separately, `LOGGING` writes every `INFO`+ line (Django's own plus every `apps.*` logger) to a rotating
 `logs/app.log` (10MB x 5 backups) on top of console, and Sentry (when `SENTRY_DSN` is set) turns every
 `ERROR`+ log line into an event with `send_default_pii=False`. **Don't conflate the two**:
-`logs/app.log` is an operational trace (what the server did); `pt_audit_log` is a permanent security
-record of who logged in/out, who changed which account, and from where. Neither substitutes for the
-other.
+`logs/app.log` is an operational trace (what the server did); `pt_audit_log` is the record of who
+logged in/out, who changed which account, what each person changed or downloaded, and from where.
+Neither substitutes for the other.
 
 `PTCookieJWTAuthentication.authenticate()` catches `(InvalidToken, AuthenticationFailed)` at `DEBUG`
 and everything else at `WARNING` with a full traceback, still falling through to the Bearer attempt.
@@ -989,10 +1001,13 @@ mail and knows nothing about SMTP. Callers currently send only `text_body`.
 [audit_log.py](../apps/core/audit_log.py) - lives in `apps/core` but outside the `models/` package.
 
 - `PTAuditLog` (`pt_audit_log`) - `timestamp`, `action` (`login`, `logout`, `user_created`,
-  `user_updated`, `user_deleted`, `device_revoked`, `sessions_revoked`), `actor_id` (a plain integer,
-  not an FK, so a deleted user's rows survive), `actor_email` (denormalised), `ip_address`, `detail`.
-  Indexed on `timestamp`, `action` and `(actor_id, timestamp)`; newest first. Registered read-only in
-  `apps/core/admin.py`.
+  `user_updated`, `user_deleted`, `device_revoked`, `sessions_revoked`, `auth_failed`, `change`,
+  `download`, `page_view`), `actor_id` (a plain integer, not an FK, so a deleted user's rows survive),
+  `actor_email` (denormalised; the email tried, for `auth_failed`), `ip_address`, `detail`, and for
+  request rows `method`, `path`, `route`, `status_code`, `plant`, `user_agent`, `duration_ms`,
+  `payload` (redacted). `ROUTINE_ACTIONS` / `RETENTION_DAYS` drive the nightly prune. Indexed on
+  `timestamp`, `action`, `(actor_id, timestamp)` and `(action, timestamp)`; newest first. Registered
+  read-only in `apps/core/admin.py`.
 - `log_pt_action(request, action, detail="", actor=None)` - writes one row; `actor` falls back to
   `request.user` (anonymous users get a null `actor_id`); IP via `get_client_ip()`. Swallows and logs
   every exception.

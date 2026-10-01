@@ -27,7 +27,6 @@ from apps.core.models import (
     HRSRMSnapshot,
     DataQualityFlag,
     ImportPOCorrection,
-    MatchReview,
     RTPAchhadImportPOLineItem,
     RTPAchhadImportPurchaseOrder,
     RTPAchhadMIREntry,
@@ -78,7 +77,6 @@ admin.site.register(RTPVapiRMSnapshot)
 admin.site.register(RTPVapiPOMirMatch)
 admin.site.register(RTPVapiMirStockMatch)
 admin.site.register(SyncRun)
-admin.site.register(MatchReview)
 admin.site.register(DataQualityFlag)
 
 

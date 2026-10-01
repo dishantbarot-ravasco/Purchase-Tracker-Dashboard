@@ -106,8 +106,10 @@ full command list is in CLAUDE.md.
 | `home.html` | Landing page with a live cross-plant KPI row |
 | `index.html` (`/`) | The reconciliation dashboard - Purchase Orders and Raw Material Analysis |
 | `search-po.html` | Look up a PO number across all three plants at once |
-| `review.html` | Match-accuracy review queue (Correct / Incorrect / Unsure) |
-| `admin.html` | Admin only - sync status, user management, activity overview |
+| `po-files.html` | Uploaded PO files per plant |
+| `mir.html` | MIR entry, the MIR register and open mismatches |
+| `stock.html` | RM store - issue from a MIR, the RM register, stock differences |
+| `admin.html` | Admin only - sync status, user management, and the activity log (who signed in, changed, downloaded or opened what) |
 
 Roles are `admin`, `editor`, `viewer`. Writes (inline field corrections, dismissing a flag, user
 management) are role-gated and audited; `PTUser.plants` can additionally scope an account to

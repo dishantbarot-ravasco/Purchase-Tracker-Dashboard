@@ -36,7 +36,7 @@ change genuinely needs no doc update (a pure refactor with no behavioural change
 | Architecture, models, config | [architecture.md](docs/architecture.md) | layering, per-plant models, decimal precision, lot identity, `config/`, `apps/core/models/`, admin, checks |
 | Data sources and sync | [data-sync.md](docs/data-sync.md) | Drive layout, parsers, `sync_*` commands, change detection, scheduling, full command reference |
 | Matching engine | [matching-engine.md](docs/matching-engine.md) | PO↔MIR, MIR↔Stock, import PO↔MIR, registries, flag thresholds, `matching_core.py` |
-| API and features | [api-and-features.md](docs/api-and-features.md) | endpoint table, routers, feature rules, inline edits, pins, dismissals, licences, exports, match accuracy |
+| API and features | [api-and-features.md](docs/api-and-features.md) | endpoint table, routers, feature rules, inline edits, pins, dismissals, licences, exports, match accuracy, activity log |
 | Frontend | [frontend.md](docs/frontend.md) | pages, load order, every JS/CSS file, modals, freshness watcher, accessibility |
 | Consumption | [consumption.md](docs/consumption.md) | consumption ledger, rollups, Days-Left, consumption reports |
 | Auth, security, email | [auth-security-email.md](docs/auth-security-email.md) | login/OTP/device trust, roles and plant scoping, throttling, tokens, headers, outgoing email |
@@ -87,7 +87,7 @@ DJANGO_DEBUG=false uv run python manage.py check --deploy --fail-level WARNING
 # Ledgers: sync_rodtep, sync_advance_license; reference: load_material_category_reference --file x.csv
 # Flags: every sync_* takes --file <path>; sync_*_stock takes --no-snapshot;
 #        compute_*_consumption takes --all | --since YYYY-MM-DD (default 45-day lookback)
-# Read-only: report_retired_pos, report_match_accuracy, backfill_achhad_po_numbers
+# Read-only: report_retired_pos, backfill_achhad_po_numbers
 # Procurement (MIR entry): sync_procurement_pos [--plant x] - DB-only projection, also in release.sh
 # Maintenance: prune_revoked_tokens; backup_database (pg_dump to R2 now - the nightly job by hand)
 ```
@@ -217,8 +217,10 @@ Read the linked section before breaking any of these. Each is there because it w
 - Corrections mutate the real row plus an audit row, re-match on the background worker
   (`rematch.request_rematch()`, never inside the request), and are overwritten by the next sync. Matcher `defaults` never carry `dismissed_*`; only `_save_po_mir_match()` clears it,
   when a line is re-pointed to a different MIR row.
-- Review verdicts and match dismissals are keyed on the pair (`match_pairs.py`: PO line + MIR row, or
-  MIR row + lot), never the match row's id - the matcher recreates rows under new ids.
+- Match dismissals are keyed on the pair (`match_pairs.py`: PO line + MIR row, or MIR row + lot),
+  never the match row's id - the matcher recreates rows under new ids. The match types live on
+  `MatchDismissal.MatchType` (the Review Matches page and its `MatchReview` table were removed
+  2026-10-01, owner's request).
   `run_full_match()` restores `MatchDismissal` onto recreated rows; readers still filter on
   `dismissed_by_override`.
   [dismiss](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag)
@@ -345,6 +347,21 @@ Read the linked section before breaking any of these. Each is there because it w
 - `stock_consumption.py` is dead code carrying the cumulative-`received` bug; delete it only
   together with its test. [stock_consumption.py](docs/consumption.md#appsservicesstock_consumptionpy)
 
+### Activity log (2026-10-01)
+- Every `/api/` write, download and refused sign-in is recorded by `ActivityLogMiddleware` (last in
+  `MIDDLEWARE`) through `activity_log.record_request()`, which never raises; page visits come from
+  `auth.js`'s `recordPageView()`. Admins read it in admin.html's Activity Log tab.
+  [activity log](docs/api-and-features.md#activity-log-2026-10-01)
+- **Never store a secret in it**: bodies go through `activity_log.redact()` (any key naming a password,
+  code, OTP, token or secret, at every depth); a multipart body is never read by the middleware, and a
+  file is kept as name and size only. A new secret-bearing field name must match `_SECRET_KEY`.
+- Successful `/api/auth/` calls are skipped because their views call `log_pt_action()` - keep those
+  explicit calls, or the event disappears from the log. A new endpoint is logged automatically; give it
+  a sentence in `ROUTE_LABELS`, and add a keystroke-rate endpoint (a preview) to the skips.
+- Changes, downloads and page visits are kept 90 days (`RETENTION_DAYS`, owner's choice), pruned by
+  the nightly `activity-log-prune` schedule; sign-ins and user management are kept for good.
+- `auth.js`'s `renderNavTabs()` page keys must equal `activity_log.PAGES`, or visits are refused.
+
 ### Auth, security, email
 - Never call `get_user_model()` in auth code (`PTUser` is not `auth.User`); never add simplejwt's
   `token_blacklist`. [non-negotiables](docs/auth-security-email.md#non-negotiables)
@@ -423,7 +440,6 @@ Read the linked section before breaking any of these. Each is there because it w
 | Google OAuth ignoring account lockout; non-atomic failed-login / OTP counters undercounting | [auth](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters) |
 | A blank `JWT_SIGNING_KEY=` signing every JWT with an empty key; a CLI password reset leaving sessions alive | [auth](docs/auth-security-email.md#configsettingspy-auth-and-security-parts) |
 | `KeyError` in `exceptions.py` leaking dict key names as a 400 | [auth](docs/auth-security-email.md#alerts-audit-log-and-logs) |
-| The review queue serving every plant's cards to a plant-scoped account | [api](docs/api-and-features.md#match-accuracy-manual-validation-is-required-not-optional) |
 | CSV formula injection in the export | [api](docs/api-and-features.md#data-export) |
 | A licence number with and without its leading zero reading as two authorisations; unguarded multi-value cell splits; Balance = Sanctioned read as "nothing spent" | [api](docs/api-and-features.md#licences-the-import-side-was-in-the-csv-all-along-2026-09-22) |
 | A `<input type="number">` reporting `''` for garbage, saving a NULL over a real figure | [api](docs/api-and-features.md#validation-runs-before-the-write-not-after) |
@@ -468,8 +484,9 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 
 - **No automated tests for the Drive API calls or the `sync_*` commands' file-fetching.** Everything
   else, including `run_full_match()`, has real coverage.
-- **No measured match accuracy over a sample big enough to act on.** The harness is complete
-  (`review.html` + `match_accuracy.py`); what is missing is reviews, not code.
+- **No measured match accuracy at all.** The Review Matches harness never reached a usable sample and
+  was removed with its data on 2026-10-01 at the owner's request; a future measurement starts from
+  scratch.
 - **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git history** with 4 dev/test `pt_users`
   bcrypt hashes. History was deliberately not rewritten - rotate any reused password.
 - **`prune_revoked_tokens` has a trigger endpoint but no fixed cadence.**

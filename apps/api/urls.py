@@ -15,7 +15,7 @@ from django.urls import include, path
 
 from apps.api import views
 from apps.api.auth_views import PTLoginView, PTTokenRefreshView, PTTokenVerifyView, whoami
-from apps.api.routers import achhad_views, admin_overview_views, document_views, hrs_views, imports_views, mir_views, password_views, preferences_views, reports_views, review_views, stock_views, vapi_views
+from apps.api.routers import achhad_views, activity_views, admin_overview_views, document_views, hrs_views, imports_views, mir_views, password_views, preferences_views, reports_views, stock_views, vapi_views
 
 urlpatterns = [
     path("health", views.health, name="health"),
@@ -209,15 +209,10 @@ urlpatterns = [
     path("imports/advance-license", imports_views.advance_license_ledger, name="imports-advance-license-ledger"),
     path("imports/advance-license/sync-trigger", imports_views.advance_license_sync_trigger, name="imports-advance-license-sync-trigger"),
 
-    # Match Accuracy Programme, Phase 1 - the review screen (doc 03, 1.2).
-    # Cross-plant like imports_views.py above, not per-plant-prefixed - see
-    # review_views.py's own module docstring.
-    path("review/next", review_views.next_review, name="review-next"),
-    # Accuracy panel + undo (2026-09-22). "review/stats" is declared BEFORE
-    # the bare "review" route for readability only - they differ by path, not
-    # by prefix, so order is not load-bearing here.
-    path("review/stats", review_views.review_stats, name="review-stats"),
-    path("review/stats/export", review_views.export_review_stats, name="review-stats-export"),
-    path("review/<int:review_id>", review_views.undo_review, name="review-undo"),
-    path("review", review_views.submit_review, name="review-submit"),
+    # Activity log (2026-10-01) - activity_views.py. The page-view beacon is
+    # open to every signed-in account; the rest is admin-only.
+    path("activity/page-view", activity_views.page_view, name="activity-page-view"),
+    path("activity/people", activity_views.activity_people, name="activity-people"),
+    path("activity/export", activity_views.activity_export, name="activity-export"),
+    path("activity", activity_views.activity, name="activity"),
 ]

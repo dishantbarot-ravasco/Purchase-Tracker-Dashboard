@@ -155,8 +155,8 @@ That key is `<code>|<vendor>#<occurrence>`, shaped for MIR<->Stock matching. Con
 who supplied a material, and vendor-keying forks one material across its suppliers (HRS buys SBR 1502
 from three). The `#occurrence` suffix is assigned by sheet row order: measured 2026-09-21, 56 HRS lots'
 `opening_stock` changed between Sep 2 and Sep 3 and **54% of those picked up the previous lot's
-opening** - a reshuffle splicing two materials' histories. A wrong match is visible and reviewable
-(`MatchReview`); a spliced consumption series just returns a confident wrong number. A material *code*
+opening** - a reshuffle splicing two materials' histories. A wrong match is visible and dismissable
+on the dashboard; a spliced consumption series just returns a confident wrong number. A material *code*
 would be better if all three plants had one - Vapi's is `hsn_code`, a tariff code where 24 of 73
 distinct values cover more than one material, so it would merge unrelated materials outright. The code
 is stored as a non-key column (`material_code`) instead. Consequence: a description reworded in the

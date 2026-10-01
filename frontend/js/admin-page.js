@@ -65,9 +65,11 @@ function switchAdminTab(tab) {
   if (tab === CURRENT_ADMIN_TAB) return;
   CURRENT_ADMIN_TAB = tab;
   document.querySelectorAll('[data-admin-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.adminTab === tab));
-  ['overview', 'users', 'sync', 'system'].forEach(key => {
+  ['overview', 'users', 'activity', 'sync', 'system'].forEach(key => {
     document.getElementById('adminTab' + key.charAt(0).toUpperCase() + key.slice(1)).hidden = key !== tab;
   });
+  // The Activity Log loads on first open only (js/activity-log.js).
+  if (tab === 'activity') openActivityLog();
 }
 
 // ── Sync status cards ────────────────────────────────────────────

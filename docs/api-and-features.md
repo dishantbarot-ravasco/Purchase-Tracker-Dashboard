@@ -114,15 +114,14 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | POST | `documents/<id>/withdraw` | `withdraw_document` | IsEditor + the file's plant (403) | Withdraw with a `reason` |
 | POST | `mir/entries/<id>/invoice` | `mir_invoice` | IsEditor + MIR's plant (403) | Multipart `file`, `note`: attach or replace a posted MIR's invoice copy |
 
-### Review, admin, reports
+### Activity log, admin, reports
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `review/next` | `review_views.next_review` | Auth, draws only from readable plants | Up to 5 random unreviewed matches, round-robin across groups |
-| POST | `review` | `review_views.submit_review` | Auth + plant (403) | Record a `MatchReview` verdict; 201 |
-| DELETE | `review/<id>` | `review_views.undo_review` | Auth, own rows only (404 otherwise) | Undo: delete the caller's own verdict |
-| GET | `review/stats` | `review_views.review_stats` | Auth, cross-plant on purpose | Precision / recall / F1 report from `match_accuracy.build_report()` |
-| GET | `review/stats/export` | `review_views.export_review_stats` | Auth, cross-plant on purpose | Same tables as CSV via `SafeCsvWriter` |
+| POST | `activity/page-view` | `activity_views.page_view` | Auth (any role), own visits only | Body `{"page"}` (an `auth.js` nav key); 202 `{"recorded"}`, false for a repeat within 5 minutes; 400 for an unknown page |
+| GET | `activity?actor=&group=&q=&since=&until=&page=` | `activity_views.activity` | IsAdmin, every plant on purpose | 100 log rows a page, newest first, plus `total` and the type `groups` |
+| GET | `activity/people` | `activity_views.activity_people` | IsAdmin | Every account: last sign-in, last seen, 30-day sign-ins / changes / downloads / page visits / refused sign-ins |
+| GET | `activity/export?...` | `activity_views.activity_export` | IsAdmin | The filtered log as CSV (`SafeCsvWriter`, at most 50,000 rows) |
 | GET | `auth/users` | `users_views.list_users` | IsAdmin | All users with `correctionsCount` |
 | POST | `auth/users/create` | `users_views.create_user` | IsAdmin, `AdminWriteThrottle` | Create a user; 409 on duplicate email |
 | PATCH / DELETE | `auth/users/<id>` | `users_views.update_user` | IsAdmin, `AdminWriteThrottle`; DELETE also needs `DELETE_USER_ALLOWED_EMAIL` | Update fields / reset password, or permanently delete |
@@ -171,7 +170,7 @@ combined import list narrows silently, import single-PO reads 404); the reasonin
 
 ---
 
-## Match accuracy and review
+## Match accuracy
 
 ### Match accuracy: manual validation is required, not optional
 
@@ -214,7 +213,7 @@ MS crates at all** (36% / 47% / 76% of the three plants' MIR rows). Against the 
 actually in the sheet the figures are **84% / 100% / 85%**. **Quote that second set when comparing this
 pairing to PO↔MIR** - the headline percentages have different denominators.
 
-**Until a sample-based accuracy check exists, treat every match as a suggestion, not a fact.** This is a
+**There is no sample-based accuracy check, so treat every match as a suggestion, not a fact.** This is a
 process instruction, not just a UI note. Do not wire any downstream action - auto-approving a PO,
 auto-updating stock - off a match without a human in the loop. The dashboard prompts for it through
 `shared.js`'s `matchingDisclaimerHtml()` (one sentence plus a "How matching works" disclosure) and the
@@ -227,83 +226,12 @@ weighted score ≥ 0.75, **low** = below that. The reconcile card shows Ordered 
 in real figures rather than per-flag delta badges, so a partial delivery (qty short, rate in line) is
 visibly different from a price discrepancy.
 
-**The review queue.** `review.html` (`review-page.js`) + `review_views.py` back a deliberately minimal
-queue: a batch of 5 random unreviewed matches (`_BATCH_SIZE`), both sides side by side, recording
-Correct / Incorrect / Unsure as a `MatchReview` row. No filtering, no search, no bulk actions - the goal
-is throughput (`REVIEW_TARGET = 200` distinct matches), and filtering would bias the random sample the
-accuracy figure depends on. It is cross-plant (one router, like `imports_views.py`) and reuses each
-plant's `MATCH_CONFIG` via `match_accuracy.CONFIGS` for model classes and lot field names rather than a
-second mapping. Any authenticated role can review - data collection, not a privileged write.
-
-**Role is open; plant is not (2026-09-23).** A card is real per-plant business data, and until this date
-`next_review` drew from every plant regardless of `PTUser.plants` while `submit_review` accepted a
-verdict on any plant. `next_review` now draws only from readable plants and `submit_review` 403s on any
-other, via `user_can_access_plant()`. `review_views._ACCESS_KEY` maps `SyncRun.Plant` values (what
-`MatchReview.plant` stores) to the lowercase access keys; `test_review_plant_scoping.py` fails if it
-disagrees with the three `_PlantConfig`s. `review_stats` and its export stay cross-plant on purpose:
-they report the accuracy of the app's own output, not plant data.
-
-**A card carries both rows' identifiers and the matcher's own evidence** (2026-09-22). The first version
-showed description / qty / rate / value / vendor only: a Tier-1 match could not be checked against the
-PO number it was made on, `500 KG` against `500 MTR` read as agreement, and there was no key to find the
-row in the source sheet. Each side now carries ordered `refs` (PO number and date, line, UOM, HSN,
-delivery date / MIR number and date, the PO the MIR itself cites, invoice number and date / the lot's
-item code, received date, UOM, category), and `signals` render the matcher's identification booleans
-(`po_number_matched` / `vendor_matched` / `material_matched` / `manually_pinned`, and MIR↔Stock's
-`material_matched` / `date_matched` / `uom_mismatch`) as plain-English pills. The lot's item-code and
-UOM columns come from `MATCH_CONFIG.stock_code_field` / `stock_uom_field` (HRS `sap_item_code` / `uom`,
-Achhad `sap_code` / none, Vapi none / `uom`); an empty field name omits the row rather than showing a
-blank.
-
-Two display rules came with it. **Import cards show INR, not the PO's own currency**: the card uses
-`matching_core._import_rate_value_inr()`, the same conversion the matcher scores on; the raw USD
-`net_price` made a correct match look like a ~90x rate discrepancy and invited a wrong "Incorrect"
-verdict. The original-currency rate and exchange rate stay as ref fields. And the card **deliberately
-does not use `formatInr()`**, which rounds to whole rupees and abbreviates at a lakh, rounding away the
-exact comparison the verdict depends on. `apps/api/tests/test_review_card_payload.py` pins this.
-
-**The accuracy figures are in the browser, not only a terminal** (2026-09-22). `review.html` has two
-views behind one nav tab, **Review queue** and **Accuracy**. `GET /api/review/stats` serves
-precision / recall / F1 overall and by plant, match type, plant × match type, tier and coverage band,
-plus reviewer counts and the latest reviewer notes; `/api/review/stats/export` is the same tables as a
-CSV.
-
-**The scoring lives in `apps/services/match_accuracy.py`** and `manage.py report_match_accuracy` is a
-renderer over it. Two implementations of precision/recall that could drift is not affordable for the
-only measured accuracy statement this app makes. Four things a re-derivation would likely get wrong:
-
-- **`byPlantAndType` materialises all 9 cells, including `n=0` ones.** An unsampled cell is a hole in the
-  evidence; the panel renders it as "not sampled yet", never 0%.
-- **A verdict is about a pair, not a match row** (2026-09-29). `MatchReview` stores `left_id` /
-  `right_id` (the PO line and primary MIR row, or the MIR row and lot - `match_pairs.py`) beside the
-  `match_id` it was recorded on. The matcher deletes a row when its line matches nothing and recreates it
-  with a new id, so a verdict keyed on the row id went stale and the pair was served for review again.
-  Verdicts now group, resolve and count by pair everywhere (`latest_verdicts()`, `_match_rows()`,
-  `next_review`, `_progress()`).
-- **A verdict on a pair no match row holds any more is dropped and counted as `staleVerdicts`** - the
-  matcher no longer makes that pairing, so scoring it would be scoring the past. A verdict whose row was
-  already gone when migration `0075` backfilled the pair columns keeps them null and is always stale.
-- **Tiers resolve with one query per (plant, match_type) group**, not one per review (200+ queries at
-  the programme's own target).
-- **`precision` ignores "unsure" and `recall` counts it against the total.** `null` (nothing judged)
-  renders as an en dash, never 0%.
-
-**Throughput polish, same date.** Keyboard verdicts (`1` / `2` / `3`), `U` to undo, `N` for the next
-batch, and a progress bar against the target counted in **distinct pairs** (`_progress()`:
-re-reviewing one is a correction, not progress). Three things are load-bearing:
-
-- **Undo deletes the row, and only ever the caller's own** (`DELETE /api/review/<id>` filters on
-  `reviewer=request.user`; anything else is a 404). The model always allowed a correction (no unique
-  constraint, latest verdict wins); the screen used to disable the buttons permanently. Not even an
-  admin can delete someone else's verdict.
-- **The batch does not auto-advance** when the fifth verdict lands; that made Undo unreachable for the
-  card most likely to be a misclick. An explicit "Next 5" costs one keypress per five reviews.
-- **`_pending` is set synchronously before the POST** (`review-page.js`), and `firstUnreviewedIdx()`
-  skips a pending card. Without it, holding `1` down landed every keypress on the same card.
-
-Keyboard handling is inert while the note textarea has focus and while the Accuracy view is open.
-`apps/api/tests/test_review_stats_and_undo.py` pins scoring, stale/unsampled handling and both undo
-permissions.
+**The review queue was removed (owner, 2026-10-01).** A Review Matches page (`review.html`) once
+collected Correct / Incorrect / Unsure verdicts on random matches to measure precision and recall; it
+never reached a sample big enough to act on, and the owner had it taken out with its endpoints,
+scoring, `report_match_accuracy` command and verdict table (migration `0089`). Dismissing a flagged
+match on the dashboard is unaffected - that is `MatchDismissal`, not a review. Any future accuracy
+measurement starts from scratch.
 
 **Getting plant staff to reliably fill MIR's own PO-number field was considered and rejected as a
 lever** - a training/process fix, not this app's to solve. Don't assume Tier-1 coverage will improve on
@@ -335,13 +263,13 @@ side is in [frontend.md](frontend.md); the server-relevant facts:
 - **`search-po.html`** (`search-po-page.js`) - PO lookup across all three plants (substring,
   case-insensitive, ≥ 2 characters). **Deliberately self-contained**: it fetches its own copy of each
   plant's PO list and deep-links into `/?plant=<key>&po=<number>` for full detail.
-- **`review.html`** (`review-page.js`) - the match-accuracy queue and Accuracy view (above).
 - **`mir.html`** (`mir-page.js`) - MIR entry, the register and open mismatches ([MIR entry](#mir-entry-2026-09-28)).
   Any role reads the register; entering needs Editor or Admin at the receiving plant. The form takes
   the invoice copy, and a MIR's detail shows and replaces it ([files](#po-and-invoice-files-2026-09-30)).
 - **`po-files.html`** (`po-files-page.js`) - the purchase team's PO uploads ([files](#po-and-invoice-files-2026-09-30)).
   Any role lists and opens its plants' files; uploading and withdrawing need Editor or Admin there.
-- **`admin.html`** (`admin-page.js`) - admin only: per-plant sync status, Overview tab, Users panel.
+- **`admin.html`** (`admin-page.js`, `activity-log.js`) - admin only: per-plant sync status, Overview
+  tab, Users panel and the [Activity Log](#activity-log-2026-10-01).
   The client-side access-denied panel is defence in depth; **the endpoints enforce `IsAdmin`
   server-side**.
 
@@ -1302,6 +1230,41 @@ Opening Stock, Received, Issued, Today's Stock, Rate, Value, Lot Currently Activ
 
 ---
 
+### Activity log (2026-10-01)
+
+Project owner: "keep track of users, how's their activity, what are changing or interacting with the
+dashboard". Admins see it in admin.html's **Activity Log** tab: a People table (last sign-in, last
+active, 30-day counts) and a filterable, paged log whose rows open to show the request behind them.
+
+**One table, two writers.** `PTAuditLog` ([auth-security-email.md](auth-security-email.md#alerts-audit-log-and-logs))
+already held sign-ins and user management, written explicitly by the auth views. It now also holds:
+
+| Action | Written by | When |
+| --- | --- | --- |
+| `change` | `ActivityLogMiddleware` | every POST / PUT / PATCH / DELETE under `/api/`, accepted or refused |
+| `download` | `ActivityLogMiddleware` | a CSV export (an `attachment` response) or an opened PO / invoice file |
+| `auth_failed` | `ActivityLogMiddleware` | a refused login, verification code, Google sign-in or password change, credited to the email typed |
+| `page_view` | `activity/page-view`, from `auth.js` | a protected page opened, once per page per 5 minutes |
+
+**What is deliberately not logged:** plain reads (the dashboard polls and filters constantly; the page
+visit already says what was looked at), the MIR and stock form previews (one per keystroke), token
+refresh and verify, health checks, the cron triggers, saved sort presets, and successful `/api/auth/`
+calls - those already write their own explicit row, and a second would double-count every sign-in.
+
+**What a change row holds:** who, when, a readable sentence ("Posted a MIR - HRS/MIR/26-27/0012",
+"Corrected a PO field - PO 3000001167 (refused: ...)"), the plant, the HTTP status, how long the view
+took, IP and browser, and the request body **with every password, code, OTP, token and secret masked**
+at any depth. An uploaded file is recorded by name and size, never its bytes. The per-feature history
+tables (`MirChange`, `DomesticPOCorrection`, `MaterialCorrection`, `MatchDismissal`, ...) stay the record
+of a field's old and new values; this log says who did what and when, across the whole dashboard.
+
+**Never breaks a request.** `record_request()` swallows its own failures (logged to `logs/app.log`); a
+test makes the write fail and checks the request still answers normally.
+
+**Retention (owner, 2026-10-01): 90 days** for changes, downloads and page visits
+(`PTAuditLog.RETENTION_DAYS`), pruned nightly at 03:41 IST by the `activity-log-prune` schedule.
+Sign-ins, refused sign-ins and user management are kept for good.
+
 ## File reference
 
 ### apps/api/urls.py
@@ -1326,7 +1289,7 @@ expressed only as config values, never as branches inside this module.
   only; not read by the request path any more).
 - **`csv_safe()` / `SafeCsvWriter` / `_Echo`**: formula-injection escaping for exported cells, a
   `csv.writer` wrapper that applies it to every cell, and the file-like object whose `write()` returns
-  the line so a generator can stream it. Imported by `review_views.py` too.
+  the line so a generator can stream it. Imported by `activity_views.py` too.
 - **`_coerce_value()` / `_coerce_material_value()`**: blank → None, ISO dates, `Decimal` with
   `InvalidOperation` re-raised as `ValueError`. `_field_warning()`: GSTIN / email warnings after save.
   `_serialize()`: dates to ISO, Decimals to float. Both shared with `imports_views.py`.
@@ -1457,27 +1420,6 @@ endpoints.
   `po_kind=import`), **`manual_changes_view`**, **`preview_mir_match`**, **`preview_mir_match_status`**.
   `_domestic_cfg_for()` imports the plant view modules lazily to avoid a circular import.
 
-### apps/api/routers/review_views.py
-
-The match-accuracy review queue and accuracy report endpoints.
-
-- **`_GROUPS`**: every (match type, plant) pair. **`_ACCESS_KEY`**: `SyncRun.Plant` → access key;
-  `_can_review()` wraps `user_can_access_plant()`.
-- **`_ref()` / `_signal()`**: one identifying field (`kind` `text` / `date` / `num`) and one matcher
-  evidence pill (`yes` / `no` / `warn`). **`_po_mir_sides()`** builds both sides of a PO↔MIR or import
-  card (import figures converted to INR, BOE qty); **`_mir_stock_sides()`** builds a MIR↔Stock card (lot
-  qty and value deliberately `None`, since stock qty is not comparable).
-- **`_pick_one()`**: a random (`order_by("?")`) match from one group excluding reviewed and already-picked
-  ids.
-- **`next_review`**: shuffles the caller's readable groups and picks round-robin until 5 or exhausted;
-  `{"done": true}` only when every group is empty; `_reviewed_match_ids()` excludes rows holding an
-  already-reviewed pair. **`submit_review`**: validates plant (400), scope (403), match type, verdict,
-  integer id, match existence (404); creates the row with the match's pair (`match_pairs.pair_of()`);
-  201. **`undo_review`**: deletes only the caller's own row. **`_progress()`**: distinct reviewed pairs
-  (keyed by `verdict_key()`, like the report) against `REVIEW_TARGET`.
-- **`review_stats`** / **`export_review_stats`**: `build_report()` as JSON, and its tables as one CSV
-  with a `section` column and a `small_sample` flag (`match-accuracy-<date>.csv`).
-
 ### apps/api/routers/users_views.py
 
 Admin user management (see [In-app user management](#in-app-user-management)).
@@ -1500,6 +1442,37 @@ list from create.
 tallies the three correction tables; `_top_correctors()` / `_top_vendors()` (top 5, domestic POs only) /
 `_recent_activity()` (last 10 corrections across all three tables, merged and re-sorted).
 
+### apps/api/routers/activity_views.py
+
+The four `activity/...` endpoints ([Activity log](#activity-log-2026-10-01)); gates, parses and
+serializes only. `page_view` (`IsAuthenticated`, written down so the permission guard sees the
+decision) credits the visit to `request.user`, never to anything in the body. `activity` pages with
+`PAGE_SIZE = 100`; `activity_export` caps at `EXPORT_LIMIT = 50_000` rows and names the file
+`activity-log-<date>.csv`. The admin endpoints read every plant: the log is about people, not plant
+data, so there is no plant scoping beyond `IsAdmin`. A bad filter (`group`, `actor`, a date) is a
+`ValueError`, so a 400 with its message.
+
+### apps/services/activity_log.py
+
+Everything the activity log decides. **`record_request()`** is called by `ActivityLogMiddleware` after
+every `/api/` view and never raises; **`_classify()`** picks the action or skips the request:
+`_SKIP_ROUTES` and any route containing `preview` or `trigger-` are never logged, a sign-in step in
+`_AUTH_FLOW_ROUTES` is logged only when refused (`auth_failed`), any other successful `auth-` /
+`users-` / `device-` write is skipped because its view already called `log_pt_action()`, every other
+write is `change`, and a GET is logged only as a `download` (an `attachment` response or
+`document-open`). **`describe()`** builds the sentence from `ROUTE_LABELS` (plant prefix stripped; an
+unlisted route falls back to `METHOD path`) plus the first of `mirNo` / `voucherNo` / `poNumber` /
+`fileName` in the response, else a URL argument, plus the refusal message on a 4xx. **`plant_of()`**:
+the route's plant prefix, else a `plant` URL argument or body field. **`request_payload()`** /
+**`redact()`** / **`_fit()`**: the JSON body the middleware read, or the multipart fields DRF parsed
+(`request._post`, files as name and size only); any key matching `_SECRET_KEY` (pass, otp, token,
+secret, credential, exactly `code` or `key`) masked as `***` at every depth; strings cut at 500
+characters, lists at 50 items, a body over 8,000 characters reduced to its field names.
+**`record_page_view()`**: one row per user per page per `PAGE_VIEW_DEDUPE` (5 minutes); a page outside
+`PAGES` is a `ValueError`. **`prune_routine()`** / **`scheduled_prune()`**: delete
+`PTAuditLog.ROUTINE_ACTIONS` rows older than `RETENTION_DAYS`. **`filtered()`**, **`serialize()`**,
+**`user_names()`**, **`people()`** back the admin reads; `GROUPS` maps the filter's types to actions.
+
 ### apps/api/routers/reports_views.py
 
 Shared-secret endpoints for the external scheduler (cron-job.org), since the caller has no session.
@@ -1515,19 +1488,6 @@ test run" rule are in [auth-security-email.md](auth-security-email.md) and
 
 `device_urls.py`, `device_views.py`, `google_oauth_urls.py`, `google_oauth_views.py`, `password_views.py`
 are documented in [auth-security-email.md](auth-security-email.md).
-
-### apps/services/match_accuracy.py
-
-The single scoring implementation behind `review/stats`, its CSV and `report_match_accuracy`.
-`CONFIGS` (plant → `MATCH_CONFIG`), `PLANT_LABELS`, `MATCH_TYPE_LABELS`, `MIN_SAMPLE = 5`,
-`REVIEW_TARGET = 200`. `model_for(config, match_type)` picks the match model. `verdict_key(review)` is
-(plant, match type, left id, right id), or (plant, match type, None, match id) for a verdict with no
-recorded pair; `latest_verdicts()` keeps the most recent verdict per key. `scores()`: precision = correct / (correct +
-incorrect), recall = correct / (all three), F1, each `None` when undefined. `_match_rows()` resolves tier
-and `coverage_band()` (`n/a` until a `field_coverage` column exists) with one query per group, via
-`match_pairs.rows_for_pairs()`, and drops verdicts whose pair no row holds. `build_report(note_limit=25)` returns overall, `byPlant`, `byMatchType`,
-`byPlantAndType` (all 9 cells), `byTier`, `byCoverage`, `staleVerdicts`, reviewer counts and recent
-notes. Only reviews of existing matches are ever scored, so this is not recall over missed matches.
 
 ### apps/services/match_dismiss.py
 
@@ -1787,12 +1747,6 @@ something flagged, CC'ing every admin, **with no "do not reply" footer** (it ask
 delivery is off unless `MISMATCH_REPORT_PLANT_HEADS_ENABLED`; then it returns `plant_heads_disabled:
 true`. `test_recipient` redirects all three emails there, prefixes `[TEST]`, drops the CC and is never
 gated. Best-effort per plant; no `ReportSendLog` dedup, by decision.
-
-### apps/core/management/commands/report_match_accuracy.py
-
-Terminal renderer over `match_accuracy.build_report(note_limit=0)`: overall, then by plant, match type,
-plant + match type, match type + tier, match type + coverage band, marking small samples and reporting
-stale verdicts. Holds no scoring logic of its own.
 
 ### apps/core/management/commands/report_retired_pos.py
 

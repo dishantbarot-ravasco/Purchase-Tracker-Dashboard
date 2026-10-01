@@ -60,7 +60,6 @@ uv run python manage.py load_material_category_reference --file path.csv   # --f
 # Read-only diagnostics
 uv run python manage.py report_retired_pos                 # what the next PO sync would retire (fetches the CSVs)
 uv run python manage.py report_retired_pos --already-retired --plant achhad   # DB only, no Drive
-uv run python manage.py report_match_accuracy
 uv run python manage.py backfill_achhad_po_numbers --mir-file in.xlsx --output out.xlsx [--po-csv-file po.csv]
 
 # Maintenance
@@ -390,7 +389,10 @@ company-wide RoDTEP and Advance Licence syncs.
 A second row, **`nightly-db-backup`** (2026-09-30), runs `db_backup.scheduled_backup()` at **02:13
 IST** (`13 2 * * *`) - outside the sync hours and off the round minute. It dumps the database to the
 R2 backup bucket ([testing-deployment.md](testing-deployment.md#backups-2026-09-30)). Its first run
-fires on the deploy that creates it, so a missing R2 setting shows up at once as a failed task. Admin/dashboard-triggered `sync-trigger` endpoints
+fires on the deploy that creates it, so a missing R2 setting shows up at once as a failed task. A
+third, **`activity-log-prune`** (2026-10-01), runs `activity_log.scheduled_prune()` at **03:41 IST**
+(`41 3 * * *`), after the backup, deleting activity-log changes, downloads and page visits older than
+90 days ([activity log](api-and-features.md#activity-log-2026-10-01)). Admin/dashboard-triggered `sync-trigger` endpoints
 still exist alongside it, and a plant is **skipped, not queued behind**, if a manual refresh is
 already mid-flight for it.
 
@@ -848,7 +850,8 @@ left as the app has them (`source = app`), and any line flagged for review.
 
 `get_or_create()`s each row of `_SCHEDULES` by name: `daily-sync-all-plants` (`func` =
 `apps.services.sync_trigger.run_daily_sync_all_plants`, `Schedule.CRON`, `0 9-20 * * *`) and
-`nightly-db-backup` (`apps.services.db_backup.scheduled_backup`, `13 2 * * *`), `next_run` = now on
+`nightly-db-backup` (`apps.services.db_backup.scheduled_backup`, `13 2 * * *`) and
+`activity-log-prune` (`apps.services.activity_log.scheduled_prune`, `41 3 * * *`), `next_run` = now on
 creation. On an existing row it corrects only drifted `func`/`schedule_type`/`cron` and clears
 `minutes`; it never touches `next_run`. Never rename a row - the name is the key, and a rename would
 create a second job. Run by `release.sh` on every deploy.
@@ -897,10 +900,3 @@ it on an existing account revokes that account's tokens. The only way to create 
 
 Calls `token_revocation.prune_expired_revoked_tokens()` and prints the count. The same function sits
 behind `/api/internal/prune-revoked-tokens`, which has no cadence configured.
-
-### [apps/core/management/commands/report_match_accuracy.py](../apps/core/management/commands/report_match_accuracy.py)
-
-A terminal renderer over `match_accuracy.build_report()`: precision/recall/F1 overall and by plant,
-match type, plant x match type, tier and field-coverage band, flagging cells under `MIN_SAMPLE` and
-counting stale verdicts. The scoring lives in `match_accuracy.py` so this and the review page's
-Accuracy tab cannot drift; see [matching-engine.md](matching-engine.md).

@@ -1,7 +1,7 @@
 # Frontend (static HTML + vanilla JS)
 
-Six pages live in `frontend/`: `index.html` (the dashboard at `/`), `home.html`, `search-po.html`,
-`review.html`, `admin.html` and the unauthenticated `login.html`. **There is no bundler, no build
+Nine pages live in `frontend/`: `index.html` (the dashboard at `/`), `home.html`, `search-po.html`,
+`po-files.html`, `mir.html`, `stock.html`, `admin.html` and the unauthenticated `login.html`. **There is no bundler, no build
 step and no ES modules**: every `.js` file is a plain `<script>` tag and all of a page's scripts
 share one global scope, so load order is the dependency graph. What each page loads, in order, is in
 [HTML pages](#frontendhtml-pages). Feature rules (what a KPI means, why a flag fires) belong to
@@ -40,7 +40,7 @@ such name declared in two of its scripts.
 `main.js`, grep `frontend/js/` rather than assuming it was deleted.**
 
 Each page's own bootstrap was likewise extracted from inline `<script>` blocks (`theme-init.js`,
-`login-theme-toggle.js`, `home-page.js`, `admin-page.js`, `search-po-page.js`, `review-page.js`), and
+`login-theme-toggle.js`, `home-page.js`, `admin-page.js`, `search-po-page.js`), and
 every inline `onclick`/`onerror` attribute became a real listener. That split was done so CSP's
 `script-src` could drop `'unsafe-inline'` entirely, not for tidiness. The same is true of styles:
 `style-src` has no `'unsafe-inline'` either, so **never write a literal `style="..."` into rendered
@@ -359,8 +359,7 @@ Do not reintroduce `nowrap` on a cell's content without a column wide enough for
   the same name from the environment. Changing the env var alone hides the Delete button from the new
   account; the backend remains the real gate.
 - **Exact money is not `formatInr()`.** `formatInr()` rounds to whole rupees and abbreviates at a
-  lakh/crore; reconciliation cards (`reconMoney()`) and review cards (`formatMoneyExact()`) use full
-  precision on purpose.
+  lakh/crore; reconciliation cards (`reconMoney()`) use full precision on purpose.
 
 #### Plant stock tabs - Inventory, On Order, Stock & Orders (2026-09-29)
 
@@ -453,8 +452,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | `index.html` (`/`) | Django template (`{% static %}`) | `brand.css`, `style.css` | head: `theme-init.js`, Chart.js 4.5.0 from jsdelivr with an SRI hash; body: `auth.js`, `shared.js`, `charts.js`, `flags.js`, `list-sort.js`, `po-list.js`, `po-sort.js`, `po-reconcile.js`, `po-modal.js`, `import-po.js`, `import-sort.js`, `rodtep-panel.js`, `advance-license-panel.js`, `materials.js`, `material-sort.js`, `material-modal.js`, `plant-stock.js`, `plant-stock-sort.js`, `export-panel.js`, `no-po-panel.js`, `main.js` |
 | `home.html` | WhiteNoise | `brand.css`, `home-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `home-page.js` |
 | `search-po.html` | WhiteNoise | `brand.css`, `search-po-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `list-sort.js`, `search-po-page.js` |
-| `review.html` | WhiteNoise | `brand.css`, `review-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `review-page.js` |
-| `admin.html` | WhiteNoise | `brand.css`, `admin-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `admin-page.js` |
+| `admin.html` | WhiteNoise | `brand.css`, `admin-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `admin-page.js`, `activity-log.js` |
 | `mir.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `mir-page.js` |
 | `po-files.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `po-files-page.js` |
 | `stock.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css`, `stock-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `stock-page.js` |
@@ -464,8 +462,8 @@ Every protected page has the same static `.topnav` markup (brand link, `#navTabs
 `auth.js` fills, a skip link, and a `role="main" tabindex="-1"` container. `index.html`'s `#root` is
 replaced wholesale by `main.js`'s `init()`. `admin.html` ships its create/edit-user modal
 (`#uf-overlay`) and `#toastStack` as static markup, plus a `#deniedContent` panel for non-admins
-(defence in depth; the endpoints enforce `IsAdmin`). `review.html` has two views (`#viewQueue`,
-`#viewStats`) behind `review-viewtab` buttons. `mir.html` has three views (`#viewNew`, `#viewRegister`, `#viewMismatches`) behind
+(defence in depth; the endpoints enforce `IsAdmin`), and its Activity Log tab (`#adminTabActivity`)
+as static markup that `activity-log.js` fills. `mir.html` has three views (`#viewNew`, `#viewRegister`, `#viewMismatches`) behind
 the dashboard's own `.view-tab` buttons; it is the one page besides `index.html` that loads `style.css`, so its tabs, filter
 bars, tables and pills are the dashboard's components. `po-files.html` (PO uploads) borrows the same
 three stylesheets and has one upload panel (`#uploadPanel`, shown only when the account may upload
@@ -508,8 +506,12 @@ cookie; nothing here holds a token.
 - `logout()` - best-effort POST `/api/auth/logout`, then always redirects.
 - `renderNavTabs(container, activePage)` - Home (`/home.html`), Dashboard (`/`), Search PO, PO Files
   (`/po-files.html`, every role), MIR Entry (`/mir.html`, every role), RM Store (`/stock.html`, every
-  role), Review Matches, and Admin only when `role === 'admin'`. `activePage` is
-  `home`/`dashboard`/`search`/`pofiles`/`mir`/`stock`/`review`/`admin`.
+  role), and Admin only when `role === 'admin'`. `activePage` is
+  `home`/`dashboard`/`search`/`pofiles`/`mir`/`stock`/`admin`. It also calls `recordPageView()`.
+- `recordPageView(page)` - fire-and-forget POST `/api/activity/page-view` (`keepalive`, errors
+  swallowed) so the admin Activity Log knows the page was opened; every protected page runs
+  `renderNavTabs()` exactly once, which is why the call lives there. The `activePage` keys must stay
+  the server's `activity_log.PAGES` keys, or the visit is refused with a 400.
 - `renderUserBadge(container)` - initials avatar coloured by role (`.avatar-role-*`), name/role, a
   dropdown with Change Password and Logout; a document click closes it.
 - `initThemeToggle()` - inserts `#themeToggleBtn` before `.nav-user` and persists the choice to
@@ -1352,21 +1354,6 @@ default line order). `renderResults()` sorts before drawing the bar, counts "N o
 again. `runSearch()` awaits both sorters' presets with the data. The sort styles are restated in
 `search-po-page.css` in brand.css's palette, since this page does not load `style.css`.
 
-### frontend/js/review-page.js
-
-`review.html`, self-contained. `apiReview(path, opts)` wraps `/api/review` (same contract as
-`apiForPlant`). Queue: `loadNext()` (GET `/api/review/next`, up to 5 cards), `cardHtml()` (both sides'
-identifying `refs`, UOM clash highlighted on both sides, "why these were paired" `signalsHtml()`,
-diff pills), `submitVerdict()` (POST `/api/review`; `_pending` is set **synchronously before the POST**
-and `firstUnreviewedIdx()` skips pending cards, so a held key cannot land five verdicts on one card),
-`undoVerdict()` (DELETE `/api/review/<id>`), `renderBatchFooter()` (an explicit "Next 5" rather than
-auto-advance, so Undo stays reachable for the last card), `renderGoal()` (progress bar width set from
-JS). `initKeyboard()`: 1/2/3, U, N; inert in text fields and while the Accuracy view is open.
-Accuracy view: `loadStats()` (GET `/api/review/stats`, refetched on every open), `renderStats()`,
-`statRowsHtml()` (n = 0 renders "not sampled yet", never 0%), `formatScore()` (null -> en dash), CSV
-link to `/api/review/stats/export`. `formatMoneyExact()` keeps full precision on purpose. Its own
-`showToast(text)` targets `#reviewToast`.
-
 ### frontend/js/stock-page.js
 
 `stock.html`'s page ("RM Store"), built like MIR entry (2026-09-30): three views - **Issue from MIR**,
@@ -1409,7 +1396,7 @@ top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.
 
 ### frontend/js/mir-page.js
 
-`mir.html`, self-contained like `review-page.js`: `apiMir(path, opts)` wraps `/api/mir` (JSON body
+`mir.html`, self-contained (no `main.js`): `apiMir(path, opts)` wraps `/api/mir` (JSON body
 encoded for it, `err.errors` carries the server's `[{field, message}]`). **It never prices a line or
 decides a mismatch**: every input change runs the debounced `schedulePreview` -> `runPreview()` (POST
 `/api/mir/preview`, a sequence number drops a stale reply) -> `paintPreview()`, and Save posts the same
@@ -1492,7 +1479,8 @@ under the row and POSTs `documents/<id>/withdraw`. `poFilesApi()` is the page's 
 ### frontend/js/admin-page.js
 
 `admin.html` bootstrap and Users panel. Shows `#deniedContent` for non-admins and stops. Sidebar tabs
-via `switchAdminTab()`. Loads in parallel: `loadSyncCards()` (GET `<prefix>/sync-status` per plant,
+via `switchAdminTab()`, which calls `activity-log.js`'s `openActivityLog()` when the Activity Log tab
+opens. Loads in parallel: `loadSyncCards()` (GET `<prefix>/sync-status` per plant,
 labels "PO Updated"/"MIR"/"RM"/"Matching"), `loadUsers()` (GET `/api/auth/users`), `loadOverviewData()`
 (GET `/api/auth/admin-overview`; Top Correctors / Top Vendors via `renderBarList()` with widths set
 from JS, `renderRecentActivity()`), and `loadKpis()`. User form: `openForm()` (calls `openModalA11y()`
@@ -1504,6 +1492,25 @@ forced to `[]` for admins and the plants row hidden), `createUserApi()` (POST
 `/api/auth/users/<id>/devices[/<deviceId>]`; `renderDevices()` drops a response for a user no longer
 open). `showToast(message, kind)` targets `#toastStack`. Redefines `userInitials()` (see
 [Other traps](#other-traps)).
+
+### frontend/js/activity-log.js
+
+admin.html's **Activity Log** tab (2026-10-01; rules in
+[api-and-features.md](api-and-features.md#activity-log-2026-10-01)). Loaded after `admin-page.js`;
+nothing is fetched until `openActivityLog()` runs on the tab's first open. Every top-level name starts
+with `act` / `ACT_` (one global scope with `auth.js`, `shared.js`, `admin-page.js`).
+
+- `actLoadPeople()` - GET `/api/activity/people`: the People table (last sign-in, last active via
+  `actAgo()`, 30-day counts, refused sign-ins in red) and the Person filter's options. A name is a
+  button that filters the log to that person.
+- `actGo(page)` - GET `/api/activity` with `actFilters()` (person, type, from, to, search; the search
+  box debounced 300 ms). `actRequestId` drops a reply that a newer filter change has overtaken. Fills
+  the type select from the response's `groups` once, the "1-100 of N" summary and the Newer / Older
+  pager.
+- `actRenderRows()` / `actToggleDetail()` - the log table; a row (click, Enter or Space) opens a detail
+  row with the request, IP, browser, duration and the redacted body as pretty JSON. **The detail is
+  built with `textContent`, never `innerHTML`** - the body is whatever the user typed.
+- `actExport()` - opens `/api/activity/export?<filters>` in a new tab, like the stock snapshot export.
 
 ### frontend/js/login.js
 
@@ -1578,10 +1585,11 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   out uploaded-file lines and the attach/withdraw rows (flex, wrapping on a phone).
 - **`search-po-page.css`** also lets the date-range filter's two inputs share the row under 500px
   instead of overflowing a phone screen.
-- **Page files** (`home-page.css`, `search-po-page.css`, `review-page.css`, `admin-page.css`,
-  `login-page.css`) - extracted from inline `<style>` blocks for CSP; they use `brand.css` tokens
-  (several review/admin rules carry literal fallbacks, e.g. `var(--green, #16a34a)`, because the
-  dashboard tokens are not loaded there).
+- **Page files** (`home-page.css`, `search-po-page.css`, `admin-page.css`, `login-page.css`) -
+  extracted from inline `<style>` blocks for CSP; they use `brand.css` tokens (several admin rules
+  carry literal fallbacks, e.g. `var(--on-accent, #fff)`, because the dashboard tokens are not loaded
+  there). `admin-page.css`'s `act-*` rules style the Activity Log tab; admin.html does not load
+  `style.css`, so the tab does not use the dashboard's `.row-link` or `.no-data-note` styling.
 
 ### .eslintrc.json
 

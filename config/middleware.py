@@ -34,7 +34,14 @@ ApiNoStoreMiddleware
 --------------------
 Makes every /api/ response uncacheable unless its view says otherwise. See
 the class docstring.
+
+ActivityLogMiddleware
+---------------------
+Writes the activity log's change / download / refused sign-in rows. See
+the class docstring and apps/services/activity_log.py.
 """
+import time
+
 from django.middleware.csrf import CsrfViewMiddleware
 from django.middleware.gzip import GZipMiddleware
 
@@ -154,4 +161,51 @@ class ApiNoStoreMiddleware:
         response = self.get_response(request)
         if request.path.startswith(self.API_PREFIX):
             response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+
+class ActivityLogMiddleware:
+    """Record who changed or downloaded what through the API (2026-10-01).
+
+    Runs around every /api/ request. Before the view it reads the raw body
+    of a JSON write, capped at BODY_LIMIT bytes - safe to read here because
+    Django caches `request.body` and DRF's JSON parser reads that same cached
+    copy. A multipart upload's body is never read here: reading it would
+    pull the whole file into memory twice; activity_log.request_payload()
+    takes the form fields DRF already parsed, after the view.
+
+    After the view `request.user` is the PTUser DRF authenticated (DRF's
+    Request.user setter copies it onto the Django request), and
+    `request.resolver_match` names the route. activity_log.record_request()
+    decides whether the request is worth a row and never raises.
+
+    Last in MIDDLEWARE, so the duration it records is the view's own time.
+    """
+
+    API_PREFIX = "/api/"
+    BODY_LIMIT = 256 * 1024
+    _UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if not request.path.startswith(self.API_PREFIX):
+            return self.get_response(request)
+        body = None
+        if request.method in self._UNSAFE and "json" in (request.META.get("CONTENT_TYPE") or "").lower():
+            try:
+                length = int(request.META.get("CONTENT_LENGTH") or 0)
+            except ValueError:
+                length = 0
+            if 0 < length <= self.BODY_LIMIT:
+                try:
+                    body = request.body
+                except Exception:  # noqa: BLE001 - a body we cannot read is simply not logged
+                    body = None
+        started = time.monotonic()
+        response = self.get_response(request)
+        from apps.services.activity_log import record_request
+
+        record_request(request, response, body=body, started=started, now=time.monotonic())
         return response

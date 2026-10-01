@@ -1,28 +1,27 @@
 """
 apps/services/match_pairs.py - the identity of a match for the human
-decisions recorded about it: review verdicts (MatchReview) and dismissals
-(MatchDismissal).
+decision recorded about it: a dismissal (MatchDismissal).
 
 A match row's own id is not a usable identity. run_full_match() deletes a
 *POMirMatch row when its line matches nothing on a run and creates a new one
 (new id) when the same pair matches again; a MIR<->Stock row is deleted
-whenever the pair drops out. A verdict or dismissal pointing at that id was
-silently lost. The two rows a match joins are stable instead - a PO line is
+whenever the pair drops out. A dismissal pointing at that id was silently
+lost. The two rows a match joins are stable instead - a PO line is
 updated in place (sync_utils.sync_line_items()), MIR entries and stock lots
-are deactivated, never deleted - so a decision is keyed on (left_id,
+are deactivated, never deleted - so a dismissal is keyed on (left_id,
 right_id):
 
   po_mir, import_po_mir   left = the PO line item   right = the primary MIR entry
   mir_stock               left = the MIR entry      right = the stock lot
 
-Left/right is the same orientation as the review card's two sides.
+Left is the side the match starts from, right the side it lands on.
 """
 
 from collections import defaultdict
 
-from apps.core.models import MatchDismissal, MatchReview
+from apps.core.models import MatchDismissal
 
-MatchType = MatchReview.MatchType
+MatchType = MatchDismissal.MatchType
 
 PAIR_FIELDS = {
     MatchType.PO_MIR: ("po_line_item_id", "mir_entry_id"),
