@@ -306,8 +306,9 @@ live database, reports both newest migrations, and drops the scratch database - 
 equals the app's, and the live side is only counted. A table with rows live but none in the backup
 fails it; small differences are normal, the dump being from the night before. Run it after the first
 nightly backup, monthly, and after any Postgres major upgrade. Rehearsed 2026-10-01 against the local
-database (97 tables, every count matched); `test_backup_restore_check.py` runs real round trips in
-CI.
+database, then **run on production the same day**: the 11:13 IST dump restored 98 tables with every
+key-table count equal to live (it predates migrations 0088-0090, as expected for a dump taken before
+that day's deploys). `test_backup_restore_check.py` runs real round trips in CI.
 
 ### Checking uploads in production (2026-10-01)
 

@@ -507,9 +507,10 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **PO and invoice uploads are not yet checked in production** - R2 is set up and the first
   production backup uploaded (2026-10-01, 1.4 MB); the upload flow awaits the check described in
   [checking uploads](docs/testing-deployment.md#checking-uploads-in-production-2026-10-01).
-- **No production backup has been restored yet.** `verify_backup` does it safely (scratch database,
-  dropped afterwards) and was rehearsed on the local database; run it on the worker's Shell against
-  the real nightly dump, then monthly.
+- **Backups are restore-checked by hand, not on a schedule.** The first production dump
+  (`purchase_tracker_6su8-20261001-111321.dump`) passed `verify_backup` on the worker's Shell on
+  2026-10-01: 98 tables, every key-table count matched live. Run it monthly and after any Postgres
+  major upgrade.
 - **`cache_page` infrastructure exists and nothing uses it** - every endpoint is business data behind auth.
 - **A day where qcluster was down has no stock snapshot**, deliberately not backfilled; `sync-status`
   exposes `snapshotGapDays` as a badge.
