@@ -114,6 +114,9 @@ MIDDLEWARE = [
     # docstring for why the reverse ordering silently disables these headers
     # on every static-file response (most of a page load).
     "config.security_headers.SecurityHeadersMiddleware",
+    # Refuses an oversized body (413) before anything reads it - see the
+    # class docstring in config/middleware.py.
+    "config.middleware.RequestSizeLimitMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     # AFTER WhiteNoise on purpose: static responses short-circuit above this
     # line and never reach it, so WhiteNoise keeps full control of its own
@@ -136,6 +139,8 @@ MIDDLEWARE = [
     # renders {% csrf_token %} and expects this check); every /api/ request
     # skips it entirely.
     "config.middleware.AdminOnlyCsrfMiddleware",
+    # After the CSRF check: locks /admin/login/ after repeated failures.
+    "config.middleware.AdminLoginThrottleMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -670,12 +675,20 @@ DEFAULT_FROM_EMAIL = os.environ.get("SMTP_FROM", EMAIL_HOST_USER)
 EMAIL_TIMEOUT = 10
 
 # ---------------------------------------------------------------------------
-# Account domain restriction - only email addresses ending in
-# "@<this domain>" may ever have an account or log in (enforced in
-# apps/api/permissions.py::is_allowed_email_domain(), called from login and
-# Google OAuth). Configurable via env rather than hardcoded.
+# Account domain restriction - only email addresses at one of these domains
+# may ever have an account or log in (enforced in
+# apps/api/permissions.py::is_allowed_email_domain(), called from login,
+# Google OAuth, account creation and create_pt_user). A comma-separated env
+# list. hindustanrubbers.com added by the owner, 2026-10-01. The old
+# single-domain ALLOWED_EMAIL_DOMAIN variable is no longer read: production
+# set it to "ravasco.com", which would have silently kept the second domain
+# out.
 # ---------------------------------------------------------------------------
-ALLOWED_EMAIL_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN", "ravasco.com")
+ALLOWED_EMAIL_DOMAINS = tuple(
+    d.strip().lower().lstrip("@")
+    for d in (os.environ.get("ALLOWED_EMAIL_DOMAINS") or "ravasco.com,hindustanrubbers.com").split(",")
+    if d.strip()
+)
 
 # The one account that may read the activity log (owner, 2026-10-01: "I need
 # the activity log only for me and private"). Every other account - other

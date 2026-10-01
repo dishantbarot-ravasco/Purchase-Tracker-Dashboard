@@ -1155,7 +1155,13 @@ is saved - the MIR stands even if that upload fails, and the toast says to attac
 register.
 
 Files are accepted by **content, not name**: the first bytes must be a PDF, JPEG or PNG, at most
-20 MB. The object key is `<plant>/<PO number or MIR number>/r<revision>-<random>.<ext>`, so a key
+20 MB (and any request over 25 MB is refused before it is read - `RequestSizeLimitMiddleware`). **A PDF
+with active content is refused** (2026-10-01 security pass): `documents._check_pdf()` looks for the PDF
+names `/JavaScript`, `/JS`, `/Launch`, `/EmbeddedFile(s)` and `/RichMedia`, hex-escaped spellings
+included, and answers "save it again as a plain PDF". A PO or invoice never needs them, and an
+embedded file is how malware usually rides in a PDF. It is a heuristic over the raw bytes (compressed
+object streams are not inflated), so it stops the common case; files still open only from R2's own
+origin. The object key is `<plant>/<PO number or MIR number>/r<revision>-<random>.<ext>`, so a key
 never collides or reveals more than the record already does. R2 is written **before** the row: a
 failed upload leaves no row pointing at nothing. A file opens through `documents/<id>/open`, a 302
 to a five-minute link - the page opens that app URL in a new tab rather than fetching the link and
@@ -1287,7 +1293,9 @@ test makes the write fail and checks the request still answers normally.
 
 **Retention (owner, 2026-10-01): 90 days** for changes, downloads and page visits
 (`PTAuditLog.RETENTION_DAYS`), pruned nightly at 03:41 IST by the `activity-log-prune` schedule.
-Sign-ins, refused sign-ins and user management are kept for good.
+Sign-ins, sign-outs, refused sign-ins and "log out everywhere" (`SIGNIN_ACTIONS`) are kept **one
+year** (`SIGNIN_RETENTION_DAYS`, owner, 2026-10-01); user management (accounts created, changed or
+deleted, devices revoked) is kept for good. A test fails if a new action type has no retention decision.
 
 ## File reference
 

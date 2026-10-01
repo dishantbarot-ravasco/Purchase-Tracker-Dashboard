@@ -61,13 +61,12 @@ import logging
 import os
 
 import bcrypt
-from django.conf import settings
 from django.db import transaction
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
-from apps.api.permissions import AdminWriteThrottle, IsAdmin, is_allowed_email_domain
+from apps.api.permissions import AdminWriteThrottle, IsAdmin, allowed_domains_text, is_allowed_email_domain
 from apps.services.token_revocation import revoke_all_tokens
 from apps.core.audit_log import PTAuditLog, log_pt_action
 from apps.core.models import PTUser, TrustedDevice
@@ -177,7 +176,7 @@ def create_user(request):
 
     email = (data.get("email") or "").strip().lower()
     if not is_allowed_email_domain(email):
-        raise ValidationError({"detail": f"Only @{settings.ALLOWED_EMAIL_DOMAIN} email addresses are allowed."})
+        raise ValidationError({"detail": f"Only {allowed_domains_text()} email addresses are allowed."})
 
     if PTUser.objects.filter(email=email).exists():
         return Response({"detail": "That email is already registered."}, status=409)

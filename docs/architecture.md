@@ -250,9 +250,11 @@ The single settings module, driven by environment variables (loaded from `.env` 
   `django-cors-headers` (same-origin frontend) and never `rest_framework_simplejwt.token_blacklist`
   (see [auth-security-email.md](auth-security-email.md)).
 - **Middleware order** (outermost first): `SecurityMiddleware`, `SecurityHeadersMiddleware`
-  (**must** precede WhiteNoise), `WhiteNoiseMiddleware`, `SelectiveGZipMiddleware` (after
+  (**must** precede WhiteNoise), `RequestSizeLimitMiddleware` (before anything reads a body),
+  `WhiteNoiseMiddleware`, `SelectiveGZipMiddleware` (after
   WhiteNoise so static files keep their own compression and ETags), `ApiNoStoreMiddleware`,
-  sessions, common, `AdminOnlyCsrfMiddleware` (instead of the global `CsrfViewMiddleware`), auth,
+  sessions, common, `AdminOnlyCsrfMiddleware` (instead of the global `CsrfViewMiddleware`),
+  `AdminLoginThrottleMiddleware`, auth,
   messages, clickjacking, and `ActivityLogMiddleware` last (it times only the view and reads the
   user DRF authenticated). When `DEBUG` is on, `NoCacheMiddleware` is inserted at index 1.
 - **Database**: Postgres only. `DATABASE_URL` via `dj_database_url` (`conn_max_age=600`,
@@ -285,7 +287,7 @@ The single settings module, driven by environment variables (loaded from `.env` 
   refuses with 503), `MISMATCH_REPORT_PLANT_HEADS_ENABLED` (default false),
   `HEALTH_SYNC_STALE_HOURS` (default 26), Google service-account vs OAuth-client settings (two
   separate concerns), every Drive file title and folder id per plant, `RODTEP_FOLDER_ID`,
-  `ADVANCE_LICENSE_FILE_ID`, `ALLOWED_EMAIL_DOMAIN` (default `ravasco.com`).
+  `ADVANCE_LICENSE_FILE_ID`, `ALLOWED_EMAIL_DOMAINS` (comma list, default `ravasco.com,hindustanrubbers.com`).
 - **Session/cookies**: DB sessions, `SESSION_SAVE_EVERY_REQUEST = True` (needed for the OAuth PKCE
   redirect), 30-minute `SESSION_COOKIE_AGE`; `pt_access` cookie name and `Secure` flags all tied to
   `not DEBUG`. `AUTHENTICATION_BACKENDS` is `PTUserBackend` then `ModelBackend` (for Django Admin).
@@ -304,7 +306,7 @@ suite on it: SQLite loses Decimal scale in `SUM()` and produces false failures (
 
 ### config/middleware.py
 
-Five middleware classes and one WhiteNoise hook.
+Seven middleware classes and one WhiteNoise hook.
 
 - `frontend_cache_headers(headers, path, url)` - WhiteNoise add-headers hook. Sets
   `Cache-Control: no-cache, public` on `.html`/`.js`/`.mjs`/`.css` so a browser revalidates every
@@ -321,6 +323,14 @@ Five middleware classes and one WhiteNoise hook.
 - `ApiNoStoreMiddleware` - `setdefault("Cache-Control", "no-store")` on every `/api/` response, so
   a view's own header still wins. Invisible in dev because `NoCacheMiddleware` already stamps
   no-store; `test_api_no_store.py` tests the class directly for that reason.
+- `RequestSizeLimitMiddleware` - 413 for a `Content-Length` over `MAX_BYTES` (25 MB), before any
+  body is read (2026-10-01 security pass). Django spools a multipart file to disk in full before a
+  view runs, so `documents.MAX_BYTES` (20 MB), checked in the view, came after the disk had taken
+  whatever was sent. Keep `MAX_BYTES` above the largest real upload (a test checks).
+- `AdminLoginThrottleMiddleware` - Django admin's `/admin/login/` had no brute-force protection.
+  After `MAX_FAILURES` (5) failed POSTs for one username, or from one IP, within 15 minutes, every
+  POST gets a 429; a failure (form re-rendered, 200) is also logged as `auth_failed`; a success
+  (302) clears the username's count. Counters live in the cache.
 - `ActivityLogMiddleware` - the activity log's request rows (2026-10-01). For a JSON write under
   `/api/` it reads `request.body` (up to `BODY_LIMIT`, 256 KB) before the view - safe because Django
   caches the body and DRF's JSON parser reads that cached copy - and never reads a multipart body

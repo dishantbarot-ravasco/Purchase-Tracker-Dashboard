@@ -63,7 +63,7 @@ the next night.
 A third row, `activity-log-prune` (2026-10-01), runs
 apps/services/activity_log.scheduled_prune() at 03:41 IST, after the backup:
 it deletes activity-log changes, downloads and page visits older than 90
-days (sign-ins and user management are kept).
+days and sign-in rows older than a year (user management is kept).
 
 Usage:
     python manage.py ensure_schedules

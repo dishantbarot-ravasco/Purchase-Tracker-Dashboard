@@ -259,20 +259,38 @@ class TestReadingTheLog:
 
 @pytest.mark.django_db
 class TestRetention:
-    def test_routine_rows_go_after_ninety_days_sign_ins_stay(self):
-        old = timezone.now() - datetime.timedelta(days=PTAuditLog.RETENTION_DAYS + 1)
-        recent = timezone.now() - datetime.timedelta(days=PTAuditLog.RETENTION_DAYS - 1)
-        for action in (PTAuditLog.ACTION_CHANGE, PTAuditLog.ACTION_DOWNLOAD, PTAuditLog.ACTION_PAGE_VIEW,
-                       PTAuditLog.ACTION_LOGIN, PTAuditLog.ACTION_AUTH_FAILED, PTAuditLog.ACTION_USER_CREATED):
-            PTAuditLog.objects.create(action=action, timestamp=old, detail="old")
-            PTAuditLog.objects.create(action=action, timestamp=recent, detail="recent")
+    def _row(self, action, days_ago):
+        return PTAuditLog.objects.create(action=action, timestamp=timezone.now() - datetime.timedelta(days=days_ago),
+                                         detail=f"{action} {days_ago}")
 
-        assert activity_log.scheduled_prune() == 3
+    def test_routine_rows_go_after_90_days_sign_ins_after_a_year_user_management_never(self):
+        routine = PTAuditLog.ROUTINE_ACTIONS
+        signin = PTAuditLog.SIGNIN_ACTIONS
+        management = (PTAuditLog.ACTION_USER_CREATED, PTAuditLog.ACTION_USER_UPDATED,
+                      PTAuditLog.ACTION_USER_DELETED, PTAuditLog.ACTION_DEVICE_REVOKED)
+        for action in routine:
+            self._row(action, 89)
+            self._row(action, 91)
+        for action in signin:
+            self._row(action, 91)
+            self._row(action, 364)
+            self._row(action, 366)
+        for action in management:
+            self._row(action, 3000)
 
-        assert not PTAuditLog.objects.filter(detail="old", action__in=PTAuditLog.ROUTINE_ACTIONS).exists()
-        assert PTAuditLog.objects.filter(detail="recent").count() == 6
-        assert set(PTAuditLog.objects.filter(detail="old").values_list("action", flat=True)) == {
-            PTAuditLog.ACTION_LOGIN, PTAuditLog.ACTION_AUTH_FAILED, PTAuditLog.ACTION_USER_CREATED}
+        assert activity_log.scheduled_prune() == len(routine) + len(signin)
+
+        left = set(PTAuditLog.objects.values_list("detail", flat=True))
+        assert left == ({f"{a} 89" for a in routine} | {f"{a} 91" for a in signin}
+                        | {f"{a} 364" for a in signin} | {f"{a} 3000" for a in management})
+
+    def test_every_action_has_a_retention_decision(self):
+        """A new action type must be put in a retention tuple on purpose or
+        be listed here as kept for good - never kept forever by accident."""
+        kept_for_good = {PTAuditLog.ACTION_USER_CREATED, PTAuditLog.ACTION_USER_UPDATED,
+                         PTAuditLog.ACTION_USER_DELETED, PTAuditLog.ACTION_DEVICE_REVOKED}
+        decided = set(PTAuditLog.ROUTINE_ACTIONS) | set(PTAuditLog.SIGNIN_ACTIONS) | kept_for_good
+        assert {a for a, _ in PTAuditLog.ACTION_CHOICES} == decided
 
 
 @pytest.mark.django_db

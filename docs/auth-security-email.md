@@ -150,8 +150,10 @@ too. It exists because the review router grew to five endpoints with no plant sc
 the sentence above. It is a tripwire, not a proof: it cannot tell whether the scoping call is in the
 right place, only that someone thought about it.
 
-`permissions.is_allowed_email_domain()` restricts accounts and logins to `@<ALLOWED_EMAIL_DOMAIN>`
-(default `ravasco.com`, case-insensitive), enforced at password login (as a defence-in-depth check
+`permissions.is_allowed_email_domain()` restricts accounts and logins to the domains in
+`ALLOWED_EMAIL_DOMAINS` (a comma-separated env list, default `ravasco.com,hindustanrubbers.com` -
+hindustanrubbers.com added by the owner 2026-10-01; the whole domain must match, case-insensitive,
+so `evilravasco.com` is refused; the old single `ALLOWED_EMAIL_DOMAIN` variable is not read), enforced at password login (as a defence-in-depth check
 after bcrypt), Google OAuth, in-app account creation and `create_pt_user`. The delete-user gate
 reads `DELETE_USER_ALLOWED_EMAIL` (defaulting to the previously hardcoded address, blank treated as
 unset) so the restriction survives a personnel change without a code change and redeploy. Deleting
@@ -165,6 +167,11 @@ regression test uses two real threads with separate DB connections
 (`@pytest.mark.django_db(transaction=True)`), since a row lock means nothing inside one transaction.
 
 ### Throttling, lockout, and brute-force counters
+
+**Django admin's sign-in is locked too (2026-10-01 security pass).** `/admin/login/` is Django's own
+form for `auth.User` accounts and had none of the protections below. `AdminLoginThrottleMiddleware`
+(`config/middleware.py`) refuses every POST with a 429 after 5 failures for one username or from one
+IP within 15 minutes, and logs each failure to the activity log as `auth_failed`.
 
 **Hardened 2026-09-25 after a security review:**
 
@@ -389,8 +396,8 @@ removing a `log_pt_action()` call would silently drop that event from the log. A
 writes it as `auth_failed`, credited to the email that was typed, with the password masked. **The
 activity log must never hold a secret**: `activity_log.redact()` masks any key naming a password,
 code, OTP, token or secret at every depth before a body is stored, and a test checks the typed password
-is nowhere in the row. Routine rows (changes, downloads, page visits) are pruned after 90 days; sign-in
-and account rows are kept for good.
+is nowhere in the row. Routine rows (changes, downloads, page visits) are pruned after 90 days, sign-in
+rows after a year; user-management rows are kept for good.
 
 Separately, `LOGGING` writes every `INFO`+ line (Django's own plus every `apps.*` logger) to a rotating
 `logs/app.log` (10MB x 5 backups) on top of console, and Sentry (when `SENTRY_DSN` is set) turns every
@@ -789,7 +796,9 @@ and the refresh serializer.
 [permissions.py](../apps/api/permissions.py) - role permission classes, throttles and plant-scoping
 helpers.
 
-- `is_allowed_email_domain(email)` - case-insensitive `endswith("@" + ALLOWED_EMAIL_DOMAIN)`.
+- `is_allowed_email_domain(email)` - the part after the last `@` must equal one of
+  `ALLOWED_EMAIL_DOMAINS` (case-insensitive), with a non-empty local part. `allowed_domains_text()`
+  renders "@ravasco.com or @hindustanrubbers.com" for refusal messages.
 - `IsEditor` (admin or editor) / `IsAdmin` (admin) - both also require `is_active`.
 - `SyncTriggerThrottle` (scope `sync_trigger`, 10/min) / `AdminWriteThrottle` (scope `admin_write`,
   30/min) - `UserRateThrottle` subclasses, keyed per user.
@@ -1086,7 +1095,7 @@ docstring records what was moved where to drop `'unsafe-inline'`. The CSP conten
   Cookies: `PT_COOKIE_NAME = "pt_access"`, `PT_COOKIE_SAMESITE`, `PT_COOKIE_SECURE`,
   `PT_DEVICE_COOKIE_SECURE`, CSRF cookie `Secure`/`Lax` (Admin only).
 - `AUTHENTICATION_BACKENDS` - `PTUserBackend`, then `ModelBackend` (Admin superuser only).
-- SMTP settings and `EMAIL_TIMEOUT = 10`; `ALLOWED_EMAIL_DOMAIN` (default `ravasco.com`);
+- SMTP settings and `EMAIL_TIMEOUT = 10`; `ALLOWED_EMAIL_DOMAINS` (default `ravasco.com,hindustanrubbers.com`);
   `REPORT_CRON_SECRET`; `MISMATCH_REPORT_PLANT_HEADS_ENABLED`; the Google OAuth client settings
   (separate from the Drive service-account settings).
 - Outside DEBUG: `SECURE_PROXY_SSL_HEADER`, `SECURE_SSL_REDIRECT` (forced off under pytest), HSTS one

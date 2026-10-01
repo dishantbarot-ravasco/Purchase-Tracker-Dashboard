@@ -1208,7 +1208,7 @@ function renderMaterialsView() {
           Object.keys(flagCategoryCounts).sort().map(function (label) {
             const value = 'cat:' + label;
             const selected = state.matStatusFilter === value ? ' selected' : '';
-            return '<option value="' + value + '"' + selected + '>' + label + ' (' + flagCategoryCounts[label] + ')</option>';
+            return '<option value="' + escapeHtml(value) + '"' + selected + '>' + escapeHtml(label) + ' (' + flagCategoryCounts[label] + ')</option>';
           }).join('') +
         '</select>' +
       '</div>' +

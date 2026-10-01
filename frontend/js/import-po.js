@@ -424,7 +424,7 @@ function renderImportPoList(el) {
   const flagCategoryOptionsHtml = Object.keys(flagCategoryCounts).sort().map(function (label) {
     const value = 'cat:' + label;
     const selected = state.importStatusFilter === value ? ' selected' : '';
-    return '<option value="' + value + '"' + selected + '>' + label + ' (' + flagCategoryCounts[label] + ')</option>';
+    return '<option value="' + escapeHtml(value) + '"' + selected + '>' + escapeHtml(label) + ' (' + flagCategoryCounts[label] + ')</option>';
   }).join('');
   const flagsOptionsHtml =
     '<option value="qtydisc"' + (state.importStatusFilter === 'qtydisc' ? ' selected' : '') + '>Qty Mismatch - PO vs BOE (' + counts.qtyDisc + ')</option>' +

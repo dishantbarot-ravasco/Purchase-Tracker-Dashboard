@@ -370,7 +370,7 @@ to work**, even though a developer's own `PGHOST`/`DATABASE_URL` typically says 
   `smtp.gmail.com`) - with `DJANGO_DEBUG=true` a failed OTP send falls back to printing the OTP to
   the console. `DJANGO_DEBUG` itself defaults to **false** when unset, so set it explicitly in a
   dev `.env` (`.env.example` does). `JWT_SIGNING_KEY` defaults to `DJANGO_SECRET_KEY` (and the
-  deploy check warns about that outside DEBUG); `ALLOWED_EMAIL_DOMAIN` defaults to `ravasco.com`.
+  deploy check warns about that outside DEBUG); `ALLOWED_EMAIL_DOMAINS` defaults to `ravasco.com,hindustanrubbers.com`.
 
 ## How to run
 
@@ -560,7 +560,7 @@ production runs.
 core (`DJANGO_SECRET_KEY`, `DJANGO_DEBUG=true`, `DJANGO_ALLOWED_HOSTS`), Sentry (`SENTRY_DSN` blank
 disables it, `SENTRY_ENVIRONMENT`, `SENTRY_TRACES_SAMPLE_RATE`), database (`DATABASE_URL` or
 `PGDATABASE/PGUSER/PGPASSWORD/PGHOST/PGPORT`), Google service account (`GOOGLE_SERVICE_ACCOUNT_JSON`
-or `_FILE`, never both), Drive folder ids, auth (`ALLOWED_EMAIL_DOMAIN`, `JWT_SIGNING_KEY`), SMTP,
+or `_FILE`, never both), Drive folder ids, auth (`ALLOWED_EMAIL_DOMAINS`, `JWT_SIGNING_KEY`), SMTP,
 Google OAuth client, `SAFECUBE_API_KEY`, `REPORT_CRON_SECRET` (blank makes every report endpoint
 refuse with 503), `MISMATCH_REPORT_PLANT_HEADS_ENABLED` (killswitch, default `false`),
 `DELETE_USER_ALLOWED_EMAIL`, `ACTIVITY_LOG_OWNER_EMAIL` (the one account that reads the activity log; defaults to the owner), `EMAIL_OTP_POOL_WORKERS`/`EMAIL_BULK_POOL_WORKERS`, and Cloudflare R2
@@ -667,7 +667,8 @@ Configuration is `pyproject.toml` plus these:
 |---|---|---|
 | test_achhad_correct_field.py | yes | Achhad inline "Edit Everywhere": roles, plant scoping, audit row, validation. |
 | test_google_oauth_minimal_scopes.py | yes | Google sign-in asks only for `openid email`, `access_type=online`. |
-| test_activity_log.py | yes | Activity log: last_seen_at stamped by any signed-in request at most every 5 minutes, last active is not the last sign-in, saved work before the log counts, `trackingSince`; only the owner account reads it (404 for other admins, setting override, inactive owner refused, `/auth/me` flag, Django admin hidden); a refused write is a change row with who / what / status / plant / payload; reads and previews are not logged; a refused sign-in is credited to the email tried with the password masked; a successful auth action is not logged twice; an upload keeps field names and file name and size, never bytes (R2 stubbed); exports are downloads; a failed log write never breaks the request; redaction at depth; page visits deduped per 5 minutes; admin-only reads and filters; 30-day people counts; formula-safe CSV; 90-day prune keeps sign-ins. |
+| test_allowed_email_domains.py | yes | Only whole-domain matches of `ALLOWED_EMAIL_DOMAINS` (ravasco.com, hindustanrubbers.com) pass; look-alikes refused; account creation and `create_pt_user` accept both. |
+| test_activity_log.py | yes | Activity log: retention 90 days routine / 1 year sign-ins / user management kept, every action has a retention decision; last_seen_at stamped by any signed-in request at most every 5 minutes, last active is not the last sign-in, saved work before the log counts, `trackingSince`; only the owner account reads it (404 for other admins, setting override, inactive owner refused, `/auth/me` flag, Django admin hidden); a refused write is a change row with who / what / status / plant / payload; reads and previews are not logged; a refused sign-in is credited to the email tried with the password masked; a successful auth action is not logged twice; an upload keeps field names and file name and size, never bytes (R2 stubbed); exports are downloads; a failed log write never breaks the request; redaction at depth; page visits deduped per 5 minutes; admin-only reads and filters; 30-day people counts; formula-safe CSV; 90-day prune keeps sign-ins. |
 | test_achhad_dismiss_flag.py | yes | Achhad PO-level flag dismiss/reinstate. |
 | test_achhad_dismiss_match.py | yes | Achhad PO<->MIR / MIR<->Stock match dismissal, survives rematch. |
 | test_admin_overview.py | yes | `GET /api/auth/admin-overview` admin-only aggregates. |
@@ -720,6 +721,7 @@ Configuration is `pyproject.toml` plus these:
 | test_reports_views.py | yes | Shared-secret report cron endpoints: 503/403/200/502 behaviour. |
 | test_response_compression.py | yes | `SelectiveGZipMiddleware`: API gzipped, `/api/auth/` and admin never. |
 | test_rodtep_api.py | yes | RoDTEP scrip ledger API and import citations. |
+| test_security_hardening.py | yes | A request over 25 MB is a 413 before the view (and the cap stays above the 20 MB upload limit); Django admin sign-in locks after 5 failures per username or IP, even with the right password, success not counted, failures logged; PDFs with JavaScript / launch / embedded files / rich media (hex-escaped too) are refused and nothing is stored, a plain PDF passes. |
 | test_security_headers_and_csrf_scope.py | yes | CSP contents, Permissions-Policy, CSRF only under `/admin/`. |
 | test_sort_presets.py | yes | Sort presets: owner-only (another user reads 404), viewers may save, every bad level/name/view refused, same name saves over, per-view cap, presets kept per view, picked values and "show only" round-trip and are validated (only on pickable columns), each list's frontend columns and `pick` columns equal the server's. |
 | test_stock_matched_field.py | yes | `stockMatched` on line items requires a real MIR<->Stock match. |

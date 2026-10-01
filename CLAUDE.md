@@ -361,7 +361,8 @@ Read the linked section before breaking any of these. Each is there because it w
   explicit calls, or the event disappears from the log. A new endpoint is logged automatically; give it
   a sentence in `ROUTE_LABELS`, and add a keystroke-rate endpoint (a preview) to the skips.
 - Changes, downloads and page visits are kept 90 days (`RETENTION_DAYS`, owner's choice), pruned by
-  the nightly `activity-log-prune` schedule; sign-ins and user management are kept for good.
+  the nightly `activity-log-prune` schedule; sign-in rows are kept one year (`SIGNIN_RETENTION_DAYS`) and
+  user management for good. A new action type must join a retention tuple (a test checks).
 - `auth.js`'s `renderNavTabs()` page keys must equal `activity_log.PAGES`, or visits are refused.
 - "Last active" is never `last_login_at` (sessions last 30 days): it is the newest of `last_seen_at`, the
   log, saved work (`WORK_SOURCES`) and the sign-in. Never estimate use the app did not record.
@@ -374,7 +375,13 @@ Read the linked section before breaking any of these. Each is there because it w
 - `SecurityHeadersMiddleware` stays before WhiteNoise, `SelectiveGZipMiddleware` after it; anything
   returning a token or OTP in a body lives under `/api/auth/` (not gzipped - BREACH).
   [non-negotiables](docs/auth-security-email.md#non-negotiables)
-- Auth-flow throttles key on the account or pending session, never the IP.
+- Accounts and sign-in are limited to `ALLOWED_EMAIL_DOMAINS` (ravasco.com, hindustanrubbers.com), matched
+  on the whole domain - never `endswith()` on a bare domain. The old `ALLOWED_EMAIL_DOMAIN` is not read.
+- Auth-flow throttles key on the account or pending session, never the IP. Django admin's `/admin/login/`
+  is the exception: `AdminLoginThrottleMiddleware` locks per username AND per IP (5 failures / 15 min).
+- `RequestSizeLimitMiddleware` (25 MB) stays before anything that reads a body, and above
+  `documents.MAX_BYTES`. Uploads refuse PDFs with active content (`documents._check_pdf()`) - never
+  loosen it to accept `/JavaScript`, `/Launch` or embedded files.
   [throttling](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters)
 - The refresh token only travels in the httpOnly cookie. Password change calls
   `revoke_all_tokens()`; "log out everywhere" calls `revoke_all_sessions()` - keep them separate.

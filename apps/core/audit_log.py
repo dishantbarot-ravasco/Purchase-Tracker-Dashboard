@@ -8,8 +8,9 @@ One append-only table, PTAuditLog, written from two places:
      - every successful login (trusted-device fast path, new-device email-OTP
      verify, Google OAuth trusted-device path), every logout, password
      change, "log out everywhere", and every admin user-management mutation
-     (account created/updated/deleted, trusted device revoked). These rows
-     are kept for good.
+     (account created/updated/deleted, trusted device revoked). Sign-in
+     rows (SIGNIN_ACTIONS) are kept SIGNIN_RETENTION_DAYS (one year, owner,
+     2026-10-01); user-management rows are kept for good.
 
   2. apps/services/activity_log.py, fed by config.middleware.
      ActivityLogMiddleware and the page-visit beacon (2026-10-01, owner:
@@ -91,9 +92,14 @@ class PTAuditLog(models.Model):
         (ACTION_PAGE_VIEW, "Page visit"),
     ]
 
-    # Pruned after RETENTION_DAYS; every other action is kept for good.
+    # Pruned after RETENTION_DAYS (owner, 2026-10-01: 90 days).
     ROUTINE_ACTIONS = (ACTION_CHANGE, ACTION_DOWNLOAD, ACTION_PAGE_VIEW)
     RETENTION_DAYS = 90
+    # Pruned after SIGNIN_RETENTION_DAYS (owner, 2026-10-01: one year).
+    # User-management actions (user_*, device_revoked) are in neither tuple
+    # and are kept for good.
+    SIGNIN_ACTIONS = (ACTION_LOGIN, ACTION_LOGOUT, ACTION_SESSIONS_REVOKED, ACTION_AUTH_FAILED)
+    SIGNIN_RETENTION_DAYS = 365
 
     timestamp = models.DateTimeField(default=timezone.now, db_index=True)
     action = models.CharField(max_length=32, choices=ACTION_CHOICES, db_index=True)

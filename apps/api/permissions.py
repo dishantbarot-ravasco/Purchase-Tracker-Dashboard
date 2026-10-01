@@ -19,10 +19,18 @@ from rest_framework.throttling import UserRateThrottle
 
 
 def is_allowed_email_domain(email: str) -> bool:
-    """True only for an email ending in "@<settings.ALLOWED_EMAIL_DOMAIN>"
-    (case-insensitive). Gates account creation and login so no address
-    outside the company domain can ever have or use a PTUser account."""
-    return (email or "").strip().lower().endswith("@" + settings.ALLOWED_EMAIL_DOMAIN.lower())
+    """True only for an email whose domain is exactly one of
+    settings.ALLOWED_EMAIL_DOMAINS (case-insensitive) - "x@ravasco.com" yes,
+    "x@evilravasco.com" and "x@ravasco.com.evil.io" no. Gates account
+    creation and login so no address outside the company domains can ever
+    have or use a PTUser account."""
+    local, sep, domain = (email or "").strip().lower().rpartition("@")
+    return bool(sep and local) and domain in settings.ALLOWED_EMAIL_DOMAINS
+
+
+def allowed_domains_text() -> str:
+    """"@ravasco.com or @hindustanrubbers.com" - for refusal messages."""
+    return " or ".join("@" + d for d in settings.ALLOWED_EMAIL_DOMAINS)
 
 
 class IsEditor(BasePermission):

@@ -376,15 +376,21 @@ def touch_last_seen(request) -> None:
 # ── Retention ─────────────────────────────────────────────────────────────
 
 
-def prune_routine(days: int | None = None) -> int:
+def prune_routine(days: int | None = None, signin_days: int | None = None) -> int:
     """Delete routine rows (changes, downloads, page visits) older than
-    `days` (default PTAuditLog.RETENTION_DAYS). Sign-in and account rows are
-    never pruned. Returns how many rows went."""
+    `days` (default PTAuditLog.RETENTION_DAYS, 90) and sign-in rows (logins,
+    logouts, refused sign-ins, "log out everywhere") older than
+    `signin_days` (default PTAuditLog.SIGNIN_RETENTION_DAYS, 365).
+    User-management rows are never pruned. Returns how many rows went."""
     from apps.core.audit_log import PTAuditLog
 
+    now = timezone.now()
     days = PTAuditLog.RETENTION_DAYS if days is None else days
-    cutoff = timezone.now() - datetime.timedelta(days=days)
-    deleted, _ = PTAuditLog.objects.filter(action__in=PTAuditLog.ROUTINE_ACTIONS, timestamp__lt=cutoff).delete()
+    signin_days = PTAuditLog.SIGNIN_RETENTION_DAYS if signin_days is None else signin_days
+    deleted, _ = PTAuditLog.objects.filter(
+        Q(action__in=PTAuditLog.ROUTINE_ACTIONS, timestamp__lt=now - datetime.timedelta(days=days))
+        | Q(action__in=PTAuditLog.SIGNIN_ACTIONS, timestamp__lt=now - datetime.timedelta(days=signin_days))
+    ).delete()
     return deleted
 
 

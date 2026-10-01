@@ -112,8 +112,8 @@ services:
           property: connectionString
 
       # ── Auth ─────────────────────────────────────────────────────────────
-      - key: ALLOWED_EMAIL_DOMAIN
-        value: ravasco.com
+      - key: ALLOWED_EMAIL_DOMAINS
+        value: ravasco.com,hindustanrubbers.com
 
       # ── Google Drive service account (unattended sync jobs) - paste the
       #    key JSON as ONE line when prompted. GOOGLE_SERVICE_ACCOUNT_FILE is
@@ -281,8 +281,8 @@ services:
         fromDatabase:
           name: purchase-tracker-db
           property: connectionString
-      - key: ALLOWED_EMAIL_DOMAIN
-        value: ravasco.com
+      - key: ALLOWED_EMAIL_DOMAINS
+        value: ravasco.com,hindustanrubbers.com
       - key: GOOGLE_SERVICE_ACCOUNT_JSON
         sync: false
       - key: PURCHASE_TRACKER_DB_FOLDER_ID

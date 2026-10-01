@@ -392,7 +392,7 @@ R2 backup bucket ([testing-deployment.md](testing-deployment.md#backups-2026-09-
 fires on the deploy that creates it, so a missing R2 setting shows up at once as a failed task. A
 third, **`activity-log-prune`** (2026-10-01), runs `activity_log.scheduled_prune()` at **03:41 IST**
 (`41 3 * * *`), after the backup, deleting activity-log changes, downloads and page visits older than
-90 days ([activity log](api-and-features.md#activity-log-2026-10-01)). Admin/dashboard-triggered `sync-trigger` endpoints
+90 days and sign-in rows older than a year ([activity log](api-and-features.md#activity-log-2026-10-01)). Admin/dashboard-triggered `sync-trigger` endpoints
 still exist alongside it, and a plant is **skipped, not queued behind**, if a manual refresh is
 already mid-flight for it.
 
@@ -891,7 +891,7 @@ over a category a clerk picked at MIR entry). No `SyncRun` row.
 ### [apps/core/management/commands/create_pt_user.py](../apps/core/management/commands/create_pt_user.py)
 
 Creates or updates a `PTUser` (`update_or_create` on the lower-cased email, `is_active=True`),
-refusing an email outside `ALLOWED_EMAIL_DOMAIN` and enforcing the same password policy as the Users
+refusing an email outside `ALLOWED_EMAIL_DOMAINS` and enforcing the same password policy as the Users
 panel (10+ characters, not all digits, not the email local-part). bcrypt with `rounds=12`. Re-running
 it on an existing account revokes that account's tokens. The only way to create the first admin; see
 [auth-security-email.md](auth-security-email.md).

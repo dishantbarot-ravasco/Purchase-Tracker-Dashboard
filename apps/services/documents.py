@@ -21,7 +21,8 @@ Revisions, withdrawals - the PO-number edge cases:
   - Nothing is deleted, in the database or in R2.
 
 Files are accepted by their content, not their name: the first bytes must
-be a PDF, JPEG or PNG. At most MAX_BYTES.
+be a PDF, JPEG or PNG. At most MAX_BYTES. A PDF with active content
+(JavaScript, a launch action, an embedded file) is refused - _check_pdf().
 """
 
 from __future__ import annotations
@@ -42,6 +43,16 @@ _SIGNATURES = (
     (b"\x89PNG\r\n\x1a\n", "image/png", "png"),
 )
 _KEY_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+# PDF features that run something rather than show something (2026-10-01,
+# security pass): JavaScript, launching a program, an embedded file (the
+# usual way malware rides inside a PDF), Flash-era rich media, and an
+# automatic action on open that names JavaScript. A PO or vendor invoice
+# never needs any of them, so a PDF carrying one is refused rather than
+# stored and later opened by staff. Names are matched as PDF name tokens
+# (/JS must not match /JSmith), including the #xx hex-escaped spellings
+# used to hide them.
+_PDF_ACTIVE = re.compile(rb"/(JavaScript|JS|Launch|EmbeddedFiles?|RichMedia)(?![A-Za-z0-9])")
+_PDF_HEX_ESCAPE = re.compile(rb"#([0-9A-Fa-f]{2})")
 
 
 class DocumentError(ValueError):
@@ -55,6 +66,19 @@ def _sniff(head: bytes):
     raise DocumentError("Upload a PDF, JPEG or PNG file.")
 
 
+def _check_pdf(data: bytes) -> None:
+    """Refuse a PDF with active content (_PDF_ACTIVE). A heuristic over the
+    raw bytes: content inside compressed object streams is not inflated, so
+    this stops the common case, not a determined attacker - files still open
+    only from R2's own origin, never the app's."""
+    plain = _PDF_HEX_ESCAPE.sub(lambda m: bytes([int(m.group(1), 16)]), data)
+    found = _PDF_ACTIVE.search(plain)
+    if found:
+        raise DocumentError(
+            "This PDF contains active content (" + found.group(1).decode() + ") that a PO or invoice never "
+            "needs, so it was not accepted. Save it again as a plain PDF (print to PDF) and upload that.")
+
+
 def _read_upload(upload) -> tuple[bytes, str, str]:
     if upload is None:
         raise DocumentError("Choose a file to upload.")
@@ -64,6 +88,8 @@ def _read_upload(upload) -> tuple[bytes, str, str]:
         raise DocumentError(f"The file is larger than {MAX_BYTES // (1024 * 1024)} MB.")
     data = upload.read()
     content_type, ext = _sniff(data[:16])
+    if content_type == "application/pdf":
+        _check_pdf(data)
     return data, content_type, ext
 
 

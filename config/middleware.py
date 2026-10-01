@@ -35,6 +35,11 @@ ApiNoStoreMiddleware
 Makes every /api/ response uncacheable unless its view says otherwise. See
 the class docstring.
 
+RequestSizeLimitMiddleware / AdminLoginThrottleMiddleware
+-------------------------------------------------------
+A 25 MB cap on any request body, checked before it is read; and a lockout
+on Django admin's sign-in form. See the class docstrings.
+
 ActivityLogMiddleware
 ---------------------
 Writes the activity log's change / download / refused sign-in rows. See
@@ -209,4 +214,88 @@ class ActivityLogMiddleware:
 
         record_request(request, response, body=body, started=started, now=time.monotonic())
         touch_last_seen(request)
+        return response
+
+
+class RequestSizeLimitMiddleware:
+    """Refuse a request body over MAX_BYTES before anything reads it
+    (2026-10-01, security pass).
+
+    Django's DATA_UPLOAD_MAX_MEMORY_SIZE does not count uploaded files, and a
+    multipart file is spooled to a temp file in full before a view runs - so
+    documents.MAX_BYTES (20 MB), checked inside the view, came after the
+    disk had already taken whatever was sent. A multi-gigabyte request
+    could fill the container's disk. Content-Length is checked here, before
+    the body is touched; Django's multipart parser refuses a body without
+    one. The largest real request is a 20 MB PO or invoice file plus its
+    form fields, so 25 MB leaves headroom."""
+
+    MAX_BYTES = 25 * 1024 * 1024
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        try:
+            length = int(request.META.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            length = 0
+        if length > self.MAX_BYTES:
+            from django.http import JsonResponse
+
+            return JsonResponse({"error": f"The upload is larger than {self.MAX_BYTES // (1024 * 1024)} MB."},
+                                status=413)
+        return self.get_response(request)
+
+
+class AdminLoginThrottleMiddleware:
+    """Lock the Django admin sign-in after repeated failures (2026-10-01,
+    security pass).
+
+    /admin/login/ is Django's own form for auth.User accounts and had no
+    brute-force protection, unlike the app's login (PTUser lockout and
+    throttles). After MAX_FAILURES failed POSTs for one username - or from
+    one IP, so cycling usernames does not help - inside WINDOW_SECONDS,
+    every further POST gets a 429 until the window passes. A failed
+    attempt is the login form re-rendered (200); a success redirects (302)
+    and clears that username's count. Each failure is also written to the
+    activity log as a refused sign-in."""
+
+    PATH = "/admin/login/"
+    MAX_FAILURES = 5
+    WINDOW_SECONDS = 15 * 60
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    @staticmethod
+    def _keys(request):
+        from apps.services.device_service import get_client_ip
+
+        username = (request.POST.get("username") or "").strip().lower()
+        return f"admin-login-fail:u:{username}", f"admin-login-fail:ip:{get_client_ip(request)}", username
+
+    def __call__(self, request):
+        if request.method != "POST" or request.path != self.PATH:
+            return self.get_response(request)
+        from django.core.cache import cache
+        from django.http import HttpResponse
+
+        user_key, ip_key, username = self._keys(request)
+        if max(cache.get(user_key, 0), cache.get(ip_key, 0)) >= self.MAX_FAILURES:
+            return HttpResponse("Too many failed sign-in attempts. Try again in 15 minutes.", status=429,
+                                content_type="text/plain")
+        response = self.get_response(request)
+        if response.status_code == 200:
+            for key in (user_key, ip_key):
+                cache.add(key, 0, self.WINDOW_SECONDS)
+                try:
+                    cache.incr(key)
+                except ValueError:
+                    cache.set(key, 1, self.WINDOW_SECONDS)
+            from apps.core.audit_log import PTAuditLog, log_pt_action
+
+            log_pt_action(request, PTAuditLog.ACTION_AUTH_FAILED, detail=f"Django admin sign-in refused: {username[:100]}")
+        elif response.status_code == 302:
+            cache.delete(user_key)
         return response

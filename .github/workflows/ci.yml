@@ -30,7 +30,7 @@ jobs:
       JWT_SIGNING_KEY: ci-only-jwt-signing-key-not-used-in-production-0123456789
       DJANGO_DEBUG: "false"
       DATABASE_URL: postgres://pt_ci:pt_ci@localhost:5432/pt_ci
-      ALLOWED_EMAIL_DOMAIN: ravasco.com
+      ALLOWED_EMAIL_DOMAINS: ravasco.com,hindustanrubbers.com
       # Dummy Drive/Google values so settings.py imports cleanly - no live
       # Drive/OAuth calls happen during makemigrations/migrate/check/test.
       GOOGLE_SERVICE_ACCOUNT_JSON: ""
@@ -159,7 +159,7 @@ jobs:
           DJANGO_DEBUG=false
           DJANGO_ALLOWED_HOSTS=localhost
           DATABASE_URL=postgres://pt_ci:pt_ci@localhost:5432/pt_ci
-          ALLOWED_EMAIL_DOMAIN=ravasco.com
+          ALLOWED_EMAIL_DOMAINS=ravasco.com,hindustanrubbers.com
           GOOGLE_SERVICE_ACCOUNT_JSON=
           GOOGLE_CLIENT_ID=ci-placeholder
           GOOGLE_CLIENT_SECRET=ci-placeholder

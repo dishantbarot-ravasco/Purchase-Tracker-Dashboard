@@ -20,10 +20,9 @@ Usage:
 """
 
 import bcrypt
-from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.api.permissions import is_allowed_email_domain
+from apps.api.permissions import allowed_domains_text, is_allowed_email_domain
 from apps.core.models import PTUser
 from apps.services.token_revocation import revoke_all_tokens
 
@@ -50,7 +49,7 @@ class Command(BaseCommand):
         email = options["email"].strip().lower()
         if not is_allowed_email_domain(email):
             raise CommandError(
-                f"'{email}' is outside the allowed domain (@{settings.ALLOWED_EMAIL_DOMAIN}) - refusing to create it."
+                f"'{email}' is outside the allowed domains ({allowed_domains_text()}) - refusing to create it."
             )
 
         # Same modest strength policy as the in-app Users panel
