@@ -22,6 +22,7 @@ Domestic endpoints exist three times: HRS has no prefix, RTP-Achhad is under `ac
 
 **Auth-flow endpoints are documented in [auth-security-email.md](auth-security-email.md):**
 `auth/login`, `auth/token/refresh`, `auth/token/verify`, `auth/me`, `auth/change-password/request|confirm`,
+`auth/password-reset/request|confirm` (Forgot password),
 and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py` / `google_oauth_views.py`
 (`password_views.py` too). `health` and `health/ready` are in [testing-deployment.md](testing-deployment.md).
 
@@ -300,8 +301,8 @@ admin, use our builded as we did in tds_app") - **no Django Admin links remain o
   locked). Validates the email domain, rejects a duplicate with a real `409`,
   enforces `_validate_password_strength()` (≥ 10 chars, not all digits, not the email local-part).
 - `PATCH /api/auth/users/<id>` - any of `role` / `isActive` / `fullName` / `designation` / `plants` /
-  `password`. The password field is the in-app reset path, and a reset calls `revoke_all_tokens()` so
-  the account's live sessions end (device trust is kept).
+  `permissions`. A `password` is refused (400): since 2026-10-02 the holder resets a forgotten password
+  with Forgot password on the sign-in page ([auth-security-email.md](auth-security-email.md#appsapirouterspassword_viewspy)).
 - `DELETE /api/auth/users/<id>` - same view; only the account in `DELETE_USER_ALLOWED_EMAIL` may delete.
 - `GET .../devices`, `DELETE .../devices/<device_id>`, `POST .../logout-everywhere` - trusted-device
   management and the admin-side panic button.

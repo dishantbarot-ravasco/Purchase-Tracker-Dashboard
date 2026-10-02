@@ -111,14 +111,14 @@ class TestRefreshTokenNeverInResponseBody:
         assert login.data["status"] == "device_verify"
         _assert_no_refresh_in_body(login, "POST /api/auth/login (device_verify branch)")
 
-        otp = generate_otp(self.user.email)
+        otp = generate_otp(self.user.email, "login")
         resp = self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")
         assert resp.status_code == 200, resp.data
         _assert_no_refresh_in_body(resp, "POST /api/auth/device-verify")
 
     def test_device_verify_still_sets_the_refresh_cookie(self):
         self.client.post(LOGIN_URL, {"email": self.user.email, "password": PASSWORD}, format="json")
-        otp = generate_otp(self.user.email)
+        otp = generate_otp(self.user.email, "login")
         resp = self.client.post(DEVICE_VERIFY_URL, {"code": otp}, format="json")
         assert "pt_refresh" in resp.cookies, "the pt_refresh cookie was not set"
         assert resp.cookies["pt_refresh"]["httponly"]

@@ -43,23 +43,14 @@ Deliberately NOT ported from TDS, and why
   creator), meaningless for a read-only reconciliation dashboard. Not
   applicable here at all, not a gap.
 
-Diverges from TDS (added 2026-09-04): password reset from this panel
-----------------------------------------------------------------------
-TDS's own update_user() has no password field - this app's did not either,
-until now. An existing user's password could previously only be reset via
-`manage.py create_pt_user` (CLI access required), which the project owner
-asked to fix so an admin never needs shell/terminal access just to help a
-locked-out colleague. update_user() below now accepts an optional
-`password` field (min 10 chars - see _validate_password_strength(); this
-docstring said 8 until 2026-09-15, when the same stale figure was also found
-in admin.html's placeholder and admin-page.js's client-side check, where it
-was actively misleading admins - bcrypt-hashed the same way create_user()
-hashes a new account's password) - omitted or blank means "leave the
-current password alone", never accidentally cleared. `manage.py
-create_pt_user` still exists and still works (it remains the only way to
-create/reset the very first account, before any admin exists to use this
-panel at all) - this doesn't replace it, it adds a normal in-app path for
-every reset after that first account exists.
+Passwords are the account holder's alone (2026-10-02)
+---------------------------------------------------
+An admin sets a new account's first password at creation, and never again:
+update_user() refuses a `password` field. A forgotten password is reset by
+its holder from the sign-in page ("Forgot password", an emailed code), and a
+known one changed from the account menu - both in password_views.py. That
+way no admin ever knows, or can quietly change, anyone's working password.
+`manage.py create_pt_user` stays as the bootstrap and break-glass path.
 """
 
 import logging
@@ -81,7 +72,6 @@ from apps.api.permissions import (
     is_allowed_email_domain,
     is_owner,
 )
-from apps.services.token_revocation import revoke_all_tokens
 from apps.core.audit_log import PTAuditLog, log_pt_action
 from apps.core.models import PTUser, TrustedDevice
 
@@ -319,10 +309,10 @@ def _assert_not_last_active_admin(exclude_pk: int) -> None:
 def update_user(request, user_id):
     """PATCH /api/auth/users/<id>
     Body: any of { "role", "isActive", "fullName", "designation", "plants",
-    "permissions", "password" }
+    "permissions" }
 
-    Admin only. No email field (identity, not editable) - see this file's
-    header comment for the password field's own history.
+    Admin only. No email field (identity, not editable), and no password: a
+    `password` field is refused with a 400 - see this file's header.
 
     DELETE /api/auth/users/<id> - permanently delete the account. Admin only,
     AND only when the caller's own account is dishant.barot@ravasco.com
@@ -358,15 +348,11 @@ def update_user(request, user_id):
     # a generic "user updated" row (see log_pt_action() call at the bottom).
     prev_role, prev_is_active = user.role, user.is_active
     prev_plants, prev_permissions = list(user.plants or []), list(user.permissions or [])
-    password_was_reset = False
-
     data = request.data
     _require_owner_for_admin(request, target=user, new_role=data.get("role"))
-    if "password" in data and data["password"]:
-        password = data["password"]
-        _validate_password_strength(password, user.email)
-        user.password_hash = _hash_password(password)
-        password_was_reset = True
+    if data.get("password"):
+        raise ValidationError({"detail": "Admins do not set passwords. The account holder resets it with "
+                                         "Forgot password on the sign-in page."})
 
     new_role = user.role
     if "role" in data and data["role"] is not None:
@@ -410,27 +396,6 @@ def update_user(request, user_id):
             _assert_not_last_active_admin(user.pk)
         user.save()
 
-    # An admin resetting someone's password must evict that account's live
-    # sessions too (audit pass, 2026-09-15) - before this, the reset changed
-    # only what a FUTURE sign-in would require, while any token already issued
-    # kept working: 12h on the access token, and indefinitely via the sliding
-    # 30-day pt_refresh cookie. Since the overwhelmingly common reason an admin
-    # resets a password is "this account may be compromised", that made the
-    # remedy ineffective against the exact case it was reached for.
-    #
-    # revoke_all_tokens, not revoke_all_sessions: device trust is deliberately
-    # preserved (see that function's docstring - a pt_device cookie only ever
-    # skips the OTP step, never the password, so it is worthless to an attacker
-    # once the password changes). An admin who genuinely wants to re-challenge
-    # every device still has POST /api/auth/users/<id>/logout-everywhere, which
-    # remains the deliberate nuclear option.
-    #
-    # Note this is NOT needed for the isActive=False path: PTJWTAuthentication.
-    # get_user() already rejects an inactive user on every single request, so
-    # deactivation has always taken effect immediately.
-    if password_was_reset:
-        revoke_all_tokens(user)
-
     logger.info("users_views: admin %s updated PTUser %s", request.user.email, user.email)
 
     detail_parts = []
@@ -442,8 +407,6 @@ def update_user(request, user_id):
         detail_parts.append(f"plants: {prev_plants} -> {user.plants or []}")
     if (user.permissions or []) != prev_permissions:
         detail_parts.append(f"permissions: {prev_permissions} -> {user.permissions or []}")
-    if password_was_reset:
-        detail_parts.append("password reset; all sessions revoked")
     log_pt_action(
         request, PTAuditLog.ACTION_USER_UPDATED, actor=request.user,
         detail=f"updated {user.email}" + (f" ({'; '.join(detail_parts)})" if detail_parts else ""),

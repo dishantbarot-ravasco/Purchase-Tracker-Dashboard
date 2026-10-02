@@ -7,7 +7,8 @@ THE GAP
 Both password-setting paths saved a new bcrypt hash and stopped there:
 
   - POST /api/auth/change-password/confirm  (self-service, OTP-gated)
-  - PATCH /api/auth/users/<id>              (admin reset)
+  - PATCH /api/auth/users/<id>              (admin reset - removed
+                                              2026-10-02, now refused)
 
 Neither touched `PTUser.token_version`, which is the one thing that
 invalidates an already-issued JWT (see PTJWTAuthentication.get_user()'s
@@ -67,8 +68,8 @@ class TestSelfServicePasswordChange:
         stale_token = _bearer(self.client, self.user)
         assert self.client.get("/api/auth/me").status_code == 200
 
-        otp = generate_otp(self.user.email)
-        resp = self.client.post(CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD}, format="json")
+        otp = generate_otp(self.user.email, "password_change")
+        resp = self.client.post(CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD, "confirmPassword": NEW_PASSWORD}, format="json")
         assert resp.status_code == 200, resp.data
         assert resp.data["sessionsRevoked"] is True
 
@@ -80,9 +81,9 @@ class TestSelfServicePasswordChange:
     def test_token_version_is_bumped(self):
         before = PTUser.objects.get(pk=self.user.pk).token_version
         _bearer(self.client, self.user)
-        otp = generate_otp(self.user.email)
+        otp = generate_otp(self.user.email, "password_change")
         assert self.client.post(
-            CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD}, format="json"
+            CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD, "confirmPassword": NEW_PASSWORD}, format="json"
         ).status_code == 200
         assert PTUser.objects.get(pk=self.user.pk).token_version == before + 1
 
@@ -91,8 +92,8 @@ class TestSelfServicePasswordChange:
         you changed it in - the response re-cookies a token minted against
         the NEW token_version."""
         _bearer(self.client, self.user)
-        otp = generate_otp(self.user.email)
-        resp = self.client.post(CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD}, format="json")
+        otp = generate_otp(self.user.email, "password_change")
+        resp = self.client.post(CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD, "confirmPassword": NEW_PASSWORD}, format="json")
         assert resp.status_code == 200
 
         from django.conf import settings
@@ -114,9 +115,9 @@ class TestSelfServicePasswordChange:
             user=self.user, device_token_hash="a" * 64, device_name="Laptop",
         )
         _bearer(self.client, self.user)
-        otp = generate_otp(self.user.email)
+        otp = generate_otp(self.user.email, "password_change")
         assert self.client.post(
-            CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD}, format="json"
+            CONFIRM_URL, {"otp": otp, "newPassword": NEW_PASSWORD, "confirmPassword": NEW_PASSWORD}, format="json"
         ).status_code == 200
         assert TrustedDevice.objects.filter(user=self.user).count() == 1, (
             "password change must NOT wipe device trust - use "
@@ -130,13 +131,13 @@ class TestSelfServicePasswordChange:
         _bearer(self.client, self.user)
 
         assert self.client.post(
-            CONFIRM_URL, {"otp": "000000", "newPassword": NEW_PASSWORD}, format="json"
+            CONFIRM_URL, {"otp": "000000", "newPassword": NEW_PASSWORD, "confirmPassword": NEW_PASSWORD}, format="json"
         ).status_code == 400
         assert PTUser.objects.get(pk=self.user.pk).token_version == before
 
-        otp = generate_otp(self.user.email)
+        otp = generate_otp(self.user.email, "password_change")
         assert self.client.post(
-            CONFIRM_URL, {"otp": otp, "newPassword": "short"}, format="json"
+            CONFIRM_URL, {"otp": otp, "newPassword": "short", "confirmPassword": "short"}, format="json"
         ).status_code == 400
         assert PTUser.objects.get(pk=self.user.pk).token_version == before
 
@@ -152,23 +153,19 @@ class TestAdminPasswordReset:
     def _patch(self, **body):
         return self.client.patch(f"/api/auth/users/{self.target.user_id}", body, format="json")
 
-    def test_admin_reset_revokes_the_targets_sessions(self):
+    def test_an_admin_cannot_set_someone_elses_password(self):
+        """Since 2026-10-02 admins never set a working password - the holder
+        resets it with Forgot password. The refusal changes nothing: same
+        hash, same sessions."""
         victim = APIClient()
-        stale_token = _bearer(victim, self.target)
-        assert victim.get("/api/auth/me").status_code == 200
-
-        assert self._patch(password=NEW_PASSWORD).status_code == 200
-
-        still_stale = APIClient()
-        still_stale.credentials(HTTP_AUTHORIZATION=f"Bearer {stale_token}")
-        assert still_stale.get("/api/auth/me").status_code == 401
-
-    def test_admin_reset_preserves_target_device_trust(self):
-        TrustedDevice.objects.create(
-            user=self.target, device_token_hash="b" * 64, device_name="Target laptop",
-        )
-        assert self._patch(password=NEW_PASSWORD).status_code == 200
-        assert TrustedDevice.objects.filter(user=self.target).count() == 1
+        token = _bearer(victim, self.target)
+        before = PTUser.objects.get(pk=self.target.pk)
+        assert self._patch(password=NEW_PASSWORD).status_code == 400
+        after = PTUser.objects.get(pk=self.target.pk)
+        assert (after.password_hash, after.token_version) == (before.password_hash, before.token_version)
+        still = APIClient()
+        still.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        assert still.get("/api/auth/me").status_code == 200
 
     def test_a_non_password_edit_does_not_revoke_sessions(self):
         """Renaming someone or changing their plants must not sign them out -
@@ -176,8 +173,3 @@ class TestAdminPasswordReset:
         before = PTUser.objects.get(pk=self.target.pk).token_version
         assert self._patch(fullName="Renamed Person").status_code == 200
         assert PTUser.objects.get(pk=self.target.pk).token_version == before
-
-    def test_admin_own_session_survives_resetting_someone_else(self):
-        """The admin doing the reset must not be logged out by it."""
-        assert self._patch(password=NEW_PASSWORD).status_code == 200
-        assert self.client.get("/api/auth/users").status_code == 200

@@ -171,11 +171,3 @@ class TestUserManagementAuditLog:
         assert response.status_code == 200
         row = PTAuditLog.objects.filter(action=PTAuditLog.ACTION_USER_UPDATED).latest("timestamp")
         assert "user -> admin" in row.detail
-
-    def test_password_reset_is_called_out_in_the_audit_detail_without_leaking_it(self):
-        target = make_user(email="reset-audit@ravasco.com")
-        response = self.client.patch(f"/api/auth/users/{target.user_id}", {"password": "AnotherStr0ngPass!"}, format="json")
-        assert response.status_code == 200
-        row = PTAuditLog.objects.filter(action=PTAuditLog.ACTION_USER_UPDATED).latest("timestamp")
-        assert "password reset" in row.detail
-        assert "AnotherStr0ngPass!" not in row.detail

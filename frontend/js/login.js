@@ -1,14 +1,29 @@
 /**
- * frontend/js/login.js - drives login.html: password step -> optional
- * email-OTP device-verify step -> redirect to home.html. Also picks up
- * the Google OAuth redirect's query params (?oauth_ready=1 / ?step=device_verify
- * / ?oauth_error=...). No imports - plain script tag.
+ * frontend/js/login.js - drives login.html, one card showing one step at a
+ * time (showStep()):
+ *   password      email + password -> redirect, or -> otp for a new device
+ *   otp           the new-device code -> redirect
+ *   resetRequest  Forgot password: the email to send a reset code to
+ *   resetConfirm  the code + new password + confirmation -> back to password
+ * Also picks up the Google OAuth redirect's query params (?oauth_ready=1 /
+ * ?step=device_verify / ?oauth_error=...). No imports - plain script tag.
+ * Forgot password never says whether an address has an account: the server
+ * answers the same either way (apps/api/routers/password_views.py).
  */
 
 // ── DOM refs & state ────────────────────────────────────────────────────
 const passwordStep = document.getElementById('passwordStep');
 const otpStep = document.getElementById('otpStep');
 const errorBox = document.getElementById('loginError');
+const noticeBox = document.getElementById('loginNotice');
+const STEPS = {
+  password: { form: passwordStep, title: 'Sign in', sub: 'Use your Ravasco work account', focus: 'email' },
+  otp: { form: otpStep, title: 'Verify this device', sub: 'Enter the 6-digit code we emailed you. It expires in 10 minutes.', focus: 'otpCode' },
+  resetRequest: { form: document.getElementById('resetRequestStep'), title: 'Reset your password',
+    sub: 'Enter your work email and we will send you a 6-digit reset code.', focus: 'resetEmail' },
+  resetConfirm: { form: document.getElementById('resetConfirmStep'), title: 'Choose a new password',
+    sub: 'Enter the code from your email, then your new password twice.', focus: 'resetCode' },
+};
 
 // Show/hide toggle for any password field (project owner, 2026-09-05: "add
 // eye thing whenever password is required") - delegated at the document
@@ -91,22 +106,25 @@ function clearError() {
   errorBox.textContent = '';
   errorBox.classList.remove('show');
 }
-/** Swaps the card into the OTP-entry step (new-device verification). */
-function showOtpStep() {
-  passwordStep.hidden = true;
-  otpStep.hidden = false;
-  document.getElementById('cardTitle').textContent = 'Verify your device';
-  document.getElementById('cardSub').textContent = 'Enter the code we emailed you';
-  document.getElementById('otpCode').focus();
+function showNotice(message) {
+  noticeBox.textContent = message;
+  noticeBox.hidden = !message;
 }
-/** Swaps the card back to the password step (e.g. "back to login" link). */
-function showPasswordStep() {
-  otpStep.hidden = true;
-  passwordStep.hidden = false;
-  document.getElementById('cardTitle').textContent = 'Sign In';
-  document.getElementById('cardSub').textContent = 'Use your company account credentials';
-  document.getElementById('otpCode').value = '';
+/** Shows one step of the card and hides the others; `sub` overrides the
+ * step's own subtitle. Codes and new passwords are cleared on every switch,
+ * so none lingers in a hidden form. */
+function showStep(name, sub) {
+  const step = STEPS[name];
+  Object.values(STEPS).forEach(st => { st.form.hidden = st !== step; });
+  document.getElementById('cardTitle').textContent = step.title;
+  document.getElementById('cardSub').textContent = sub || step.sub;
+  ['otpCode', 'resetCode', 'resetNew', 'resetConfirm'].forEach(id => { document.getElementById(id).value = ''; });
+  updateResetRules();
+  clearError();
+  document.getElementById(step.focus).focus();
 }
+function showOtpStep() { showStep('otp'); }
+function showPasswordStep() { showStep('password'); }
 
 /** POSTs JSON to `url` and returns the parsed response body; throws with
  * the server's `detail` message (or a generic fallback) on a non-OK
@@ -175,10 +193,10 @@ otpStep.addEventListener('submit', async (e) => {
   }
 });
 
-document.getElementById('backToLogin').addEventListener('click', () => {
-  clearError();
+document.querySelectorAll('[data-back]').forEach(btn => btn.addEventListener('click', () => {
+  showNotice('');
   showPasswordStep();
-});
+}));
 
 // Recovery path for a lost/failed-to-arrive OTP email (see
 // apps/services/device_service.py's send_device_otp() docstring - the send
@@ -203,6 +221,102 @@ document.getElementById('resendCode').addEventListener('click', async () => {
   } catch (err) {
     resendLink.textContent = 'Resend code';
     showError(err.message);
+  }
+});
+
+// ── Forgot password ─────────────────────────────────────────────────────
+// Two steps on the server (password_views.py): request a code for an email,
+// then confirm with the code and the new password twice. The page mirrors
+// the server's password rules as a live checklist; the server checks them
+// again, and a code is only spent once they pass.
+let RESET_EMAIL = '';
+
+const RESET_RULES = {
+  length: (pw) => pw.length >= 10,
+  digits: (pw) => pw.length > 0 && !/^\d+$/.test(pw),
+  email: (pw) => {
+    const local = (RESET_EMAIL.split('@')[0] || '').toLowerCase();
+    return pw.length > 0 && (!local || pw.toLowerCase() !== local);
+  },
+  match: (pw, confirm) => pw.length > 0 && pw === confirm,
+};
+
+function updateResetRules() {
+  const pw = document.getElementById('resetNew').value;
+  const confirm = document.getElementById('resetConfirm').value;
+  let allOk = true;
+  document.querySelectorAll('#resetRules li').forEach(li => {
+    const ok = RESET_RULES[li.dataset.rule](pw, confirm);
+    li.classList.toggle('ok', ok);
+    allOk = allOk && ok;
+  });
+  return allOk;
+}
+['resetNew', 'resetConfirm'].forEach(id => document.getElementById(id).addEventListener('input', updateResetRules));
+
+document.getElementById('forgotLink').addEventListener('click', () => {
+  showNotice('');
+  showStep('resetRequest');
+  document.getElementById('resetEmail').value = document.getElementById('email').value.trim();
+});
+
+async function sendResetCode(email) {
+  const data = await postJson('/api/auth/password-reset/request', { email });
+  RESET_EMAIL = email;
+  showStep('resetConfirm', data.detail || 'If that address has an account, a reset code is on its way.');
+}
+
+document.getElementById('resetRequestStep').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearError();
+  const email = document.getElementById('resetEmail').value.trim();
+  if (!email || email.indexOf('@') === -1) return showError('Enter your work email address.');
+  const btn = document.getElementById('resetSendBtn');
+  btn.disabled = true;
+  try {
+    await sendResetCode(email);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('resetResend').addEventListener('click', async () => {
+  const link = document.getElementById('resetResend');
+  link.disabled = true;
+  try {
+    await sendResetCode(RESET_EMAIL);
+    showNotice('A new code is on its way. Only the newest code works.');
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    // A pause stops repeated clicks sending a stream of emails.
+    setTimeout(() => { link.disabled = false; }, 30000);
+  }
+});
+
+document.getElementById('resetConfirmStep').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearError();
+  const otp = document.getElementById('resetCode').value.trim();
+  const newPassword = document.getElementById('resetNew').value;
+  const confirmPassword = document.getElementById('resetConfirm').value;
+  if (!/^\d{6}$/.test(otp)) return showError('Enter the 6-digit code from your email.');
+  if (!updateResetRules()) return showError('Your new password does not meet the rules below yet.');
+  const btn = document.getElementById('resetConfirmBtn');
+  btn.disabled = true;
+  try {
+    const data = await postJson('/api/auth/password-reset/confirm', { email: RESET_EMAIL, otp, newPassword, confirmPassword });
+    document.getElementById('email').value = RESET_EMAIL;
+    showStep('password');
+    showNotice(data.detail || 'Your password has been reset. Sign in with your new password.');
+    document.getElementById('password').value = '';
+    document.getElementById('password').focus();
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    btn.disabled = false;
   }
 });
 

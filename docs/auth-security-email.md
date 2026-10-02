@@ -914,19 +914,45 @@ registered in Google Cloud Console) and `auth/google/session-token`.
 
 ### apps/api/routers/password_views.py
 
-[password_views.py](../apps/api/routers/password_views.py) - self-service password change, OTP-gated
-like a new-device login. Only ever touches `request.user`'s own row; resetting someone else's password
-is the admin `PATCH /api/auth/users/<id>`.
+[password_views.py](../apps/api/routers/password_views.py) - **the only ways a password changes**
+outside `create_pt_user` (2026-10-02). Admins never set or reset a working password:
+`users_views.update_user()` refuses a `password` field with a 400. Every path checks the new password
+before spending the code (`verify_otp()` uses it up): present, equal to `confirmPassword`,
+`_validate_password_strength()`, and not the current password. Every success emails the holder a notice
+(`password_service.notify_password_changed()`).
+
+Signed in - "Change password" in the account menu:
 
 - `PasswordChangeRequestThrottle` (scope `password_change_request`, 5/min) and
   `PasswordChangeConfirmThrottle` (scope `otp_verify`, 10/min), both per user.
-- `request_password_change` (`POST /api/auth/change-password/request`, `IsAuthenticated`) - emails a
-  code to the caller's own address and always answers 202 `{"status": "sent"}`.
-- `confirm_password_change` (`POST /api/auth/change-password/confirm`, body `{"otp", "newPassword"}`)
-  - applies `_validate_password_strength` first (verifying the OTP uses it up, so a weak password
-  checked afterwards cost the user their code), then verifies the OTP, saves the new hash, `revoke_all_tokens()`
-  (device trust kept), re-reads the user and re-issues both cookies, writes a `user_updated` audit row,
-  returns `{"status": "ok", "sessionsRevoked": true}`.
+- `request_password_change` (`POST /api/auth/change-password/request`, `IsAuthenticated`, body
+  `{"currentPassword"}`) - a wrong current password is a 400 and counts towards the same 5-try lockout
+  as the sign-in page (`auth_backend._register_failed_attempt()`), so an unattended open session cannot
+  change the password; otherwise emails a `password_change` code to the caller's own address, 202.
+- `confirm_password_change` (`POST /api/auth/change-password/confirm`, body
+  `{"otp", "newPassword", "confirmPassword"}`) - verifies the code, saves the new hash,
+  `revoke_all_tokens()` (device trust kept), re-reads the user and re-issues both cookies, writes a
+  `user_updated` audit row, returns `{"status": "ok", "sessionsRevoked": true}`.
+
+Signed out - "Forgot password" on the sign-in page:
+
+- `PasswordResetRequestThrottle` (scope `password_reset_request`, **5/hour**) and
+  `PasswordResetConfirmThrottle` (scope `otp_verify`, 10/min), both keyed on the submitted email
+  (`_EmailKeyedThrottle`, like `LoginRateThrottle`), the IP only when none was sent.
+- `request_password_reset` (`POST /api/auth/password-reset/request`, `AllowAny`, body `{"email"}`) -
+  **always 202 with the same body** (`_RESET_SENT`), account or not; a `password_reset` code is emailed
+  only to an active account on an allowed domain (`_reset_account()`). With no account, one bcrypt hash
+  at the code's cost stands in for generating a code, so the reply takes about as long.
+- `confirm_password_reset` (`POST /api/auth/password-reset/confirm`, `AllowAny`, body
+  `{"email", "otp", "newPassword", "confirmPassword"}`) - an unknown address, a wrong code and an
+  expired one all answer the same 400 "Invalid or expired code." **at the same cost**: every path runs
+  one password-cost bcrypt check (`_dummy_verify()` stands in for the current-password comparison) and one
+  code-cost check (`otp_service.burn_code_check()` when there is no account or no live code). On success,
+  in one transaction: the new hash, `failed_login_attempts = 0`, `locked_until = None`, and
+  `revoke_all_sessions()` - every token AND trusted device, since a reset is what someone does when the
+  account may be in other hands. **Nobody is signed in by it**: the holder signs in with the new password
+  and verifies the device again. `test_password_reset.py` pins the equal cost, the identical replies,
+  the rate limit and the purpose binding.
 
 ### apps/api/routers/users_views.py
 
@@ -976,22 +1002,26 @@ because a trailing-slash distinction is fragile.
 [otp_service.py](../apps/services/otp_service.py) - Postgres-backed OTP store (`OTPCode`,
 `pt_otp_codes`). Never sends anything itself.
 
-- `generate_otp(email)` - `secrets.randbelow(1_000_000)` zero-padded to 6 digits; prunes every expired
-  row; `update_or_create` on the unique lower-cased email with a bcrypt (`rounds=10`) hash, a 10-minute
-  expiry and `attempts=0`, so there is at most one live code per address. Returns the plaintext code
+- `generate_otp(email, purpose)` - `secrets.randbelow(1_000_000)` zero-padded to 6 digits; prunes every
+  expired row; `update_or_create` on (lower-cased email, `purpose`) with a bcrypt (`rounds=10`) hash, a
+  10-minute expiry and `attempts=0`, so there is at most one live code per address **per flow**.
+  `purpose` is an `OTPCode.Purpose` (`login`, `password_change`, `password_reset`) and has no default:
+  a caller must say which flow a code is for. Returns the plaintext code
   to the caller (never log it).
-- `verify_otp(email, code)` - under `select_for_update()` + `atomic()`: missing -> False; expired ->
-  delete, False; increments `attempts` first, and past `_MAX_ATTEMPTS = 5` deletes the row; wrong
+- `verify_otp(email, code, purpose)` - only a code issued for the same `purpose` matches (a sign-in
+  code cannot reset a password, a reset code cannot sign in). Under `select_for_update()` + `atomic()`:
+  missing -> `burn_code_check()`, False; expired -> delete, `burn_code_check()`, False; increments `attempts` first, and past `_MAX_ATTEMPTS = 5` deletes the row; wrong
   code saves the count; correct code deletes the row (single use). `_check_code()` fails closed on a
   corrupt hash.
 
 ### apps/services/password_service.py
 
-[password_service.py](../apps/services/password_service.py) - one function,
-`send_password_change_otp(user)`: `generate_otp()` for the user's own email, builds email 4 with
-`render_email()`, sends it through `device_service._dispatch_email(..., priority=True)` with
-`fail_silently=False` inside a closure that logs failures. Separate from `device_service.py` because it
-is a different concern (an already-authenticated user), even though it shares the OTP store.
+[password_service.py](../apps/services/password_service.py) - the password emails, each sent through
+`device_service._dispatch_email(..., priority=True)` with `fail_silently=False` inside a closure that
+logs failures: `send_password_change_otp(user)` (a `password_change` code, email 4),
+`send_password_reset_otp(user)` (a `password_reset` code for Forgot password) and
+`notify_password_changed(user, how)` (the notice after any change, saying how and when). Separate from
+`device_service.py` because it is a different concern, even though it shares the OTP store.
 
 ### apps/services/device_service.py
 
@@ -1095,7 +1125,7 @@ submodule.
   `activity_log.touch_last_seen()` - a session lasts up to 30 days, so `last_login_at` alone said
   nothing about whether someone used the app this week),
   `failed_login_attempts`, `locked_until`, `token_version`. Declares `is_authenticated`/`is_anonymous`.
-- `OTPCode` (`pt_otp_codes`) - unique `email`, `code_hash`, `expires_at`, `attempts`, `created_at`.
+- `OTPCode` (`pt_otp_codes`) - `email`, `purpose` (`login` / `password_change` / `password_reset`; unique together with `email`, migration `0093`), `code_hash`, `expires_at`, `attempts`, `created_at`.
 - `RevokedRefreshToken` (`pt_revoked_refresh_tokens`) - unique `jti`, `revoked_at`, `expires_at`.
 - `TrustedDevice` (`pt_trusted_devices`) - FK to `PTUser` (cascade), unique `device_token_hash`
   (SHA-256; migration `0015` hashed the previously plaintext tokens in place), `device_name`,

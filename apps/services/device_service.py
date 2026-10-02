@@ -36,7 +36,7 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
 
-from apps.core.models import TrustedDevice
+from apps.core.models import OTPCode, TrustedDevice
 from apps.services.email_service import render_email
 from apps.services.otp_service import generate_otp
 
@@ -305,7 +305,7 @@ def send_device_otp(user) -> str:
     block the login request itself; the frontend only needs
     {status: 'device_verify'} to show the code-entry screen, not delivery
     confirmation."""
-    otp = generate_otp(user.email)
+    otp = generate_otp(user.email, OTPCode.Purpose.LOGIN)
     name = user.full_name or user.email.split("@")[0]
 
     subject = "Your Purchase Tracker Login Verification Code"

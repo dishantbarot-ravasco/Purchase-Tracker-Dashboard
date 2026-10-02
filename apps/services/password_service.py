@@ -14,6 +14,14 @@ Public API
 send_password_change_otp(user) -> None  (OTP emailed on a background thread,
                                           same fire-and-forget shape as
                                           device_service.py's send_device_otp)
+send_password_reset_otp(user) -> None   (the same, for "Forgot password" on
+                                          the sign-in page, 2026-10-02)
+notify_password_changed(user, how) -> None  (a security notice to the
+                                          account holder after any change)
+
+Each code is issued for its own OTPCode.Purpose, so a change code cannot
+reset a password, a reset code cannot change one, and neither signs anyone
+in (apps/services/otp_service.py).
 """
 
 from __future__ import annotations
@@ -22,10 +30,12 @@ import logging
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.utils import timezone
 
 from apps.services.device_service import _dispatch_email
 
 from apps.services.email_service import render_email
+from apps.core.models import OTPCode
 from apps.services.otp_service import generate_otp
 
 log = logging.getLogger(__name__)
@@ -39,7 +49,7 @@ def send_password_change_otp(user) -> None:
     send_device_otp(): the frontend only needs to know a code is on its way,
     not delivery confirmation, so an SMTP round-trip shouldn't block the
     request."""
-    otp = generate_otp(user.email)
+    otp = generate_otp(user.email, OTPCode.Purpose.PASSWORD_CHANGE)
     name = user.full_name or user.email.split("@")[0]
 
     subject = "Confirm Your Purchase Tracker Password Change"
@@ -85,3 +95,56 @@ def send_password_change_otp(user) -> None:
     # priority=True: like the login OTP, a human is sitting and waiting on
     # this code.
     _dispatch_email(_send, priority=True)
+
+
+def _send_to(user, subject, body, what):
+    def _send():
+        try:
+            send_mail(subject=subject, message=body, from_email=settings.DEFAULT_FROM_EMAIL,
+                      recipient_list=[user.email], fail_silently=False)
+        except Exception:
+            log.exception("%s: failed to send email to %s", what, user.email)
+
+    _dispatch_email(_send, priority=True)
+
+
+def send_password_reset_otp(user) -> None:
+    """The "Forgot password" code (2026-10-02): issued for
+    OTPCode.Purpose.PASSWORD_RESET only, emailed to the account's own
+    address. Never says whether the request came from the account holder -
+    anyone can type an email on the sign-in page."""
+    otp = generate_otp(user.email, OTPCode.Purpose.PASSWORD_RESET)
+    name = user.full_name or user.email.split("@")[0]
+    _html_body, body = render_email(
+        greeting=f"Hi {name},",
+        body_paragraphs=[
+            "Someone asked to reset the password for your Ravasco Purchase Tracker account.",
+            "Your one-time reset code is below. It expires in 10 minutes.",
+        ],
+        highlight_value=otp,
+        highlight_label="Reset Code",
+        after_highlight_paragraphs=[
+            "Enter it on the sign-in page with your new password.",
+            "If you did not ask for this, ignore this email - your password stays as it is without the code - "
+            "and tell your administrator.",
+        ],
+    )
+    _send_to(user, "Reset Your Purchase Tracker Password", body, "send_password_reset_otp")
+
+
+def notify_password_changed(user, how: str) -> None:
+    """Tells the account holder their password just changed, so a change they
+    did not make is noticed at once. `how` is a short phrase for the email
+    ("from the sign-in page", "from your account menu")."""
+    name = user.full_name or user.email.split("@")[0]
+    when = timezone.localtime().strftime("%d %b %Y, %H:%M IST")
+    _html_body, body = render_email(
+        greeting=f"Hi {name},",
+        body_paragraphs=[
+            f"The password for your Ravasco Purchase Tracker account was changed {how} on {when}.",
+            "Every session signed in with the old password has been signed out.",
+            "If this was not you, tell your administrator straight away.",
+        ],
+    )
+    _send_to(user, "Your Purchase Tracker Password Was Changed", body, "notify_password_changed")
+

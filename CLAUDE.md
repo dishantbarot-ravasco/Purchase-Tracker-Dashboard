@@ -400,8 +400,14 @@ Read the linked section before breaking any of these. Each is there because it w
   loosen it to accept `/JavaScript`, `/Launch` or embedded files.
   [throttling](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters)
 - The refresh token only travels in the httpOnly cookie. Password change calls
-  `revoke_all_tokens()`; "log out everywhere" calls `revoke_all_sessions()` - keep them separate.
-  [sessions](docs/auth-security-email.md#sessions-and-tokens)
+  `revoke_all_tokens()`; "log out everywhere" and a Forgot-password reset call `revoke_all_sessions()` -
+  keep them separate. [sessions](docs/auth-security-email.md#sessions-and-tokens)
+- **Passwords are the holder's alone (2026-10-02):** admins never set or reset one (`update_user()`
+  refuses `password`); the holder changes it signed in (current password + emailed code) or resets it
+  from the sign-in page (Forgot password). Every emailed code is bound to its `OTPCode.Purpose` -
+  `generate_otp()`/`verify_otp()` take it with no default. The reset endpoints answer identically and
+  at equal bcrypt cost for every address; keep both when changing them (`test_password_reset.py`).
+  [password_views.py](docs/auth-security-email.md#appsapirouterspassword_viewspy)
 - If the bcrypt cost changes, regenerate `_DUMMY_HASH`.
   [throttling](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters)
 - Never `fail_silently=True`; test send failures with `refusing_email_backends.py`, not by

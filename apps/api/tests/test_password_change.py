@@ -18,9 +18,21 @@ class TestChangePasswordRequest:
         user = make_user(email="changeme@ravasco.com", role="viewer")
         client = APIClient()
         client.force_authenticate(user=user)
-        response = client.post("/api/auth/change-password/request")
+        response = client.post("/api/auth/change-password/request", {"currentPassword": "Str0ngPassw0rd!"}, format="json")
         assert response.status_code == 202
-        assert OTPCode.objects.filter(email="changeme@ravasco.com").exists()
+        assert OTPCode.objects.filter(email="changeme@ravasco.com", purpose="password_change").exists()
+
+    def test_a_wrong_current_password_sends_nothing_and_counts_towards_the_lockout(self):
+        """A session left open on someone's desk must not be enough to
+        change the password (2026-10-02)."""
+        user = make_user(email="desk@ravasco.com", role="viewer")
+        client = APIClient()
+        client.force_authenticate(user=user)
+        response = client.post("/api/auth/change-password/request", {"currentPassword": "not-it"}, format="json")
+        assert response.status_code == 400
+        assert not OTPCode.objects.filter(email="desk@ravasco.com").exists()
+        user.refresh_from_db()
+        assert user.failed_login_attempts == 1
 
     def test_request_requires_authentication(self):
         client = APIClient()
@@ -35,22 +47,18 @@ class TestChangePasswordConfirm:
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
-    def _request_otp(self):
-        self.client.post("/api/auth/change-password/request")
-        return OTPCode.objects.get(email=self.user.email)
-
     def _real_otp_code(self):
         """generate_otp() only stores a bcrypt hash - recover the plaintext
         the same way otp_service.py's own tests must: call generate_otp()
         directly rather than trying to reverse the hash."""
         from apps.services.otp_service import generate_otp
-        return generate_otp(self.user.email)
+        return generate_otp(self.user.email, "password_change")
 
     def test_confirm_with_correct_otp_changes_password(self):
         code = self._real_otp_code()
         response = self.client.post(
             "/api/auth/change-password/confirm",
-            {"otp": code, "newPassword": "BrandNewPassw0rd!"},
+            {"otp": code, "newPassword": "BrandNewPassw0rd!", "confirmPassword": "BrandNewPassw0rd!"},
             format="json",
         )
         assert response.status_code == 200
@@ -62,7 +70,7 @@ class TestChangePasswordConfirm:
         old_hash = self.user.password_hash
         response = self.client.post(
             "/api/auth/change-password/confirm",
-            {"otp": "000000", "newPassword": "BrandNewPassw0rd!"},
+            {"otp": "000000", "newPassword": "BrandNewPassw0rd!", "confirmPassword": "BrandNewPassw0rd!"},
             format="json",
         )
         assert response.status_code == 400
@@ -73,7 +81,7 @@ class TestChangePasswordConfirm:
         code = self._real_otp_code()
         response = self.client.post(
             "/api/auth/change-password/confirm",
-            {"otp": code, "newPassword": "1234567890"},
+            {"otp": code, "newPassword": "1234567890", "confirmPassword": "1234567890"},
             format="json",
         )
         assert response.status_code == 400
@@ -87,32 +95,58 @@ class TestChangePasswordConfirm:
         strength check - so a rejected password cost the user their code."""
         code = self._real_otp_code()
         weak = self.client.post("/api/auth/change-password/confirm",
-                                {"otp": code, "newPassword": "1234567890"}, format="json")
+                                {"otp": code, "newPassword": "1234567890", "confirmPassword": "1234567890"}, format="json")
         assert weak.status_code == 400
         retry = self.client.post("/api/auth/change-password/confirm",
-                                 {"otp": code, "newPassword": "BrandNewPassw0rd!"}, format="json")
+                                 {"otp": code, "newPassword": "BrandNewPassw0rd!", "confirmPassword": "BrandNewPassw0rd!"}, format="json")
         assert retry.status_code == 200
 
     def test_confirm_otp_is_single_use(self):
         code = self._real_otp_code()
         first = self.client.post(
             "/api/auth/change-password/confirm",
-            {"otp": code, "newPassword": "FirstNewPassw0rd!"},
+            {"otp": code, "newPassword": "FirstNewPassw0rd!", "confirmPassword": "FirstNewPassw0rd!"},
             format="json",
         )
         assert first.status_code == 200
         second = self.client.post(
             "/api/auth/change-password/confirm",
-            {"otp": code, "newPassword": "SecondNewPassw0rd!"},
+            {"otp": code, "newPassword": "SecondNewPassw0rd!", "confirmPassword": "SecondNewPassw0rd!"},
             format="json",
         )
         assert second.status_code == 400
+
+    def test_a_confirmation_that_does_not_match_is_refused_and_the_code_kept(self):
+        code = self._real_otp_code()
+        res = self.client.post("/api/auth/change-password/confirm",
+                               {"otp": code, "newPassword": "BrandNewPassw0rd!", "confirmPassword": "BrandNewPassw0rd?"},
+                               format="json")
+        assert res.status_code == 400
+        retry = self.client.post("/api/auth/change-password/confirm",
+                                 {"otp": code, "newPassword": "BrandNewPassw0rd!", "confirmPassword": "BrandNewPassw0rd!"},
+                                 format="json")
+        assert retry.status_code == 200
+
+    def test_the_current_password_is_refused_as_the_new_one(self):
+        code = self._real_otp_code()
+        res = self.client.post("/api/auth/change-password/confirm",
+                               {"otp": code, "newPassword": "Str0ngPassw0rd!", "confirmPassword": "Str0ngPassw0rd!"},
+                               format="json")
+        assert res.status_code == 400
+
+    def test_a_reset_code_cannot_change_a_password(self):
+        from apps.services.otp_service import generate_otp
+        code = generate_otp(self.user.email, "password_reset")
+        res = self.client.post("/api/auth/change-password/confirm",
+                               {"otp": code, "newPassword": "BrandNewPassw0rd!", "confirmPassword": "BrandNewPassw0rd!"},
+                               format="json")
+        assert res.status_code == 400
 
     def test_confirm_requires_authentication(self):
         client = APIClient()
         response = client.post(
             "/api/auth/change-password/confirm",
-            {"otp": "123456", "newPassword": "BrandNewPassw0rd!"},
+            {"otp": "123456", "newPassword": "BrandNewPassw0rd!", "confirmPassword": "BrandNewPassw0rd!"},
             format="json",
         )
         assert response.status_code == 401

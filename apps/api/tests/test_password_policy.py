@@ -61,29 +61,3 @@ class TestCreateUserPasswordStrength:
         )
         assert response.status_code == 201
         assert PTUser.objects.filter(email="reasonable@ravasco.com").exists()
-
-
-@pytest.mark.django_db
-class TestUpdateUserPasswordStrength:
-    def setup_method(self):
-        self.client = APIClient()
-        self.admin = make_user(email="admin2@ravasco.com", role="admin")
-        self.client.force_authenticate(user=self.admin)
-        self.target = make_user(email="target@ravasco.com", role="viewer")
-
-    def test_rejects_weak_password_reset(self):
-        old_hash = self.target.password_hash
-        response = self.client.patch(
-            f"/api/auth/users/{self.target.user_id}", {"password": "weak1"}, format="json"
-        )
-        assert response.status_code == 400
-        self.target.refresh_from_db()
-        assert self.target.password_hash == old_hash
-
-    def test_accepts_strong_password_reset(self):
-        response = self.client.patch(
-            f"/api/auth/users/{self.target.user_id}", {"password": "N3wStrongPassword!"}, format="json"
-        )
-        assert response.status_code == 200
-        self.target.refresh_from_db()
-        assert self.target.password_hash  # changed, don't assert exact hash

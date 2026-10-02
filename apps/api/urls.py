@@ -47,6 +47,10 @@ urlpatterns = [
     # Self-service "Change Password", OTP-gated like new-device login
     path("auth/change-password/request", password_views.request_password_change, name="change-password-request"),
     path("auth/change-password/confirm", password_views.confirm_password_change, name="change-password-confirm"),
+    # "Forgot password" on the sign-in page (2026-10-02) - signed out, under
+    # /api/auth/ so SelectiveGZipMiddleware never compresses it.
+    path("auth/password-reset/request", password_views.request_password_reset, name="password-reset-request"),
+    path("auth/password-reset/confirm", password_views.confirm_password_reset, name="password-reset-confirm"),
     # Admin Panel Overview tab - top correctors/vendors + recent activity
     path("auth/admin-overview", admin_overview_views.admin_overview, name="admin-overview"),
 

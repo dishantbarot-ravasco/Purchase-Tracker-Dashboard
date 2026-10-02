@@ -1,12 +1,10 @@
 <!--
   login.html - Sign-in page for the Purchase Tracker Dashboard.
 
-  Visual design ported from the TDS Automation App's frontend/index.html
-  (split hero/login-card layout, navy/gold theme, Ravasco logo) so both
-  internal apps share one look. The underlying form/element IDs are
-  unchanged from before this pass - js/login.js still drives this page
-  exactly as it did (password step -> optional email-OTP device-verify
-  step -> redirect), only the markup/styling around them changed.
+  Redesigned 2026-10-02: a short brand panel on the left (hidden on narrow
+  screens) and one light card on the right showing ONE step at a time -
+  sign in, new-device verification, or Forgot password's two steps (email,
+  then code + new password twice). js/login.js's showStep() swaps them.
 
   Served directly by WhiteNoise from frontend/ (no Django route/template
   rendering for this file - see config/urls.py), so asset paths below are
@@ -29,128 +27,136 @@
 </head>
 <body class="login-body">
 
-  <div class="login-bg">
+  <main class="login-bg">
 
-    <!-- ── Left hero panel ── -->
-    <div class="login-hero">
+    <!-- ── Left panel: the product in one sentence (hidden on narrow screens) ── -->
+    <aside class="login-hero" aria-hidden="true">
       <div class="hero-logo-badge">
-        <img src="img/indus_logo.png" alt="Ravasco" class="hero-logo-img" data-hide-on-error>
+        <img src="img/indus_logo.png" alt="" class="hero-logo-img" data-hide-on-error>
       </div>
-
       <div class="hero-body">
         <h2>Purchase Order<br>Tracking &amp; <span>Reconciliation</span></h2>
-        <p>Reconcile Purchase Orders, MIR, and Raw Material Stock across every plant - accurately, and in one place.</p>
-        <div class="hero-pillars">
-          <div class="hero-pillar"><div class="hero-pillar-dot"></div>PO &harr; MIR &harr; Stock matching, vendor-gated</div>
-          <div class="hero-pillar"><div class="hero-pillar-dot"></div>HRS, RTP-Achhad, and RTP-Vapi in one dashboard</div>
-          <div class="hero-pillar"><div class="hero-pillar-dot"></div>Role-based access - by plant and by page</div>
-          <div class="hero-pillar"><div class="hero-pillar-dot"></div>Synced directly from Google Drive source files</div>
-        </div>
+        <p>Purchase orders, MIR and raw material stock for HRS, RTP-Achhad and RTP-Vapi, in one place.</p>
       </div>
+      <div class="hero-foot-text">Ravasco Transmission and Packing Limited</div>
+    </aside>
 
-      <div class="hero-foot">
-        <div class="hero-foot-text">Ravasco Transmission and Packing Limited</div>
-      </div>
-    </div>
-
-    <!-- ── Right login panel ── -->
-    <div class="login-right">
+    <!-- ── Right panel: one card, one step at a time ── -->
+    <section class="login-right">
       <div class="login-panel">
 
         <div class="login-brand">
           <img src="img/indus_logo.png" alt="Ravasco" class="login-brand-logo" data-hide-on-error>
           <h1>Purchase Tracker</h1>
-          <p>Ravasco Transmission and Packing Limited</p>
         </div>
 
         <div class="login-card">
-          <div class="login-card-header">
-            <h2 id="cardTitle">Sign In</h2>
-            <p id="cardSub">Use your company account credentials</p>
+          <div class="login-card-head">
+            <h2 id="cardTitle">Sign in</h2>
+            <p id="cardSub">Use your Ravasco work account</p>
           </div>
 
-          <div class="login-card-body">
+          <div class="login-notice" id="loginNotice" role="status" hidden></div>
+          <div class="login-error" id="loginError" role="alert"></div>
 
-            <!-- ── Step 1: Email + Password ── -->
-            <form id="passwordStep">
-              <div class="form-group">
-                <label class="form-label" for="email">Email Address</label>
-                <div class="login-input-wrap">
-                  <span class="input-icon">&#9993;</span>
-                  <input type="email" id="email" name="email" class="form-control" placeholder="you@ravasco.com" autocomplete="username" required>
-                </div>
+          <!-- ── Step 1: email + password ── -->
+          <form id="passwordStep" novalidate>
+            <div class="form-group">
+              <label class="form-label" for="email">Email</label>
+              <input type="email" id="email" name="email" class="form-control" placeholder="you@ravasco.com" autocomplete="username" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="password">Password</label>
+              <div class="login-input-wrap has-toggle">
+                <input type="password" id="password" name="password" class="form-control" autocomplete="current-password" required>
+                <button type="button" class="pw-toggle" data-pw-target="password" aria-label="Show password" title="Show password">&#128065;</button>
               </div>
-              <div class="form-group">
-                <label class="form-label" for="password">Password</label>
-                <div class="login-input-wrap has-toggle">
-                  <span class="input-icon">&#128274;</span>
-                  <input type="password" id="password" name="password" class="form-control" placeholder="••••••••" autocomplete="current-password" required>
-                  <button type="button" class="pw-toggle" data-pw-target="password" aria-label="Show password" title="Show password">&#128065;</button>
-                </div>
+            </div>
+            <div class="login-options">
+              <label class="form-check">
+                <input type="checkbox" id="rememberMe" class="form-check-input">
+                <span class="form-check-label">Remember me</span>
+              </label>
+              <button type="button" class="login-link" id="forgotLink">Forgot password?</button>
+            </div>
+            <button type="submit" class="login-btn" id="signInBtn">Sign in</button>
+            <div class="login-divider">or</div>
+            <a href="/api/auth/google/login/" class="google-btn">
+              <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+              </svg>
+              Continue with Google
+            </a>
+          </form>
+
+          <!-- ── Step 2: new-device verification (login.js's showStep('otp')) ── -->
+          <form id="otpStep" novalidate hidden>
+            <div class="form-group">
+              <label class="form-label" for="otpCode">Verification code</label>
+              <input type="text" id="otpCode" class="form-control code-input" placeholder="000000" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
+            </div>
+            <button type="submit" class="login-btn" id="verifyBtn">Verify and sign in</button>
+            <div class="login-links">
+              <button type="button" class="login-link" id="resendCode">Resend code</button>
+              <button type="button" class="login-link" data-back>Back to sign in</button>
+            </div>
+          </form>
+
+          <!-- ── Forgot password, step 1: which account ── -->
+          <form id="resetRequestStep" novalidate hidden>
+            <div class="form-group">
+              <label class="form-label" for="resetEmail">Email</label>
+              <input type="email" id="resetEmail" class="form-control" placeholder="you@ravasco.com" autocomplete="username" required>
+            </div>
+            <button type="submit" class="login-btn" id="resetSendBtn">Send reset code</button>
+            <div class="login-links">
+              <button type="button" class="login-link" data-back>Back to sign in</button>
+            </div>
+          </form>
+
+          <!-- ── Forgot password, step 2: code + new password ── -->
+          <form id="resetConfirmStep" novalidate hidden>
+            <div class="form-group">
+              <label class="form-label" for="resetCode">Reset code</label>
+              <input type="text" id="resetCode" class="form-control code-input" placeholder="000000" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="resetNew">New password</label>
+              <div class="login-input-wrap has-toggle">
+                <input type="password" id="resetNew" class="form-control" autocomplete="new-password" required>
+                <button type="button" class="pw-toggle" data-pw-target="resetNew" aria-label="Show password" title="Show password">&#128065;</button>
               </div>
-
-              <div class="login-options">
-                <label class="form-check">
-                  <input type="checkbox" id="rememberMe" class="form-check-input">
-                  <span class="form-check-label">Remember me</span>
-                </label>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="resetConfirm">Confirm new password</label>
+              <div class="login-input-wrap has-toggle">
+                <input type="password" id="resetConfirm" class="form-control" autocomplete="new-password" required>
+                <button type="button" class="pw-toggle" data-pw-target="resetConfirm" aria-label="Show password" title="Show password">&#128065;</button>
               </div>
-
-              <button type="submit" class="login-btn" id="signInBtn">Sign In</button>
-
-              <div class="login-divider">or continue with</div>
-              <a href="/api/auth/google/login/" class="google-btn">
-                <svg width="18" height="18" viewBox="0 0 48 48">
-                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.35-8.16 2.35-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-                </svg>
-                Sign in with Google
-              </a>
-
-              <div class="login-error" id="loginError"></div>
-            </form>
-
-            <!-- ── Step 2: Device Verification (new device) ──
-                 Starts hidden - js/login.js's showOtpStep()/showPasswordStep()
-                 toggle both forms' `hidden` attribute (via the .hidden IDL
-                 property) after a password-step submit returns
-                 status:'device_verify', or on the Google OAuth redirect's
-                 own ?step=device_verify. -->
-            <form id="otpStep" hidden>
-              <div class="otp-intro">
-                <div class="otp-icon">&#128231;</div>
-                <p class="otp-hint">Enter the 6-digit code sent to your email.<br>It expires in 10 minutes.</p>
-              </div>
-
-              <div class="form-group">
-                <label class="form-label" for="otpCode">Verification Code</label>
-                <input type="text" id="otpCode" class="form-control" placeholder="123456" inputmode="numeric" maxlength="6" autocomplete="one-time-code" required>
-              </div>
-
-              <button type="submit" class="login-btn" id="verifyBtn">Verify &amp; Sign In</button>
-              <div class="text-center">
-                <span class="login-back" id="resendCode">Resend code</span>
-                &nbsp;&middot;&nbsp;
-                <span class="login-back" id="backToLogin">&larr; Back to sign in</span>
-              </div>
-            </form>
-
-          </div>
-
-          <div class="login-footer">
-            <div class="iso-ribbon">&#10003; ISO 9001:2015 Certified</div>
-            <div>Internal use only - Ravasco Transmission and Packing Limited</div>
-            <div class="privacy-note">Sign-ins and changes in this app are recorded for security and audit, and kept for a limited time. Google sign-in shares only your verified work email.</div>
-            <div class="secure-badge">Secured with JWT &middot; Device-verified sign-in</div>
-          </div>
+            </div>
+            <ul class="pw-rules" id="resetRules" aria-live="polite">
+              <li data-rule="length">At least 10 characters</li>
+              <li data-rule="digits">Not only numbers</li>
+              <li data-rule="email">Not your email name</li>
+              <li data-rule="match">Both entries match</li>
+            </ul>
+            <button type="submit" class="login-btn" id="resetConfirmBtn">Reset password</button>
+            <div class="login-links">
+              <button type="button" class="login-link" id="resetResend">Send a new code</button>
+              <button type="button" class="login-link" data-back>Back to sign in</button>
+            </div>
+          </form>
         </div>
 
+        <p class="login-foot">Internal use only &middot; ISO 9001:2015 certified<br>
+          Sign-ins and changes are recorded for security and audit. Google sign-in shares only your work email.</p>
       </div>
-    </div>
+    </section>
 
-  </div>
+  </main>
 
   <button type="button" id="themeToggleBtn" class="theme-toggle-btn"></button>
   <script src="js/login-theme-toggle.js"></script>

@@ -731,11 +731,11 @@ Configuration is `pyproject.toml` plus these:
 | test_models_package.py | no | `apps/core/models/` package re-exports every model. |
 | test_no_em_dashes.py | no | No em dash in any text file in the repo (code, docs, config; skips `.venv`, migrations, `staticfiles`). |
 | test_oauth_lockout_and_error_leak.py | yes | Google OAuth respects lockout; exception handler does not leak internals. |
-| test_password_change.py | yes | OTP-gated self-service password change. |
+| test_password_change.py | yes | Self-service password change: the current password required (a wrong one sends nothing and counts towards the lockout), the confirmation must match, the current password refused, a reset code refused, OTP single-use. |
 | test_password_change_revokes_sessions.py | yes | Password change/reset revokes other sessions, keeps device trust. |
 | test_password_policy.py | yes | Password strength policy on create/reset. |
 | test_password_policy_is_stated_consistently.py | no | Every stated password minimum matches the enforced one. |
-| test_password_reset.py | yes | Admin password reset via `update_user()`. |
+| test_password_reset.py | yes | Forgot password: identical replies for known, unknown and outside addresses, a code only for an active account, 5 requests an hour per address, a reset that sets the password, clears the lockout and revokes every session and device without signing in, identical answers and equal bcrypt cost on every failing path, single-use codes, a mismatch or weak password not spending the code, the current password refused, codes bound to their purpose, and admins refused a `password` field. |
 | test_po_status_inputs.py | yes | Line-item fields the frontend's `computeStatus()` depends on. |
 | test_prune_revoked_tokens.py | yes | `prune_revoked_tokens` deletes only expired rows. |
 | test_import_po_receipt_status.py | yes | The import list endpoint's `materialInwarded` / `partialDelivery` / `deliveryDateStatus` over real match rows - cleared but not in MIR, short, over, dismissed, BOE short - and a shared receipt counting only its `receiptShare`. |

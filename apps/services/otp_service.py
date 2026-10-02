@@ -9,9 +9,11 @@ Security design
 - OTP codes are 6-digit strings generated with secrets.randbelow (CSPRNG).
 - Only the bcrypt HASH of the code is stored in the DB - never the
   plaintext. Even direct DB access cannot reveal a valid code.
-- One active OTP per email: `email` is a unique DB column and generate_otp()
-  upserts it in a single atomic update_or_create(), so concurrent requests
-  for the same address can't create duplicate rows.
+- One active OTP per email and PURPOSE (2026-10-02): (email, purpose) is
+  unique and generate_otp() upserts it in a single atomic update_or_create(),
+  so concurrent requests can't create duplicate rows. verify_otp() only
+  matches a code issued for the same purpose - a new-device sign-in code
+  cannot reset a password, and a reset code cannot sign anyone in.
 - expires_at is a timezone-aware UTC datetime, enforced in Python before
   attempting bcrypt verification.
 - Attempt counter increments on each wrong guess; at MAX_ATTEMPTS the row is
@@ -83,9 +85,21 @@ def _check_code(code: str, hashed: str) -> bool:
         return False
 
 
+# A real bcrypt hash at the codes' own cost (rounds=10), checked when there
+# is no live code to check, so a missing or expired code costs as much time
+# as a wrong one - the signed-out password reset must not reveal, by its
+# timing, which addresses have a code pending (2026-10-02).
+_DUMMY_CODE_HASH = bcrypt.hashpw(b"no-code", bcrypt.gensalt(rounds=10)).decode()
+
+
+def burn_code_check(code: str) -> None:
+    """Spend one code check's worth of time and match nothing."""
+    _check_code(str(code or ""), _DUMMY_CODE_HASH)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def generate_otp(email: str) -> str:
+def generate_otp(email: str, purpose: str) -> str:
     """Generate a cryptographically secure 6-digit OTP, persist its hash to
     the DB, and return the plaintext code (which gets emailed to the user by
     the caller - this function never sends anything itself).
@@ -112,6 +126,7 @@ def generate_otp(email: str) -> str:
         # create pattern was vulnerable to - see verify_otp()'s .get()).
         OTPCode.objects.update_or_create(
             email=key,
+            purpose=purpose,
             defaults={
                 "code_hash": _hash_code(code),
                 "expires_at": now + timedelta(minutes=_OTP_TTL_MINUTES),
@@ -119,11 +134,11 @@ def generate_otp(email: str) -> str:
             },
         )
 
-    log.info("OTP generated for %s (expires in %d min)", email, _OTP_TTL_MINUTES)
+    log.info("OTP generated for %s (%s, expires in %d min)", email, purpose, _OTP_TTL_MINUTES)
     return code
 
 
-def verify_otp(email: str, code: str) -> bool:
+def verify_otp(email: str, code: str, purpose: str) -> bool:
     """True if `code` matches the stored hash for `email` and the OTP has
     not expired, been used, or exceeded the attempt limit.
 
@@ -147,8 +162,9 @@ def verify_otp(email: str, code: str) -> bool:
     # for the duration of the whole check-and-increment closes that.
     with transaction.atomic():
         try:
-            entry = OTPCode.objects.select_for_update().get(email=key)
+            entry = OTPCode.objects.select_for_update().get(email=key, purpose=purpose)
         except OTPCode.DoesNotExist:
+            burn_code_check(code)
             log.debug("verify_otp: no OTP found for %s", key)
             return False
 
@@ -161,6 +177,7 @@ def verify_otp(email: str, code: str) -> bool:
 
         if now > entry.expires_at:
             entry.delete()
+            burn_code_check(code)
             log.debug("verify_otp: OTP expired for %s", key)
             return False
 

@@ -27,7 +27,7 @@ from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 
 from apps.api.auth_serializers import PTTokenObtainPairSerializer
-from apps.core.models import PTUser
+from apps.core.models import OTPCode, PTUser
 from apps.services.device_service import (
     notify_admins_new_device_login,
     register_device,
@@ -90,7 +90,7 @@ def device_verify(request):
     except PTUser.DoesNotExist:
         return Response({"detail": "User not found or inactive."}, status=400)
 
-    if not verify_otp(user.email, code):
+    if not verify_otp(user.email, code, OTPCode.Purpose.LOGIN):
         log.warning("device_verify: wrong or expired code for user_id=%s", user_id)
         return Response({"detail": "Invalid or expired code. Please try again."}, status=400)
 

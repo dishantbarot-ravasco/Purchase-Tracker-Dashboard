@@ -411,6 +411,9 @@ REST_FRAMEWORK = {
         # Self-service "Change Password" (apps/api/routers/password_views.py)
         # - requesting a fresh code, same cadence as login's own throttle.
         "password_change_request": "5/minute",
+        # "Forgot password" (password_views.py): codes requested per email
+        # address an hour - each one is an email to a real mailbox.
+        "password_reset_request": "5/hour",
     },
 }
 

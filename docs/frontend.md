@@ -460,7 +460,7 @@ Skip links and `role="main"` are on all five protected pages (not `login.html`),
 | `mir.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `mir-page.js` |
 | `po-files.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `doc-files.js`, `po-files-page.js` |
 | `stock.html` | WhiteNoise | `brand.css`, `style.css`, `mir-page.css`, `stock-page.css` | `theme-init.js`; `auth.js`, `shared.js`, `stock-page.js` |
-| `login.html` (footer `.privacy-note`: what is recorded, and that Google shares only the work email) | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
+| `login.html` (one card, one step at a time - sign in, new-device code, Forgot password's two steps; `.login-foot` under the card says what is recorded and that Google shares only the work email) | WhiteNoise | `brand.css`, `login-page.css` | `theme-init.js`; `login-theme-toggle.js`, `login.js` (no `auth.js`/`shared.js`) |
 
 Every protected page has the same static `.topnav` markup (brand link, `#navTabs`, `#navUser`) that
 `auth.js` fills, a skip link, and a `role="main" tabindex="-1"` container. `index.html`'s `#root` is
@@ -571,9 +571,10 @@ few module-level variables for the correction box and modal a11y.
   Enter/Space activation for div-based controls, and a capture-phase click that stops a click on
   `.info-tooltip` from also toggling the KPI card around it.
 - **Change password:** `openChangePasswordModal()` builds and removes its own `#cpwOverlay` (most
-  pages have no `#modalBackdrop`); POST `/api/auth/change-password/request`, then
-  `/api/auth/change-password/confirm` with `{otp, newPassword}`; client check is length >= 10 and
-  match.
+  pages have no `#modalBackdrop`); current password, new password and confirmation, then POST
+  `/api/auth/change-password/request` with `{currentPassword}` (a wrong one shows the server's message),
+  then `/api/auth/change-password/confirm` with `{otp, newPassword, confirmPassword}`; client checks are
+  length >= 10, match, and different from the current one.
 - **KPIs for home/admin:** `animateCountUp(el, target, opts)` (skips animation under
   `prefers-reduced-motion`), `wireKpiCountUps(root)` (reads `data-count-target`/`data-count-fmt`
   `inr`/`locale`/`int` on `.kpi-card .val`), and `loadKpis()`: GET `/purchase-orders` for every
@@ -1561,9 +1562,18 @@ with `act` / `ACT_` (one global scope with `auth.js`, `shared.js`, `admin-page.j
 
 ### frontend/js/login.js
 
-Drives `login.html` without `auth.js` or `shared.js`, using plain `fetch` via `postJson()`. Password
-step POST `/api/auth/login` (`status: 'ok'` -> `/home.html`, `device_verify` -> OTP step); OTP step
-POST `/api/auth/device-verify`; "Resend code" re-posts the login. `handleOAuthRedirect()` reads
+Drives `login.html` without `auth.js` or `shared.js`, using plain `fetch` via `postJson()`. One card
+shows one step at a time: `showStep(name, sub)` over `STEPS` (`password`, `otp`, `resetRequest`,
+`resetConfirm`) swaps the form, title and subtitle, and clears every code and new-password field on each
+switch. Password step POST `/api/auth/login` (`status: 'ok'` -> `/home.html`, `device_verify` -> OTP
+step); OTP step POST `/api/auth/device-verify`; "Resend code" re-posts the login. **Forgot password**
+(2026-10-02): "Forgot password?" opens `resetRequest` with the typed email; it POSTs
+`/api/auth/password-reset/request` and shows the server's own "if that address has an account" wording
+(never confirming an account); `resetConfirm` takes the code and the new password twice, with a live
+checklist (`RESET_RULES` / `updateResetRules()`: 10+ characters, not only digits, not the email name,
+matching - the server's rules, checked again there), POSTs `/password-reset/confirm`, and returns to
+the password step with a green `#loginNotice`. "Send a new code" is disabled for 30 seconds after a
+send. `[data-back]` buttons return to sign-in. `handleOAuthRedirect()` reads
 `?oauth_error=` (messages in `OAUTH_ERROR_MESSAGES`), `?step=device_verify`, or `?oauth_ready=1`
 (one GET `/api/auth/google/session-token` to consume the server-side stash; the Google button is a
 plain link to `/api/auth/google/login/`). "Remember me" hands the credential to the browser's own

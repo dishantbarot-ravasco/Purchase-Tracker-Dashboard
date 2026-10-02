@@ -397,15 +397,10 @@ function openForm(user) {
   renderPlantsCheckboxes(user ? user.plants : []);
   renderPermissionCheckboxes(user ? user.permissions : []);
   updatePlantsRowVisibility();
-  // Password row now stays visible in edit mode too (added 2026-09-04,
-  // in-app reset) - just optional there: label/hint/required-asterisk
-  // swap to make "blank = leave unchanged" obvious.
-  document.getElementById('uf-pw-label').innerHTML = edit
-    ? 'New Password <span class="text-muted fw-400">(leave blank to keep current)</span>'
-    : 'Password <span class="req-mark">*</span>';
-  document.getElementById('uf-pw-hint').textContent = edit
-    ? 'Only fill this in to reset the password - leave it blank to leave the current password untouched.'
-    : 'Share this password with the user directly, or ask them to use "Change Password" from their own account menu afterwards.';
+  // A password only when creating an account (2026-10-02): admins never
+  // reset one - the holder does, with Forgot password on the sign-in page
+  // (users_views.py refuses a `password` on update).
+  document.getElementById('uf-pw-row').hidden = edit;
   document.getElementById('uf-active-row').hidden = !edit;
   if (edit) document.getElementById('uf-active').value = String(user.isActive);
   // Trusted Devices: only meaningful for an existing account (a new
@@ -506,10 +501,6 @@ async function submitForm() {
     // admin typing a 9-character password passed this check and then got a
     // 400 from the server contradicting what the form had just told them.
     if (password.length < 10) { return showFormError('Password must be at least 10 characters.'); }
-  } else if (password && password.length < 10) {
-    // Blank is fine (means "don't change it") - only validate length
-    // when the admin actually typed a new one.
-    return showFormError('Password must be at least 10 characters.');
   }
 
   const btn = document.getElementById('uf-submit');
@@ -518,7 +509,6 @@ async function submitForm() {
   try {
     if (editingUserId) {
       const payload = { fullName, designation, role, isActive, plants, permissions };
-      if (password) payload.password = password;
       await patchUser(editingUserId, payload);
       showToast('User updated.', 'success');
     } else {

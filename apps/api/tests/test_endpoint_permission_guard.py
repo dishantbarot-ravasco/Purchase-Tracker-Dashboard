@@ -78,6 +78,8 @@ NOT_PERMISSION_GATED = {
     ("google_oauth_views.py", "oauth_session_token"): "Sign-in step, before any account is known.",
     ("password_views.py", "request_password_change"): "Self-service: changing your own password.",
     ("password_views.py", "confirm_password_change"): "Self-service: changing your own password.",
+    ("password_views.py", "request_password_reset"): "Forgot password on the sign-in page, before any account is known.",
+    ("password_views.py", "confirm_password_reset"): "Forgot password on the sign-in page, before any account is known.",
     ("preferences_views.py", "presets"): "Self-service: the caller's own saved sort presets.",
     ("preferences_views.py", "preset"): "Self-service: the caller's own saved sort presets.",
     ("activity_views.py", "page_view"): "Records the caller's own page visit; returns nothing.",

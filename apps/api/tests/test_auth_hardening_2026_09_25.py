@@ -24,28 +24,28 @@ class TestDailyCodeCap:
     def test_fresh_codes_do_not_reset_the_daily_failures(self):
         user = make_user(email="cap@ravasco.com")
         for _ in range(otp_service._MAX_DAILY_FAILURES // 5):
-            otp_service.generate_otp(user.email)
+            otp_service.generate_otp(user.email, "login")
             for _ in range(5):
-                assert otp_service.verify_otp(user.email, "000000") is False
+                assert otp_service.verify_otp(user.email, "000000", "login") is False
         # 20 wrong codes across four fresh codes: now even the RIGHT code of a
         # brand-new one is refused.
-        code = otp_service.generate_otp(user.email)
-        assert otp_service.verify_otp(user.email, code) is False
+        code = otp_service.generate_otp(user.email, "login")
+        assert otp_service.verify_otp(user.email, code, "login") is False
 
     def test_the_window_ends_after_a_day(self):
         user = make_user(email="win@ravasco.com")
         type(user).objects.filter(pk=user.pk).update(
             otp_failed_attempts=otp_service._MAX_DAILY_FAILURES,
             otp_failures_since=timezone.now() - datetime.timedelta(hours=25))
-        code = otp_service.generate_otp(user.email)
-        assert otp_service.verify_otp(user.email, code) is True
+        code = otp_service.generate_otp(user.email, "login")
+        assert otp_service.verify_otp(user.email, code, "login") is True
 
     def test_a_right_code_clears_the_count(self):
         user = make_user(email="ok@ravasco.com")
-        otp_service.generate_otp(user.email)
-        otp_service.verify_otp(user.email, "000000")
-        code = otp_service.generate_otp(user.email)
-        assert otp_service.verify_otp(user.email, code) is True
+        otp_service.generate_otp(user.email, "login")
+        otp_service.verify_otp(user.email, "000000", "login")
+        code = otp_service.generate_otp(user.email, "login")
+        assert otp_service.verify_otp(user.email, code, "login") is True
         user.refresh_from_db()
         assert user.otp_failed_attempts == 0
 

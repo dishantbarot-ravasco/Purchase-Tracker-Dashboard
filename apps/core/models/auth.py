@@ -106,19 +106,27 @@ class PTUser(models.Model):
 
 
 class OTPCode(models.Model):
-    """One active email-OTP row per address (login 2FA on a new device).
+    """One active email-OTP row per address AND purpose (2026-10-02): a code
+    sent to sign in on a new device, to change a password, or to reset a
+    forgotten one only ever verifies for that same purpose, so a code
+    requested for one flow can never complete another.
 
     Security design (identical to the TDS app's OTPCode - see
     apps/services/otp_service.py): code_hash is a bcrypt hash, never the
     plaintext code; expires_at enforces a 10-minute TTL; attempts increments
     per wrong guess and the row is deleted at the cap; deleted on a
     successful verify (single-use); generate_otp() deletes any existing row
-    for that email first (one active code at a time). `email` is unique at
-    the DB level - generate_otp() wraps its delete-then-create in a single
-    atomic, locked transaction so two concurrent requests for the same email
+    for that email and purpose first (one active code per flow at a time).
+    (email, purpose) is unique at the DB level, so two concurrent requests
     can't both insert a row and make verify_otp()'s lookup ambiguous."""
 
-    email = models.EmailField(unique=True)
+    class Purpose(models.TextChoices):
+        LOGIN = "login", "Sign-in on a new device"
+        PASSWORD_CHANGE = "password_change", "Password change (signed in)"
+        PASSWORD_RESET = "password_reset", "Forgotten password reset"
+
+    email = models.EmailField()
+    purpose = models.CharField(max_length=20, choices=Purpose.choices, default=Purpose.LOGIN)
     code_hash = models.CharField(max_length=128)
     expires_at = models.DateTimeField()
     attempts = models.PositiveSmallIntegerField(default=0)
@@ -126,9 +134,10 @@ class OTPCode(models.Model):
 
     class Meta:
         db_table = "pt_otp_codes"
+        constraints = [models.UniqueConstraint(fields=["email", "purpose"], name="uniq_otp_email_purpose")]
 
     def __str__(self):
-        return f"OTP({self.email}, expires={self.expires_at})"
+        return f"OTP({self.email}, {self.purpose}, expires={self.expires_at})"
 
 
 class RevokedRefreshToken(models.Model):

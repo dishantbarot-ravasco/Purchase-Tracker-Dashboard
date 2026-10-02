@@ -262,10 +262,10 @@ document.addEventListener('click', (e) => {
 });
 
 // ── Self-service "Change Password" ──────────────────────────────────────
-// Every role can change their own password, OTP-gated the same way a new-
-// device login is (project owner, 2026-09-07: "add the change password for
-// all the users and add the otp to it for verification like we do for 1st
-// time devices" - see apps/api/routers/password_views.py). Lives here, not
+// Every account can change its own password: the current password, the new
+// one twice, then a code emailed to the account's own address (project
+// owner, 2026-09-07; current password and confirmation checked by the
+// server too since 2026-10-02 - see apps/api/routers/password_views.py). Lives here, not
 // admin-page.js, since the trigger is the user-menu dropdown (auth.js's
 // renderUserBadge()) shared by every protected page - most of which have no
 // #modalBackdrop/#modalBody element at all (that's index.html-only), so
@@ -281,6 +281,13 @@ function changePasswordModalHtml() {
       '<div class="uf-body">' +
         '<div id="cpwErr" class="uf-err"></div>' +
         '<div id="cpwStep1">' +
+          '<div class="uf-row">' +
+            '<label class="uf-label">Current Password</label>' +
+            '<div class="uf-input-wrap">' +
+              '<input id="cpwCurrent" type="password" class="uf-input" autocomplete="current-password">' +
+              '<button type="button" class="pw-toggle" data-pw-target="cpwCurrent" aria-label="Show password" title="Show password">&#128065;</button>' +
+            '</div>' +
+          '</div>' +
           '<div class="uf-row">' +
             '<label class="uf-label">New Password</label>' +
             '<div class="uf-input-wrap">' +
@@ -336,16 +343,23 @@ function openChangePasswordModal() {
 
   async function sendCode() {
     clearErr();
+    const current = document.getElementById('cpwCurrent').value;
     const pw = document.getElementById('cpwNew').value;
     const confirmPw = document.getElementById('cpwConfirm').value;
+    if (!current) return showErr('Enter your current password.');
     if (pw.length < 10) return showErr('Password must be at least 10 characters.');
     if (pw !== confirmPw) return showErr('Passwords do not match.');
+    if (pw === current) return showErr('Choose a password different from the current one.');
     submitBtn.disabled = true;
     submitBtn.textContent = 'Sending…';
     try {
-      const res = await authFetch('/api/auth/change-password/request', { method: 'POST', credentials: 'same-origin' });
+      const res = await authFetch('/api/auth/change-password/request', {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: current }),
+      });
       if (res.status === 401) { window.location.href = '/login.html'; return; }
-      if (!res.ok) throw new Error('Could not send the verification code. Please try again.');
+      const sent = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(sent.detail || 'Could not send the verification code. Please try again.');
       step = 2;
       document.getElementById('cpwStep1').hidden = true;
       document.getElementById('cpwStep2').hidden = false;
@@ -368,7 +382,7 @@ function openChangePasswordModal() {
     try {
       const res = await authFetch('/api/auth/change-password/confirm', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ otp: otp, newPassword: pw }),
+        body: JSON.stringify({ otp: otp, newPassword: pw, confirmPassword: document.getElementById('cpwConfirm').value }),
       });
       if (res.status === 401) { window.location.href = '/login.html'; return; }
       const data = await res.json().catch(() => ({}));
