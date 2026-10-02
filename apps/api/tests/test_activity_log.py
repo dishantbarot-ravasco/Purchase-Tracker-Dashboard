@@ -84,7 +84,7 @@ class TestWhatIsRecorded:
     def test_a_successful_auth_action_keeps_its_own_row_and_is_not_logged_twice(self):
         admin = make_user(email="admin@ravasco.com", role="admin")
         response = _client(admin).post("/api/auth/users/create", {
-            "email": "new@ravasco.com", "fullName": "New Person", "role": "viewer", "password": "An0therStr0ngPass!",
+            "email": "new@ravasco.com", "fullName": "New Person", "role": "user", "password": "An0therStr0ngPass!",
         }, format="json")
         assert response.status_code == 201
 
@@ -124,7 +124,7 @@ class TestWhatIsRecorded:
 
         monkeypatch.setattr(PTAuditLog.objects, "create", broken)
         editor = make_user(email="store@ravasco.com", role="editor")
-        response = _client(editor).post("/api/mir/entries/new", {"plant": "HRS"}, format="json")
+        response = _client(editor).post("/api/mir/entries/new", {"plant": "hrs"}, format="json")
         assert response.status_code == 400
 
 
@@ -299,7 +299,7 @@ class TestLastActive:
     who works every day was last seen weeks ago (owner, 2026-10-01)."""
 
     def test_any_signed_in_request_stamps_last_seen_at_most_every_five_minutes(self):
-        viewer = make_user(email="viewer@ravasco.com")
+        viewer = make_user(email="viewer@ravasco.com", role="editor")
         client = _client(viewer)
         assert client.get("/api/mir/entries").status_code == 200
         viewer.refresh_from_db()

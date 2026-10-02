@@ -1,7 +1,8 @@
 // po-files.html's page script - see po-files.html's header comment. Uses
-// /api/mir/meta for the plant list (canReceive is the same rule as
-// uploading: Editor or Admin at that plant) and doc-files.js for uploading
-// and opening files. The Document picker switches the form between a PO
+// /api/mir/meta for the plant list and for what the account may do (`can`:
+// a PO copy needs PO upload, an import paper Import docs - the same rule
+// document_views.py's KIND_PERMISSION enforces) and doc-files.js for
+// uploading and opening files. The Document picker switches the form between a PO
 // copy and an import paper (BOE, Advance License, RoDTEP scrip), which also
 // needs its own number; the two license kinds take an .xlsx too.
 
@@ -27,7 +28,7 @@ const PO_FILES_KINDS = {
     return;
   }
   const readable = PO_FILES_META.plants.filter(p => p.canRead);
-  const uploadable = PO_FILES_META.plants.filter(p => p.canReceive);
+  const uploadable = poFilesKindsAllowed().length ? readable : [];
   document.getElementById('listPlant').innerHTML = '<option value="">All plants</option>' +
     readable.map(p => '<option value="' + escapeHtml(p.code) + '">' + escapeHtml(p.name) + '</option>').join('');
   if (uploadable.length) {
@@ -35,7 +36,9 @@ const PO_FILES_KINDS = {
       uploadable.map(p => '<option value="' + escapeHtml(p.code) + '">' + escapeHtml(p.name) + '</option>').join('');
     document.getElementById('uploadPanel').hidden = false;
     document.getElementById('uploadForm').addEventListener('submit', ev => { ev.preventDefault(); poFilesUpload(); });
-    document.getElementById('upKind').addEventListener('change', poFilesKindChanged);
+    const kindSelect = document.getElementById('upKind');
+    Array.from(kindSelect.options).forEach(o => { if (!poFilesKindsAllowed().includes(o.value)) o.remove(); });
+    kindSelect.addEventListener('change', poFilesKindChanged);
     poFilesKindChanged();
   }
   let t;
@@ -143,9 +146,15 @@ async function poFilesLoad() {
   }
 }
 
-function poFilesCanWrite(plantCode) {
+/** The kinds of file this account may upload or withdraw. */
+function poFilesKindsAllowed() {
+  const can = (PO_FILES_META && PO_FILES_META.can) || {};
+  return [].concat(can.poUpload ? ['PO'] : [], can.importDocs ? ['BOE', 'ADV_LIC', 'RODTEP'] : []);
+}
+
+function poFilesCanWrite(plantCode, kind) {
   const p = PO_FILES_META.plants.find(x => x.code === plantCode);
-  return !!(p && p.canReceive);
+  return !!(p && p.canRead) && poFilesKindsAllowed().includes(kind);
 }
 
 function poFilesRender() {
@@ -163,7 +172,7 @@ function poFilesRender() {
         escapeHtml(d.fileName) + ', ' + docFileSize(d.sizeBytes) + '</div></td>' +
       '<td>' + escapeHtml(d.uploadedBy) + '<div class="mir-muted">' + escapeHtml(new Date(d.uploadedAt).toLocaleString('en-IN')) + '</div></td>' +
       '<td>' + (d.poInSystem ? 'Yes' : '<span class="mir-muted" title="No PO with this number at this plant yet">Not yet</span>') + '</td>' +
-      '<td>' + (d.status !== 'WITHDRAWN' && poFilesCanWrite(d.plant) ? '<button type="button" class="mir-link" data-withdraw="' + d.id + '">Withdraw</button>' : '') + '</td></tr>' +
+      '<td>' + (d.status !== 'WITHDRAWN' && poFilesCanWrite(d.plant, d.kind) ? '<button type="button" class="mir-link" data-withdraw="' + d.id + '">Withdraw</button>' : '') + '</td></tr>' +
       '<tr class="mir-action-row" data-withdraw-row="' + d.id + '" hidden><td colspan="9"></td></tr>').join('') +
     '</tbody></table></div>';
   docFileBindOpen(area);

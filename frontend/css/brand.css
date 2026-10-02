@@ -355,8 +355,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 /* ── ADMIN PANEL (admin.html) ──────────────────────────────────── */
 .role-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .role-pill.admin { background: var(--gold-pale); color: var(--gold-text); }
-.role-pill.editor { background: var(--blue-pale); color: var(--blue); }
-.role-pill.viewer { background: var(--bg-section); color: var(--text-muted); }
+.role-pill.user { background: var(--blue-pale); color: var(--blue); }
 .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; }
 .dot.on { background: var(--green); } .dot.off { background: var(--border-mid); }
 
@@ -667,8 +666,7 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
 .otp-intro { text-align: center; margin-bottom: 24px; }
 .home-page-wrap { padding-top: 36px; }
 .avatar-role-admin { background: var(--gold-light); color: var(--navy-solid); } /* white on gold was 2.6:1 */
-.avatar-role-editor { background: #1D64C7; } /* fixed: --blue lightens for text in dark mode */
-.avatar-role-viewer { background: var(--navy-mid); }
+.avatar-role-user { background: #1D64C7; } /* fixed: --blue lightens for text in dark mode */
 
 .text-red { color: var(--red); }
 .text-muted { color: var(--text-muted); }
@@ -757,3 +755,10 @@ a:focus-visible, button:focus-visible { outline: 2px solid var(--gold-light); ou
   text-decoration: none;
   font-weight: 600;
 }
+
+/* "No access" panel (auth.js's showNoAccess(), 2026-10-02) - shown in place
+   of a page the signed-in account may not open, on every page. */
+.access-panel { max-width: 640px; margin: 48px auto; padding: 22px 24px; background: var(--bg-card);
+  border: 1px solid var(--gold-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+  color: var(--text-muted); font-size: 14px; line-height: 1.5; }
+.access-panel-title { font-family: var(--font-head); font-size: 17px; color: var(--text); margin-bottom: 6px; }

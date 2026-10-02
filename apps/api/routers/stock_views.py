@@ -7,15 +7,13 @@ the RM register (one row per MIR receipt, like the store's Stock sheet, plus
 the issue slips) and Open mismatches (stock differences waiting for an
 admin).
 
-Access:
-  - Reading receipts, the register, a receipt's movements, slips and
-    differences: any role, filtered to the plants the account may read
-    (user_can_access_plant()).
-  - Issuing, returning, recording a difference, cancelling and a material's
-    settings: Editor or Admin, allowed to edit THAT plant
-    (user_can_edit_plant()).
-  - Approving or turning down a difference: Admin, at that plant. An
-    editor's difference waits for this; an admin's posts at once.
+Access (apps/api/permissions.py):
+  - Everything on the page - reading receipts, the register, slips and
+    differences; issuing, returning, recording a difference, cancelling and
+    a material's settings: Perm.RM_STORE, at THAT plant
+    (user_can_access_plant()); reads are filtered to the account's plants.
+  - Approving or turning down a difference: Admin. A storekeeper's
+    difference waits for this; an admin's posts at once.
 
 Stock is always the plant's own: unlike MIR entry's PO lookups, nothing here
 reads another plant's store. Quantities and money travel as strings, never
@@ -32,7 +30,7 @@ from rest_framework import status as http
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from apps.api.permissions import IsAdmin, IsEditor, user_can_access_plant, user_can_edit_plant
+from apps.api.permissions import HasAnyAccess, IsAdmin, Perm, has_perm, is_admin, requires, user_can_access_plant
 from apps.core.models import Material, Plant, StockLot, StockReasonCode, StockVoucher
 from apps.services import materials, stock_rules, stock_service
 from apps.services import procurement_rules as prules
@@ -73,7 +71,7 @@ def _material(m):
 
 
 def _is_writer(user):
-    return getattr(user, "role", "") in ("admin", "editor")
+    return has_perm(user, Perm.RM_STORE)
 
 
 def _readable_plants(user, wanted=None):
@@ -113,6 +111,7 @@ def _receipt(lot, balance=None):
 
 
 @api_view(["GET"])
+@permission_classes([HasAnyAccess])
 def meta(request):
     """Plants (and what the caller may do at each), reasons, today, the
     backdating window, departments used before, categories held, and how
@@ -121,9 +120,9 @@ def meta(request):
     plants, departments, readable = [], {}, []
     for p in Plant.objects.all():
         can_read = user_can_access_plant(user, p.code)
-        can_write = can_read and _is_writer(user) and user_can_edit_plant(user, p.code)
+        can_write = can_read and _is_writer(user)
         plants.append({**_plant(p), "canRead": can_read, "canWrite": can_write,
-                       "canApprove": can_write and getattr(user, "role", "") == "admin"})
+                       "canApprove": can_write and is_admin(user)})
         if can_read:
             readable.append(p.code)
             departments[p.code] = stock_service.departments(p)
@@ -136,7 +135,7 @@ def meta(request):
                     # Stock comes in only through a MIR now: no opening-balance reason.
                     for r in StockReasonCode.objects.filter(is_active=True).exclude(code="OPENING_BALANCE")],
         "today": _d(timezone.localdate()), "backdateDays": stock_service.BACKDATE_DAYS,
-        "departments": departments, "pendingApprovals": pending, "isAdmin": getattr(user, "role", "") == "admin",
+        "departments": departments, "pendingApprovals": pending, "isAdmin": is_admin(user),
         "categories": categories,
         "baseUnits": [{"code": c, "label": label} for c, label in Material.BaseUnit.choices],
         # Units a pack factor may be entered for: every known unit nothing exact converts.
@@ -150,6 +149,7 @@ def meta(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.RM_STORE)])
 def receipts(request):
     """MIR receipts with stock left, for the issue form and the difference
     form: at ?plant= (404 if the caller may not read it), or at every plant
@@ -168,6 +168,7 @@ def receipts(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.RM_STORE)])
 def register(request):
     """One row per MIR receipt for a period, like the store's Stock sheet.
     ?plant= ?from= ?to= (default: this month to today) ?q= ?category=
@@ -190,6 +191,7 @@ def register(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.RM_STORE)])
 def receipt(request, lot_id):
     """One MIR receipt: where it came from, its balances, every movement with
     the running balance, and the plant's setting for the material."""
@@ -202,7 +204,7 @@ def receipt(request, lot_id):
         **_receipt(lot, b["balance"]), "in": _s(b["in"]), "issued": _s(b["issued"]), "returned": _s(b["returned"]),
         "adjusted": _s(b["adjusted"]),
         "value": _s(stock_rules.value(b["balance"], lot.rate)) if b["balance"] > 0 and lot.currency == "INR" else "0.00",
-        "canWrite": _is_writer(request.user) and user_can_edit_plant(request.user, lot.plant.code),
+        "canWrite": _is_writer(request.user) and user_can_access_plant(request.user, lot.plant.code),
         "setting": {"isStocked": setting.is_stocked if setting else True,
                     "minLevel": _s(setting.min_level) if setting else None,
                     "minLevelUom": setting.min_level_uom if setting else "",
@@ -214,13 +216,13 @@ def receipt(request, lot_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.RM_STORE)])
 def settings(request):
     """Whether a plant stocks a material, and its minimum level. Body:
     {"plant", "materialId", "isStocked", "minLevel", "minLevelUom"}."""
     data = request.data or {}
     plant = Plant.objects.filter(code=data.get("plant")).first()
-    if plant is None or not user_can_edit_plant(request.user, plant.code):
+    if plant is None or not user_can_access_plant(request.user, plant.code):
         return _forbidden()
     material = get_object_or_404(Material, pk=data.get("materialId"))
     try:
@@ -242,11 +244,11 @@ def _material_units(material):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.RM_STORE)])
 def material_units(request, material_id):
     """A material's base unit and pack factors. Body: {"baseUom", "factors":
-    {unit: factor or ""}, "reason"}. Materials are company-wide, so any
-    Editor or Admin may, like a category; logged with the reason
+    {unit: factor or ""}, "reason"}. Materials are company-wide, so anyone
+    with RM store may, like a category; logged with the reason
     (materials.set_units()). Only MIRs posted afterwards convert by it."""
     material = get_object_or_404(Material, pk=material_id)
     data = request.data or {}
@@ -281,11 +283,11 @@ def _preview_payload(result):
 
 def _plant_writable(request):
     code = (request.data or {}).get("plant")
-    return bool(code) and user_can_edit_plant(request.user, code)
+    return bool(code) and user_can_access_plant(request.user, code)
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.RM_STORE)])
 def preview(request):
     """Checks and values the form as it stands; saves nothing."""
     if not _plant_writable(request):
@@ -294,7 +296,7 @@ def preview(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.RM_STORE)])
 def post_voucher(request):
     if not _plant_writable(request):
         return _forbidden("You cannot enter stock for that plant.")
@@ -328,7 +330,7 @@ def _voucher_detail(v, user):
     v = StockVoucher.objects.select_related("plant", "return_of").get(pk=v.pk)
     lines = list(v.lines.select_related("material", "reason", "return_of_line", *("lot__" + r for r in stock_service.LOT_RELATED))
                  .prefetch_related("allocations__lot__mir_line__mir", "allocations__lot__voucher_line__voucher").order_by("line_no"))
-    can_write = _is_writer(user) and user_can_edit_plant(user, v.plant.code)
+    can_write = _is_writer(user) and user_can_access_plant(user, v.plant.code)
     returnable = []
     if v.kind == "ISSUE" and v.status == "POSTED":
         returnable = [{"lineId": r["line"].id, "lineNo": r["line"].line_no, "material": _material(r["line"].material),
@@ -341,7 +343,7 @@ def _voucher_detail(v, user):
         "cancelReason": v.cancel_reason,
         "returns": [{"id": r.id, "voucherNo": r.voucher_no, "status": r.status} for r in v.returns.all()],
         "canCancel": can_write and v.status in ("POSTED", "PENDING"),
-        "canApprove": can_write and getattr(user, "role", "") == "admin" and v.status == "PENDING"
+        "canApprove": can_write and is_admin(user) and v.status == "PENDING"
                       and v.created_by_id != getattr(user, "pk", None),
         "returnable": returnable,
         "lines": [{
@@ -357,6 +359,7 @@ def _voucher_detail(v, user):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.RM_STORE)])
 def vouchers(request):
     """Issue slips, returns and differences, newest first, for the plants
     the caller may read. Filters: ?plant= ?kind= ?status= ?q= (number,
@@ -380,6 +383,7 @@ def vouchers(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.RM_STORE)])
 def voucher(request, voucher_id):
     v = get_object_or_404(StockVoucher.objects.select_related("plant"), pk=voucher_id)
     if not user_can_access_plant(request.user, v.plant.code):
@@ -391,6 +395,7 @@ def voucher(request, voucher_id):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.RM_STORE)])
 def differences(request):
     """Stock differences at the plants the caller may read: ?status=OPEN
     (waiting for an admin, the default) / RESOLVED / CANCELLED / ALL,
@@ -414,11 +419,11 @@ def differences(request):
 
 def _writable_voucher(request, voucher_id):
     v = get_object_or_404(StockVoucher.objects.select_related("plant"), pk=voucher_id)
-    return v, user_can_edit_plant(request.user, v.plant.code)
+    return v, user_can_access_plant(request.user, v.plant.code)
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.RM_STORE)])
 def cancel_voucher(request, voucher_id):
     v, allowed = _writable_voucher(request, voucher_id)
     if not allowed:

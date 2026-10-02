@@ -13,12 +13,17 @@ Endpoints
 ---------
 GET   /api/auth/users             List all users. Admin only.
 POST  /api/auth/users/create      Create a user (email + password + role +
-                                   plants). Admin only. Bcrypt-hashes the
-                                   password server-side - the plaintext never
-                                   touches the database.
+                                   plants + permissions). Admin only.
+                                   Bcrypt-hashes the password server-side -
+                                   the plaintext never touches the database.
 PATCH /api/auth/users/<id>        Update role / is_active / full_name /
-                                   designation / plants / password. Admin
-                                   only.
+                                   designation / plants / permissions /
+                                   password. Admin only.
+
+Admins and the owner (2026-10-02): any admin manages user accounts - their
+plants and permissions (apps/api/permissions.py). Only the owner
+(settings.OWNER_EMAIL) may create an admin, make a user an admin, or change
+an existing admin's account in any way (_require_owner_for_admin()).
 DELETE /api/auth/users/<id>       Permanently delete the account (same view
                                    as PATCH, branches on request.method).
                                    Admin only, AND only when the caller is
@@ -66,7 +71,16 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.response import Response
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
-from apps.api.permissions import AdminWriteThrottle, IsAdmin, allowed_domains_text, is_allowed_email_domain
+from apps.api.permissions import (
+    ALL_PERMISSIONS,
+    PERMISSIONS,
+    PLANT_KEYS,
+    AdminWriteThrottle,
+    IsAdmin,
+    allowed_domains_text,
+    is_allowed_email_domain,
+    is_owner,
+)
 from apps.services.token_revocation import revoke_all_tokens
 from apps.core.audit_log import PTAuditLog, log_pt_action
 from apps.core.models import PTUser, TrustedDevice
@@ -76,7 +90,7 @@ logger = logging.getLogger(__name__)
 _VALID_ROLES = {choice[0] for choice in PTUser.Role.choices}
 # The lowercase plant keys from frontend/js/shared.js's PLANTS map - not
 # SyncRun.Plant's uppercase enum, see PTUser.plants' own docstring.
-_VALID_PLANTS = {"hrs", "achhad", "vapi"}
+_VALID_PLANTS = set(PLANT_KEYS)
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -111,6 +125,25 @@ def _clean_plants(raw) -> list:
     return raw
 
 
+def _clean_permissions(raw) -> list:
+    """Validates an incoming `permissions` array against permissions.Perm,
+    returned de-duplicated in the Admin Panel's order."""
+    if not isinstance(raw, list):
+        raise ValidationError({"detail": "permissions must be a list of permission keys."})
+    invalid = [p for p in raw if p not in ALL_PERMISSIONS]
+    if invalid:
+        raise ValidationError({"detail": f"Unknown permission(s) {invalid}; must be among {list(ALL_PERMISSIONS)}."})
+    return [p for p in ALL_PERMISSIONS if p in raw]
+
+
+def _require_owner_for_admin(request, *, target=None, new_role=None) -> None:
+    """Only the owner makes an admin, unmakes one, or edits one (2026-10-02).
+    Other admins manage every user account."""
+    touches_admin = (target is not None and target.role == PTUser.Role.ADMIN) or new_role == PTUser.Role.ADMIN
+    if touches_admin and not is_owner(request.user):
+        raise PermissionDenied("Only the application owner can create, change or remove an admin.")
+
+
 def _hash_password(plain: str) -> str:
     """Bcrypt-hash a plaintext password - same call shape as
     `manage.py create_pt_user` and apps/api/auth_backend.py's verify side,
@@ -129,6 +162,8 @@ def _user_out(u: PTUser, corrections_by_email=None) -> dict:
         "role": u.role,
         "designation": u.designation or "",
         "plants": u.plants or [],
+        "permissions": u.permissions or [],
+        "isOwner": is_owner(u),
         "isActive": u.is_active,
         "createdAt": u.created_at.isoformat() if u.created_at else None,
         "lastLoginAt": u.last_login_at.isoformat() if u.last_login_at else None,
@@ -150,7 +185,13 @@ def list_users(request):
 
     users = PTUser.objects.order_by("email")
     corrections_by_email = correction_counts_by_email()
-    return Response({"users": [_user_out(u, corrections_by_email) for u in users]})
+    return Response({
+        "users": [_user_out(u, corrections_by_email) for u in users],
+        # What the panel's checklist offers, and whether the caller may touch
+        # admin accounts at all.
+        "permissionCatalog": [{"key": k, "group": g, "label": label} for k, g, label in PERMISSIONS],
+        "callerIsOwner": is_owner(request.user),
+    })
 
 
 @api_view(["POST"])
@@ -158,7 +199,8 @@ def list_users(request):
 @throttle_classes([AdminWriteThrottle])
 def create_user(request):
     """POST /api/auth/users
-    Body: { "email", "password", "fullName"?, "designation"?, "role"? }
+    Body: { "email", "password", "fullName"?, "designation"?, "role"?,
+    "plants"?, "permissions"? }
 
     Admin only. New account starts active. Mirrors the same validation
     `manage.py create_pt_user` already enforces (domain check, role choice)
@@ -166,9 +208,10 @@ def create_user(request):
     duplicate-email check with a real 409 instead of a stack trace)."""
     data = request.data
 
-    role = data.get("role") or PTUser.Role.VIEWER
+    role = data.get("role") or PTUser.Role.USER
     if role not in _VALID_ROLES:
         raise ValidationError({"detail": f"role must be one of {sorted(_VALID_ROLES)}"})
+    _require_owner_for_admin(request, new_role=role)
 
     full_name = (data.get("fullName") or "").strip()
     if not full_name:
@@ -184,17 +227,14 @@ def create_user(request):
     password = data.get("password") or ""
     _validate_password_strength(password, email)
 
-    # An admin's own access is never plant-scoped in practice (every
-    # admin-only endpoint - sync_trigger, this file's own views - ignores
-    # PTUser.plants entirely), but user_can_access_plant()/
-    # user_can_edit_plant() don't special-case role at all - they'd still
-    # honor a non-empty `plants` list against an admin account, which would
-    # silently lock that admin out of correcting fields on an unscoped
-    # plant. Forcing plants=[] for role=admin here closes that off at
-    # creation time rather than relying on the frontend never sending one
-    # (see admin-page.js's own role-change handler, which hides the Plants
-    # section for this exact reason).
-    plants = [] if role == PTUser.Role.ADMIN else (_clean_plants(data.get("plants")) if data.get("plants") is not None else [])
+    # An admin reaches every plant and holds every permission
+    # (permissions.py), so an admin's lists are kept empty rather than
+    # trusted from the request body. A user starts with what the panel sent;
+    # with no permissions they are locked until an admin grants some.
+    is_admin_role = role == PTUser.Role.ADMIN
+    plants = [] if is_admin_role else (_clean_plants(data.get("plants")) if data.get("plants") is not None else [])
+    permissions = [] if is_admin_role else (
+        _clean_permissions(data.get("permissions")) if data.get("permissions") is not None else [])
 
     user = PTUser.objects.create(
         email=email,
@@ -203,6 +243,7 @@ def create_user(request):
         designation=(data.get("designation") or "").strip() or None,
         role=role,
         plants=plants,
+        permissions=permissions,
         is_active=True,
     )
     logger.info("users_views: admin %s created PTUser %s (role=%s)", request.user.email, user.email, user.role)
@@ -278,7 +319,7 @@ def _assert_not_last_active_admin(exclude_pk: int) -> None:
 def update_user(request, user_id):
     """PATCH /api/auth/users/<id>
     Body: any of { "role", "isActive", "fullName", "designation", "plants",
-    "password" }
+    "permissions", "password" }
 
     Admin only. No email field (identity, not editable) - see this file's
     header comment for the password field's own history.
@@ -316,9 +357,11 @@ def update_user(request, user_id):
     # two security-sensitive cases worth calling out explicitly rather than
     # a generic "user updated" row (see log_pt_action() call at the bottom).
     prev_role, prev_is_active = user.role, user.is_active
+    prev_plants, prev_permissions = list(user.plants or []), list(user.permissions or [])
     password_was_reset = False
 
     data = request.data
+    _require_owner_for_admin(request, target=user, new_role=data.get("role"))
     if "password" in data and data["password"]:
         password = data["password"]
         _validate_password_strength(password, user.email)
@@ -346,12 +389,16 @@ def update_user(request, user_id):
         user.full_name = new_full_name
     if "designation" in data and data["designation"] is not None:
         user.designation = data["designation"].strip() or None
-    # See create_user()'s own comment on why an admin's `plants` is always
+    # See create_user()'s own comment on why an admin's lists are always
     # forced empty rather than trusted from the request body.
     if new_role == PTUser.Role.ADMIN:
         user.plants = []
-    elif "plants" in data and data["plants"] is not None:
-        user.plants = _clean_plants(data["plants"])
+        user.permissions = []
+    else:
+        if "plants" in data and data["plants"] is not None:
+            user.plants = _clean_plants(data["plants"])
+        if "permissions" in data and data["permissions"] is not None:
+            user.permissions = _clean_permissions(data["permissions"])
 
     # transaction.atomic() + _assert_not_last_active_admin()'s own
     # select_for_update() - see that function's docstring for the real
@@ -391,6 +438,10 @@ def update_user(request, user_id):
         detail_parts.append(f"role: {prev_role} -> {new_role}")
     if new_is_active != prev_is_active:
         detail_parts.append(f"isActive: {prev_is_active} -> {new_is_active}")
+    if (user.plants or []) != prev_plants:
+        detail_parts.append(f"plants: {prev_plants} -> {user.plants or []}")
+    if (user.permissions or []) != prev_permissions:
+        detail_parts.append(f"permissions: {prev_permissions} -> {user.permissions or []}")
     if password_was_reset:
         detail_parts.append("password reset; all sessions revoked")
     log_pt_action(

@@ -197,9 +197,12 @@ Read the linked section before breaking any of these. Each is there because it w
   sides state it, overrides the weight. Client-side qty checks must use `isQtyMismatch()`. [flag thresholds](docs/matching-engine.md#flag-thresholds)
 
 ### API and features
-- Every new endpoint needs both a role gate and a plant-scoping call;
-  `test_endpoint_permission_guard.py` enforces it, and `test_plant_scope_no_leak.py` checks no GET
-  hands a scoped account another plant's data.
+- Every new endpoint, reads included, names its permission - `@permission_classes([requires(Perm.X)])`,
+  `IsAdmin` or `HasAnyAccess`, never bare `IsAuthenticated` - and calls `user_can_access_plant()` for
+  its plant; `test_endpoint_permission_guard.py` enforces both, and `test_plant_scope_no_leak.py`
+  checks no GET hands a scoped account another plant's data. A page that reads it must list the same
+  permission in `auth.js`'s `PAGE_ACCESS`.
+  [roles](docs/auth-security-email.md#roles-and-plant-scoping),
   [conventions](docs/api-and-features.md#endpoint-conventions-worth-knowing-before-adding-one)
 - Never name a query param `format` (DRF reserves it). Read body flags with `_request_bool()`,
   never `bool(...)` (`bool("false")` is `True`). Use `timezone.localdate()`, never `date.today()`. [conventions](docs/api-and-features.md#endpoint-conventions-worth-knowing-before-adding-one)
@@ -265,8 +268,9 @@ Read the linked section before breaking any of these. Each is there because it w
   table's sort moves its rows (`resortSortedTables()`), never re-renders them - that would reset an
   in-progress correction. A list must sort before it draws its sort bar.
   [list-sort.js](docs/frontend.md#frontendjslist-sortjs)
-- Raw Material Analysis is admin-only; every role gets Inventory / On Order / Stock & Orders
-  (`plant-stock.js`), built from Raw Material Analysis's own classes and layout. Those tabs reuse
+- Raw Material Analysis is admin-only, on the server too: `/materials` drops `mirStockMatches`,
+  `dataQualityFlags`, `corrections` and `mirMatched` for non-admins, so the plant tabs must never read
+  them. Each of Inventory / On Order / Stock & Orders is its own permission (`plant-stock.js`), built from Raw Material Analysis's own classes and layout. Those tabs reuse
   materials.js's helpers for every figure - never re-derive stock, open qty or Days Left there - and
   never add stock to ordered quantity (Achhad lots have no unit). Material links go through
   `openMaterialLink()`, which routes by role. `vendorContains()` matches identical names at any length
@@ -376,6 +380,12 @@ Read the linked section before breaking any of these. Each is there because it w
   access without a feature that needs them.
 
 ### Auth, security, email
+- **Access is layered (owner, 2026-10-02):** admin (everything; only `OWNER_EMAIL` makes, unmakes or
+  edits an admin) / plants (`PTUser.plants`, **empty = none, never "all"**) / permissions
+  (`PTUser.permissions`, `permissions.Perm`; none = locked). The rules live only in
+  `apps/api/permissions.py`; `auth.js` mirrors them for display. Migration `0092` locked every
+  non-admin on purpose - don't "fix" it by granting defaults.
+  [roles](docs/auth-security-email.md#roles-and-plant-scoping)
 - Never call `get_user_model()` in auth code (`PTUser` is not `auth.User`); never add simplejwt's
   `token_blacklist`. [non-negotiables](docs/auth-security-email.md#non-negotiables)
 - `SecurityHeadersMiddleware` stays before WhiteNoise, `SelectiveGZipMiddleware` after it; anything

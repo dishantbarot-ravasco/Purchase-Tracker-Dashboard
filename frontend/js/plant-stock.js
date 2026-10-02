@@ -33,11 +33,16 @@
 // disclaimer. A line tied to two materials counts under both rows; the KPI
 // totals count each line once.
 
+// `perm` is the permission that shows the tab (auth.js's userHasPerm(),
+// apps/api/permissions.py's Perm) - each is granted on its own.
 const PLANT_STOCK_TABS = [
-  { key: 'inventory', label: 'Inventory' },
-  { key: 'onorder', label: 'On Order' },
-  { key: 'combined', label: 'Stock & Orders' },
+  { key: 'inventory', label: 'Inventory', perm: 'view_inventory' },
+  { key: 'onorder', label: 'On Order', perm: 'view_on_order' },
+  { key: 'combined', label: 'Stock & Orders', perm: 'view_stock_orders' },
 ];
+// Who may read the order books - the server's ORDER_VIEWS. An account with
+// Inventory alone loads stock only.
+const PS_ORDER_PERMS = ['view_dashboard', 'view_on_order', 'view_stock_orders'];
 const PLANT_STOCK_VIEW_KEYS = PLANT_STOCK_TABS.map(t => t.key);
 
 function isAdminUser() {
@@ -351,9 +356,12 @@ async function loadAndRenderPlantView() {
   el.innerHTML = '<div class="load-banner"><div class="spinner"></div><div>Loading ' + escapeHtml(PLANT_STOCK_TABS.find(t => t.key === view).label.toLowerCase()) + '&hellip;</div></div>';
   try {
     // Stock and both order books for every tab - they share the caches, so
-    // switching between the three never waits a second time.
+    // switching between the three never waits a second time. The order
+    // books only for an account that may read them (Inventory needs none).
     const keys = selectedPlantKeys();
-    await Promise.all([ensureMaterialsLoaded(keys), ensurePOsLoaded(keys), ensureImportPOsLoaded(), psSorter(view).ensurePresetsLoaded()]);
+    const loads = [ensureMaterialsLoaded(keys), psSorter(view).ensurePresetsLoaded()];
+    if (userHasPerm(...PS_ORDER_PERMS)) loads.push(ensurePOsLoaded(keys), ensureImportPOsLoaded());
+    await Promise.all(loads);
   } catch (e) {
     console.error('loadAndRenderPlantView failed:', e);
     if (psView() !== view || state.plant !== plantAtStart) return true;

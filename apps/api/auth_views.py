@@ -24,7 +24,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView, TokenVerifyView
 
 from .auth_serializers import PTTokenObtainPairSerializer, PTTokenRefreshSerializer
-from .permissions import is_activity_log_owner
+from .permissions import PLANT_KEYS, granted, is_activity_log_owner, is_admin, is_owner
 
 logger = logging.getLogger(__name__)
 
@@ -178,10 +178,12 @@ def whoami(request):
         "email": user.email,
         "fullName": user.full_name or "",
         "role": user.role,
-        # Empty list = "all plants" - see PTUser.plants' own docstring. The
-        # frontend uses this to decide which pencil icons to render for the
-        # inline "Edit Everywhere" feature (shared.js's canEditField()).
-        "plants": user.plants or [],
+        # The account's plants and permissions (apps/api/permissions.py) -
+        # every plant and permission for an admin. auth.js builds the nav,
+        # tabs and edit controls from these; every endpoint checks them again.
+        "plants": list(PLANT_KEYS) if is_admin(user) else (user.plants or []),
+        "permissions": sorted(granted(user)),
+        "isOwner": is_owner(user),
         # Only the activity log's owner sees admin.html's Activity Log tab;
         # the endpoints enforce it (permissions.IsActivityLogOwner).
         "canViewActivityLog": is_activity_log_owner(user),

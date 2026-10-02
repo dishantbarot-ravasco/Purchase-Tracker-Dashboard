@@ -963,7 +963,7 @@ function stOpenReceipt(lotId) {
 function stInitMismatches() {
   document.getElementById('mmExplain').innerHTML = '<b>What this is for.</b> When the stock on the floor is not what the register says - a physical count comes out short or over, ' +
     'or material is damaged, lost or taken as a sample - record it here against the MIR it belongs to. ' +
-    (ST_META.isAdmin ? 'Differences you enter post at once; an editor\'s wait here for you to approve or turn down.'
+    (ST_META.isAdmin ? 'Differences you enter post at once; a storekeeper\'s wait here for you to approve or turn down.'
       : 'It waits here, moving nothing, until an admin approves it or turns it down with a note.');
   const reload = stDebounce(stLoadMismatches, 250);
   ['mmStatus', 'mmPlant'].forEach(id => document.getElementById(id).addEventListener('input', reload));

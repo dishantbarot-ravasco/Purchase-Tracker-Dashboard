@@ -102,21 +102,50 @@ re-check this specifically.** The current order in [settings.py](../config/setti
 
 ### Roles and plant scoping
 
-Roles: **`admin`** (full access + user management), **`editor`** (full dashboard access + dismissing/
-overriding flags + inline corrections + manual MIR pins), **`viewer`** (read-only).
+**Access is layered (project owner, 2026-10-02)** and lives in
+[permissions.py](../apps/api/permissions.py):
 
-On the dashboard, the **Raw Material Analysis** tab is shown to admins only (2026-09-29); editors and
-viewers get the Inventory, On Order and Stock & Orders tabs instead. That is a view choice, not a data
-boundary - the endpoints behind both are readable by every role - see
+1. **Admin** (`role = "admin"`) - every page, every plant, every action, and the only role that sees
+   **Raw Material Analysis**. An admin's `plants` and `permissions` are kept empty and ignored.
+   **The owner** (`settings.OWNER_EMAIL`, default dishant.barot@ravasco.com, `permissions.is_owner()`)
+   is the one admin who may create an admin, make a user an admin, or change an admin's account in
+   any way - other admins manage user accounts only (`users_views._require_owner_for_admin()`).
+2. **Plants** - a **user** (`role = "user"`) reads and works on exactly the plants in `PTUser.plants`.
+   **An empty list means no plants, never "all"** (it meant "all" until 2026-10-02).
+3. **Permissions** - a user also needs each page or action granted in `PTUser.permissions`
+   (`permissions.Perm`), and a grant applies to all of the user's plants:
+
+   | Perm | Opens |
+   | --- | --- |
+   | `view_dashboard` | Purchase Orders, Import Purchases, Search PO, the licence ledgers, PO files (read) |
+   | `view_inventory` / `view_on_order` / `view_stock_orders` | the three plant stock tabs, each on its own |
+   | `po_upload` | PO copies (upload / withdraw), PO line close / reopen / review, mismatch resolution |
+   | `mir_entry` | MIR entry, invoice files, MIR edits and cancels, a material's category |
+   | `import_docs` | Bill of Entry, Advance License and RoDTEP files (upload / withdraw), the licence ledgers |
+   | `rm_store` | the RM store page (all of it); reads the MIR register it issues against |
+   | `edit_fields` | inline corrections, MIR pins, flag and match dismissals, the stock-snapshot export |
+
+   **A user with no permissions, or no plants, is locked**: they can sign in, and every page shows
+   "no access yet". The migration that introduced this (`0092`) locked every non-admin account on
+   purpose - the owner's rule was that editor and viewer access is not carried over - and bumped their
+   `token_version` so open tabs sign out.
+
+**How an endpoint is gated.** Every endpoint names what it needs with
+`@permission_classes([requires(Perm.X, ...)])` - any one of the listed permissions passes, an admin
+always passes, and a user with no plants never does - or `IsAdmin`, or `HasAnyAccess` (any admin, or a
+user with at least one permission and one plant: the reads every page shares, such as `sync-status`
+and the MIR/RM store `meta`). The plant is then checked in the view body with
+`user_can_access_plant()` (admin: every plant; user: only listed ones), because the plant is usually
+only known inside the view. The shared tuples: `ORDER_VIEWS` (`view_dashboard`, `view_on_order`,
+`view_stock_orders` - the order books), `STOCK_VIEWS` (the three stock tabs - `/materials` and the
+stock trend and snapshot reads), and per router `MIR_READERS`, `PO_MANAGERS`, `DOCUMENT_READERS` and
+`KIND_PERMISSION` (an upload or withdrawal needs the permission of the file's kind).
+
+**Raw Material Analysis is a data boundary now, not just a hidden tab.** The plant stock tabs read the
+same `/materials` endpoint, so for anyone but an admin the response leaves out the reconciliation layer
+- `mirStockMatches`, `dataQualityFlags`, `corrections` and `mirMatched` - on the server
+(`_domestic_base._without_reconciliation()`); see
 [frontend.md](frontend.md#plant-stock-tabs---inventory-on-order-stock--orders-2026-09-29).
-
-Read endpoints are plain `IsAuthenticated` on *role* - any role can read, by design - **but they also
-narrow by `PTUser.plants`** via `permissions.user_can_access_plant()`, the same underlying check
-`user_can_edit_plant()` uses for writes (it literally delegates). **An empty `plants` list means "all
-plants"**, not "no plants", so accounts predating the field are unaffected and no backfill was needed.
-Plant keys are the lowercase `hrs`/`achhad`/`vapi` frontend keys, not `SyncRun.Plant`'s enum. An
-admin's `plants` is always forced to `[]` on create and update, because neither helper special-cases
-role and a scoped admin would otherwise lock themselves out of writes.
 
 How an out-of-scope plant is refused differs by endpoint shape, deliberately: domestic single-plant
 reads **403** outright; Import's cross-plant `purchase_orders`/`sync_status` **silently narrow** the
@@ -124,31 +153,32 @@ combined result (the same "you see less, not an error" shape the endpoint alread
 zero rows); `purchase_order_detail` **404s** rather than 403, matching its existing unknown-plant
 behaviour rather than confirming a PO exists.
 
-`IsEditor` gates: `correct_field` (domestic and import), `correct_material_field`,
-`dismiss_po_mir_match`/`dismiss_mir_stock_match`/`dismiss_import_po_mir_match`/`dismiss_flag`
-(domestic and import), `set_mir_match` (domestic and import), the stock-snapshot export, and MIR
-entry (`mir_views`: preview, post, cancel, resolve, PO-line close/reopen/review, each also scoped
-to the receiving, MIR or PO plant). **One deliberate exception to plant scoping:** MIR entry's PO
-lookups (`open_pos`, `purchase_order`, `vendors`) return every plant's open POs to an editor, by the
-project owner's rule that any plant's store may receive any plant's PO (2026-09-28); the MIR it
-then saves is scoped to the receiving plant, and the MIR register narrows by readable plant.
-`IsAdmin` gates: every plant `sync_trigger` and the imports/RoDTEP/Advance Licence sync triggers,
-`admin_overview`, and every [users_views.py](../apps/api/routers/users_views.py) endpoint (including
-the password field on `PATCH /api/auth/users/<id>`). The per-endpoint list lives in
+**One deliberate exception to plant scoping:** MIR entry's PO lookups (`open_pos`, `purchase_order`,
+`vendors`) return every plant's open POs, by the project owner's rule that any plant's store may
+receive any plant's PO (2026-09-28); the MIR it then saves is scoped to the receiving plant, the MIR
+register narrows by plant, and `purchase_order` lists the PO's **files** only to an account that has
+the PO's plant. `IsAdmin` gates: every plant `sync_trigger` and the imports/RoDTEP/Advance Licence sync
+triggers, `admin_overview`, approving or turning down an RM stock difference, and every
+[users_views.py](../apps/api/routers/users_views.py) endpoint. The per-endpoint list lives in
 [api-and-features.md](api-and-features.md); treat this one as a summary.
 
-**If you add a new read OR write endpoint, gate both role and plant** - don't leave a new endpoint
-unscoped by plant just because it's "only a read".
+**The browser half** is `auth.js`'s `PAGE_ACCESS` / `canOpenPage()` / `userHasPerm()`: the nav lists
+only pages the account may open, a page opened directly shows `showNoAccess()`'s panel and its script
+stops (`requireAuth()` returns null), and tabs, cards and pencils follow the same permissions. It only
+decides what to show - see [frontend.md](frontend.md#serving-load-order-and-the-one-global-scope).
 
-**This is enforced now, not remembered (2026-09-23).** `apps/api/tests/test_endpoint_permission_guard.py`
-walks the AST of every `@api_view` under `apps/api/` and fails if (1) an endpoint accepting
-POST/PUT/PATCH/DELETE has no `@permission_classes` - the project default lets ANY role write, so
-omitting it is a decision that used to be invisible - or (2) an endpoint that handles a plant (a
-`plant` argument, a `"plant"` field, a `plant` variable, or a per-plant `cfg`) never calls a scoping
-helper. Legitimate exceptions live in two allow-lists **with their reason**, and a stale entry fails
-too. It exists because the review router grew to five endpoints with no plant scoping on any, despite
-the sentence above. It is a tripwire, not a proof: it cannot tell whether the scoping call is in the
-right place, only that someone thought about it.
+**If you add a new read OR write endpoint, gate both its permission and its plant.**
+
+**This is enforced, not remembered.** `apps/api/tests/test_endpoint_permission_guard.py` walks the AST
+of every `@api_view` under `apps/api/` and fails if (1) an endpoint accepting POST/PUT/PATCH/DELETE
+has no `@permission_classes`, (2) an endpoint that handles a plant (a `plant` argument, a `"plant"`
+field, a `plant` variable, or a per-plant `cfg`) never calls `user_can_access_plant()`, or (3,
+2026-10-02) any endpoint, reads included, is not gated by `requires()`, `IsAdmin` or `HasAnyAccess` -
+bare `IsAuthenticated` lets a locked account through. Legitimate exceptions (sign-in steps,
+self-service, the cron triggers, the activity log) live in allow-lists **with their reason**, and a
+stale entry fails too. It is a tripwire, not a proof: it cannot tell whether the scoping call is in the
+right place, only that someone thought about it. `test_layered_permissions.py` checks the rules
+themselves, endpoint by endpoint.
 
 `permissions.is_allowed_email_domain()` restricts accounts and logins to the domains in
 `ALLOWED_EMAIL_DOMAINS` (a comma-separated env list, default `ravasco.com,hindustanrubbers.com` -
@@ -790,27 +820,33 @@ and the refresh serializer.
   [Throttling](#throttling-lockout-and-brute-force-counters)).
 - `PTTokenVerifyView` - simplejwt's stock `TokenVerifyView` (verifies a token string; a browser cannot
   use it because its token is in an httpOnly cookie).
-- `whoami` (`GET /api/auth/me`, default `IsAuthenticated`) - `userId`, `email`, `fullName`, `role`,
-  `plants`, and `canViewActivityLog` (`permissions.is_activity_log_owner()`: only the account named by
-  `ACTIVITY_LOG_OWNER_EMAIL`). `auth.js`'s `requireAuth()` calls it on every protected page load; the frontend uses
-  `plants` to decide which pencils to render.
+- `whoami` (`GET /api/auth/me`, default `IsAuthenticated` - a locked account must reach it) - `userId`,
+  `email`, `fullName`, `role`, `plants` (every plant for an admin), `permissions` (every one for an
+  admin), `isOwner`, and `canViewActivityLog` (`permissions.is_activity_log_owner()`: only the account
+  named by `ACTIVITY_LOG_OWNER_EMAIL`). `auth.js`'s `requireAuth()` calls it on every protected page
+  load and builds the nav, tabs and pencils from it.
 
 ### apps/api/permissions.py
 
-[permissions.py](../apps/api/permissions.py) - role permission classes, throttles and plant-scoping
-helpers.
+[permissions.py](../apps/api/permissions.py) - the layered access rules (see
+[Roles and plant scoping](#roles-and-plant-scoping)), throttles and the plant-scoping helper.
 
 - `is_allowed_email_domain(email)` - the part after the last `@` must equal one of
   `ALLOWED_EMAIL_DOMAINS` (case-insensitive), with a non-empty local part. `allowed_domains_text()`
   renders "@ravasco.com or @hindustanrubbers.com" for refusal messages.
-- `IsEditor` (admin or editor) / `IsAdmin` (admin) - both also require `is_active`.
+- `PLANT_KEYS`, `Perm`, `PERMISSIONS` (key, group, label - what the Admin Panel lists),
+  `ALL_PERMISSIONS`, `ORDER_VIEWS`, `STOCK_VIEWS`.
+- `is_admin(user)`, `is_owner(user)` (an active admin whose email is `OWNER_EMAIL`), `granted(user)`
+  (every permission for an admin, none for an inactive account), `has_perm(user, *perms)`.
+- `requires(*perms)` - builds a `BasePermission` passing an admin, or a user holding one of `perms`
+  with at least one plant; raises `ValueError` on an unknown permission. `HasAnyAccess` - an admin, or
+  a user with any permission and a plant. `IsAdmin` - an active admin.
 - `SyncTriggerThrottle` (scope `sync_trigger`, 10/min) / `BlTrackThrottle` (scope `bl_track`, 10/min:
   the BL lookup holds a worker for a live SafeCube call) / `AdminWriteThrottle` (scope `admin_write`,
   30/min) - `UserRateThrottle` subclasses, keyed per user.
-- `user_can_access_plant(user, plant_key)` - True when `plants` is empty or contains the key. Called
-  from view bodies (not a `BasePermission`) because the plant is only known inside the view.
-- `user_can_edit_plant(user, plant_key)` - delegates to `user_can_access_plant`; kept as a separate
-  name so write call sites read as writes.
+- `user_can_access_plant(user, plant_key)` - True for an active admin; for a user, only when `plants`
+  contains the key (empty means none). Called from view bodies (not a `BasePermission`) because the
+  plant is only known inside the view.
 
 ### apps/api/routers/device_views.py
 
@@ -902,9 +938,15 @@ is the admin `PATCH /api/auth/users/<id>`.
   all digits, not the email local-part); raises DRF `ValidationError` (400). Imported by
   `password_views.py`; mirrored by `create_pt_user`.
 - `_hash_password(plain)` - bcrypt, `rounds=12`.
-- `_clean_plants(raw)` - must be a list of `hrs`/`achhad`/`vapi`.
+- `_clean_plants(raw)` - must be a list of `hrs`/`achhad`/`vapi`. `_clean_permissions(raw)` - must
+  be a list of `Perm` values; returned de-duplicated in the panel's order.
+- `_require_owner_for_admin(request, target=, new_role=)` - 403 unless the caller is the owner, when
+  the target account is an admin or the new role is admin.
+- `list_users` also returns `permissionCatalog` and `callerIsOwner`; each user carries `permissions`
+  and `isOwner`.
 - `create_user` (`POST /api/auth/users/create`, `AdminWriteThrottle`) - domain check, 409 on a
-  duplicate email, password policy, admin role forces `plants=[]`, audit `user_created`.
+  duplicate email, password policy, owner-only for an admin, admin role forces `plants=[]` and
+  `permissions=[]` (a new user defaults to locked), audit `user_created`.
 - `_DELETE_USER_ALLOWED_EMAIL` - from `DELETE_USER_ALLOWED_EMAIL`, defaulting to the project owner's
   address. Note the `PermissionDenied` message still names that default address even if the env var
   points elsewhere.
@@ -912,9 +954,10 @@ is the admin `PATCH /api/auth/users/<id>`.
   `transaction.atomic()`. See [Roles and plant scoping](#roles-and-plant-scoping).
 - `update_user` (`PATCH`/`DELETE /api/auth/users/<id>`, `AdminWriteThrottle`) - one view for both
   methods because `path()` matches URLs, not methods. DELETE: only the allowed email, last-admin guard,
-  audit `user_deleted`, 204. PATCH: role/isActive/fullName/designation/plants/password; a non-blank
-  password is policy-checked and triggers `revoke_all_tokens(user)` after save; audit detail names
-  role/active changes and password resets.
+  audit `user_deleted`, 204. PATCH: role/isActive/fullName/designation/plants/permissions/password,
+  owner-only when the account is or becomes an admin; a non-blank password is policy-checked and
+  triggers `revoke_all_tokens(user)` after save; audit detail names role, active, plant and permission
+  changes and password resets.
 - `list_user_devices` / `revoke_user_device` (`GET` / `DELETE /api/auth/users/<id>/devices[/<id>]`) -
   never return `device_token_hash`; revoking writes `device_revoked`. The revoked browser is
   re-challenged at its next sign-in (existing JWT cookies are unaffected until they expire).
@@ -1044,15 +1087,14 @@ mail and knows nothing about SMTP. Callers currently send only `text_body`.
 submodule.
 
 - `PTUser` (`pt_users`) - `user_id` AutoField PK, unique `email`, bcrypt `password_hash` (never
-  serialized, excluded from the Admin form), `full_name`, `role` (`admin`/`editor`/`viewer`, default
-  `viewer`), `designation`, `plants` (JSON list, empty = all plants, scopes reads and writes),
+  serialized, excluded from the Admin form), `full_name`, `role` (`admin`/`user`, default `user`),
+  `designation`, `plants` (JSON list of plant keys, empty = no plants; ignored for an admin),
+  `permissions` (JSON list of `Perm` values, empty = locked; ignored for an admin),
   `is_active`, `created_at`, `last_login_at` (written by all three login paths via `.update()`),
   `last_seen_at` (any signed-in `/api/` request, at most every 5 minutes, by
   `activity_log.touch_last_seen()` - a session lasts up to 30 days, so `last_login_at` alone said
   nothing about whether someone used the app this week),
   `failed_login_attempts`, `locked_until`, `token_version`. Declares `is_authenticated`/`is_anonymous`.
-  Its docstring's claim that `plants` "has no bearing on read access" predates read scoping and is
-  stale.
 - `OTPCode` (`pt_otp_codes`) - unique `email`, `code_hash`, `expires_at`, `attempts`, `created_at`.
 - `RevokedRefreshToken` (`pt_revoked_refresh_tokens`) - unique `jti`, `revoked_at`, `expires_at`.
 - `TrustedDevice` (`pt_trusted_devices`) - FK to `PTUser` (cascade), unique `device_token_hash`
@@ -1121,8 +1163,9 @@ fail a build under `--fail-level WARNING`. Tested by `test_deploy_checks.py`.
 ### apps/core/management/commands/create_pt_user.py
 
 [create_pt_user.py](../apps/core/management/commands/create_pt_user.py) -
-`manage.py create_pt_user --email ... --password ... [--role admin|editor|viewer] [--full-name]
-[--designation]`. The only way to create the first account. Domain check, the same password policy as
+`manage.py create_pt_user --email ... --password ... [--role admin|user] [--full-name]
+[--designation]`. An admin's plants and permissions are cleared; a user is created locked and granted
+in the Admin Panel. The only way to create the first account. Domain check, the same password policy as
 the UI (duplicated by hand; `test_password_policy_is_stated_consistently.py` checks they agree),
 bcrypt `rounds=12`, then `update_or_create` on the email, so re-running it is also a CLI password reset
 or role change and re-activates the account. On an existing account it calls `revoke_all_tokens()`

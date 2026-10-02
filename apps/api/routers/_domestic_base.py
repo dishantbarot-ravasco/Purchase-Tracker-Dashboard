@@ -32,7 +32,17 @@ from django.http import HttpResponse, StreamingHttpResponse
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
 
-from apps.api.permissions import IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant
+from apps.api.permissions import (
+    ORDER_VIEWS,
+    STOCK_VIEWS,
+    HasAnyAccess,
+    IsAdmin,
+    Perm,
+    SyncTriggerThrottle,
+    is_admin,
+    requires,
+    user_can_access_plant,
+)
 from django.db.models import Q
 
 from apps.core.models import (
@@ -86,7 +96,7 @@ class _PlantConfig:
     Achhad's model simply has no vendor field at all, so lot_vendor_field is
     None there rather than a fake placeholder."""
 
-    key: str  # "hrs" / "vapi" / "achhad" - passed to user_can_edit_plant/is_sync_in_progress/trigger_plant_sync
+    key: str  # "hrs" / "vapi" / "achhad" - passed to user_can_access_plant/is_sync_in_progress/trigger_plant_sync
     syncrun_plant: str  # SyncRun.Plant.HRS / .RTP_VAPI / .RTP_ACHHAD
 
     po_model: type
@@ -726,6 +736,7 @@ def make_purchase_order_summary(cfg: _PlantConfig):
     (shared.js's loadKpis()). They used to download every plant's full PO
     list for them, about 1.9 MB with line items and matches, to count rows."""
     @api_view(["GET"])
+    @permission_classes([requires(*ORDER_VIEWS)])
     def purchase_order_summary(request):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's purchase orders."}, status=403)
@@ -740,6 +751,7 @@ def make_purchase_order_summary(cfg: _PlantConfig):
 
 def make_purchase_orders(cfg: _PlantConfig):
     @api_view(["GET"])
+    @permission_classes([requires(*ORDER_VIEWS)])
     def purchase_orders(request):
         # See apps/api/permissions.py's user_can_access_plant() docstring -
         # low blast-radius: only affects accounts an admin already scoped
@@ -799,9 +811,9 @@ def make_purchase_orders(cfg: _PlantConfig):
 
 def make_correct_field(cfg: _PlantConfig):
     @api_view(["PATCH"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def correct_field(request, po_number):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
 
         item_id = (request.data.get("itemId") or "").strip()
@@ -892,8 +904,20 @@ def _consumption_by_material(cfg: _PlantConfig) -> MaterialRates:
     return consumption_rates(cfg.syncrun_plant, today=timezone.localdate())
 
 
+# Raw Material Analysis is admin-only (owner, 2026-09-29 and 2026-10-02).
+# The plant stock tabs read this same endpoint, so for anyone else the
+# reconciliation layer - MIR<->Stock matches, data-quality flags and
+# corrections - is taken out on the server, not just hidden in the page.
+_RECONCILIATION_FIELDS = {"corrections": [], "mirStockMatches": [], "dataQualityFlags": [], "mirMatched": None}
+
+
+def _without_reconciliation(row: dict) -> dict:
+    return {**row, **_RECONCILIATION_FIELDS}
+
+
 def make_materials(cfg: _PlantConfig):
     @api_view(["GET"])
+    @permission_classes([requires(*STOCK_VIEWS)])
     def materials(request):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's materials."}, status=403)
@@ -916,21 +940,22 @@ def make_materials(cfg: _PlantConfig):
             "source_id",
         )
 
-        return Response({
-            "materials": [
-                _lot_dict(cfg, lot, consumption_by_material, category_reference, corrections_by_lot, flags_by_lot)
-                for lot in lots
-            ]
-        })
+        rows = [
+            _lot_dict(cfg, lot, consumption_by_material, category_reference, corrections_by_lot, flags_by_lot)
+            for lot in lots
+        ]
+        if not is_admin(request.user):
+            rows = [_without_reconciliation(row) for row in rows]
+        return Response({"materials": rows})
 
     return materials
 
 
 def make_correct_material_field(cfg: _PlantConfig):
     @api_view(["PATCH"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def correct_material_field(request, lot_id: int):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's materials."}, status=403)
 
         field_name = (request.data.get("field") or "").strip()
@@ -976,6 +1001,7 @@ def make_correct_material_field(cfg: _PlantConfig):
 
 def make_stock_trend(cfg: _PlantConfig):
     @api_view(["GET"])
+    @permission_classes([requires(*STOCK_VIEWS)])
     def stock_trend(request, lot_id: int):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's stock trend."}, status=403)
@@ -1002,6 +1028,7 @@ def make_stock_snapshot_dates(cfg: _PlantConfig):
     lots than its neighbours means a partial sync."""
 
     @api_view(["GET"])
+    @permission_classes([requires(*STOCK_VIEWS)])
     def stock_snapshot_dates(request):
         from django.db.models import Count
 
@@ -1027,6 +1054,7 @@ def make_stock_snapshots_for_date(cfg: _PlantConfig):
     everywhere" and a reader would believe."""
 
     @api_view(["GET"])
+    @permission_classes([requires(*STOCK_VIEWS)])
     def stock_snapshots_for_date(request):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's stock snapshots."}, status=403)
@@ -1096,15 +1124,15 @@ def make_export_stock_snapshots(cfg: _PlantConfig):
     afterwards. CSV, not Excel - project owner asked for whichever is
     cheaper/faster, and building a .xlsx would mean pulling in openpyxl for
     no real benefit over a plain CSV any spreadsheet program opens directly.
-    IsEditor + user_can_access_plant-gated (not a plain read like the rest of
-    this file's GET endpoints) - project owner asked for Editor/Admin only,
-    even though every other read endpoint here is IsAuthenticated-any-role.
+    Needs Perm.EDIT_FIELDS plus the plant (not just a stock view like the
+    rest of this file's stock reads) - the project owner asked for this bulk
+    history download to stay with the people who correct the data.
     Reuses the exact same getattr(cfg.lot_*_field) pattern
     stock_snapshots_for_date() above already uses for the same per-plant
     schema differences (Achhad has no vendor/uom/sub_category field at all)."""
 
     @api_view(["GET"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def export_stock_snapshots(request):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to export this plant's stock snapshots."}, status=403)
@@ -1202,13 +1230,14 @@ def make_mir_without_po(cfg: _PlantConfig):
     through them in a spreadsheet and hand corrections back - the one thing
     a modal cannot do.
 
-    Read-gated like every other GET here (IsAuthenticated + plant scope),
-    NOT IsEditor. Unlike the stock-snapshot export this is not bulk history
-    - it is a few hundred rows of the same MIR data the dashboard already
-    shows a viewer, reorganized.
+    Needs Perm.VIEW_DASHBOARD plus the plant, the same as the dashboard it
+    sits on - not Perm.EDIT_FIELDS. Unlike the stock-snapshot export this is
+    not bulk history - it is a few hundred rows of the same MIR data the
+    dashboard already shows, reorganized.
     """
 
     @api_view(["GET"])
+    @permission_classes([requires(Perm.VIEW_DASHBOARD)])
     def mir_without_po(request):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant's MIR entries."}, status=403)
@@ -1304,6 +1333,7 @@ def _cached_mir_without_po_summary(cfg: _PlantConfig) -> dict:
 
 def make_sync_status(cfg: _PlantConfig):
     @api_view(["GET"])
+    @permission_classes([HasAnyAccess])
     def sync_status(request):
         from django.utils import timezone
 
@@ -1436,9 +1466,9 @@ def make_sync_trigger(cfg: _PlantConfig):
 
 def make_dismiss_po_mir_match(cfg: _PlantConfig):
     @api_view(["PATCH"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def dismiss_po_mir_match(request, match_id: int):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
         dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
@@ -1461,9 +1491,9 @@ def make_dismiss_po_mir_match(cfg: _PlantConfig):
 
 def make_dismiss_mir_stock_match(cfg: _PlantConfig):
     @api_view(["PATCH"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def dismiss_mir_stock_match(request, match_id: int):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
         dismissed = _request_bool(request.data.get("dismissed"), True)
         reason = (request.data.get("reason") or "").strip()
@@ -1486,9 +1516,9 @@ def make_dismiss_mir_stock_match(cfg: _PlantConfig):
 
 def make_dismiss_flag(cfg: _PlantConfig):
     @api_view(["PATCH"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def dismiss_flag(request, po_number):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
         flag_key = (request.data.get("flagKey") or "").strip()
         if not flag_key:
@@ -1695,6 +1725,7 @@ def make_mir_candidates(cfg: _PlantConfig):
     ones, which is what a reader opening the picker most often wants."""
 
     @api_view(["GET"])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def mir_candidates(request, po_number):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant."}, status=403)
@@ -1775,9 +1806,9 @@ def make_set_mir_match(cfg: _PlantConfig):
     re-match is queued on the background worker."""
 
     @api_view(["PATCH"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def set_mir_match(request, po_number):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
         change = change_from_request(request.data)
         po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
@@ -1811,6 +1842,7 @@ def make_manual_changes(cfg: _PlantConfig):
     one - see manual_receipts.manual_changes()."""
 
     @api_view(["GET"])
+    @permission_classes([requires(*ORDER_VIEWS)])
     def manual_changes_view(request, po_number):
         if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to view this plant."}, status=403)
@@ -1831,9 +1863,9 @@ def make_preview_mir_match(cfg: _PlantConfig):
     returns {previewId}; the page polls make_preview_status()'s GET."""
 
     @api_view(["POST"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def preview_mir_match(request, po_number):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
         change = change_from_request(request.data)
         po = cfg.po_model.objects.filter(po_number=po_number, is_active=True).first()
@@ -1854,9 +1886,9 @@ def make_preview_status(cfg: _PlantConfig):
     """GET .../mir-match/preview/<id> - the preview's state and result."""
 
     @api_view(["GET"])
-    @permission_classes([IsEditor])
+    @permission_classes([requires(Perm.EDIT_FIELDS)])
     def preview_status(request, preview_id):
-        if not user_can_edit_plant(request.user, cfg.key):
+        if not user_can_access_plant(request.user, cfg.key):
             return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
         data = receipt_preview.status(preview_id)
         if data is None or data.get("plantKey") != cfg.key:

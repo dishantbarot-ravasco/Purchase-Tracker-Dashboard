@@ -865,24 +865,26 @@ async function _pollSyncUntilDone(btn, targetKeys, baseline, opts) {
 }
 
 // ── Level 1: Purchase Orders / Raw Material Analysis / plant stock tabs ─
-// Raw Material Analysis is for admins only (project owner, 2026-09-29): its
-// match confidence, mismatch flags and corrections are reconciliation work.
-// Plant staff get Inventory, On Order and Stock & Orders instead
-// (plant-stock.js), which read the same stock and order data. This hides a
-// view, it does not guard data - every role may read the endpoints both
-// views are built from.
+// Raw Material Analysis is for admins only (project owner, 2026-09-29 and
+// 2026-10-02): its match confidence, mismatch flags and corrections are
+// reconciliation work, and the server leaves them out of /materials for
+// everyone else. Each other tab is shown to an account granted its
+// permission (auth.js's userHasPerm()); the endpoints check the same.
 function viewTabOptions() {
-  const tabs = [{ key: 'po', label: 'Purchase Orders' }];
+  const tabs = [];
+  if (userHasPerm('view_dashboard')) tabs.push({ key: 'po', label: 'Purchase Orders' });
   if (isAdminUser()) tabs.push({ key: 'materials', label: 'Raw Material Analysis' });
-  return tabs.concat(PLANT_STOCK_TABS);
+  return tabs.concat(PLANT_STOCK_TABS.filter(t => userHasPerm(t.perm)));
 }
 
 function renderViewTabs() {
   const el = document.getElementById('viewTabs');
   const tabs = viewTabOptions();
-  // A view this role does not have (a non-admin on 'materials') falls back
-  // to the first plant stock tab rather than rendering nothing selected.
-  if (!tabs.some(t => t.key === state.view)) state.view = PLANT_STOCK_TABS[0].key;
+  // A view this account does not have (a non-admin on 'materials', or a
+  // tab not granted) falls back to the first one it does have, rather than
+  // rendering nothing selected. auth.js only opens this page for an account
+  // holding at least one of them.
+  if (!tabs.some(t => t.key === state.view) && tabs.length) state.view = tabs[0].key;
   el.innerHTML = tabs.map(t =>
     '<div class="view-tab ' + (state.view === t.key ? 'active' : '') + '" data-view="' + t.key + '" tabindex="0" role="tab" aria-selected="' + (state.view === t.key) + '">' + escapeHtml(t.label) + '</div>'
   ).join('');

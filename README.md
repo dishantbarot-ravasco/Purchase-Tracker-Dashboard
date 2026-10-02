@@ -111,6 +111,8 @@ full command list is in CLAUDE.md.
 | `stock.html` | RM store - issue from a MIR, the RM register, stock differences |
 | `admin.html` | Admin only - sync status, user management, and (for the owner account only) the activity log of who signed in, changed, downloaded or opened what |
 
-Roles are `admin`, `editor`, `viewer`. Writes (inline field corrections, dismissing a flag, user
-management) are role-gated and audited; `PTUser.plants` can additionally scope an account to
-specific plants, where an empty list means all of them.
+Access is layered: an `admin` opens everything (only the owner makes an admin); a `user` opens only
+the plants in `PTUser.plants` and the pages and actions granted in `PTUser.permissions` (dashboard,
+inventory, on order, stock & orders, PO upload, MIR entry, import docs, RM store, edit fields). A user
+with nothing granted is locked. Writes are permission-gated and audited. See
+[docs/auth-security-email.md](docs/auth-security-email.md#roles-and-plant-scoping).

@@ -53,12 +53,20 @@ def _write_off(lot, qty="5"):
 
 @pytest.mark.django_db
 class TestWhoMayWrite:
-    def test_a_viewer_reads_the_register_but_cannot_preview_or_issue(self):
+    def test_without_rm_store_the_store_is_closed_and_with_it_open(self):
+        """The RM store page is one permission (layered access, 2026-10-02):
+        a dashboard viewer can neither read the register nor issue; an
+        account granted RM store alone does both at its plant."""
         lot = _stock()
         client = _client(role="viewer")
-        assert client.get("/api/stock/register").json()["rows"][0]["closing"] == "100.000"
+        assert client.get("/api/stock/register").status_code == 403
         assert client.post("/api/stock/preview", _issue_body(lot), format="json").status_code == 403
         assert client.post("/api/stock/vouchers/new", _issue_body(lot), format="json").status_code == 403
+        store = APIClient()
+        store.force_authenticate(user=make_user(email="store@ravasco.com", role="user",
+                                                permissions=["rm_store"], plants=["hrs"]))
+        assert store.get("/api/stock/register").json()["rows"][0]["closing"] == "100.000"
+        assert store.post("/api/stock/preview", _issue_body(lot), format="json").status_code == 200
 
     def test_an_editor_scoped_to_hrs_issues_at_hrs_only(self):
         hrs = _stock("hrs")
@@ -101,7 +109,7 @@ class TestPlantScope:
         vapi = _stock("vapi")
         admin = _client(role="admin", email="a@ravasco.com")
         vapi_issue = admin.post("/api/stock/vouchers/new", _issue_body(vapi, "vapi"), format="json").json()
-        viewer = _client(role="viewer", plants=["hrs"], email="v@ravasco.com")
+        viewer = _client(role="editor", plants=["hrs"], email="v@ravasco.com")
         assert {r["plant"]["code"] for r in viewer.get("/api/stock/register").json()["rows"]} == {"hrs"}
         assert viewer.get("/api/stock/register?plant=vapi").json()["rows"] == []
         assert viewer.get("/api/stock/vouchers").json()["vouchers"] == []

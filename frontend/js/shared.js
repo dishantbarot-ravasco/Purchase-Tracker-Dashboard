@@ -23,17 +23,17 @@ const PLANTS = {
 const PLANT_KEYS = Object.keys(PLANTS);
 
 /** Narrows PLANT_KEYS, in place, to the plants `user` may read - called by
- * auth.js's requireAuth() before any page renders. An empty `plants` list
- * means every plant (apps/api/permissions.py's user_can_access_plant()).
+ * auth.js's requireAuth() before any page renders. /api/auth/me lists every
+ * plant for an admin and exactly the granted ones for a user; an empty list
+ * means none (apps/api/permissions.py's user_can_access_plant()), and such
+ * an account is stopped by requireAuth() before any page fetches.
  * Every page builds its tabs and fetches from PLANT_KEYS, so a scoped
  * account opened on All Plants used to request plants the server refuses:
  * the dashboard read "Couldn't load", and Home/Search warned on every load.
  * In place, not reassigned: it is a const every script already holds. */
 function scopePlantKeysToUser(user) {
   const allowed = (user && Array.isArray(user.plants)) ? user.plants : [];
-  if (!allowed.length) return;
   const keep = PLANT_KEYS.filter(k => allowed.indexOf(k) !== -1);
-  if (!keep.length) return; // a list naming no real plant: leave it to the server's 403s
   PLANT_KEYS.splice(0, PLANT_KEYS.length, ...keep);
 }
 const ALL_PLANTS_LABEL = 'All Plants';
@@ -880,15 +880,12 @@ function matchingDisclaimerHtml(summary, detailHtml) {
 // which must have already resolved before any of these are called.
 
 // True only if the signed-in user may actually save a correction for
-// plantKey - matches the IsEditor permission class + user_can_edit_plant()
-// check the backend enforces independently, so a pencil is never rendered
-// for an action that would just 403. Empty CURRENT_USER.plants means "all
-// plants" (see PTUser.plants' own docstring).
+// plantKey - the same Perm.EDIT_FIELDS + user_can_access_plant() check the
+// backend enforces independently, so a pencil is never rendered for an
+// action that would just 403.
 function canEditField(plantKey) {
-  if (!CURRENT_USER) return false;
-  if (CURRENT_USER.role !== 'admin' && CURRENT_USER.role !== 'editor') return false;
-  const plants = CURRENT_USER.plants || [];
-  return !plants.length || plants.includes(plantKey);
+  if (!CURRENT_USER || !userHasPerm('edit_fields')) return false;
+  return isAdminAccount(CURRENT_USER) || (CURRENT_USER.plants || []).includes(plantKey);
 }
 
 /** Renders a static (non-editable) "Label: value" line, used for a field a

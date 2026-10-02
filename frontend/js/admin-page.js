@@ -23,6 +23,10 @@ let USERS = [];
 let editingUserId = null;
 let CURRENT_ADMIN_TAB = 'overview';
 let CURRENT_ADMIN_EMAIL = '';
+// From GET /api/auth/users: the grantable permissions, and whether the
+// signed-in admin is the owner (the only one who may touch admin accounts).
+let PERMISSION_CATALOG = [];
+let CALLER_IS_OWNER = false;
 
 // Delete is a real, irreversible destructive action (unlike Deactivate,
 // which just blocks sign-in) - project owner asked for it restricted to
@@ -210,6 +214,8 @@ async function loadUsers() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     USERS = data.users || [];
+    PERMISSION_CATALOG = data.permissionCatalog || [];
+    CALLER_IS_OWNER = !!data.callerIsOwner;
     renderUsers();
   } catch (e) {
     console.error('admin: failed to load users:', e);
@@ -232,10 +238,12 @@ function renderUsers() {
         '<div><div class="user-card-name">' + escapeHtml(u.fullName || u.email) + '</div>' +
         '<div class="user-card-email">' + escapeHtml(u.email) + '</div></div>' +
       '</div>' +
-      '<div class="user-card-meta"><span class="role-pill ' + escapeHtml(u.role) + '">' + escapeHtml(u.role) + '</span>' +
+      '<div class="user-card-meta"><span class="role-pill ' + escapeHtml(u.role) + '">' + escapeHtml(u.isOwner ? 'owner' : u.role) + '</span>' +
         '<span class="status-pill ' + (u.isActive ? 'active' : 'inactive') + '">' + (u.isActive ? 'Active' : 'Inactive') + '</span>' +
-        '<span class="plants-pill">' + escapeHtml(plantsLabel(u.plants)) + '</span></div>' +
+        '<span class="plants-pill">' + escapeHtml(plantsLabel(u)) + '</span>' +
+        (isLockedAccount(u) ? '<span class="locked-pill" title="No plants or no access granted yet">Locked</span>' : '') + '</div>' +
       '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
+      '<div class="user-card-desig">' + escapeHtml(accessLabel(u)) + '</div>' +
       '<div class="user-card-stats">' +
         '<div><div class="user-card-stat-val">' + (u.correctionsCount || 0) + '</div><div class="user-card-stat-label">Corrections Made</div></div>' +
         '<div><div class="user-card-stat-val fs-13">' + escapeHtml(u.lastLoginAt ? formatDateIN(localDateOf(u.lastLoginAt)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
@@ -243,8 +251,12 @@ function renderUsers() {
       '<div class="user-card-foot">' +
         '<span class="fs-11 text-muted">Since ' + escapeHtml(formatDateIN(u.createdAt ? localDateOf(u.createdAt) : null)) + '</span>' +
         '<div class="user-card-actions">' +
-          '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
-          '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>' +
+          // Only the owner changes an admin's account (users_views.py's
+          // _require_owner_for_admin()); other admins see no controls on one.
+          (u.role !== 'admin' || CALLER_IS_OWNER
+            ? '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
+              '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>'
+            : '') +
           (CURRENT_ADMIN_EMAIL === DELETE_USER_ALLOWED_EMAIL
             ? '<button type="button" class="icon-btn danger" data-delete="' + u.userId + '">Delete</button>'
             : '') +
@@ -265,9 +277,17 @@ function updateUserCounts() {
   document.getElementById('sysinfoActiveCount').textContent = String(USERS.filter(u => u.isActive).length);
 }
 
-function plantsLabel(plants) {
-  if (!plants || !plants.length) return 'All plants';
-  return plants.map(k => (PLANTS[k] || { label: k }).label).join(', ');
+function plantsLabel(u) {
+  if (u.role === 'admin') return 'All plants';
+  if (!u.plants || !u.plants.length) return 'No plants';
+  return u.plants.map(k => (PLANTS[k] || { label: k }).label).join(', ');
+}
+
+/** "Inventory, MIR entry" - what a user account was granted. */
+function accessLabel(u) {
+  if (u.role === 'admin') return 'Every page and action';
+  const labels = PERMISSION_CATALOG.filter(p => (u.permissions || []).includes(p.key)).map(p => p.label);
+  return labels.length ? labels.join(', ') : 'No access granted yet';
 }
 
 function userInitials(u) {
@@ -292,17 +312,32 @@ function readPlantsCheckboxes() {
   return Array.from(document.querySelectorAll('#uf-plants input[type="checkbox"]:checked')).map(cb => cb.value);
 }
 
-// An admin's own access is never plant-scoped - every admin-only endpoint
-// (sync_trigger, every users_views.py view) ignores PTUser.plants entirely,
-// and users_views.py's create_user()/update_user() now force plants=[]
-// server-side for role=admin regardless of what's submitted (see that
-// file's own comment) - so showing the checkboxes for an admin account
-// would just be a control that quietly does nothing, which reads as a bug
-// ("I checked HRS only, why can this admin still edit every plant?") more
-// than a feature. Hidden here for exactly that reason, not to save space.
+// The permissions checklist, grouped View / Work, from the server's own
+// catalogue (apps/api/permissions.py's PERMISSIONS) so the two never drift.
+function renderPermissionCheckboxes(selected) {
+  const sel = selected || [];
+  const groups = [...new Set(PERMISSION_CATALOG.map(p => p.group))];
+  document.getElementById('uf-perms').innerHTML = groups.map(g =>
+    '<div class="uf-perms-group"><span class="uf-perms-group-label">' + escapeHtml(g) + '</span>' +
+    PERMISSION_CATALOG.filter(p => p.group === g).map(p =>
+      '<label><input type="checkbox" value="' + escapeHtml(p.key) + '"' + (sel.includes(p.key) ? ' checked' : '') + '> ' + escapeHtml(p.label) + '</label>'
+    ).join('') + '</div>'
+  ).join('');
+}
+
+function readPermissionCheckboxes() {
+  return Array.from(document.querySelectorAll('#uf-perms input[type="checkbox"]:checked')).map(cb => cb.value);
+}
+
+// An admin reaches every plant and holds every permission, and
+// users_views.py's create_user()/update_user() force both lists empty
+// server-side for role=admin regardless of what's submitted - so showing
+// the checkboxes for an admin account would just be controls that quietly
+// do nothing. Hidden here for exactly that reason, not to save space.
 function updatePlantsRowVisibility() {
   const isAdmin = document.getElementById('uf-role').value === 'admin';
-  document.getElementById('uf-plants-row').style.display = isAdmin ? 'none' : 'block';
+  document.getElementById('uf-plants-row').hidden = isAdmin;
+  document.getElementById('uf-perms-row').hidden = isAdmin;
 }
 
 function openForm(user) {
@@ -314,9 +349,14 @@ function openForm(user) {
   document.getElementById('uf-email').value = user ? user.email : '';
   document.getElementById('uf-email').readOnly = edit;
   document.getElementById('uf-designation').value = user ? (user.designation || '') : '';
-  document.getElementById('uf-role').value = user ? user.role : 'viewer';
+  document.getElementById('uf-role').value = user ? user.role : 'user';
+  // Making an admin is the owner's alone; anyone else gets User only.
+  const adminOption = document.querySelector('#uf-role option[value="admin"]');
+  adminOption.disabled = !CALLER_IS_OWNER;
+  document.getElementById('uf-role-hint').hidden = CALLER_IS_OWNER;
   document.getElementById('uf-password').value = '';
   renderPlantsCheckboxes(user ? user.plants : []);
+  renderPermissionCheckboxes(user ? user.permissions : []);
   updatePlantsRowVisibility();
   // Password row now stays visible in edit mode too (added 2026-09-04,
   // in-app reset) - just optional there: label/hint/required-asterisk
@@ -413,10 +453,11 @@ async function submitForm() {
   const designation = document.getElementById('uf-designation').value.trim();
   const role = document.getElementById('uf-role').value;
   const isActive = document.getElementById('uf-active').value === 'true';
-  // Server-side already forces plants=[] for role=admin regardless of what's
-  // sent (users_views.py) - zeroed here too so a role switched to Admin
-  // after checking some plants doesn't submit stale, now-meaningless values.
+  // Server-side already forces both lists empty for role=admin regardless
+  // of what's sent (users_views.py) - zeroed here too so a role switched to
+  // Admin after checking some boxes doesn't submit stale values.
   const plants = role === 'admin' ? [] : readPlantsCheckboxes();
+  const permissions = role === 'admin' ? [] : readPermissionCheckboxes();
 
   if (!fullName) { return showFormError('Full name is required.'); }
   if (!editingUserId) {
@@ -437,12 +478,12 @@ async function submitForm() {
   btn.textContent = 'Saving…';
   try {
     if (editingUserId) {
-      const payload = { fullName, designation, role, isActive, plants };
+      const payload = { fullName, designation, role, isActive, plants, permissions };
       if (password) payload.password = password;
       await patchUser(editingUserId, payload);
       showToast('User updated.', 'success');
     } else {
-      await createUserApi({ email, password, fullName, designation, role, plants });
+      await createUserApi({ email, password, fullName, designation, role, plants, permissions });
       showToast('User created.', 'success');
     }
     closeForm();

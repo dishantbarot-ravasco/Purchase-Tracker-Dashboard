@@ -89,7 +89,7 @@ class TestAddedReceiptJoinsTheLine:
 
     def test_adding_59_09_keeps_the_line_s_other_receipts(self):
         _po, six, seven = _order()
-        user = PTUser.objects.create(email="d@ravasco.com", password_hash="x", role="editor",
+        user = PTUser.objects.create(email="d@ravasco.com", password_hash="x", role="user",
                                      full_name="Dishant Barot")
         _edit("1", "59/09", "add", SEVEN, user=user)
         result = run_full_match()

@@ -693,10 +693,15 @@ ALLOWED_EMAIL_DOMAINS = tuple(
     if d.strip()
 )
 
+# The application's owner (2026-10-02): the one admin who may grant or take
+# away admin, and change another admin's account. Other admins manage
+# everyone else. See apps/api/permissions.py's is_owner().
+OWNER_EMAIL = (os.environ.get("OWNER_EMAIL") or "dishant.barot@ravasco.com").strip().lower()
+
 # The one account that may read the activity log (owner, 2026-10-01: "I need
 # the activity log only for me and private"). Every other account - other
 # admins included - gets a 404 from /api/activity/... and never sees the tab.
-ACTIVITY_LOG_OWNER_EMAIL = (os.environ.get("ACTIVITY_LOG_OWNER_EMAIL") or "dishant.barot@ravasco.com").strip().lower()
+ACTIVITY_LOG_OWNER_EMAIL = (os.environ.get("ACTIVITY_LOG_OWNER_EMAIL") or OWNER_EMAIL).strip().lower()
 
 # ---------------------------------------------------------------------------
 # Security headers

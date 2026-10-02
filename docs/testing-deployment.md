@@ -616,7 +616,11 @@ Configuration is `pyproject.toml` plus these:
 
 - [`apps/api/tests/factories.py`](../apps/api/tests/factories.py) - `make_user(email, password,
   role="viewer", **extra)` creates an active `PTUser` with a real bcrypt hash; `extra` passes through
-  (e.g. `plants=[...]`). Most API tests pair it with `APIClient.force_authenticate()`.
+  (e.g. `plants=[...]`). Most API tests pair it with `APIClient.force_authenticate()`. `role` also takes
+  test shorthands for the roles before layered access (2026-10-02): `"editor"` (a user with every
+  permission) and `"viewer"` (every View permission), both on every plant unless `plants=` is given, and
+  `"locked"` (nothing granted). A test of the permissions themselves passes `role="user"` with explicit
+  `permissions=` and `plants=`. An admin-touching user-management test acts as `settings.OWNER_EMAIL`.
 - [`apps/services/tests/refusing_email_backends.py`](../apps/services/tests/refusing_email_backends.py)
   - email backends that fail like a dead SMTP server and honour `fail_silently` exactly as Django's
   SMTP backend does: `REFUSE_ALL`, `REFUSE_IMPORT_VALIDITY`, `REFUSE_ALL_BUT_VAPI`,
@@ -705,7 +709,8 @@ Configuration is `pyproject.toml` plus these:
 | test_dismiss_flag.py | yes | HRS and import PO-level flag dismiss/reinstate. |
 | test_dismiss_match.py | yes | HRS match dismissal with reason, survives rematch; string `"false"` reinstates, a missing flag dismisses. |
 | test_dockerignore_mirrors_gitignore.py | no | `.dockerignore` covers every `.gitignore` pattern. |
-| test_endpoint_permission_guard.py | no | Source scan: write endpoints declare permissions, plant endpoints scope by plant. |
+| test_endpoint_permission_guard.py | no | Source scan: write endpoints declare permissions, plant endpoints scope by plant, every endpoint is gated by `requires()` / `IsAdmin` / `HasAnyAccess` unless allow-listed with a reason. |
+| test_layered_permissions.py | yes | Layered access: a locked user refused on every area's read and a granted one let in, no plants opens nothing, `/me` for admin and user, an empty plant list is no plants, each view opens only its data, edits need `edit_fields`, `/materials` reconciliation fields admin-only, file kinds need their permission, a cross-plant PO lookup hides the files, only the owner manages admins, a new user starts locked, migration `0092` locks non-admins and signs them out. |
 | test_ensure_schedules.py | yes | `ensure_schedules` is idempotent and never resets `next_run`; creates the sync, backup and activity-log-prune rows once each. |
 | test_error_visibility.py | yes | No silent failures: OTP generation error, SyncRun rows and error detail. |
 | test_hrs_correct_field.py | yes | HRS inline "Edit Everywhere" with plant scoping. |
@@ -720,8 +725,8 @@ Configuration is `pyproject.toml` plus these:
 | test_material_category_reference.py | yes | Canonical category/subcategory lookup on `GET /api/materials`. |
 | test_material_correct_field.py | yes | Raw Material modal inline edit on stock lots. |
 | test_materials_days_left.py | yes | Days-of-cover on `/materials` read from the consumption ledger. |
-| test_mir_api.py | yes | `/api/mir/...`: viewer cannot enter, editor posts at their plant against another plant's PO but not at another plant, 400 field errors, preview saves nothing, cross-plant PO search, register scoping and newest-first order, cancel and line-close scoping, mismatch resolve, `meta` flags. |
-| test_stock_api.py | yes | `/api/stock/...`: a viewer reads the register but cannot write, an editor writes at their plant only, only an admin approves, 400 field errors, a scoped reader sees only its plants' receipts, register, vouchers and differences, the picker carrying everything from the MIR and leaving out emptied receipts, the MIR detail's per-line stock, a MIR cancel refused naming the issue, returnable lines, `meta` flags and categories (no opening-balance reason), preview saving nothing, the register row and a receipt's movements, a bad period, settings scoping and validation, differences listed and turned down, cancelling, slip filters. |
+| test_mir_api.py | yes | `/api/mir/...`: an account without MIR entry cannot enter, editor posts at their plant against another plant's PO but not at another plant, 400 field errors, preview saves nothing, cross-plant PO search, register scoping and newest-first order, cancel and line-close scoping, mismatch resolve, `meta` flags. |
+| test_stock_api.py | yes | `/api/stock/...`: without RM store the register is closed and issuing refused, with it alone both work, an editor writes at their plant only, only an admin approves, 400 field errors, a scoped reader sees only its plants' receipts, register, vouchers and differences, the picker carrying everything from the MIR and leaving out emptied receipts, the MIR detail's per-line stock, a MIR cancel refused naming the issue, returnable lines, `meta` flags and categories (no opening-balance reason), preview saving nothing, the register row and a receipt's movements, a bad period, settings scoping and validation, differences listed and turned down, cancelling, slip filters. |
 | test_mir_without_po_endpoint.py | yes | `mir-without-po` drill-down: shape, bucket filter, plant gate, CSV. |
 | test_models_package.py | no | `apps/core/models/` package re-exports every model. |
 | test_no_em_dashes.py | no | No em dash in any text file in the repo (code, docs, config; skips `.venv`, migrations, `staticfiles`). |

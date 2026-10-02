@@ -152,6 +152,13 @@ async function requireAuth() {
     CURRENT_USER = await res.json();
     // shared.js, when the page loads it (login.html does not).
     if (typeof scopePlantKeysToUser === 'function') scopePlantKeysToUser(CURRENT_USER);
+    // A page this account may not open shows the nav and a "no access"
+    // panel instead, and the page script stops here (it sees null).
+    const page = PAGE_BY_PATH[window.location.pathname];
+    if (page && !canOpenPage(page)) {
+      showNoAccess(page);
+      return null;
+    }
     return CURRENT_USER;
   } catch (e) {
     // A 401/403 (no session, or the account was deactivated). Network
@@ -241,24 +248,96 @@ function renderUserBadge(container) {
   document.getElementById('changePasswordBtn').onclick = () => openChangePasswordModal();
 }
 
+// ── Layered access (2026-10-02) ─────────────────────────────────────────
+// The browser half of apps/api/permissions.py: an admin opens everything; a
+// user opens a page only when they hold one of its permissions AND at least
+// one plant. A user with none is "locked" - signed in, sees nothing. This
+// only decides what to show; every endpoint checks the same rules again.
+// PAGE_ACCESS must stay in step with the endpoints each page reads.
+const PAGE_ACCESS = {
+  dashboard: ['view_dashboard', 'view_inventory', 'view_on_order', 'view_stock_orders'],
+  search: ['view_dashboard'],
+  pofiles: ['view_dashboard', 'po_upload', 'import_docs', 'mir_entry', 'rm_store'],
+  mir: ['mir_entry', 'po_upload', 'rm_store'],
+  stock: ['rm_store'],
+};
+const PAGE_BY_PATH = {
+  '/': 'dashboard', '/index.html': 'dashboard', '/home.html': 'home', '/search-po.html': 'search',
+  '/po-files.html': 'pofiles', '/mir.html': 'mir', '/stock.html': 'stock', '/admin.html': 'admin',
+};
+
+function isAdminAccount(user) {
+  return !!user && user.role === 'admin';
+}
+
+/** True when the signed-in account holds at least one of `perms`. */
+function userHasPerm(...perms) {
+  if (!CURRENT_USER) return false;
+  if (isAdminAccount(CURRENT_USER)) return true;
+  const held = CURRENT_USER.permissions || [];
+  return (CURRENT_USER.plants || []).length > 0 && perms.some(p => held.indexOf(p) !== -1);
+}
+
+/** A user account an admin has not granted anything yet. */
+function isLockedAccount(user) {
+  if (!user || isAdminAccount(user)) return false;
+  return !(user.permissions || []).length || !(user.plants || []).length;
+}
+
+/** May the signed-in account open `page` (a renderNavTabs() key)? */
+function canOpenPage(page) {
+  if (page === 'home') return true;
+  if (page === 'admin') return isAdminAccount(CURRENT_USER);
+  const needs = PAGE_ACCESS[page];
+  return !needs || userHasPerm(...needs);
+}
+
+/** Replaces a page this account may not open with the nav and a short
+ * panel saying why. Everything below the nav is hidden, not removed, so the
+ * page's own markup never runs half-built. */
+function showNoAccess(page) {
+  const navTabs = document.getElementById('navTabs');
+  const nav = navTabs && navTabs.closest('nav');
+  renderNavTabs(navTabs, page);
+  renderUserBadge(document.getElementById('navUser'));
+  if (typeof initThemeToggle === 'function') initThemeToggle();
+  Array.from(document.body.children).forEach(el => {
+    if (el !== nav && el.tagName !== 'SCRIPT' && !el.classList.contains('skip-link')) el.hidden = true;
+  });
+  const panel = document.createElement('div');
+  panel.className = 'access-panel';
+  panel.setAttribute('role', 'status');
+  const title = document.createElement('div');
+  title.className = 'access-panel-title';
+  const body = document.createElement('div');
+  if (isLockedAccount(CURRENT_USER)) {
+    title.textContent = 'Your account has no access yet';
+    body.textContent = 'An admin will grant you the plants and pages you need. Ask an admin if you are waiting on this.';
+  } else {
+    title.textContent = 'You do not have access to this page';
+    body.textContent = 'Ask an admin if you need it. The pages you can open are in the menu above.';
+  }
+  panel.appendChild(title);
+  panel.appendChild(body);
+  if (nav) nav.after(panel);
+  else document.body.prepend(panel);
+}
+
 // ── Shared nav tabs ─────────────────────────────────────────────────────
-// Shared top-nav tabs (Home / Dashboard / Search PO / Admin) - rendered the
-// same way on every protected page (home.html, index.html, search-po.html,
-// admin.html) so the header looks and behaves identically everywhere, same
-// design as the TDS Automation App's own top nav. "Home" points at
-// /home.html (the landing/overview page); "Dashboard" always points at "/"
-// (the real PO<->MIR<->Stock reconciliation UI) - these are two distinct
-// tabs/destinations, not aliases of each other.
+// Shared top-nav tabs - rendered the same way on every protected page so
+// the header looks and behaves identically everywhere, same design as the
+// TDS Automation App's own top nav. "Home" points at /home.html (the
+// landing/overview page); "Dashboard" always points at "/" (the real
+// PO<->MIR<->Stock reconciliation UI) - two distinct destinations.
 //
-// Call after requireAuth() has resolved (CURRENT_USER populated) - the Admin
-// tab is hidden entirely for non-admin roles rather than shown-then-denied,
-// admin.html's own access-denied state is defense in depth for anyone who
-// navigates there directly, not the primary gate.
+// Call after requireAuth() has resolved (CURRENT_USER populated). A tab is
+// listed only when the account may open its page (canOpenPage()) - hidden
+// rather than shown-then-denied; requireAuth()'s showNoAccess() is the
+// fallback for anyone who navigates to one directly.
 /**
  * Renders the shared nav tabs into `container`, marking `activePage`
  * (e.g. 'home', 'dashboard', 'search', 'admin') as the active one, and
- * records the visit (recordPageView()). The Admin tab is only added to the
- * list at all for role === 'admin'.
+ * records the visit (recordPageView()).
  */
 function renderNavTabs(container, activePage) {
   if (!container || !CURRENT_USER) return;
@@ -267,17 +346,11 @@ function renderNavTabs(container, activePage) {
     { key: 'home', href: '/home.html', label: 'Home' },
     { key: 'dashboard', href: '/', label: 'Dashboard' },
     { key: 'search', href: '/search-po.html', label: 'Search PO' },
-    // MIR entry (2026-09-28) - every role reads the register; entering a
-    // MIR needs Editor at the receiving plant (mir.html says so itself).
-    // Uploaded PO copies (2026-09-30) - every role reads its plants' files;
-    // uploading needs Editor at the plant.
     { key: 'pofiles', href: '/po-files.html', label: 'PO Files' },
     { key: 'mir', href: '/mir.html', label: 'MIR Entry' },
-    // RM store entry (2026-09-29) - issues, returns and adjustments against
-    // the stock MIR entry brings in; every role reads stock for its plants.
     { key: 'stock', href: '/stock.html', label: 'RM Store' },
-  ];
-  if (CURRENT_USER.role === 'admin') tabs.push({ key: 'admin', href: '/admin.html', label: 'Admin' });
+    { key: 'admin', href: '/admin.html', label: 'Admin' },
+  ].filter(t => canOpenPage(t.key));
   container.innerHTML = tabs.map(t =>
     '<a class="nav-tab' + (t.key === activePage ? ' active' : '') + '" href="' + t.href + '">' + escapeHtmlAuth(t.label) + '</a>'
   ).join('');

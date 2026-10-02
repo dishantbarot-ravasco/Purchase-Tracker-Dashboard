@@ -77,8 +77,14 @@
 
     <div id="mainContent" hidden>
 
+      <!-- An account an admin has not granted anything yet (home-page.js) -->
+      <div class="access-panel" id="lockedNotice" role="status" hidden>
+        <div class="access-panel-title">Your account has no access yet</div>
+        <div>An admin will grant you the plants and pages you need. Ask an admin if you are waiting on this.</div>
+      </div>
+
       <!-- KPIs -->
-      <div class="section-title">Overview</div>
+      <div class="section-title" id="kpiTitle">Overview</div>
       <div class="stats-row kpi4" id="kpiRow">
         <div class="stat-card">
           <div class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><line x1="9" y1="10" x2="15" y2="10"/><line x1="9" y1="14" x2="15" y2="14"/><line x1="9" y1="18" x2="13" y2="18"/></svg></div>
@@ -115,9 +121,9 @@
       </div>
 
       <!-- Quick Actions -->
-      <div class="section-title">Quick Actions</div>
+      <div class="section-title" id="actionsTitle">Quick Actions</div>
       <div class="action-cards cols-3" id="actionCards">
-        <a href="/" class="action-card">
+        <a href="/" class="action-card" data-page="dashboard">
           <div class="action-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="21" x2="5" y2="10"/><line x1="12" y1="21" x2="12" y2="4"/><line x1="19" y1="21" x2="19" y2="14"/></svg></div>
           <div class="action-card-title">Dashboard</div>
           <div class="action-card-desc">
@@ -125,7 +131,7 @@
           </div>
           <span class="action-card-cta">Open Dashboard &rarr;</span>
         </a>
-        <a href="/search-po.html" class="action-card">
+        <a href="/search-po.html" class="action-card" data-page="search">
           <div class="action-card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg></div>
           <div class="action-card-title">Search PO</div>
           <div class="action-card-desc">

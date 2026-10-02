@@ -123,7 +123,7 @@ class TestRegisterScoping:
 
     def test_the_register_shows_only_plants_the_caller_may_read(self):
         hrs, vapi = self._post("hrs"), self._post("vapi")
-        scoped = _client(role="viewer", plants=["hrs"], email="v@ravasco.com")
+        scoped = _client(role="editor", plants=["hrs"], email="v@ravasco.com")
         listed = {e["mirNo"] for e in scoped.get("/api/mir/entries").json()["entries"]}
         assert listed == {hrs["mirNo"]}
         assert scoped.get(f"/api/mir/entries/{vapi['id']}").status_code == 404

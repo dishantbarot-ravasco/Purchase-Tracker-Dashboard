@@ -17,10 +17,9 @@
   quantity or a value itself.
   Styled with the dashboard's own components (css/style.css) and MIR entry's
   (css/mir-page.css), plus stock-page.css.
-  Protected page: requireAuth() (js/auth.js). Issuing, returning and recording
-  a difference need the Editor or Admin role at the plant; an editor's
-  difference waits for an admin's approval. Any role can read the plants it
-  may see.
+  Protected page: requireAuth() (js/auth.js) opens it for the RM store
+  permission. Issuing, returning and recording a difference need it at the
+  plant; a storekeeper's difference waits for an admin's approval.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -65,7 +64,7 @@
 
     <!-- ── Issue from MIR ─────────────────────────────────────────── -->
     <div id="viewIssue" role="tabpanel" aria-labelledby="tabIssue" data-form-host>
-      <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot issue material. Ask an admin for the Editor role at your plant.</div>
+      <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot issue material. Ask an admin for the RM store permission at your plant.</div>
       <ol class="mir-progress" id="issueProgress" aria-label="Progress">
         <li data-step="1"><button type="button" data-goto="isStep1"><span class="mir-progress-dot">1</span><span>Issue</span></button></li>
         <li data-step="2"><button type="button" data-goto="isStep2"><span class="mir-progress-dot">2</span><span>Pick the MIR</span></button></li>
@@ -183,7 +182,7 @@
         <button type="button" class="btn btn-small btn-primary" id="mmNew">+ Record a difference</button>
       </div>
       <div id="diffHost" data-form-host hidden>
-        <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot record stock differences. Ask an admin for the Editor role at your plant.</div>
+        <div class="mir-banner mir-banner-warn" data-no-write hidden>Your account cannot record stock differences. Ask an admin for the RM store permission at your plant.</div>
         <form id="diffForm" novalidate>
           <section class="mir-panel">
             <h3 class="mir-panel-title">Record a stock difference</h3>

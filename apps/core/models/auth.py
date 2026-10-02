@@ -22,37 +22,30 @@ from django.db import models
 class PTUser(models.Model):
     """Application user, completely independent of Django's auth.User.
 
-    Roles: 'admin' (full access, incl. user management) | 'editor' (full
-    dashboard access, plus dismissing/overriding a flagged match and the
-    inline "Edit Everywhere" field corrections - see CLAUDE.md's "Dismiss/
-    override a flagged match" and "Inline 'Edit Everywhere'" sections) |
-    'viewer' (read-only dashboard access - view POs, materials, sync
-    status). password_hash is bcrypt (see
-    apps/api/auth_backend.py's _verify_password) - never returned by any API
-    response and excluded from the Django Admin form (PTUserAdmin).
+    Access is layered (2026-10-02, apps/api/permissions.py):
+    - role "admin": every page, plant and action, Raw Material Analysis
+      included. `plants` and `permissions` are kept empty and ignored.
+    - role "user": only the plants in `plants` (lowercase "hrs"/"achhad"/
+      "vapi" keys - empty means NO plants, never "all") and only the pages
+      and actions in `permissions` (permissions.Perm values). A user with no
+      permissions is locked: they can sign in and see nothing.
 
-    `plants` scopes which plants an admin may edit via the inline "Edit
-    Everywhere" feature (apps/api/permissions.py's user_can_edit_plant()) -
-    an empty list means "all plants" (deliberate default so every admin that
-    existed before this field was added keeps full access with no data
-    backfill), a non-empty list restricts to just those plant keys (the
-    lowercase `hrs`/`achhad`/`vapi` keys from frontend/js/shared.js's PLANTS
-    map, NOT SyncRun.Plant's uppercase enum - the two are unrelated). Has no
-    bearing on read access - every role can still read every plant's
-    dashboard, this only gates writes."""
+    password_hash is bcrypt (see apps/api/auth_backend.py's
+    _verify_password) - never returned by any API response and excluded
+    from the Django Admin form (PTUserAdmin)."""
 
     class Role(models.TextChoices):
         ADMIN = "admin", "Admin"
-        EDITOR = "editor", "Editor"
-        VIEWER = "viewer", "Viewer"
+        USER = "user", "User"
 
     user_id = models.AutoField(primary_key=True)
     email = models.TextField(unique=True)
     password_hash = models.TextField()
     full_name = models.TextField(null=True, blank=True)
-    role = models.TextField(choices=Role.choices, default=Role.VIEWER)
+    role = models.TextField(choices=Role.choices, default=Role.USER)
     designation = models.TextField(null=True, blank=True)
     plants = models.JSONField(default=list, blank=True)
+    permissions = models.JSONField(default=list, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_login_at = models.DateTimeField(null=True, blank=True)

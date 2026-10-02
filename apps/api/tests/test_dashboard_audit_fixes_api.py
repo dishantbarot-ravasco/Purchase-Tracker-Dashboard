@@ -108,7 +108,7 @@ class TestPickerDefaultListLeadsWithTheOrdersOwnReceipts:
         for n in range(90):
             mir(f"MIR-NEW-{n}", str(n + 2), 30 + n)
 
-        res = _client(role="viewer").get(f"/api/purchase-orders/{po.po_number}/mir-candidates")
+        res = _client(role="editor").get(f"/api/purchase-orders/{po.po_number}/mir-candidates")
         numbers = [c["mirNo"] for c in res.json()["candidates"]]
         assert numbers[0] == "MIR-OWN"
 

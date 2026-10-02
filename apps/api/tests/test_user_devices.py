@@ -8,6 +8,7 @@ promised in its own email body ("...or revoke the device from the admin
 panel") before any such revoke endpoint existed.
 """
 import pytest
+from django.conf import settings
 from django.http import HttpResponse
 from django.test import RequestFactory
 from rest_framework.test import APIClient
@@ -147,13 +148,13 @@ class TestUserManagementAuditLog:
 
     def setup_method(self):
         self.client = APIClient()
-        self.admin = make_user(email="admin-audit@ravasco.com", role="admin")
+        self.admin = make_user(email=settings.OWNER_EMAIL, role="admin")  # the owner: it promotes to admin below
         self.client.force_authenticate(user=self.admin)
 
     def test_create_user_writes_an_audit_row(self):
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new-audit@ravasco.com", "password": "Str0ngPassw0rd!", "role": "viewer", "fullName": "Audit Test User"},
+            {"email": "new-audit@ravasco.com", "password": "Str0ngPassw0rd!", "role": "user", "fullName": "Audit Test User"},
             format="json",
         )
         assert response.status_code == 201
@@ -162,14 +163,14 @@ class TestUserManagementAuditLog:
         assert "new-audit@ravasco.com" in row.detail
 
     def test_role_change_is_called_out_in_the_audit_detail(self):
-        """A privilege escalation (viewer -> admin) is exactly the kind of
+        """A privilege escalation (user -> admin) is exactly the kind of
         change that must be visible in the audit detail text, not folded
         into a generic 'user updated' row."""
         target = make_user(email="promote-audit@ravasco.com", role="viewer")
         response = self.client.patch(f"/api/auth/users/{target.user_id}", {"role": "admin"}, format="json")
         assert response.status_code == 200
         row = PTAuditLog.objects.filter(action=PTAuditLog.ACTION_USER_UPDATED).latest("timestamp")
-        assert "viewer -> admin" in row.detail
+        assert "user -> admin" in row.detail
 
     def test_password_reset_is_called_out_in_the_audit_detail_without_leaking_it(self):
         target = make_user(email="reset-audit@ravasco.com")

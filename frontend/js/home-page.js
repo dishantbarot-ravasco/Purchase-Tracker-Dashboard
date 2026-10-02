@@ -12,8 +12,18 @@
   renderUserBadge(document.getElementById('navUser'));
   initThemeToggle();
   if (user.role === 'admin') document.getElementById('adminCard').hidden = false;
+  // Each quick-action card only for a page this account may open (auth.js).
+  document.querySelectorAll('#actionCards a.action-card[data-page]').forEach(card => {
+    if (!canOpenPage(card.dataset.page)) card.hidden = true;
+  });
+  if (!document.querySelector('#actionCards a.action-card:not([hidden])')) {
+    ['actionsTitle', 'actionCards'].forEach(id => { document.getElementById(id).hidden = true; });
+  }
+  if (isLockedAccount(user)) document.getElementById('lockedNotice').hidden = false;
 
-  await loadKpis();
+  // The KPI row counts purchase orders, which needs an order view.
+  if (userHasPerm('view_dashboard', 'view_on_order', 'view_stock_orders')) await loadKpis();
+  else ['kpiTitle', 'kpiRow'].forEach(id => { document.getElementById(id).hidden = true; });
 
   document.getElementById('loadingOverlay').style.display = 'none';
   document.getElementById('mainContent').hidden = false;

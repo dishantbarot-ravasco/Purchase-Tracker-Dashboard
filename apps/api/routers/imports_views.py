@@ -11,12 +11,10 @@ plants' Import CSVs are byte-for-byte identical (confirmed live
 2026-09-04), so there is no real per-plant divergence to protect against by
 splitting the read/derive logic into three copies.
 
-Every read view requires authentication (any role). The PATCH correction
-endpoint requires IsEditor (admin/editor) - a viewer can look but not touch,
-same role split IsEditor's own docstring describes for a "real mutating
-endpoint" beyond what this app has had until now (see apps/core/audit_log.py's
-docstring on this app previously being read-only; this endpoint is the first
-exception, deliberately, per the build spec's inline-correction requirement).
+Access (apps/api/permissions.py): the order reads need one of ORDER_VIEWS
+(the dashboard, On Order or Stock & Orders), the licence ledgers the
+dashboard or Perm.IMPORT_DOCS, and every correction, pin and dismissal
+Perm.EDIT_FIELDS - each plus the plant itself.
 """
 
 import datetime
@@ -29,7 +27,7 @@ from rest_framework.decorators import api_view, permission_classes, throttle_cla
 from rest_framework.response import Response
 
 from apps.api.permissions import (
-    BlTrackThrottle, IsAdmin, IsEditor, SyncTriggerThrottle, user_can_access_plant, user_can_edit_plant,
+    ORDER_VIEWS, BlTrackThrottle, HasAnyAccess, IsAdmin, Perm, SyncTriggerThrottle, requires, user_can_access_plant,
 )
 from apps.core.models import (
     AdvanceLicense,
@@ -424,6 +422,7 @@ def _resolve_plant(plant_key):
 # ── Purchase order list/detail ────────────────────────────────────────────────
 
 @api_view(["GET"])
+@permission_classes([requires(*ORDER_VIEWS)])
 def purchase_orders(request):
     """GET /api/imports/purchase-orders - all three plants combined, list
     shape (see _po_dict's non-detail fields). Spec section 1's "single
@@ -450,6 +449,7 @@ def purchase_orders(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*ORDER_VIEWS)])
 def purchase_order_detail(request, plant, po_number):
     """GET /api/imports/purchase-orders/<plant>/<po_number> - one PO, detail
     shape (adds vendor/billing fields, corrections, flag dismissals - see
@@ -477,7 +477,7 @@ def purchase_order_detail(request, plant, po_number):
 # ── Inline field corrections ──────────────────────────────────────────────────
 
 @api_view(["PATCH"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.EDIT_FIELDS)])
 def correct_field(request, plant, po_number):
     """Inline-edit endpoint backing every pencil icon in the detail modal.
     Body: {"itemId": "<optional>", "field": "<model field name>", "value": "<new value>"}.
@@ -486,7 +486,7 @@ def correct_field(request, plant, po_number):
     resolved = _resolve_plant(plant)
     if not resolved:
         return Response({"error": "Unknown plant."}, status=404)
-    if not user_can_edit_plant(request.user, plant):
+    if not user_can_access_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
     po_model, item_model, sr_plant, _label, _match_model = resolved
 
@@ -602,6 +602,7 @@ def _coerce_value(field_name, raw_value):
 # ── Sync status/trigger ────────────────────────────────────────────────────────
 
 @api_view(["GET"])
+@permission_classes([HasAnyAccess])
 def sync_status(request):
     """GET /api/imports/sync-status - latest IMPORT_PO_CSV SyncRun per plant,
     plus each plant's own in-progress flag (see is_imports_sync_in_progress)
@@ -641,6 +642,7 @@ def sync_status(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*ORDER_VIEWS)])
 @throttle_classes([BlTrackThrottle])
 def track_bl(request):
     """GET /api/imports/track-bl?bl=<BL number> - live shipment lookup via
@@ -683,7 +685,7 @@ def sync_trigger(request, plant):
 # ── Match dismiss / flag dismiss ──────────────────────────────────────────────
 
 @api_view(["PATCH"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.EDIT_FIELDS)])
 def dismiss_import_po_mir_match(request, plant, match_id: int):
     """PATCH /api/imports/matches/po-mir/<plant>/<match_id>/dismiss
     Body: {"dismissed": true/false, "reason": "<optional>"}. Same shape as
@@ -694,7 +696,7 @@ def dismiss_import_po_mir_match(request, plant, match_id: int):
     resolved = _resolve_plant(plant)
     if not resolved:
         return Response({"error": "Unknown plant."}, status=404)
-    if not user_can_edit_plant(request.user, plant):
+    if not user_can_access_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's matches."}, status=403)
     _po_model, _item_model, _sr_plant, _label, match_model = resolved
     dismissed = _request_bool(request.data.get("dismissed"), True)
@@ -715,7 +717,7 @@ def dismiss_import_po_mir_match(request, plant, match_id: int):
 
 
 @api_view(["PATCH"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.EDIT_FIELDS)])
 def dismiss_flag(request, plant, po_number):
     """PATCH /api/imports/purchase-orders/<plant>/<po_number>/flags/dismiss
     Body: {"flagKey": "<code>:<item_id|''>", "dismissed": true/false, "reason": "<optional>"}.
@@ -728,7 +730,7 @@ def dismiss_flag(request, plant, po_number):
     resolved = _resolve_plant(plant)
     if not resolved:
         return Response({"error": "Unknown plant."}, status=404)
-    if not user_can_edit_plant(request.user, plant):
+    if not user_can_access_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
     _po_model, _item_model, sr_plant, _label, _match_model = resolved
     flag_key = (request.data.get("flagKey") or "").strip()
@@ -867,6 +869,7 @@ def _unrecognised_license_rows(by_license: dict, known_numbers: set) -> list:
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.VIEW_DASHBOARD, Perm.IMPORT_DOCS)])
 def rodtep_ledger(request):
     """GET /api/imports/rodtep - one row per Script Number: the credit
     sanctioned against it (auto-synced RodtepScrollEntry), and which imports
@@ -967,6 +970,7 @@ def rodtep_ledger(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.VIEW_DASHBOARD, Perm.IMPORT_DOCS)])
 def rodtep_script_detail(request, script_no):
     """GET /api/imports/rodtep/<script_no> - the export side (every Shipping
     Bill row that earned this scrip's credit), the import side (every line
@@ -1216,6 +1220,7 @@ def _advance_license_dict(lic, citations: list, today, known_boes: frozenset | N
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.VIEW_DASHBOARD, Perm.IMPORT_DOCS)])
 def advance_license_ledger(request):
     """GET /api/imports/advance-license - every synced Advance License with
     its own fields, its input materials rolled up (authorised vs imported
@@ -1304,6 +1309,7 @@ def advance_license_sync_trigger(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(Perm.EDIT_FIELDS)])
 def mir_candidates(request, plant, po_number):
     """GET /api/imports/purchase-orders/<plant>/<po>/mir-candidates?q=<text>"""
     resolved = _PLANTS.get(plant)
@@ -1396,7 +1402,7 @@ def _domestic_cfg_for(plant):
 
 
 @api_view(["PATCH"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.EDIT_FIELDS)])
 def set_mir_match(request, plant, po_number):
     """PATCH /api/imports/purchase-orders/<plant>/<po>/mir-match
 
@@ -1406,7 +1412,7 @@ def set_mir_match(request, plant, po_number):
     resolved = _PLANTS.get(plant)
     if not resolved:
         return Response({"error": "Unknown plant."}, status=404)
-    if not user_can_edit_plant(request.user, plant):
+    if not user_can_access_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
     po_model, item_model, sr_plant, _label, _match_model = resolved
     change = change_from_request(request.data)
@@ -1428,6 +1434,7 @@ def set_mir_match(request, plant, po_number):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*ORDER_VIEWS)])
 def manual_changes_view(request, plant, po_number):
     """GET /api/imports/purchase-orders/<plant>/<po>/manual-changes - see
     manual_receipts.manual_changes()."""
@@ -1444,14 +1451,14 @@ def manual_changes_view(request, plant, po_number):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.EDIT_FIELDS)])
 def preview_mir_match(request, plant, po_number):
     """POST /api/imports/purchase-orders/<plant>/<po>/mir-match/preview -
     see apps/services/receipt_preview.py."""
     resolved = _PLANTS.get(plant)
     if not resolved:
         return Response({"error": "Unknown plant."}, status=404)
-    if not user_can_edit_plant(request.user, plant):
+    if not user_can_access_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
     po_model, item_model, sr_plant, _label, _match_model = resolved
     change = change_from_request(request.data)
@@ -1468,12 +1475,12 @@ def preview_mir_match(request, plant, po_number):
 
 
 @api_view(["GET"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.EDIT_FIELDS)])
 def preview_mir_match_status(request, plant, preview_id):
     """GET /api/imports/mir-match-previews/<plant>/<id>."""
     if plant not in _PLANTS:
         return Response({"error": "Unknown plant."}, status=404)
-    if not user_can_edit_plant(request.user, plant):
+    if not user_can_access_plant(request.user, plant):
         return Response({"error": "You are not permitted to edit this plant's purchase orders."}, status=403)
     data = receipt_preview.status(preview_id)
     if data is None or data.get("plantKey") != plant:

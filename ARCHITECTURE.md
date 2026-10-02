@@ -152,11 +152,12 @@ are needed. See CLAUDE.md's "Deployment, Docker, and `.env`".
 
 ## Known architectural constraints
 
-- **Read endpoints are role-open but plant-scoped.** Every read (PO list, materials, stock trend,
-  sync status, domestic and import) is plain `IsAuthenticated` on *role* - any role can read, by
-  design - but narrows by `PTUser.plants` via `permissions.user_can_access_plant()`. An empty
-  `plants` list means "all plants". Writes are gated at `IsEditor`/`IsAdmin` plus the same plant
-  check. CLAUDE.md has the endpoint-by-endpoint list.
+- **Every endpoint names a permission and checks the plant (layered access, 2026-10-02).** An admin
+  opens everything; a user needs the endpoint's permission (`permissions.requires(Perm...)`) and the
+  plant in `PTUser.plants` (`permissions.user_can_access_plant()`; empty means none). Raw Material
+  Analysis's reconciliation fields are admin-only on the server.
+  [docs/auth-security-email.md](docs/auth-security-email.md#roles-and-plant-scoping) has the rules,
+  [docs/api-and-features.md](docs/api-and-features.md#endpoints) the endpoint-by-endpoint list.
 - **`cache_page` infrastructure exists and nothing uses it.** `DatabaseCache` is wired up and
   test-safe, but every current endpoint is real business data behind auth, not the public reference
   data `cache_page` is safe to sit in front of - and it must never sit above a permission check.

@@ -8,7 +8,7 @@ endpoints with no plant scoping on any of them, despite CLAUDE.md's standing
 instruction: "If you add a new read OR write endpoint, gate both role and
 plant". Every other router already did this by hand; nothing checked it.
 
-Two rules, both read from the AST of every function decorated with
+Three rules, all read from the AST of every function decorated with
 @api_view under apps/api/:
 
 1. An endpoint accepting POST/PUT/PATCH/DELETE declares @permission_classes.
@@ -20,6 +20,12 @@ Two rules, both read from the AST of every function decorated with
 2. An endpoint that handles a plant - takes a `plant` argument, reads a
    "plant" field, or is built from a per-plant `cfg` - calls one of the plant
    scoping helpers in its body.
+
+3. (2026-10-02, layered access) Every endpoint, reads included, is gated by
+   a permission: requires(...), IsAdmin or HasAnyAccess. Bare
+   IsAuthenticated, or no decorator at all, lets a LOCKED account - signed
+   in, no permissions granted - through, so it is allowed only for the
+   sign-in, self-service and owner-only views listed with their reasons.
 
 An endpoint that is right to break a rule goes in the matching allow-list
 below WITH ITS REASON. Stale entries fail too, so the lists cannot quietly
@@ -35,7 +41,8 @@ from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parents[1]
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-PLANT_SCOPE_CALLS = {"user_can_access_plant", "user_can_edit_plant"}
+PLANT_SCOPE_CALLS = {"user_can_access_plant"}
+PERMISSION_GATES = {"requires", "IsAdmin", "HasAnyAccess"}
 
 # Rule 1 exceptions: unsafe method, deliberately no @permission_classes.
 WRITES_OPEN_TO_ANY_ROLE = {
@@ -53,13 +60,36 @@ PLANT_ENDPOINTS_NOT_SCOPED = {
         "Unauthenticated uptime probe; loops over plants only to name stale pipeline steps - no plant data returned.",
     # MIR entry (2026-09-28): project owner's rule - any plant's store may
     # receive against ANY plant's open PO, so finding one is cross-plant on
-    # purpose. IsEditor-gated; posting is then scoped to the receiving plant.
+    # purpose. Needs MIR entry or PO upload; posting is then scoped to the
+    # receiving plant.
     ("mir_views.py", "open_pos"):
-        "Owner rule 2026-09-28: every plant may receive any plant's open PO; IsEditor, read-only PO lookup.",
-    ("mir_views.py", "purchase_order"):
-        "Owner rule 2026-09-28: the PO a store receives against may belong to another plant; IsEditor, read-only.",
+        "Owner rule 2026-09-28: every plant may receive any plant's open PO; MIR entry / PO upload, read-only lookup.",
     ("mir_views.py", "vendors"):
-        "Vendor master is company-wide, not plant data; IsEditor picker for a PO that names no vendor.",
+        "Vendor master is company-wide, not plant data; MIR entry picker for a PO that names no vendor.",
+}
+
+# Rule 3 exceptions: deliberately not gated by a permission.
+NOT_PERMISSION_GATED = {
+    ("auth_views.py", "whoami"):
+        "Tells the page who is signed in and what they hold - a locked account must reach it to see 'no access'.",
+    ("device_views.py", "device_verify"): "Sign-in step, before any account is known.",
+    ("device_views.py", "logout_view"): "Signing out must always work.",
+    ("device_views.py", "logout_everywhere_view"): "Self-service: revoking your own sessions.",
+    ("google_oauth_views.py", "oauth_session_token"): "Sign-in step, before any account is known.",
+    ("password_views.py", "request_password_change"): "Self-service: changing your own password.",
+    ("password_views.py", "confirm_password_change"): "Self-service: changing your own password.",
+    ("preferences_views.py", "presets"): "Self-service: the caller's own saved sort presets.",
+    ("preferences_views.py", "preset"): "Self-service: the caller's own saved sort presets.",
+    ("activity_views.py", "page_view"): "Records the caller's own page visit; returns nothing.",
+    ("activity_views.py", "activity"): "IsActivityLogOwner - narrower than any permission.",
+    ("activity_views.py", "activity_people"): "IsActivityLogOwner - narrower than any permission.",
+    ("activity_views.py", "activity_export"): "IsActivityLogOwner - narrower than any permission.",
+    ("reports_views.py", "trigger_daily_report"): "Cron trigger, shared-secret checked in the body.",
+    ("reports_views.py", "trigger_monthly_report"): "Cron trigger, shared-secret checked in the body.",
+    ("reports_views.py", "trigger_mismatch_report"): "Cron trigger, shared-secret checked in the body.",
+    ("reports_views.py", "trigger_prune_revoked_tokens"): "Cron trigger, shared-secret checked in the body.",
+    ("reports_views.py", "trigger_advance_license_expiry_report"): "Cron trigger, shared-secret checked in the body.",
+    ("views.py", "readiness"): "Unauthenticated uptime probe; returns no business data.",
 }
 
 
@@ -151,8 +181,8 @@ def test_every_write_endpoint_declares_its_permission_classes():
         and (f, n) not in WRITES_OPEN_TO_ANY_ROLE
     ]
     assert not offenders, (
-        "These endpoints accept writes with no @permission_classes, so ANY authenticated role can call them. "
-        "Add IsEditor/IsAdmin, or - if open-to-every-role is genuinely right - add the view to "
+        "These endpoints accept writes with no @permission_classes, so ANY signed-in account can call them. "
+        "Add requires(Perm...)/IsAdmin, or - if open-to-every-account is genuinely right - add the view to "
         "WRITES_OPEN_TO_ANY_ROLE with the reason:\n  " + "\n  ".join(offenders)
     )
 
@@ -167,12 +197,46 @@ def test_every_plant_endpoint_calls_a_plant_scoping_helper():
     ]
     assert not offenders, (
         "These endpoints handle a plant but never check PTUser.plants, so an account scoped to one plant can "
-        "reach another's data. Call user_can_access_plant()/user_can_edit_plant(), or add the view to "
+        "reach another's data. Call user_can_access_plant(), or add the view to "
         "PLANT_ENDPOINTS_NOT_SCOPED with the reason:\n  " + "\n  ".join(offenders)
+    )
+
+
+def _gates(fn) -> set:
+    """Names used inside the endpoint's @permission_classes([...])."""
+    found = set()
+    for d in fn.decorator_list:
+        if _decorator_name(d) == "permission_classes":
+            found |= {getattr(n, "id", None) or getattr(n, "attr", None) for n in ast.walk(d)}
+    return found
+
+
+def test_the_permission_rule_flags_a_bare_isauthenticated_read():
+    """Rule 3 must catch the shape the layered-access rework replaced: a read
+    open to any signed-in account, locked ones included."""
+    fn = ast.parse('''
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def materials(request):
+    return Response([])
+''').body[0]
+    assert not (_gates(fn) & PERMISSION_GATES)
+
+
+def test_every_endpoint_is_gated_by_a_permission():
+    offenders = [
+        f"{f}::{n}"
+        for f, n, _, fn in _endpoints()
+        if not (_gates(fn) & PERMISSION_GATES) and (f, n) not in NOT_PERMISSION_GATED
+    ]
+    assert not offenders, (
+        "These endpoints are open to any signed-in account, including one with no permissions granted. "
+        "Gate them with requires(Perm...), IsAdmin or HasAnyAccess, or - for a sign-in or self-service "
+        "view - add the view to NOT_PERMISSION_GATED with the reason:\n  " + "\n  ".join(offenders)
     )
 
 
 def test_allow_lists_name_only_endpoints_that_still_exist():
     names = {(f, n) for f, n, _, _ in _endpoints()}
-    stale = sorted((set(WRITES_OPEN_TO_ANY_ROLE) | set(PLANT_ENDPOINTS_NOT_SCOPED)) - names)
+    stale = sorted((set(WRITES_OPEN_TO_ANY_ROLE) | set(PLANT_ENDPOINTS_NOT_SCOPED) | set(NOT_PERMISSION_GATED)) - names)
     assert not stale, f"Allow-list entries for endpoints that no longer exist - delete them: {stale}"

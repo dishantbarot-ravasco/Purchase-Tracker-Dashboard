@@ -27,7 +27,7 @@ class TestCreateUserPasswordStrength:
         pass the old >= 8 check) must now be rejected."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "short@ravasco.com", "password": "Sh0rt1!", "role": "viewer"},
+            {"email": "short@ravasco.com", "password": "Sh0rt1!", "role": "user"},
             format="json",
         )
         assert response.status_code == 400
@@ -36,7 +36,7 @@ class TestCreateUserPasswordStrength:
     def test_rejects_purely_numeric_password(self):
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "numeric@ravasco.com", "password": "1234567890", "role": "viewer"},
+            {"email": "numeric@ravasco.com", "password": "1234567890", "role": "user"},
             format="json",
         )
         assert response.status_code == 400
@@ -45,7 +45,7 @@ class TestCreateUserPasswordStrength:
     def test_rejects_password_matching_email_local_part(self):
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "newuser123@ravasco.com", "password": "newuser123", "role": "viewer"},
+            {"email": "newuser123@ravasco.com", "password": "newuser123", "role": "user"},
             format="json",
         )
         assert response.status_code == 400
@@ -56,7 +56,7 @@ class TestCreateUserPasswordStrength:
         confirms the tightened rule isn't accidentally rejecting everything."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "reasonable@ravasco.com", "password": "Str0ngPassw0rd!", "role": "viewer", "fullName": "Reasonable Person"},
+            {"email": "reasonable@ravasco.com", "password": "Str0ngPassw0rd!", "role": "user", "fullName": "Reasonable Person"},
             format="json",
         )
         assert response.status_code == 201

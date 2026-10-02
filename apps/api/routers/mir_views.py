@@ -3,19 +3,20 @@
 The rules live in apps/services/mir_service.py; this file only gates, parses
 and serializes.
 
-Access:
-  - Reading MIRs and mismatches: any role, filtered to the plants the account
-    may read (user_can_access_plant()).
-  - Entering, previewing and cancelling a MIR: Editor or Admin, and the
-    account must be allowed to edit the RECEIVING plant.
-  - Finding a PO to receive against (open-pos, purchase-orders/<id>,
-    vendors): Editor or Admin, across EVERY plant, by the project owner's
-    rule - any plant's store may receive any plant's open PO. These three
-    return PO data for plants the account may not otherwise read, which is
-    the point; test_endpoint_permission_guard.py records it.
+Access (apps/api/permissions.py):
+  - Reading MIRs and mismatches: Perm.MIR_ENTRY, PO_UPLOAD or RM_STORE (the
+    RM store issues against a MIR), filtered to the account's plants.
+  - Entering, previewing, editing and cancelling a MIR, and a material's
+    category: Perm.MIR_ENTRY, at the RECEIVING plant.
+  - Finding a PO to receive against (open-pos, purchase-orders/<id>):
+    Perm.MIR_ENTRY or PO_UPLOAD, across EVERY plant, by the project owner's
+    rule - any plant's store may receive any plant's open PO. These return
+    PO data for plants the account may not otherwise read, which is the
+    point; test_endpoint_permission_guard.py records it. The PO's files are
+    listed only when the account has the PO's plant.
   - Resolving a mismatch, closing/reopening a PO line and clearing a line's
-    review flag: Editor or Admin at the PO's plant (or the MIR's plant, for
-    a mismatch).
+    review flag: Perm.MIR_ENTRY or PO_UPLOAD at the PO's plant (or the MIR's
+    plant, for a mismatch).
 
 Money and quantities travel as strings, never floats, so what the screen
 shows is exactly what was stored.
@@ -30,7 +31,7 @@ from rest_framework import status as http
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 
-from apps.api.permissions import IsEditor, user_can_access_plant, user_can_edit_plant
+from apps.api.permissions import HasAnyAccess, Perm, has_perm, requires, user_can_access_plant
 from apps.api.routers.document_views import invoice_files, po_files
 from apps.core.models import (
     Material,
@@ -44,6 +45,10 @@ from apps.core.models import (
 )
 from apps.services import materials, mir_service, stock_service
 from apps.services import procurement_rules as rules
+
+# Who may read MIRs, and who may manage a PO's lines and mismatches.
+MIR_READERS = (Perm.MIR_ENTRY, Perm.PO_UPLOAD, Perm.RM_STORE)
+PO_MANAGERS = (Perm.MIR_ENTRY, Perm.PO_UPLOAD)
 
 
 def _s(value):
@@ -119,6 +124,7 @@ def _po_header(po):
 
 
 @api_view(["GET"])
+@permission_classes([HasAnyAccess])
 def meta(request):
     """Plants (and which the caller may receive at), reasons, tax types,
     GST slabs - everything the form's dropdowns need."""
@@ -126,12 +132,16 @@ def meta(request):
     plants = []
     for p in Plant.objects.all():
         can_read = user_can_access_plant(user, p.code)
-        can_receive = can_read and getattr(user, "role", "") in ("admin", "editor") and user_can_edit_plant(user, p.code)
+        can_receive = can_read and has_perm(user, Perm.MIR_ENTRY)
         plants.append({**_plant(p), "stateCode": p.state_code, "canRead": can_read, "canReceive": can_receive})
     reasons = [{"code": r.code, "kind": r.kind, "label": r.label, "closesLine": r.closes_line, "noteRequired": r.note_required}
                for r in MirReasonCode.objects.filter(is_active=True)]
     return Response({
         "plants": plants, "reasons": reasons,
+        # What this account may do, for the pages that share this endpoint
+        # (mir.html, po-files.html). The endpoints enforce it again.
+        "can": {"mirEntry": has_perm(user, Perm.MIR_ENTRY), "poUpload": has_perm(user, Perm.PO_UPLOAD),
+                "importDocs": has_perm(user, Perm.IMPORT_DOCS), "manageLines": has_perm(user, *PO_MANAGERS)},
         "taxTypes": [{"code": c, "label": rules.TaxType.LABELS[c]} for c in rules.TaxType.ALL],
         "gstSlabs": [str(s) for s in rules.GST_SLABS],
         "categories": [{"name": c, "subcategories": subs} for c, subs in mir_service.category_options().items()],
@@ -144,7 +154,7 @@ def meta(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsEditor])
+@permission_classes([requires(*PO_MANAGERS)])
 def open_pos(request):
     """Open POs at every plant whose PO number contains ?q=."""
     results = []
@@ -156,20 +166,23 @@ def open_pos(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsEditor])
+@permission_classes([requires(*PO_MANAGERS)])
 def purchase_order(request, po_id):
     po = get_object_or_404(PurchaseOrder.objects.select_related("plant", "vendor"), pk=po_id)
     lines = mir_service.po_lines_with_state(po)
-    # Short-close / reopen / confirm are for an Editor or Admin at the PO's
-    # own plant (close_line and friends check the same); the page offers
-    # the buttons only when this is true.
-    can_manage = getattr(request.user, "role", "") in ("admin", "editor") and user_can_edit_plant(request.user, po.plant.code)
+    # Short-close / reopen / confirm need PO_MANAGERS at the PO's own plant
+    # (close_line and friends check the same); the page offers the buttons
+    # only when this is true. The PO itself is cross-plant by the owner's
+    # rule, its files are not: they are listed only to an account that has
+    # the PO's plant.
+    has_plant = user_can_access_plant(request.user, po.plant.code)
+    can_manage = has_plant and has_perm(request.user, *PO_MANAGERS)
     return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active, "canManage": can_manage,
-                     "poFiles": po_files(po), "lines": [_po_line(line, st) for line, st in lines]})
+                     "poFiles": po_files(po) if has_plant else [], "lines": [_po_line(line, st) for line, st in lines]})
 
 
 @api_view(["GET"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 def vendors(request):
     """Vendor picker, for a PO that names no vendor."""
     q = (request.query_params.get("q") or "").strip()
@@ -202,11 +215,11 @@ def _preview_payload(result):
 
 def _receiving_plant_allowed(request):
     code = (request.data or {}).get("plant")
-    return bool(code) and user_can_edit_plant(request.user, code)
+    return bool(code) and user_can_access_plant(request.user, code)
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 def preview(request):
     """Checks and prices the form as it stands; saves nothing."""
     if not _receiving_plant_allowed(request):
@@ -215,7 +228,7 @@ def preview(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 def post_entry(request):
     if not _receiving_plant_allowed(request):
         return _forbidden("You cannot enter MIRs for that plant.")
@@ -290,6 +303,7 @@ def _readable_plants(user):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*MIR_READERS)])
 def entries(request):
     """The MIR register, newest first, for the plants the caller may read.
     Filters: ?plant= ?status= ?q= (MIR, invoice or vendor) ?from= ?to=."""
@@ -314,6 +328,7 @@ def entries(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*MIR_READERS)])
 def entry(request, mir_id):
     mir = get_object_or_404(Mir, pk=mir_id)
     if not user_can_access_plant(request.user, mir.plant.code):
@@ -322,10 +337,10 @@ def entry(request, mir_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 def cancel_entry(request, mir_id):
     mir = get_object_or_404(Mir, pk=mir_id)
-    if not user_can_edit_plant(request.user, mir.plant.code):
+    if not user_can_access_plant(request.user, mir.plant.code):
         return _forbidden()
     try:
         mir_service.cancel_mir(mir, request.user, (request.data or {}).get("reason"))
@@ -335,10 +350,10 @@ def cancel_entry(request, mir_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 def material_category(request, material_id):
     """Correct a material's category. Body: {"category", "subcategory",
-    "reason"}. Materials are company-wide, so any Editor or Admin may; the
+    "reason"}. Materials are company-wide, so anyone with MIR entry may; the
     change is logged with its reason (materials.change_category())."""
     material = get_object_or_404(Material, pk=material_id)
     data = request.data or {}
@@ -354,11 +369,11 @@ def material_category(request, material_id):
 
 def _editable_mir(request, mir_id):
     mir = get_object_or_404(Mir.objects.select_related("plant"), pk=mir_id)
-    return mir, user_can_edit_plant(request.user, mir.plant.code)
+    return mir, user_can_access_plant(request.user, mir.plant.code)
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 def edit_entry(request, mir_id):
     """Change a posted MIR's paperwork, within mir_service's limits.
     Body: {"header": {field: value}, "lines": {lineNo: {field: value}},
@@ -380,7 +395,7 @@ def edit_entry(request, mir_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 def reject_line(request, mir_id, line_no):
     """Record a rejection found after posting. Body: {"qtyRejected": new
     total, "reason": code, "note": "..."}."""
@@ -400,6 +415,7 @@ def reject_line(request, mir_id, line_no):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*MIR_READERS)])
 def mismatches(request):
     """Mismatches of MIRs at the plants the caller may read; ?status=OPEN by
     default (RESOLVED / VOID / ALL), ?plant= to narrow."""
@@ -422,11 +438,11 @@ def mismatches(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(*PO_MANAGERS)])
 def resolve(request, mismatch_id):
     mm = get_object_or_404(MirMismatch.objects.select_related("mir__plant", "mir_line__po_line__purchase_order__plant"), pk=mismatch_id)
     po_plant = mm.mir_line.po_line.purchase_order.plant.code if mm.mir_line else None
-    if not (user_can_edit_plant(request.user, mm.mir.plant.code) or (po_plant and user_can_edit_plant(request.user, po_plant))):
+    if not (user_can_access_plant(request.user, mm.mir.plant.code) or (po_plant and user_can_access_plant(request.user, po_plant))):
         return _forbidden()
     try:
         mm = mir_service.resolve_mismatch(mm, request.user, (request.data or {}).get("note"))
@@ -440,7 +456,7 @@ def resolve(request, mismatch_id):
 
 def _line_for_edit(request, line_id):
     line = get_object_or_404(PurchaseOrderLine.objects.select_related("purchase_order__plant"), pk=line_id)
-    return line, user_can_edit_plant(request.user, line.purchase_order.plant.code)
+    return line, user_can_access_plant(request.user, line.purchase_order.plant.code)
 
 
 def _line_response(line):
@@ -450,7 +466,7 @@ def _line_response(line):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(*PO_MANAGERS)])
 def close_line(request, line_id):
     line, allowed = _line_for_edit(request, line_id)
     if not allowed:
@@ -463,7 +479,7 @@ def close_line(request, line_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(*PO_MANAGERS)])
 def reopen_line(request, line_id):
     line, allowed = _line_for_edit(request, line_id)
     if not allowed:
@@ -476,7 +492,7 @@ def reopen_line(request, line_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(*PO_MANAGERS)])
 def review_line(request, line_id):
     line, allowed = _line_for_edit(request, line_id)
     if not allowed:

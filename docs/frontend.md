@@ -366,11 +366,15 @@ Do not reintroduce `nowrap` on a cell's content without a column wide enough for
 The project owner asked for three raw-material tabs that **replace Raw Material Analysis for everyone
 but admins**: Inventory (the material in the store at each plant), On Order (the material on order for
 each plant, plus what to reorder soon) and Stock & Orders (the two together). `main.js`'s
-`viewTabOptions()` shows Purchase Orders and the three plant tabs to every role, and Raw Material
-Analysis (between them) to admins. It hides a view; it is not a data boundary - every role may read the
-`/materials` and `/purchase-orders` endpoints both views are built from. A consequence worth knowing:
-the stock-lot Category and Rate pencils live in Raw Material Analysis's material modal, so editors no
-longer reach them from the UI (`correct_material_field` still accepts an editor).
+`viewTabOptions()` shows each tab to an account granted it (layered access, 2026-10-02): Purchase Orders
+for `view_dashboard`, each plant tab for its own permission (`PLANT_STOCK_TABS[].perm`), and Raw
+Material Analysis (between them) to admins only. **For Raw Material Analysis that is a data boundary
+too**: `/materials` leaves the reconciliation layer (`mirStockMatches`, `dataQualityFlags`,
+`corrections`, `mirMatched`) out for anyone but an admin, so these tabs must never depend on those
+fields. An account with Inventory alone loads stock only - `loadAndRenderPlantView()` fetches the order
+books only for `PS_ORDER_PERMS` (the server's `ORDER_VIEWS`). A consequence worth knowing: the
+stock-lot Category and Rate pencils live in Raw Material Analysis's material modal, so non-admins no
+longer reach them from the UI (`correct_material_field` still accepts `edit_fields`).
 
 **Same layout as Raw Material Analysis, from the same classes** (project owner: "design each of these
 tabs with our current design schema, theme and fonts"). Each tab is that view's stack: KPI cards
@@ -489,13 +493,17 @@ the await) and the page never navigates; a session that cannot be renewed goes t
 bounce everyone to the login page on every blip, and they signed in again.
 
 `requireAuth()` calls `shared.js`'s `scopePlantKeysToUser()` once `CURRENT_USER` is known: it narrows
-`PLANT_KEYS` in place to the user's `plants` (empty = every plant). Every page builds its tabs and
+`PLANT_KEYS` in place to the user's `plants` (`/api/auth/me` lists every plant for an admin; empty
+means none). Then, if `PAGE_BY_PATH` names the page and `canOpenPage()` says no, it calls
+`showNoAccess()` and returns `null`, so the page script stops before any fetch. Every page builds its tabs and
 fetches from `PLANT_KEYS`, so a plant-scoped account used to request plants the server refuses - the
 dashboard read "Couldn't load" and Home/Search warned on every load.
 
 Session gate and shared nav chrome for every protected page. Exports `CURRENT_USER`, `authFetch`,
 `refreshSession`, `requireAuth`, `logout`, `renderUserBadge`, `renderNavTabs`, `userInitials`,
-`initThemeToggle`, `applyTheme`, `isEffectivelyDark`, `escapeHtmlAuth`. Depends on
+`initThemeToggle`, `applyTheme`, `isEffectivelyDark`, `escapeHtmlAuth`, and the layered-access helpers
+(2026-10-02) `PAGE_ACCESS`, `PAGE_BY_PATH`, `isAdminAccount()`, `userHasPerm(...perms)`,
+`isLockedAccount(user)`, `canOpenPage(page)`, `showNoAccess(page)`. Depends on
 `openChangePasswordModal()` from `shared.js` at click time only. Auth is the httpOnly `pt_access`
 cookie; nothing here holds a token.
 
@@ -509,9 +517,17 @@ cookie; nothing here holds a token.
 - `requireAuth()` - GET `/api/auth/me`, fills `CURRENT_USER`; any failure logs and redirects to
   `/login.html`. Each page bootstrap returns early when it resolves `null`.
 - `logout()` - best-effort POST `/api/auth/logout`, then always redirects.
-- `renderNavTabs(container, activePage)` - Home (`/home.html`), Dashboard (`/`), Search PO, PO Files
-  (`/po-files.html`, every role), MIR Entry (`/mir.html`, every role), RM Store (`/stock.html`, every
-  role), and Admin only when `role === 'admin'`. `activePage` is
+- `PAGE_ACCESS` - each page's permissions (any one opens it), the browser copy of what the page's
+  endpoints require: Dashboard any view, Search PO `view_dashboard`, PO Files the file readers, MIR Entry
+  `mir_entry` / `po_upload` / `rm_store`, RM Store `rm_store`; Home always, Admin admins only. Keep it in
+  step with [permissions.py](../apps/api/permissions.py) when an endpoint's gate changes.
+- `userHasPerm(...perms)` - an admin always; a user holding one of `perms` and at least one plant.
+  `isLockedAccount(user)` - a user with no permissions or no plants.
+- `showNoAccess(page)` - renders the nav and user badge, hides every other child of `<body>` (`hidden`,
+  not removed), and inserts an `.access-panel` (brand.css): "no access yet" for a locked account, "no
+  access to this page" otherwise.
+- `renderNavTabs(container, activePage)` - Home, Dashboard (`/`), Search PO, PO Files, MIR Entry, RM
+  Store and Admin, each only when `canOpenPage()` allows it. `activePage` is
   `home`/`dashboard`/`search`/`pofiles`/`mir`/`stock`/`admin`. It also calls `recordPageView()`.
 - `recordPageView(page)` - fire-and-forget POST `/api/activity/page-view` (`keepalive`, errors
   swallowed) so the admin Activity Log knows the page was opened; every protected page runs
@@ -573,9 +589,9 @@ few module-level variables for the correction box and modal a11y.
   (announces the list heading; scrolls only if the region's top is off-screen; jumps instead of
   gliding under reduced motion).
 - **Disclaimer:** `matchingDisclaimerHtml(summary, detailHtml)`.
-- **Permissions:** `canEditField(plantKey)` - admin/editor, and `CURRENT_USER.plants` empty (= all)
-  or containing the plant. Mirrors the backend check so a pencil or dismiss link is never rendered
-  for a write that would 403.
+- **Permissions:** `canEditField(plantKey)` - `userHasPerm('edit_fields')`, and an admin or a
+  `CURRENT_USER.plants` containing the plant. Mirrors the backend check so a pencil or dismiss link is
+  never rendered for a write that would 403.
 - **Inline "Edit Everywhere"** (feature rules in [api-and-features.md](api-and-features.md)):
   `plainLine`, `editableLine(plantKey, label, value, fieldName, itemId, fieldType, options)` and
   `editableCell(...)` emit `.editable-line`/`.cell-editable` with `data-field`, `data-item`,
@@ -1177,13 +1193,14 @@ outside the moved rows, so it stays put.
 ### frontend/js/plant-stock.js
 
 The three plant tabs (see [Plant stock tabs](#plant-stock-tabs---inventory-on-order-stock--orders-2026-09-29)).
-Globals: `PLANT_STOCK_TABS` / `PLANT_STOCK_VIEW_KEYS`, `isAdminUser()`, `PS_PLANT_COLORS`,
+Globals: `PLANT_STOCK_TABS` (each with the `perm` that shows it) / `PLANT_STOCK_VIEW_KEYS`,
+`PS_ORDER_PERMS`, `isAdminUser()`, `PS_PLANT_COLORS`,
 `PS_STATE` (per tab: category and subCategory, which narrow everything; status, search and page, which
 narrow the list only; showAll for "View all") with `psDefaultState()` / `resetPlantViewFilters()`,
 `PS_VIEWS` (each tab's row builder, statuses, page parts and columns), `PS_LIST_CTX`.
 
-- `loadAndRenderPlantView()` loads stock, both order books and the tab's sort presets for the selected
-  plants, then renders unless the reader switched view or plant meanwhile. `renderPlantView()` builds
+- `loadAndRenderPlantView()` loads stock, both order books (only for `PS_ORDER_PERMS`) and the tab's
+  sort presets for the selected plants, then renders unless the reader switched view or plant meanwhile. `renderPlantView()` builds
   the scope once (`psBuildScope()`: `materialScope()` + `computeMaterialPoLinkage()`), applies the
   category filters, and lays out the tab's parts (`psInventoryParts()` / `psOnOrderParts()` /
   `psCombinedParts()`: title, subtitle, disclaimer, six cards, status options, two charts).
@@ -1284,9 +1301,9 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   rows, `#viewContent`), first `loadAndRender()`, deep-link open, `startFreshnessWatch()`,
   `resumeSyncIfRunning()`. Refresh Data for an admin runs `triggerRealSyncAndRefresh()`; for anyone
   else it clears caches and re-reads the DB.
-- Tabs: `viewTabOptions()` (Purchase Orders, Raw Material Analysis for admins only, then
-  plant-stock.js's `PLANT_STOCK_TABS`), `renderViewTabs()` (`.view-tab`; a view the role lacks falls back to
-  Inventory; also re-reads sync status because some badges are view-specific), `renderPlantTabs()` (`.plant-tab`, All Plants first), `renderPurchaseTypeTabs()`
+- Tabs: `viewTabOptions()` (Purchase Orders for `view_dashboard`, Raw Material Analysis for admins
+  only, then each of plant-stock.js's `PLANT_STOCK_TABS` the account is granted), `renderViewTabs()`
+  (`.view-tab`; a view the account lacks falls back to the first one it has; also re-reads sync status because some badges are view-specific), `renderPlantTabs()` (`.plant-tab`, All Plants first), `renderPurchaseTypeTabs()`
   (`.sub-tab`, Purchase Orders only), whose clicks go through **`switchPurchaseType(ptype, opts)`**:
   resets every list filter, loads whichever side is missing (Import on first visit; Domestic too
   when the page opened on an Import deep link), renders, and returns `false` on a failed load or if
@@ -1323,7 +1340,9 @@ current.
 ### frontend/js/home-page.js
 
 `home.html` bootstrap: `requireAuth()`, greeting from the user's first name, nav/user/theme, reveals
-`#adminCard` for admins, `await loadKpis()` (in `shared.js`), then hides the loading overlay.
+`#adminCard` for admins, hides each quick-action card (`data-page`) the account may not open (and the section when none is left), shows
+`#lockedNotice` for a locked account, `await loadKpis()` (in `shared.js`) only for an order view (the
+KPI row is hidden otherwise), then hides the loading overlay.
 `loadKpis()` reads each plant's `purchase-orders/summary` (vendor and created date only, about 36 KB
 for all three) - it used to download every plant's full PO list, about 1.9 MB, for four counts.
 
@@ -1474,8 +1493,10 @@ Current / Older revision / Withdrawn, name, size, who, when, withdrawal reason) 
 
 ### frontend/js/po-files-page.js
 
-`po-files.html`. Reads `/api/mir/meta` for plants (`canReceive` is the same rule as uploading - Editor
-or Admin at that plant), shows the upload panel only when there is such a plant, and lists
+`po-files.html`. Reads `/api/mir/meta` for plants and `can`; `poFilesKindsAllowed()` is the kinds the
+account may upload (PO copy for `poUpload`, the import papers for `importDocs` - document_views.py's
+`KIND_PERMISSION`). It shows the upload panel only when there is one, drops the other kinds from the
+Document picker, and lists
 `/api/documents/po` (plant, Document and search filters re-fetch, debounced - the search matches a PO,
 BOE, license or scrip number; the Show filter - current copies, all revisions, withdrawn - filters the
 fetched rows). The upload form's Document picker (PO copy, Bill of Entry, Advance License, RoDTEP
@@ -1484,19 +1505,25 @@ license or scrip number) and the license kinds let the file input take .xlsx. `p
 plant, PO number, the number when needed, and file before sending and reports the new revision. Each
 row: PO number and note, document and its number, plant, revision,
 status (with the withdrawal reason), Open, who and when, whether the PO is in the app yet, and
-Withdraw for a plant the account may write - `poFilesOpenWithdraw()` opens an inline reason field
+Withdraw when the account has the plant and the row's kind (`poFilesCanWrite(plant, kind)`) - `poFilesOpenWithdraw()` opens an inline reason field
 under the row and POSTs `documents/<id>/withdraw`. `poFilesApi()` is the page's JSON wrapper.
 
 ### frontend/js/admin-page.js
 
-`admin.html` bootstrap and Users panel. Shows `#deniedContent` for non-admins and stops. Sidebar tabs
+`admin.html` bootstrap and Users panel. `requireAuth()` already stops a non-admin
+(`showNoAccess()`); `#deniedContent` stays as a fallback. Sidebar tabs
 via `switchAdminTab()`, which calls `activity-log.js`'s `openActivityLog()` when the Activity Log tab
 opens. Loads in parallel: `loadSyncCards()` (GET `<prefix>/sync-status` per plant,
 labels "PO Updated"/"MIR"/"RM"/"Matching"), `loadUsers()` (GET `/api/auth/users`), `loadOverviewData()`
 (GET `/api/auth/admin-overview`; Top Correctors / Top Vendors via `renderBarList()` with widths set
 from JS, `renderRecentActivity()`), and `loadKpis()`. User form: `openForm()` (calls `openModalA11y()`
-then focuses Full Name), `closeForm()`, `submitForm()` (password >= 10, optional on edit; `plants`
-forced to `[]` for admins and the plants row hidden), `createUserApi()` (POST
+then focuses Full Name), `closeForm()`, `submitForm()` (password >= 10, optional on edit; `plants` and
+`permissions` forced to `[]` for admins and both rows hidden), the permissions checklist
+(`renderPermissionCheckboxes()` / `readPermissionCheckboxes()`, grouped View / Work from the server's
+`permissionCatalog`), the Admin role option disabled unless `CALLER_IS_OWNER` (with `#uf-role-hint`), and
+no Edit / Deactivate on an admin's card for anyone but the owner. Cards show the role (`owner` for the
+owner), plants (`All plants` for an admin, `No plants` when empty), a `Locked` pill and the granted
+pages (`accessLabel()`). `createUserApi()` (POST
 `/api/auth/users/create`), `patchUser()` (PATCH `/api/auth/users/<id>`), `toggleActive()`,
 `deleteUser()` (DELETE `/api/auth/users/<id>`, button only for `DELETE_USER_ALLOWED_EMAIL`),
 `loadDevices()` / `renderDevices()` / `revokeDevice()` (GET and DELETE

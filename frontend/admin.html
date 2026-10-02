@@ -277,15 +277,20 @@
         <div class="uf-row">
           <label class="uf-label">Role <span class="req-mark">*</span></label>
           <select id="uf-role" class="uf-input">
-            <option value="viewer">Viewer - read-only dashboard access</option>
-            <option value="editor">Editor - full dashboard access</option>
-            <option value="admin">Admin - full access + user management</option>
+            <option value="user">User - the plants and pages granted below</option>
+            <option value="admin">Admin - every plant and page, Raw Material Analysis, user management</option>
           </select>
+          <p class="uf-hint" id="uf-role-hint" hidden>Only the application owner can make someone an admin or change an admin's account.</p>
         </div>
         <div class="uf-row" id="uf-plants-row">
-          <label class="uf-label">Plants (inline edit access)</label>
+          <label class="uf-label">Plants</label>
           <div id="uf-plants" class="uf-plants"></div>
-          <p class="uf-hint">Leave every box unchecked for access to all plants. Only affects the inline "Edit Everywhere" pencils - every role can still read every plant's dashboard.</p>
+          <p class="uf-hint">The plants this person reads and works on. With no plant ticked they can see nothing.</p>
+        </div>
+        <div class="uf-row" id="uf-perms-row">
+          <label class="uf-label">Access</label>
+          <div id="uf-perms" class="uf-perms"></div>
+          <p class="uf-hint">Each page or action applies to every plant ticked above. With nothing ticked the account is locked: it can sign in and sees nothing.</p>
         </div>
         <div class="uf-row" id="uf-active-row" hidden>
           <label class="uf-label">Status</label>

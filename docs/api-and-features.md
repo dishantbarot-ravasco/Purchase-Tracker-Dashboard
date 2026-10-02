@@ -10,8 +10,12 @@ roles, plant scoping, sessions and email in [auth-security-email.md](auth-securi
 
 ## Endpoints
 
-All paths are under `/api/`. "Auth" means the project default (`IsAuthenticated`, any role). "Plant"
-means the view also calls `user_can_access_plant()` (reads) or `user_can_edit_plant()` (writes).
+All paths are under `/api/`. The Permission column names what
+[permissions.py](../apps/api/permissions.py) requires: a permission in backticks (`edit_fields`) is
+`requires(Perm.EDIT_FIELDS)` - an admin always passes - and a tuple (`ORDER_VIEWS`, `STOCK_VIEWS`,
+`MIR_READERS`, `PO_MANAGERS`, `DOCUMENT_READERS`) means any one of its permissions; "Auth" means plain
+`IsAuthenticated` (sign-in and self-service only). "Plant" means the view also calls
+`user_can_access_plant()`. See [auth-security-email.md](auth-security-email.md#roles-and-plant-scoping).
 Domestic endpoints exist three times: HRS has no prefix, RTP-Achhad is under `achhad/`, RTP-Vapi under
 `vapi/`, written below as `[<p>/]`. `<po>` may contain "/" (see [urls.py](#appsapiurlspy)). Every `/api/` response defaults to `Cache-Control: no-store`
 (`ApiNoStoreMiddleware`, see [architecture.md](architecture.md)).
@@ -25,65 +29,65 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `[<p>/]purchase-orders` | `purchase_orders` | Auth + plant (403) | Every active PO with line items, match fields, corrections, flag dismissals, data-quality flags |
-| PATCH | `[<p>/]purchase-orders/<po>/fields` | `correct_field` | IsEditor + plant | Inline correction of one PO or line-item field, audit row, re-match if the field feeds matching |
-| GET | `[<p>/]purchase-orders/<po>/mir-candidates` | `mir_candidates` | Auth + plant (403) | MIR documents a line could be given, each with who holds it (`claimedBy`); with `itemRef`, grouped with `why` |
-| PATCH | `[<p>/]purchase-orders/<po>/mir-match` | `set_mir_match` | IsEditor + plant | One manual change to a line (add / remove a receipt, not received, back to automatic, undo, or the older pin); re-match queued on the worker |
-| POST | `[<p>/]purchase-orders/<po>/mir-match/preview` | `preview_mir_match` | IsEditor + plant | Queue a dry run of that change; returns `previewId` |
-| GET | `[<p>/]mir-match-previews/<id>` | `preview_mir_match_status` | IsEditor + plant | The preview's state and the lines it moves |
-| GET | `[<p>/]purchase-orders/<po>/manual-changes` | `manual_changes` | Auth + plant (403) | The order's manual receipt decisions, who and when, plus its receipts placed on other orders |
-| PATCH | `[<p>/]purchase-orders/<po>/flags/dismiss` | `dismiss_flag` | IsEditor + plant | Dismiss / reinstate a PO-level flag (`FlagDismissal`); 404 for a PO the plant does not hold |
-| GET | `[<p>/]materials` | `materials` | Auth + plant (403) | Every active Stock lot with consumption, MSL, MIR↔Stock matches, flags |
-| PATCH | `[<p>/]materials/<lot_id>/fields` | `correct_material_field` | IsEditor + plant | Inline correction of one lot field |
-| GET | `[<p>/]materials/<lot_id>/stock-trend` | `stock_trend` | Auth + plant (403) | One lot's snapshot history |
-| GET | `[<p>/]stock-snapshots/dates` | `stock_snapshot_dates` | Auth + plant (403) | Distinct snapshot dates with lot counts (no frontend caller today) |
-| GET | `[<p>/]stock-snapshots?date=` | `stock_snapshots_for_date` | Auth + plant (403) | Whole plant's stock on one date; 404 with nearest dates when absent (no frontend caller today) |
-| GET | `[<p>/]stock-snapshots/export?from=&to=` | `export_stock_snapshots` | IsEditor + plant | Streaming CSV of the full snapshot history |
-| GET | `[<p>/]mir-without-po?bucket=&download=csv` | `mir_without_po` | Auth + plant (403) | Receipts with no order behind them, bucketed; CSV with `?download=csv` |
-| GET | `[<p>/]sync-status` | `sync_status` | Auth + plant (403) | Latest `SyncRun` per source plus registry counts, retired-PO count, snapshot gap |
+| GET | `[<p>/]purchase-orders` | `purchase_orders` | `ORDER_VIEWS` + plant (403) | Every active PO with line items, match fields, corrections, flag dismissals, data-quality flags |
+| PATCH | `[<p>/]purchase-orders/<po>/fields` | `correct_field` | `edit_fields` + plant | Inline correction of one PO or line-item field, audit row, re-match if the field feeds matching |
+| GET | `[<p>/]purchase-orders/<po>/mir-candidates` | `mir_candidates` | `edit_fields` + plant (403) | MIR documents a line could be given, each with who holds it (`claimedBy`); with `itemRef`, grouped with `why` |
+| PATCH | `[<p>/]purchase-orders/<po>/mir-match` | `set_mir_match` | `edit_fields` + plant | One manual change to a line (add / remove a receipt, not received, back to automatic, undo, or the older pin); re-match queued on the worker |
+| POST | `[<p>/]purchase-orders/<po>/mir-match/preview` | `preview_mir_match` | `edit_fields` + plant | Queue a dry run of that change; returns `previewId` |
+| GET | `[<p>/]mir-match-previews/<id>` | `preview_mir_match_status` | `edit_fields` + plant | The preview's state and the lines it moves |
+| GET | `[<p>/]purchase-orders/<po>/manual-changes` | `manual_changes` | `ORDER_VIEWS` + plant (403) | The order's manual receipt decisions, who and when, plus its receipts placed on other orders |
+| PATCH | `[<p>/]purchase-orders/<po>/flags/dismiss` | `dismiss_flag` | `edit_fields` + plant | Dismiss / reinstate a PO-level flag (`FlagDismissal`); 404 for a PO the plant does not hold |
+| GET | `[<p>/]materials` | `materials` | `STOCK_VIEWS` + plant (403); reconciliation fields admin-only | Every active Stock lot with consumption, MSL, MIR↔Stock matches, flags |
+| PATCH | `[<p>/]materials/<lot_id>/fields` | `correct_material_field` | `edit_fields` + plant | Inline correction of one lot field |
+| GET | `[<p>/]materials/<lot_id>/stock-trend` | `stock_trend` | `STOCK_VIEWS` + plant (403) | One lot's snapshot history |
+| GET | `[<p>/]stock-snapshots/dates` | `stock_snapshot_dates` | `STOCK_VIEWS` + plant (403) | Distinct snapshot dates with lot counts (no frontend caller today) |
+| GET | `[<p>/]stock-snapshots?date=` | `stock_snapshots_for_date` | `STOCK_VIEWS` + plant (403) | Whole plant's stock on one date; 404 with nearest dates when absent (no frontend caller today) |
+| GET | `[<p>/]stock-snapshots/export?from=&to=` | `export_stock_snapshots` | `edit_fields` + plant | Streaming CSV of the full snapshot history |
+| GET | `[<p>/]mir-without-po?bucket=&download=csv` | `mir_without_po` | `view_dashboard` + plant (403) | Receipts with no order behind them, bucketed; CSV with `?download=csv` |
+| GET | `[<p>/]sync-status` | `sync_status` | `HasAnyAccess` + plant (403) | Latest `SyncRun` per source plus registry counts, retired-PO count, snapshot gap |
 | POST | `[<p>/]sync-trigger` | `sync_trigger` | IsAdmin, `SyncTriggerThrottle` | Queue the plant's Drive sync pipeline; 202 or 409 `already_running` |
-| PATCH | `[<p>/]matches/po-mir/<id>/dismiss` | `dismiss_po_mir_match` | IsEditor + plant | Dismiss / reinstate a PO↔MIR match |
-| PATCH | `[<p>/]matches/mir-stock/<id>/dismiss` | `dismiss_mir_stock_match` | IsEditor + plant | Dismiss / reinstate a MIR↔Stock match |
+| PATCH | `[<p>/]matches/po-mir/<id>/dismiss` | `dismiss_po_mir_match` | `edit_fields` + plant | Dismiss / reinstate a PO↔MIR match |
+| PATCH | `[<p>/]matches/mir-stock/<id>/dismiss` | `dismiss_mir_stock_match` | `edit_fields` + plant | Dismiss / reinstate a MIR↔Stock match |
 
 ### Imports, cross-plant (`imports_views`)
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `imports/purchase-orders` | `purchase_orders` | Auth, plants silently narrowed | All three plants' active import POs, newest first |
-| GET | `imports/purchase-orders/<plant>/<po>` | `purchase_order_detail` | Auth + plant (404) | One PO in detail shape (corrections, flag dismissals, vendor fields) |
-| PATCH | `imports/purchase-orders/<plant>/<po>/fields` | `correct_field` | IsEditor + plant (403) | Inline correction, `ImportPOCorrection` audit row, re-match if relevant |
-| GET | `imports/purchase-orders/<plant>/<po>/mir-candidates` | `mir_candidates` | Auth + plant (404) | Picker candidates; `claimedBy` lists domestic AND import holders |
-| PATCH | `imports/purchase-orders/<plant>/<po>/mir-match` | `set_mir_match` | IsEditor + plant (403) | One manual change to an import line (`po_kind=import`) |
-| POST | `imports/purchase-orders/<plant>/<po>/mir-match/preview` | `preview_mir_match` | IsEditor + plant (403) | Queue a dry run of that change |
-| GET | `imports/mir-match-previews/<plant>/<id>` | `preview_mir_match_status` | IsEditor + plant (403) | The preview's state and result |
-| GET | `imports/purchase-orders/<plant>/<po>/manual-changes` | `manual_changes_view` | Auth + plant (404) | The import order's manual receipt decisions |
-| PATCH | `imports/purchase-orders/<plant>/<po>/flags/dismiss` | `dismiss_flag` | IsEditor + plant | Dismiss an `import_flags.py` flag (`<code>:<item_id>` key) |
-| PATCH | `imports/matches/po-mir/<plant>/<id>/dismiss` | `dismiss_import_po_mir_match` | IsEditor + plant | Dismiss / reinstate an import PO↔MIR match |
-| GET | `imports/sync-status` | `sync_status` | Auth, plants silently narrowed | Latest `IMPORT_PO_CSV` run per plant, plus `rodtepInProgress` / `advanceLicenseInProgress` |
+| GET | `imports/purchase-orders` | `purchase_orders` | `ORDER_VIEWS`, plants silently narrowed | All three plants' active import POs, newest first |
+| GET | `imports/purchase-orders/<plant>/<po>` | `purchase_order_detail` | `ORDER_VIEWS` + plant (404) | One PO in detail shape (corrections, flag dismissals, vendor fields) |
+| PATCH | `imports/purchase-orders/<plant>/<po>/fields` | `correct_field` | `edit_fields` + plant (403) | Inline correction, `ImportPOCorrection` audit row, re-match if relevant |
+| GET | `imports/purchase-orders/<plant>/<po>/mir-candidates` | `mir_candidates` | `edit_fields` + plant (404) | Picker candidates; `claimedBy` lists domestic AND import holders |
+| PATCH | `imports/purchase-orders/<plant>/<po>/mir-match` | `set_mir_match` | `edit_fields` + plant (403) | One manual change to an import line (`po_kind=import`) |
+| POST | `imports/purchase-orders/<plant>/<po>/mir-match/preview` | `preview_mir_match` | `edit_fields` + plant (403) | Queue a dry run of that change |
+| GET | `imports/mir-match-previews/<plant>/<id>` | `preview_mir_match_status` | `edit_fields` + plant (403) | The preview's state and result |
+| GET | `imports/purchase-orders/<plant>/<po>/manual-changes` | `manual_changes_view` | `ORDER_VIEWS` + plant (404) | The import order's manual receipt decisions |
+| PATCH | `imports/purchase-orders/<plant>/<po>/flags/dismiss` | `dismiss_flag` | `edit_fields` + plant | Dismiss an `import_flags.py` flag (`<code>:<item_id>` key) |
+| PATCH | `imports/matches/po-mir/<plant>/<id>/dismiss` | `dismiss_import_po_mir_match` | `edit_fields` + plant | Dismiss / reinstate an import PO↔MIR match |
+| GET | `imports/sync-status` | `sync_status` | `HasAnyAccess`, plants silently narrowed | Latest `IMPORT_PO_CSV` run per plant, plus `rodtepInProgress` / `advanceLicenseInProgress` |
 | POST | `imports/sync-trigger/<plant>` | `sync_trigger` | IsAdmin, `SyncTriggerThrottle` | Queue that plant's import CSV sync + match |
-| GET | `imports/track-bl?bl=` | `track_bl` | Auth, `BlTrackThrottle` | Live SafeCube container-tracking passthrough, successes cached 10 min per BL; 502 on any failure |
-| GET | `imports/rodtep` | `rodtep_ledger` | Auth | RoDTEP scrip ledger joined to import citations |
+| GET | `imports/track-bl?bl=` | `track_bl` | `ORDER_VIEWS`, `BlTrackThrottle` | Live SafeCube container-tracking passthrough, successes cached 10 min per BL; 502 on any failure |
+| GET | `imports/rodtep` | `rodtep_ledger` | `view_dashboard` or `import_docs` | RoDTEP scrip ledger joined to import citations |
 | POST | `imports/rodtep/sync-trigger` | `rodtep_sync_trigger` | IsAdmin | Run `sync_rodtep` synchronously; 200 or 409 |
-| GET | `imports/rodtep/<script_no>` | `rodtep_script_detail` | Auth | Export side, import side and legacy usage rows for one scrip |
-| GET | `imports/advance-license` | `advance_license_ledger` | Auth | Advance Licence ledger with utilisation, validity and BOE cross-check |
+| GET | `imports/rodtep/<script_no>` | `rodtep_script_detail` | `view_dashboard` or `import_docs` | Export side, import side and legacy usage rows for one scrip |
+| GET | `imports/advance-license` | `advance_license_ledger` | `view_dashboard` or `import_docs` | Advance Licence ledger with utilisation, validity and BOE cross-check |
 | POST | `imports/advance-license/sync-trigger` | `advance_license_sync_trigger` | IsAdmin | Run `sync_advance_license` synchronously; 200 or 409 |
 
 ### RM stock entry (`stock_views`)
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `stock/meta` | `meta` | Auth | Plants with `canRead` / `canWrite` / `canApprove`, stock reasons (no `OPENING_BALANCE`), today, `backdateDays`, departments used per plant, `pendingApprovals`, the categories held (the register's filter) |
-| GET | `stock/receipts?plant=&q=&all=` | `receipts` | Auth, readable plant (404); every readable plant without `plant` | MIR receipts with stock left, oldest MIR first, matching a MIR number, material, vendor, invoice, PO or item code (80 at most), or every open one with `all=1` (500 at most) - the issue and difference forms' picker. Each carries everything from its MIR line |
-| GET | `stock/receipts/<lot_id>` | `receipt` | Auth, readable plant (404) | One MIR receipt: its MIR facts, balances, every movement with the running balance, the plant's store setting for the material |
-| GET | `stock/register?plant=&from=&to=&q=&category=&all=` | `register` | Auth, readable plants | The RM register: one row per MIR receipt for the period (default this month to today) - opening, received, issued, returned, adjusted, closing, rate, value, days in store. `all=1` keeps receipts that held nothing all period |
-| GET | `stock/differences?status=&plant=` | `differences` | Auth, readable plants | Stock differences (Open mismatches): `OPEN` (waiting for an admin, default), `RESOLVED`, `CANCELLED`, `ALL` |
-| POST | `stock/settings` | `settings` | IsEditor + plant (403) | Whether the plant keeps a material in store, and its minimum level |
-| POST | `stock/materials/<id>/units` | `material_units` | IsEditor | A material's base unit (KG / L / NOS / M) and pack factors `{unit: factor or ""}`, with a reason; company-wide, logged; used by MIRs posted afterwards |
-| POST | `stock/preview` | `preview` | IsEditor + plant (403) | Check and value an issue / return / difference; saves nothing |
-| POST | `stock/vouchers/new` | `post_voucher` | IsEditor + plant (403) | Save one; 201 (an editor's difference `PENDING`), or 400 with `errors: [{field, message}]` |
-| GET | `stock/vouchers?plant=&kind=&status=&q=&from=&to=` | `vouchers` | Auth, readable plants | The issue slips, returns and differences, newest first; `q` also finds a MIR number |
-| GET | `stock/vouchers/<id>` | `voucher` | Auth, readable plant (404) | One voucher: lines with their MIR receipt, returns against it, what is still out |
-| POST | `stock/vouchers/<id>/cancel` | `cancel_voucher` | IsEditor + plant | Cancel a posted voucher or withdraw a pending difference; a reason is required |
+| GET | `stock/meta` | `meta` | `HasAnyAccess` | Plants with `canRead` / `canWrite` / `canApprove`, stock reasons (no `OPENING_BALANCE`), today, `backdateDays`, departments used per plant, `pendingApprovals`, the categories held (the register's filter) |
+| GET | `stock/receipts?plant=&q=&all=` | `receipts` | `rm_store`, readable plant (404); every readable plant without `plant` | MIR receipts with stock left, oldest MIR first, matching a MIR number, material, vendor, invoice, PO or item code (80 at most), or every open one with `all=1` (500 at most) - the issue and difference forms' picker. Each carries everything from its MIR line |
+| GET | `stock/receipts/<lot_id>` | `receipt` | `rm_store`, readable plant (404) | One MIR receipt: its MIR facts, balances, every movement with the running balance, the plant's store setting for the material |
+| GET | `stock/register?plant=&from=&to=&q=&category=&all=` | `register` | `rm_store`, readable plants | The RM register: one row per MIR receipt for the period (default this month to today) - opening, received, issued, returned, adjusted, closing, rate, value, days in store. `all=1` keeps receipts that held nothing all period |
+| GET | `stock/differences?status=&plant=` | `differences` | `rm_store`, readable plants | Stock differences (Open mismatches): `OPEN` (waiting for an admin, default), `RESOLVED`, `CANCELLED`, `ALL` |
+| POST | `stock/settings` | `settings` | `rm_store` + plant (403) | Whether the plant keeps a material in store, and its minimum level |
+| POST | `stock/materials/<id>/units` | `material_units` | `rm_store` (company-wide) | A material's base unit (KG / L / NOS / M) and pack factors `{unit: factor or ""}`, with a reason; company-wide, logged; used by MIRs posted afterwards |
+| POST | `stock/preview` | `preview` | `rm_store` + plant (403) | Check and value an issue / return / difference; saves nothing |
+| POST | `stock/vouchers/new` | `post_voucher` | `rm_store` + plant (403) | Save one; 201 (a storekeeper's difference `PENDING`), or 400 with `errors: [{field, message}]` |
+| GET | `stock/vouchers?plant=&kind=&status=&q=&from=&to=` | `vouchers` | `rm_store`, readable plants | The issue slips, returns and differences, newest first; `q` also finds a MIR number |
+| GET | `stock/vouchers/<id>` | `voucher` | `rm_store`, readable plant (404) | One voucher: lines with their MIR receipt, returns against it, what is still out |
+| POST | `stock/vouchers/<id>/cancel` | `cancel_voucher` | `rm_store` + plant | Cancel a posted voucher or withdraw a pending difference; a reason is required |
 | POST | `stock/vouchers/<id>/approve` | `approve_voucher` | IsAdmin + plant | Approve a pending difference (re-checked now) |
 | POST | `stock/vouchers/<id>/reject` | `reject_voucher` | IsAdmin + plant | Turn one down; a note is required |
 
@@ -91,46 +95,46 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `mir/meta` | `meta` | Auth | Plants with `canRead` / `canReceive`, reason codes, tax types, GST slabs, today |
-| GET | `mir/open-pos?q=` | `open_pos` | IsEditor, every plant on purpose | Active POs with an open line whose number, vendor name or GSTIN matches |
-| GET | `mir/purchase-orders/<id>` | `purchase_order` | IsEditor, every plant on purpose | A normalized PO with each line's received-so-far, open quantity and whether it can take a receipt, plus its uploaded copies (`poFiles`, withdrawn ones left out) |
-| GET | `mir/vendors?q=` | `vendors` | IsEditor | Vendor picker for a PO that names no vendor |
-| POST | `mir/preview` | `preview` | IsEditor + receiving plant (403) | Check and price the form; saves nothing |
-| POST | `mir/entries/new` | `post_entry` | IsEditor + receiving plant (403) | Save a MIR; 201, or 400 with `errors: [{field, message}]` |
-| GET | `mir/entries?plant=&status=&q=&from=&to=` | `entries` | Auth, readable plants only | The MIR register, newest first |
-| GET | `mir/entries/<id>` | `entry` | Auth, readable plant (404) | One MIR with lines, mismatches and `invoiceFiles` |
-| POST | `mir/entries/<id>/cancel` | `cancel_entry` | IsEditor + MIR's plant (403) | Cancel with a reason |
-| GET | `mir/mismatches?status=&plant=` | `mismatches` | Auth, readable plants only | Mismatches, `OPEN` by default |
-| POST | `mir/mismatches/<id>/resolve` | `resolve` | IsEditor + MIR's or PO's plant (403) | Resolve with a note |
-| POST | `mir/po-lines/<id>/close` / `reopen` / `review` | `close_line` / `reopen_line` / `review_line` | IsEditor + PO's plant (403) | Short-close a line, reopen it, or clear a `needs_review` flag |
+| GET | `mir/meta` | `meta` | `HasAnyAccess` | Plants with `canRead` / `canReceive`, reason codes, tax types, GST slabs, today |
+| GET | `mir/open-pos?q=` | `open_pos` | `PO_MANAGERS`, every plant on purpose | Active POs with an open line whose number, vendor name or GSTIN matches |
+| GET | `mir/purchase-orders/<id>` | `purchase_order` | `PO_MANAGERS`, every plant on purpose; files only for the PO's plant | A normalized PO with each line's received-so-far, open quantity and whether it can take a receipt, plus its uploaded copies (`poFiles`, withdrawn ones left out) |
+| GET | `mir/vendors?q=` | `vendors` | `mir_entry` | Vendor picker for a PO that names no vendor |
+| POST | `mir/preview` | `preview` | `mir_entry` + receiving plant (403) | Check and price the form; saves nothing |
+| POST | `mir/entries/new` | `post_entry` | `mir_entry` + receiving plant (403) | Save a MIR; 201, or 400 with `errors: [{field, message}]` |
+| GET | `mir/entries?plant=&status=&q=&from=&to=` | `entries` | `MIR_READERS`, readable plants only | The MIR register, newest first |
+| GET | `mir/entries/<id>` | `entry` | `MIR_READERS`, readable plant (404) | One MIR with lines, mismatches and `invoiceFiles` |
+| POST | `mir/entries/<id>/cancel` | `cancel_entry` | `mir_entry` + MIR's plant (403) | Cancel with a reason |
+| GET | `mir/mismatches?status=&plant=` | `mismatches` | `MIR_READERS`, readable plants only | Mismatches, `OPEN` by default |
+| POST | `mir/mismatches/<id>/resolve` | `resolve` | `PO_MANAGERS` + MIR's or PO's plant (403) | Resolve with a note |
+| POST | `mir/po-lines/<id>/close` / `reopen` / `review` | `close_line` / `reopen_line` / `review_line` | `PO_MANAGERS` + PO's plant (403) | Short-close a line, reopen it, or clear a `needs_review` flag |
 
 ### PO and invoice files (`document_views`)
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `documents/po?plant=&kind=&q=` | `po_documents` | Auth, readable plants only | Files filed under a PO (PO copies, BOEs, licenses, RoDTEP scrips) newest first, every revision and status, with `poInSystem` and `storageReady`; `q` matches the PO number or the reference |
-| POST | `documents/po/upload` | `upload_po_document` | IsEditor + that plant (403) | Multipart `plant`, `poNumber`, `note`, `file`, and `kind` (PO default; BOE / ADV_LIC / RODTEP) with `reference`; 201, 400 with a message, 503 if R2 is not set up |
-| GET | `documents/<id>/open` | `open_document` | Auth, readable plant (404) | 302 to a five-minute R2 link |
-| POST | `documents/<id>/withdraw` | `withdraw_document` | IsEditor + the file's plant (403) | Withdraw with a `reason` |
-| POST | `mir/entries/<id>/invoice` | `mir_invoice` | IsEditor + MIR's plant (403) | Multipart `file`, `note`: attach or replace a posted MIR's invoice copy |
+| GET | `documents/po?plant=&kind=&q=` | `po_documents` | `DOCUMENT_READERS`, readable plants only | Files filed under a PO (PO copies, BOEs, licenses, RoDTEP scrips) newest first, every revision and status, with `poInSystem` and `storageReady`; `q` matches the PO number or the reference |
+| POST | `documents/po/upload` | `upload_po_document` | the kind's permission (`po_upload` / `import_docs`) + that plant (403) | Multipart `plant`, `poNumber`, `note`, `file`, and `kind` (PO default; BOE / ADV_LIC / RODTEP) with `reference`; 201, 400 with a message, 503 if R2 is not set up |
+| GET | `documents/<id>/open` | `open_document` | `DOCUMENT_READERS`, readable plant (404) | 302 to a five-minute R2 link |
+| POST | `documents/<id>/withdraw` | `withdraw_document` | the kind's permission + the file's plant (403) | Withdraw with a `reason` |
+| POST | `mir/entries/<id>/invoice` | `mir_invoice` | `mir_entry` + MIR's plant (403) | Multipart `file`, `note`: attach or replace a posted MIR's invoice copy |
 
 ### Activity log, admin, reports
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| POST | `activity/page-view` | `activity_views.page_view` | Auth (any role), own visits only | Body `{"page"}` (an `auth.js` nav key); 202 `{"recorded"}`, false for a repeat within 5 minutes; 400 for an unknown page |
+| POST | `activity/page-view` | `activity_views.page_view` | Auth (any signed-in account), own visits only | Body `{"page"}` (an `auth.js` nav key); 202 `{"recorded"}`, false for a repeat within 5 minutes; 400 for an unknown page |
 | GET | `activity?actor=&group=&q=&since=&until=&page=` | `activity_views.activity` | Owner only (`IsActivityLogOwner`), 404 for anyone else, every plant on purpose | 100 log rows a page, newest first, plus `total` and the type `groups` |
 | GET | `activity/people` | `activity_views.activity_people` | Owner only (`IsActivityLogOwner`), 404 for anyone else | Every account: `lastActive`, `lastWork` / `lastWorkWhat`, `lastLogin`, `lastSeen`, 30-day sign-ins / changes / downloads / page visits / refused sign-ins; plus `trackingSince` |
 | GET | `activity/export?...` | `activity_views.activity_export` | Owner only (`IsActivityLogOwner`), 404 for anyone else | The filtered log as CSV (`SafeCsvWriter`, at most 50,000 rows) |
-| GET | `auth/users` | `users_views.list_users` | IsAdmin | All users with `correctionsCount` |
-| POST | `auth/users/create` | `users_views.create_user` | IsAdmin, `AdminWriteThrottle` | Create a user; 409 on duplicate email |
-| PATCH / DELETE | `auth/users/<id>` | `users_views.update_user` | IsAdmin, `AdminWriteThrottle`; DELETE also needs `DELETE_USER_ALLOWED_EMAIL` | Update fields / reset password, or permanently delete |
+| GET | `auth/users` | `users_views.list_users` | IsAdmin | All users with `correctionsCount`, `permissions`, `isOwner`; plus `permissionCatalog` and `callerIsOwner` |
+| POST | `auth/users/create` | `users_views.create_user` | IsAdmin, `AdminWriteThrottle` | Create a user (an admin only by the owner); 409 on duplicate email |
+| PATCH / DELETE | `auth/users/<id>` | `users_views.update_user` | IsAdmin, `AdminWriteThrottle`; DELETE also needs `DELETE_USER_ALLOWED_EMAIL` | Update fields, plants, permissions / reset password, or permanently delete; an admin account, or making one, is owner-only (403) |
 | GET | `auth/users/<id>/devices` | `users_views.list_user_devices` | IsAdmin | The account's trusted devices |
 | DELETE | `auth/users/<id>/devices/<device_id>` | `users_views.revoke_user_device` | IsAdmin | Revoke one trusted device |
 | POST | `auth/users/<id>/logout-everywhere` | `users_views.admin_logout_everywhere` | IsAdmin, `AdminWriteThrottle` | `revoke_all_sessions()` for another account |
-| GET | `sort-presets?view=<view>` | `preferences_views.presets` | Auth (any role), own rows only | The caller's saved sort presets for a view (`materials`, `material_lots`, `material_open_pos`, `purchase_orders`, `import_purchases`, `po_lines`, `po_receipts`, `search_po`, `search_po_items`); 400 on an unknown view |
-| POST | `sort-presets` | `preferences_views.presets` | Auth (any role) | Save `{view, name, levels}`; 201 new, 200 when it saves over the caller's preset of the same name (case-insensitive) |
-| PATCH / DELETE | `sort-presets/<id>` | `preferences_views.preset` | Auth (any role), own rows only (404 otherwise) | Rename / replace levels, or delete |
+| GET | `sort-presets?view=<view>` | `preferences_views.presets` | Auth (any signed-in account), own rows only | The caller's saved sort presets for a view (`materials`, `material_lots`, `material_open_pos`, `purchase_orders`, `import_purchases`, `po_lines`, `po_receipts`, `search_po`, `search_po_items`); 400 on an unknown view |
+| POST | `sort-presets` | `preferences_views.presets` | Auth (any signed-in account) | Save `{view, name, levels}`; 201 new, 200 when it saves over the caller's preset of the same name (case-insensitive) |
+| PATCH / DELETE | `sort-presets/<id>` | `preferences_views.preset` | Auth (any signed-in account), own rows only (404 otherwise) | Rename / replace levels, or delete |
 | GET | `auth/admin-overview` | `admin_overview_views.admin_overview` | IsAdmin | Top correctors, top vendors, recent corrections |
 | GET / POST | `internal/send-daily-report` | `reports_views.trigger_daily_report` | AllowAny + `REPORT_CRON_SECRET` | Daily RM consumption emails; 502 `partial` if a plant failed |
 | GET / POST | `internal/send-monthly-report?year=&month=` | `reports_views.trigger_monthly_report` | AllowAny + secret | Monthly consumption emails; 502 `partial` if a plant failed |
@@ -145,8 +149,12 @@ combined import list narrows silently, import single-PO reads 404); the reasonin
 
 ### Endpoint conventions worth knowing before adding one
 
-- **Gate both role and plant.** `apps/api/tests/test_endpoint_permission_guard.py` fails on a write
-  endpoint without `@permission_classes`, or a plant-handling endpoint that never calls a scoping helper.
+- **Gate both permission and plant.** Name the permission with
+  `@permission_classes([requires(Perm.X, ...)])` (or `IsAdmin` / `HasAnyAccess`) and call
+  `user_can_access_plant()` for the plant. `apps/api/tests/test_endpoint_permission_guard.py` fails on a
+  write endpoint without `@permission_classes`, a plant-handling endpoint that never calls the scoping
+  helper, or any endpoint left on bare `IsAuthenticated`. A page that reads the endpoint lists the same
+  permission in `auth.js`'s `PAGE_ACCESS`. See [auth-security-email.md](auth-security-email.md#roles-and-plant-scoping).
 - **Every CSV export goes through `SafeCsvWriter`** (formula-injection escaping by construction). See
   [Data export](#data-export).
 - **Never name a query parameter `format`.** DRF reserves it for content negotiation and 404s on an
@@ -264,10 +272,11 @@ side is in [frontend.md](frontend.md); the server-relevant facts:
   case-insensitive, ≥ 2 characters). **Deliberately self-contained**: it fetches its own copy of each
   plant's PO list and deep-links into `/?plant=<key>&po=<number>` for full detail.
 - **`mir.html`** (`mir-page.js`) - MIR entry, the register and open mismatches ([MIR entry](#mir-entry-2026-09-28)).
-  Any role reads the register; entering needs Editor or Admin at the receiving plant. The form takes
+  MIR entry, PO upload and RM store read the register; entering needs MIR entry at the receiving plant. The form takes
   the invoice copy, and a MIR's detail shows and replaces it ([files](#po-and-invoice-files-2026-09-30)).
 - **`po-files.html`** (`po-files-page.js`) - the purchase team's PO uploads ([files](#po-and-invoice-files-2026-09-30)).
-  Any role lists and opens its plants' files; uploading and withdrawing need Editor or Admin there.
+  The dashboard and the file-handling permissions list and open their plants' files; uploading and withdrawing need
+  the kind's permission there (PO upload for a PO copy, Import docs for an import paper).
 - **`admin.html`** (`admin-page.js`, `activity-log.js`) - admin only: per-plant sync status, Overview
   tab, Users panel and the [Activity Log](#activity-log-2026-10-01).
   The client-side access-denied panel is defence in depth; **the endpoints enforce `IsAdmin`
@@ -287,7 +296,8 @@ admin, use our builded as we did in tds_app") - **no Django Admin links remain o
 - `GET /api/auth/users` - list, each user with `correctionsCount` (from
   `admin_overview_views.correction_counts_by_email()`).
 - `POST /api/auth/users/create` - body `email`, `password`, `fullName` (required), `designation`,
-  `role` (default viewer), `plants`. Validates the email domain, rejects a duplicate with a real `409`,
+  `role` (`user` by default, `admin` only from the owner), `plants`, `permissions` (a new user with none is
+  locked). Validates the email domain, rejects a duplicate with a real `409`,
   enforces `_validate_password_strength()` (≥ 10 chars, not all digits, not the email local-part).
 - `PATCH /api/auth/users/<id>` - any of `role` / `isActive` / `fullName` / `designation` / `plants` /
   `password`. The password field is the in-app reset path, and a reset calls `revoke_all_tokens()` so
@@ -998,7 +1008,7 @@ received - rejected); the invoice's amounts stay as billed; the line's `QTY_REJE
 or updated and re-opened if one exists, for the debit note or replacement. Returns and debit notes are not
 documents of their own: the purchase team records what was done when resolving that mismatch.
 
-**Purchase-manager line actions on the PO** (2026-09-29). An Editor or Admin at the PO's own plant
+**Purchase-manager line actions on the PO** (2026-09-29). An account with PO upload or MIR entry at the PO's own plant
 (`canManage` on `GET mir/purchase-orders/<id>`) sees a column of actions beside the PO's lines:
 **Review change** on a line the CSV changed after receipts (a note of what was checked; receipts are
 blocked until then), **Reopen** on a short-closed line (a balance or a replacement for rejected
@@ -1009,7 +1019,7 @@ including closed and review-flagged lines, which still take no receipt.
 
 **Correcting a material's category** (2026-09-29). A filed category shows read-only on the MIR form with
 a "Wrong? Correct it" link: a category from the reference list and a reason, `POST
-mir/materials/<id>/category` (IsEditor - materials are company-wide), `materials.change_category()`,
+mir/materials/<id>/category` (MIR entry - materials are company-wide), `materials.change_category()`,
 logged in `MaterialChange`. It changes the material everywhere; a reference-list reload still wins, so
 a list that is itself wrong must be fixed there too.
 
@@ -1082,7 +1092,7 @@ offers only MIR receipts.
   **Record a difference**. "Issue slips" lists the vouchers; an issue offers **Take material back**.
 - **Open mismatches** - stock differences, the RM counterpart of MIR mismatches: a **physical count** of
   what is left of one MIR receipt (the difference from the register on that day is recorded, both figures
-  kept) or a **write-off** (damage, loss, a sample). **An editor's difference is saved PENDING, listed as
+  kept) or a **write-off** (damage, loss, a sample). **A storekeeper's difference is saved PENDING, listed as
   open, and moves nothing until an admin approves it**; approval re-checks it against the receipt as it is
   now (on its own day), and the one who entered it cannot approve it. An admin's own posts at once,
   recorded as approved by them. A count that found more puts it back into the same receipt.
@@ -1102,7 +1112,7 @@ receipts are held in it:
 The lot keeps the factor, so the page shows the MIR's own figure beside the stock one ("2,000 KG (2 MT)")
 and the issue line says "KG (MIR in MT: 1 MT = 1,000 KG)"; the quantity is always typed in the stock
 unit. A material's base unit starts as the base of the unit it was first seen in (a PO line's, or the
-reference list's "Kilogram (KG)"); an editor changes it, and the pack factors, in the receipt detail's
+reference list's "Kilogram (KG)"); an account with RM store changes it, and the pack factors, in the receipt detail's
 **Units** panel, with a reason logged in `MaterialChange` - materials are company-wide, like a category.
 **A change applies to MIRs posted afterwards only**; receipts already in the store keep their unit (as
 with "kept in store"). The unit on a receipt is never typed at the plant: MIR entry takes the PO line's
@@ -1207,7 +1217,7 @@ first, in the picked order - and **"Show only these"**, which narrows the list t
 choices are scoped to the picks above it, so Category -> Sub Category -> Material pins down one
 material's orders (2026-09-28, project owner: "go to least granularity"). Built-in sorts (Category
 alone, Sub Category alone, Category then Sub Category then Material, and a few more per list) live
-in the frontend, not the database. Every role may save presets, viewers included: a preset is the caller's own display
+in the frontend, not the database. Any signed-in account may save presets, a locked one included: a preset is the caller's own display
 preference, not a write to business data. Every query filters on the caller, so another user's id
 reads 404. Nothing in a preset is trusted - `sort_presets.clean_levels()` accepts only the view's
 known column keys, each once, asc or desc, at most 5, and picked values only on the view's pickable
@@ -1235,8 +1245,9 @@ other datasets is a deliberate follow-up if asked for, not assumed.
 
 - **CSV, not Excel** - per "whichever is less compute and faster". A `.xlsx` needs a library for no real
   benefit.
-- **`IsEditor` + `user_can_access_plant()`-gated**, unlike every other GET in `_domestic_base.py` (plain
-  `IsAuthenticated`, any role). An explicit, deliberate exception, not an oversight.
+- **`edit_fields` + `user_can_access_plant()`-gated**, unlike the other stock reads in `_domestic_base.py`
+  (`STOCK_VIEWS`). An explicit, deliberate exception, not an oversight: the owner asked for this bulk history
+  to stay with the people who correct the data.
 - **It streams.** `StreamingHttpResponse` over a generator (`_Echo` + `SafeCsvWriter`, queryset
   `.iterator(chunk_size=2000)`), so peak memory is one row - on a table that grows by one row per active
   lot per day forever, where "export everything" is the default. *Behavioural note:* no `Content-Length`
@@ -1415,7 +1426,7 @@ expressed only as config values, never as branches inside this module.
   [Editing which MIR a PO line matched](#editing-which-mir-a-po-line-matched-2026-09-21) and
   [Editing a line's receipts one at a time](#editing-a-lines-receipts-one-at-a-time-2026-09-29)).
 - **`make_manual_changes` / `make_preview_mir_match` / `make_preview_status`**: the line decisions
-  listing, and the preview's queue and status endpoints (editor-only; a preview id answers only on
+  listing, and the preview's queue and status endpoints (`edit_fields` only; a preview id answers only on
   its own plant).
 - **`_request_bool(value, default)`**: reads a request-body flag as a real bool (a string by its
   meaning, missing or null as `default`). Used for every `dismissed` flag, domestic and import.
@@ -1585,16 +1596,19 @@ plant's `MatchDismissal` records onto undismissed rows holding their pair, calle
 The MIR endpoints above. Gates, parses and serializes only; every rule is in `mir_service`. Money and
 quantities are returned as strings, never floats. `_po_line()` / `_po_summary()` / `_mir_detail()` /
 `_mismatch()` are the payload shapes; `_readable_plants()` filters reads; `_receiving_plant_allowed()`
-gates preview and post. The three PO lookups are cross-plant by owner rule and listed as such in
-`test_endpoint_permission_guard.py`. `entries` orders explicitly: Django ignores `Meta.ordering` on
-its aggregate query. `purchase_order` adds the PO's copies (`document_views.po_files()`) and
-`_mir_detail()` the MIR's invoice copies (`document_views.invoice_files()`).
+gates preview and post. `MIR_READERS` (MIR entry, PO upload, RM store) and `PO_MANAGERS` (MIR entry, PO
+upload) are the shared permission tuples; `meta` returns `can` (`mirEntry`, `poUpload`, `importDocs`,
+`manageLines`) for mir.html and po-files.html. The PO lookups are cross-plant by owner rule
+(`open_pos` and `vendors` are listed as such in `test_endpoint_permission_guard.py`). `entries` orders
+explicitly: Django ignores `Meta.ordering` on its aggregate query. `purchase_order` adds the PO's
+copies (`document_views.po_files()`) only when the caller has the PO's plant, and `_mir_detail()` the
+MIR's invoice copies (`document_views.invoice_files()`).
 
 ### apps/api/routers/document_views.py
 
 The [PO and invoice file](#po-and-invoice-files-2026-09-30) endpoints. Gates, parses and serializes
-only; every rule is in `documents.py`. Listing is a GET open to every role, uploading a separate
-POST (`documents/po/upload`) so the role gate sits on the write alone. `DocumentError` becomes a 400
+only; every rule is in `documents.py`. Listing is a GET for `DOCUMENT_READERS`, uploading a separate
+POST (`documents/po/upload`) gated by the file kind's permission (`KIND_PERMISSION`). `DocumentError` becomes a 400
 with its message, `StorageNotConfigured` a 503 ("storage is not set up yet"). `open_document`
 answers a plain-text 404/503 rather than JSON, since it is opened in a browser tab. `serialize()`
 (with `kindLabel` and `reference`), `po_files()` (PO copies only) and `invoice_files()` are shared
@@ -1624,7 +1638,7 @@ for large files on its own), `download_file()` (the restore check), `list_object
 ### apps/api/routers/preferences_views.py
 
 The sort-preset endpoints above: `presets` (GET list / POST save) and `preset` (PATCH / DELETE), both
-`IsAuthenticated` declared explicitly (every role; see [sort presets](#sort-presets-2026-09-28)),
+`IsAuthenticated` declared explicitly (every signed-in account; see [sort presets](#sort-presets-2026-09-28)),
 both filtered on `user=request.user`. Validation is in `apps/services/sort_presets.py`.
 
 ### apps/services/sort_presets.py
@@ -1646,8 +1660,8 @@ name the user already has).
 ### apps/api/routers/stock_views.py
 
 The `/api/stock/...` views in the table above: gating, parsing and serializing only; the rules are in
-`stock_service`. Figures travel as strings. Every read narrows to the plants the caller may read, every
-write to a plant the caller may edit; approving is `IsAdmin`. `_receipt(lot, balance)` is how a MIR
+`stock_service`. Figures travel as strings. Every endpoint but `meta` needs `rm_store`; every read
+narrows to the caller's plants, every write to one of them; approving is `IsAdmin`. `_receipt(lot, balance)` is how a MIR
 receipt travels everywhere (picker, register row, voucher line, difference): its MIR number and line,
 invoice, PO, item code, material, unit, vendor, whose PO, rate and days in store. `_voucher_detail()` adds
 what the page needs to act: `canCancel`, `canApprove` (never for the one who entered it), `returnable`.

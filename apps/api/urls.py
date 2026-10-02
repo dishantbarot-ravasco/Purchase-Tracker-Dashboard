@@ -109,7 +109,7 @@ urlpatterns = [
     path("stock-snapshots/dates", hrs_views.stock_snapshot_dates, name="hrs-stock-snapshot-dates"),
     path("stock-snapshots", hrs_views.stock_snapshots_for_date, name="hrs-stock-snapshots"),
     # Data Export (2026-09-08) - full daily RM stock snapshot history as a
-    # downloadable CSV, IsEditor-gated (see make_export_stock_snapshots()'s
+    # downloadable CSV, Perm.EDIT_FIELDS-gated (see make_export_stock_snapshots()'s
     # own docstring for why this endpoint is narrower than every other GET
     # here).
     path("stock-snapshots/export", hrs_views.export_stock_snapshots, name="hrs-export-stock-snapshots"),

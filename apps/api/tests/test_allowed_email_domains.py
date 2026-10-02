@@ -41,7 +41,7 @@ def test_the_domains_come_from_settings(settings):
 def test_an_admin_can_create_a_hindustanrubbers_account_but_not_an_outside_one():
     client = APIClient()
     client.force_authenticate(user=make_user(email="admin@ravasco.com", role="admin"))
-    body = {"fullName": "New Person", "role": "viewer", "password": "An0therStr0ngPass!"}
+    body = {"fullName": "New Person", "role": "user", "password": "An0therStr0ngPass!"}
 
     assert client.post("/api/auth/users/create", {**body, "email": "new@hindustanrubbers.com"},
                        format="json").status_code == 201

@@ -16,7 +16,7 @@ step - no separate "reset password" command was needed.
 
 Usage:
     python manage.py create_pt_user --email dishant.barot@ravasco.com --password '...' --role admin
-    python manage.py create_pt_user --email someone@ravasco.com --password '...' --role viewer --full-name "Someone"
+    python manage.py create_pt_user --email someone@ravasco.com --password '...' --role user --full-name "Someone"
 """
 
 import bcrypt
@@ -40,7 +40,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--email", required=True)
         parser.add_argument("--password", required=True)
-        parser.add_argument("--role", choices=[c[0] for c in PTUser.Role.choices], default=PTUser.Role.VIEWER)
+        parser.add_argument("--role", choices=[c[0] for c in PTUser.Role.choices], default=PTUser.Role.USER)
         parser.add_argument("--full-name", default="")
         parser.add_argument("--designation", default="")
 
@@ -73,16 +73,20 @@ class Command(BaseCommand):
         # this email, otherwise overwrite the fields below on the existing row -
         # this is what makes re-running the command a password reset instead of
         # an error (see module docstring).
-        user, created = PTUser.objects.update_or_create(
-            email=email,
-            defaults=dict(
-                password_hash=password_hash,
-                role=options["role"],
-                full_name=options["full_name"] or None,
-                designation=options["designation"] or None,
-                is_active=True,
-            ),
+        defaults = dict(
+            password_hash=password_hash,
+            role=options["role"],
+            full_name=options["full_name"] or None,
+            designation=options["designation"] or None,
+            is_active=True,
         )
+        # An admin reaches every plant and holds every permission
+        # (apps/api/permissions.py), so its lists are kept empty, as the
+        # Admin Panel does. A user's plants and permissions are granted in
+        # the Admin Panel; a new one starts locked.
+        if options["role"] == PTUser.Role.ADMIN:
+            defaults.update(plants=[], permissions=[])
+        user, created = PTUser.objects.update_or_create(email=email, defaults=defaults)
 
         # Re-running against an existing account is a password reset, so it
         # evicts every live session the same way the in-app password change

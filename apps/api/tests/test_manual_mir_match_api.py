@@ -245,13 +245,16 @@ class TestMirCandidates:
         assert claimed[0]["description"] == other_item.description
         assert mir.mir_no == candidates[0]["mirNo"]
 
-    def test_viewer_may_read_candidates(self):
-        """Read endpoints are role-open by design (CLAUDE.md) - only the
-        write is IsEditor. A viewer looking at why a match is what it is has
-        the same right to see the register as anyone else."""
+    def test_the_picker_needs_edit_fields_not_just_a_view(self):
+        """The candidates list only feeds the pin picker, so it needs the
+        permission the pin itself needs (layered access, 2026-10-02): a
+        dashboard viewer is refused, an account granted Edit fields is not."""
         _make_mir(mir_no="MIR-A", source_row_ref="1")
         client = APIClient()
         client.force_authenticate(user=make_user(email="v2@ravasco.com", role="viewer"))
+        assert client.get(self.url, {"q": "MIR-A"}).status_code == 403
+        client.force_authenticate(user=make_user(email="e2@ravasco.com", role="user",
+                                                 permissions=["edit_fields"], plants=["hrs"]))
         res = client.get(self.url, {"q": "MIR-A"})
         assert res.status_code == 200
         assert [c["mirNo"] for c in res.json()["candidates"]] == ["MIR-A"]

@@ -520,12 +520,12 @@ Cross-plant human decisions and reference data, all with a `plant` column.
 ### apps/core/models/auth.py
 
 - `PTUser` (`pt_users`) - the real account model, unrelated to `auth.User`; PK `user_id`; `email`
-  unique; bcrypt `password_hash`; `role` (`admin`/`editor`/`viewer`); `plants` JSON list of
-  lowercase plant keys (empty means all plants); lockout (`failed_login_attempts`, `locked_until`);
+  unique; bcrypt `password_hash`; `role` (`admin`/`user`); `plants` JSON list of lowercase plant
+  keys and `permissions` JSON list of `permissions.Perm` values (empty means none - a locked user; both
+  ignored for an admin); lockout (`failed_login_attempts`, `locked_until`);
   `token_version` (the `ver` JWT claim, bumped to revoke every session). Declares
-  `is_authenticated = True`/`is_anonymous = False` because it is not an `AbstractBaseUser`. Its
-  docstring says `plants` has no bearing on reads; that is stale - reads are also scoped via
-  `permissions.user_can_access_plant()` (see [auth-security-email.md](auth-security-email.md)).
+  `is_authenticated = True`/`is_anonymous = False` because it is not an `AbstractBaseUser`. The
+  access rules are in [auth-security-email.md](auth-security-email.md#roles-and-plant-scoping).
 - `OTPCode` (`pt_otp_codes`) - one active bcrypt-hashed code per email (unique), 10-minute expiry,
   attempt counter.
 - `RevokedRefreshToken` (`pt_revoked_refresh_tokens`) - revoked `jti` (unique) with `expires_at`.

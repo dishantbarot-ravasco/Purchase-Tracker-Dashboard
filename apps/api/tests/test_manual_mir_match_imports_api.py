@@ -235,13 +235,16 @@ class TestImportMirCandidates:
         _mir("MIR-A", "1")
         client = APIClient()
         client.force_authenticate(
-            user=make_user(email="v9@ravasco.com", role="viewer", plants=["vapi"]))
+            user=make_user(email="v9@ravasco.com", role="editor", plants=["vapi"]))
         assert client.get(self.url, {"q": "MIR-A"}).status_code == 404
 
-    def test_viewer_may_read_candidates(self):
+    def test_the_picker_needs_edit_fields_not_just_a_view(self):
         _mir("MIR-A", "1")
         client = APIClient()
         client.force_authenticate(user=make_user(email="v8@ravasco.com", role="viewer"))
+        assert client.get(self.url, {"q": "MIR-A"}).status_code == 403
+        client.force_authenticate(user=make_user(email="e8@ravasco.com", role="user",
+                                                 permissions=["edit_fields"], plants=["hrs"]))
         res = client.get(self.url, {"q": "MIR-A"})
         assert res.status_code == 200
         assert [c["mirNo"] for c in res.json()["candidates"]] == ["MIR-A"]

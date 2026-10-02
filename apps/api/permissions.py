@@ -1,15 +1,23 @@
 """
-apps/api/permissions.py - Custom DRF permission classes.
+apps/api/permissions.py - Who may do what (layered access, 2026-10-02).
 
-Ported from the TDS Automation App's apps/api/permissions.py (same design,
-renamed for this app's role set):
-  IsEditor  → role in ('admin', 'editor')
-  IsAdmin   → role == 'admin'
+Three layers, decided by the project owner on 2026-10-02:
 
-'viewer' is intentionally excluded from both - a viewer can only read the
-dashboard (search/view POs, materials, sync status), never anything that
-writes (dismissing a flagged match once that endpoint exists, managing
-users).
+  1. Admin (role "admin") - every page, every plant, every action, and the
+     only role that sees Raw Material Analysis. The owner
+     (settings.OWNER_EMAIL) is the one admin who may make or unmake an admin
+     and change another admin's account (is_owner()).
+  2. Plants - every other account ("user") reads and works on exactly the
+     plants in PTUser.plants. An empty list means NO plants, never "all".
+  3. Permissions - a user account also needs each page or action granted in
+     PTUser.permissions (Perm below). A user with none is locked: signed in,
+     sees nothing. Grants apply to all of the user's plants.
+
+Every endpoint names the permissions it needs with
+@permission_classes([requires(Perm.X, ...)]) - any one of them is enough,
+an admin always passes - and calls user_can_access_plant() for the plant
+it touches. test_endpoint_permission_guard.py fails an endpoint that does
+neither.
 """
 
 from django.conf import settings
@@ -33,18 +41,106 @@ def allowed_domains_text() -> str:
     return " or ".join("@" + d for d in settings.ALLOWED_EMAIL_DOMAINS)
 
 
-class IsEditor(BasePermission):
-    """Allows access only to users with role 'admin' or 'editor'."""
+# The plant keys PTUser.plants holds - frontend/js/shared.js's PLANTS keys,
+# not SyncRun.Plant's uppercase enum.
+PLANT_KEYS = ("hrs", "achhad", "vapi")
 
-    message = "Editor (admin or editor) role required."
+
+class Perm:
+    """The grantable permissions (PTUser.permissions holds their values).
+    Views decide what a user can see; work permissions what they can do."""
+
+    VIEW_DASHBOARD = "view_dashboard"        # Purchase Orders, Import Purchases, Search PO, licences
+    VIEW_INVENTORY = "view_inventory"        # the Inventory tab
+    VIEW_ON_ORDER = "view_on_order"          # the On Order tab
+    VIEW_STOCK_ORDERS = "view_stock_orders"  # the Stock & Orders tab
+    PO_UPLOAD = "po_upload"                  # PO files; PO line close / reopen / review
+    MIR_ENTRY = "mir_entry"                  # MIR entry, its invoice files, MIR edits and cancels
+    IMPORT_DOCS = "import_docs"              # Bill of Entry, Advance License and RoDTEP files
+    RM_STORE = "rm_store"                    # RM store issues, returns and stock differences
+    EDIT_FIELDS = "edit_fields"              # inline corrections, MIR pins, flag and match dismissals
+
+
+# Order and labels as the Admin Panel lists them.
+PERMISSIONS = (
+    (Perm.VIEW_DASHBOARD, "View", "PO Dashboard"),
+    (Perm.VIEW_INVENTORY, "View", "Inventory"),
+    (Perm.VIEW_ON_ORDER, "View", "On Order"),
+    (Perm.VIEW_STOCK_ORDERS, "View", "Stock & Orders"),
+    (Perm.PO_UPLOAD, "Work", "PO upload"),
+    (Perm.MIR_ENTRY, "Work", "MIR entry"),
+    (Perm.IMPORT_DOCS, "Work", "Import docs"),
+    (Perm.RM_STORE, "Work", "RM store"),
+    (Perm.EDIT_FIELDS, "Work", "Edit fields"),
+)
+ALL_PERMISSIONS = tuple(p for p, _, _ in PERMISSIONS)
+
+# The three plant stock tabs read the same stock and order data.
+STOCK_VIEWS = (Perm.VIEW_INVENTORY, Perm.VIEW_ON_ORDER, Perm.VIEW_STOCK_ORDERS)
+# Purchase order lists: the dashboard and the two tabs that show orders.
+ORDER_VIEWS = (Perm.VIEW_DASHBOARD, Perm.VIEW_ON_ORDER, Perm.VIEW_STOCK_ORDERS)
+
+
+def _active(user) -> bool:
+    return user is not None and bool(getattr(user, "is_authenticated", False)) and bool(getattr(user, "is_active", False))
+
+
+def is_admin(user) -> bool:
+    return _active(user) and getattr(user, "role", None) == "admin"
+
+
+def is_owner(user) -> bool:
+    """The application's owner (settings.OWNER_EMAIL), who must also be an
+    active admin. Only the owner makes or unmakes an admin."""
+    return is_admin(user) and (getattr(user, "email", "") or "").strip().lower() == settings.OWNER_EMAIL
+
+
+def granted(user) -> set:
+    """The permissions this account holds - every one for an admin, none for
+    an inactive account."""
+    if not _active(user):
+        return set()
+    if is_admin(user):
+        return set(ALL_PERMISSIONS)
+    return {p for p in (getattr(user, "permissions", None) or []) if p in ALL_PERMISSIONS}
+
+
+def has_perm(user, *perms) -> bool:
+    """True when the account holds at least one of `perms`."""
+    held = granted(user)
+    return any(p in held for p in perms)
+
+
+def requires(*perms):
+    """A DRF permission class passing an admin, or a user holding any one of
+    `perms`. A user with no plants is refused too: they can read nothing."""
+    if not perms or any(p not in ALL_PERMISSIONS for p in perms):
+        raise ValueError(f"requires() needs known permissions, got {perms!r}")
+
+    class _Requires(BasePermission):
+        message = "You do not have access to this. Ask an admin to grant it."
+        needed = perms
+
+        def has_permission(self, request, view):
+            user = request.user
+            if is_admin(user):
+                return True
+            return has_perm(user, *perms) and bool(getattr(user, "plants", None))
+
+    _Requires.__name__ = "Requires_" + "_or_".join(perms)
+    return _Requires
+
+
+class HasAnyAccess(BasePermission):
+    """Any account that can see something: an admin, or a user with at least
+    one permission and one plant. For read endpoints every page shares (the
+    sync status the freshness watcher polls)."""
+
+    message = "You do not have access to this. Ask an admin to grant it."
 
     def has_permission(self, request, view):
         user = request.user
-        return (
-            user is not None
-            and bool(getattr(user, "is_active", False))
-            and getattr(user, "role", None) in ("admin", "editor")
-        )
+        return is_admin(user) or (bool(granted(user)) and bool(getattr(user, "plants", None)))
 
 
 class IsAdmin(BasePermission):
@@ -114,41 +210,20 @@ class AdminWriteThrottle(UserRateThrottle):
     scope = "admin_write"
 
 
-def user_can_edit_plant(user, plant_key: str) -> bool:
-    """True if `user` may PATCH a field correction for `plant_key`
-    ("hrs"/"achhad"/"vapi" - the lowercase frontend/js/shared.js keys, not
-    SyncRun.Plant's uppercase enum).
-
-    Layered on top of, not instead of, the IsEditor permission class already
-    gating every correct_field view - this only adds the per-plant scoping
-    from PTUser.plants. An empty `plants` list means "all plants" (see that
-    field's docstring), so every user who predates this scoping keeps full
-    access. Not a DRF BasePermission subclass because the plant key usually
-    isn't known until inside the view (a URL kwarg for Import, an implicit
-    per-router constant for Domestic) - call this directly from the view
-    body and return a 403 on False."""
-    return user_can_access_plant(user, plant_key)
-
-
 def user_can_access_plant(user, plant_key: str) -> bool:
-    """True if `user` may READ `plant_key`'s data at all (added 2026-09-05,
-    hardening pass, closing a gap flagged by a security review: every read
-    endpoint used to be plain IsAuthenticated regardless of role/plant, so
-    an editor explicitly scoped to e.g. ["hrs"] could still read every
-    other plant's dashboard - inconsistent with what PTUser.plants'
-    docstring already promises ("scopes which plants a user may edit"),
-    which read as narrower than what was actually enforced).
+    """True if `user` may read or work on `plant_key` ("hrs"/"achhad"/"vapi"
+    - the lowercase frontend/js/shared.js keys, not SyncRun.Plant's enum).
+    An admin reaches every plant; a user only the plants in PTUser.plants,
+    and an empty list means none (2026-10-02 - it used to mean all).
 
-    Same underlying check as user_can_edit_plant (which now delegates here)
-    - there was never a real distinction in the logic, only in which call
-    sites used it. Deliberately LOW blast-radius: an empty `plants` list
-    still means "all plants" (see that field's docstring), so this only
-    changes behavior for accounts an admin has already explicitly scoped to
-    specific plants - the vast majority of accounts (empty plants list) see
-    no change at all. Call this directly from a read view's body and return
-    403 (single-plant endpoints) or filter results (cross-plant endpoints
-    like imports_views.py's purchase_orders) on False - do not make this a
-    DRF BasePermission subclass, for the same URL-kwarg-vs-router-constant
-    reason user_can_edit_plant's own docstring already explains."""
+    This is the plant layer only. The endpoint's @permission_classes decides
+    whether the account may use it at all (requires()). Not a DRF permission
+    class because the plant usually is not known until inside the view (a
+    URL kwarg, a body field, or a per-router constant) - call it from the
+    view body and return a 403, or filter the results, on False."""
+    if is_admin(user):
+        return True
+    if not _active(user):
+        return False
     plants = getattr(user, "plants", None) or []
-    return not plants or plant_key in plants
+    return plant_key in plants

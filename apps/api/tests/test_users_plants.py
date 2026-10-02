@@ -6,6 +6,7 @@ which inline-edit pencils to render (shared.js's canEditField()).
 """
 
 import pytest
+from django.conf import settings
 from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
@@ -16,7 +17,8 @@ from apps.core.models import PTUser
 class TestUsersPlants:
     def setup_method(self):
         self.client = APIClient()
-        self.admin = make_user(email="admin@ravasco.com", role="admin")
+        # The owner: these tests create, promote and deactivate admins too.
+        self.admin = make_user(email=settings.OWNER_EMAIL, role="admin")
         self.client.force_authenticate(user=self.admin)
 
     def test_create_user_with_plants(self):
@@ -24,7 +26,7 @@ class TestUsersPlants:
         PTUser row and echoes it back in the create response."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "plants": ["hrs", "vapi"], "fullName": "New Editor"},
+            {"email": "new@ravasco.com", "password": "Str0ngPassw0rd!", "role": "user", "plants": ["hrs", "vapi"], "fullName": "New Editor"},
             format="json",
         )
         assert response.status_code == 201
@@ -37,7 +39,7 @@ class TestUsersPlants:
         list, not null or a crash."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new2@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "fullName": "New Editor Two"},
+            {"email": "new2@ravasco.com", "password": "Str0ngPassw0rd!", "role": "user", "fullName": "New Editor Two"},
             format="json",
         )
         assert response.status_code == 201
@@ -48,7 +50,7 @@ class TestUsersPlants:
         rejected with a 400 rather than silently accepted."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "new3@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor", "plants": ["mars"], "fullName": "New Editor Three"},
+            {"email": "new3@ravasco.com", "password": "Str0ngPassw0rd!", "role": "user", "plants": ["mars"], "fullName": "New Editor Three"},
             format="json",
         )
         assert response.status_code == 400
@@ -67,7 +69,7 @@ class TestUsersPlants:
         omitting it must 400, not silently create a nameless account."""
         response = self.client.post(
             "/api/auth/users/create",
-            {"email": "noname@ravasco.com", "password": "Str0ngPassw0rd!", "role": "editor"},
+            {"email": "noname@ravasco.com", "password": "Str0ngPassw0rd!", "role": "user"},
             format="json",
         )
         assert response.status_code == 400
@@ -113,7 +115,7 @@ class TestUsersPlants:
     def test_cannot_demote_the_last_active_admin_to_a_non_admin_role(self):
         """Same protection, the other way it can be triggered: changing role
         away from admin (not just isActive) on the only active admin."""
-        response = self.client.patch(f"/api/auth/users/{self.admin.user_id}", {"role": "editor"}, format="json")
+        response = self.client.patch(f"/api/auth/users/{self.admin.user_id}", {"role": "user"}, format="json")
         assert response.status_code == 400
         self.admin.refresh_from_db()
         assert self.admin.role == "admin"

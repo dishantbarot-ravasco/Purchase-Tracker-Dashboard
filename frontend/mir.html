@@ -9,9 +9,9 @@
   Styled with the dashboard's own components (css/style.css: .view-tabs,
   .table-wrap, .status-pill) plus mir-page.css, so it reads as the same app.
 
-  Protected page: requireAuth() (js/auth.js). Entering a MIR needs the
-  Editor or Admin role at the receiving plant; any role can read the
-  register for the plants it may see.
+  Protected page: requireAuth() (js/auth.js) opens it for MIR entry, PO
+  upload or RM store. Entering a MIR needs the MIR entry permission and the
+  receiving plant; the others read the register for their plants.
 -->
 <!DOCTYPE html>
 <html lang="en">
@@ -56,7 +56,7 @@
     <!-- ── New MIR ─────────────────────────────────────────────── -->
     <div id="viewNew" role="tabpanel" aria-labelledby="tabNew">
       <div class="mir-banner mir-banner-warn" id="noReceive" hidden>
-        Your account cannot enter MIRs. Ask an admin for the Editor role at your plant.
+        Your account cannot enter MIRs. Ask an admin for the MIR entry permission at your plant.
       </div>
 
       <div class="mir-banner mir-banner-info" id="draftBanner" role="status" hidden></div>

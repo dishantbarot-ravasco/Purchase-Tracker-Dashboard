@@ -7,12 +7,13 @@ Import paperwork (2026-10-01) - a Bill of Entry, an Advance License, a
 RoDTEP scrip file - goes through the same upload endpoint with `kind` and
 `reference` and is listed with the PO files; it has the same access rules.
 
-Access:
-  - Listing PO files and opening any file: any role, for the plants the
-    account may read (user_can_access_plant()).
-  - Uploading or withdrawing a PO file: Editor or Admin who may edit that
-    plant. Attaching an invoice: Editor or Admin who may edit the MIR's
-    receiving plant.
+Access (apps/api/permissions.py), always at the file's own plant:
+  - Listing and opening files: DOCUMENT_READERS - the dashboard or any of
+    the work permissions that handles files.
+  - Uploading or withdrawing: the permission of the file's kind
+    (KIND_PERMISSION) - a PO copy needs Perm.PO_UPLOAD, a Bill of Entry,
+    Advance License or RoDTEP file Perm.IMPORT_DOCS, an invoice
+    Perm.MIR_ENTRY.
 
 A file is opened through /api/documents/<id>/open, which redirects to a
 presigned R2 link that lasts five minutes; the bucket itself is never
@@ -27,7 +28,7 @@ from rest_framework.decorators import api_view, parser_classes, permission_class
 from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
-from apps.api.permissions import IsEditor, user_can_access_plant, user_can_edit_plant
+from apps.api.permissions import Perm, has_perm, requires, user_can_access_plant
 from apps.core.models import (
     Document,
     HRSImportPurchaseOrder,
@@ -44,6 +45,22 @@ from apps.services import documents, object_storage
 _IMPORT_POS = {"hrs": HRSImportPurchaseOrder, "achhad": RTPAchhadImportPurchaseOrder, "vapi": RTPVapiImportPurchaseOrder}
 # Everything filed under a PO (not invoices).
 _PO_FILED_KINDS = (Document.Kind.PO, *Document.REFERENCED_KINDS)
+
+# The permission that uploads or withdraws each kind of file.
+KIND_PERMISSION = {
+    Document.Kind.PO: Perm.PO_UPLOAD,
+    Document.Kind.BOE: Perm.IMPORT_DOCS,
+    Document.Kind.ADVANCE_LICENSE: Perm.IMPORT_DOCS,
+    Document.Kind.RODTEP: Perm.IMPORT_DOCS,
+    Document.Kind.INVOICE: Perm.MIR_ENTRY,
+}
+DOCUMENT_READERS = (Perm.VIEW_DASHBOARD, Perm.PO_UPLOAD, Perm.IMPORT_DOCS, Perm.MIR_ENTRY, Perm.RM_STORE)
+
+
+def _may_handle(user, kind, plant_code) -> bool:
+    """May `user` upload or withdraw a `kind` file at `plant_code`?"""
+    perm = KIND_PERMISSION.get(kind)
+    return bool(perm) and has_perm(user, perm) and user_can_access_plant(user, plant_code)
 
 
 def serialize(doc):
@@ -68,18 +85,21 @@ def _not_configured(exc):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.PO_UPLOAD, Perm.IMPORT_DOCS)])
 @parser_classes([MultiPartParser])
 def upload_po_document(request):
     """Upload a file filed under a PO. Form fields: plant, poNumber, note,
     file, and kind (PO by default; BOE, ADV_LIC or RODTEP) with reference
     (the BOE, license or scrip number) for import paperwork."""
     plant = request.data.get("plant") or ""
-    if not plant or not user_can_edit_plant(request.user, plant):
-        return Response({"error": "You cannot upload POs for that plant."}, status=http.HTTP_403_FORBIDDEN)
+    kind = request.data.get("kind") or Document.Kind.PO
+    if not plant or not user_can_access_plant(request.user, plant):
+        return Response({"error": "You cannot upload files for that plant."}, status=http.HTTP_403_FORBIDDEN)
+    if kind in KIND_PERMISSION and not _may_handle(request.user, kind, plant):
+        return Response({"error": "You do not have access to upload this kind of file."}, status=http.HTTP_403_FORBIDDEN)
     try:
         doc = documents.upload_po(plant, request.data.get("poNumber"), request.FILES.get("file"), request.user,
-                                  request.data.get("note") or "", kind=request.data.get("kind") or Document.Kind.PO,
+                                  request.data.get("note") or "", kind=kind,
                                   reference=request.data.get("reference") or "")
     except object_storage.StorageNotConfigured as exc:
         return _not_configured(exc)
@@ -89,6 +109,7 @@ def upload_po_document(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*DOCUMENT_READERS)])
 def po_documents(request):
     """Files filed under a PO (PO copies and import paperwork) at the plants
     the caller may read, newest first. Filters: ?plant= ?kind= ?q= (PO
@@ -116,6 +137,7 @@ def po_documents(request):
 
 
 @api_view(["GET"])
+@permission_classes([requires(*DOCUMENT_READERS)])
 def open_document(request, document_id):
     """Redirects to a five-minute R2 link for the file. The page opens this
     URL in a new tab (the session cookie rides along), rather than fetching
@@ -136,12 +158,14 @@ def open_document(request, document_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.PO_UPLOAD, Perm.IMPORT_DOCS, Perm.MIR_ENTRY)])
 def withdraw_document(request, document_id):
     """Body: {"reason": "..."}."""
     doc = get_object_or_404(Document.objects.select_related("plant"), pk=document_id)
-    if not user_can_edit_plant(request.user, doc.plant.code):
+    if not user_can_access_plant(request.user, doc.plant.code):
         return Response({"error": "You are not allowed to do this for that plant."}, status=http.HTTP_403_FORBIDDEN)
+    if not _may_handle(request.user, doc.kind, doc.plant.code):
+        return Response({"error": "You do not have access to withdraw this kind of file."}, status=http.HTTP_403_FORBIDDEN)
     try:
         doc = documents.withdraw(doc, request.user, (request.data or {}).get("reason"))
     except documents.DocumentError as exc:
@@ -150,12 +174,12 @@ def withdraw_document(request, document_id):
 
 
 @api_view(["POST"])
-@permission_classes([IsEditor])
+@permission_classes([requires(Perm.MIR_ENTRY)])
 @parser_classes([MultiPartParser])
 def mir_invoice(request, mir_id):
     """Attach the vendor's invoice to a posted MIR. Form fields: file, note."""
     mir = get_object_or_404(Mir.objects.select_related("plant"), pk=mir_id)
-    if not user_can_edit_plant(request.user, mir.plant.code):
+    if not user_can_access_plant(request.user, mir.plant.code):
         return Response({"error": "You are not allowed to do this for that plant."}, status=http.HTTP_403_FORBIDDEN)
     try:
         doc = documents.upload_invoice(mir, request.FILES.get("file"), request.user, request.data.get("note") or "")
