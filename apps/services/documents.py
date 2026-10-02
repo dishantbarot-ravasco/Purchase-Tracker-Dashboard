@@ -20,16 +20,28 @@ Revisions, withdrawals - the PO-number edge cases:
     under the new one.
   - Nothing is deleted, in the database or in R2.
 
+Import paperwork (2026-10-01): a Bill of Entry, an Advance License and a
+RoDTEP scrip file are filed under their import PO like a PO file, each with
+a reference number (BOE, license or scrip number). Revisions count per
+(kind, plant, PO number, reference), since one PO clears on several BOEs and
+draws on several licenses. They go to the "po" bucket under
+<plant>/<PO>/<kind>-<reference>/.
+
 Files are accepted by their content, not their name: the first bytes must
-be a PDF, JPEG or PNG. At most MAX_BYTES. A PDF with active content
-(JavaScript, a launch action, an embedded file) is refused - _check_pdf().
+be a PDF, JPEG or PNG - or, for the two license kinds, an Excel .xlsx
+workbook (RoDTEP scrips are kept in Excel or Google Sheets). At most
+MAX_BYTES. A PDF with active content (JavaScript, a launch action, an
+embedded file) is refused - _check_pdf(); so is a workbook with macros,
+ActiveX controls or embedded objects - _check_xlsx().
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import re
 import uuid
+import zipfile
 
 from django.db import transaction
 from django.utils import timezone
@@ -54,16 +66,33 @@ _KEY_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 _PDF_ACTIVE = re.compile(rb"/(JavaScript|JS|Launch|EmbeddedFiles?|RichMedia)(?![A-Za-z0-9])")
 _PDF_HEX_ESCAPE = re.compile(rb"#([0-9A-Fa-f]{2})")
 
+XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_ZIP_MAGIC = b"PK\x03\x04"
+# Parts of a workbook that run something or carry another file: VBA macros,
+# ActiveX controls, embedded OLE objects. A RoDTEP or license sheet is plain
+# cells and never needs them.
+_XLSX_ACTIVE = re.compile(r"(^|/)(vbaProject\.bin|vbaProjectSignature\.bin)$|^xl/(activeX|embeddings)/", re.I)
+# A zip bomb's unpacked size, not its upload size, is what hurts.
+_XLSX_MAX_UNPACKED = 200 * 1024 * 1024
+
+# Which file types each kind takes. Excel only for the license kinds.
+_EXCEL_KINDS = ("ADV_LIC", "RODTEP")
+_REFERENCE_LABEL = {"BOE": "BOE number", "ADV_LIC": "license number", "RODTEP": "scrip number"}
+_REFERENCE_OK = re.compile(r"^[A-Za-z0-9./-]{1,40}$")
+
 
 class DocumentError(ValueError):
     """A user-facing refusal; the message is shown as it is."""
 
 
-def _sniff(head: bytes):
+def _sniff(head: bytes, allow_xlsx: bool = False):
     for magic, content_type, ext in _SIGNATURES:
         if head.startswith(magic):
             return content_type, ext
-    raise DocumentError("Upload a PDF, JPEG or PNG file.")
+    if allow_xlsx and head.startswith(_ZIP_MAGIC):
+        return XLSX_TYPE, "xlsx"
+    raise DocumentError("Upload a PDF, JPEG, PNG or Excel (.xlsx) file." if allow_xlsx
+                        else "Upload a PDF, JPEG or PNG file.")
 
 
 def _check_pdf(data: bytes) -> None:
@@ -75,11 +104,34 @@ def _check_pdf(data: bytes) -> None:
     found = _PDF_ACTIVE.search(plain)
     if found:
         raise DocumentError(
-            "This PDF contains active content (" + found.group(1).decode() + ") that a PO or invoice never "
-            "needs, so it was not accepted. Save it again as a plain PDF (print to PDF) and upload that.")
+            "This PDF contains active content (" + found.group(1).decode() + ") that a PO, invoice or "
+            "customs document never needs, so it was not accepted. Save it again as a plain PDF (print to PDF) "
+            "and upload that.")
 
 
-def _read_upload(upload) -> tuple[bytes, str, str]:
+def _check_xlsx(data: bytes) -> None:
+    """A zip that is really an .xlsx workbook (not a .docx, a renamed
+    archive or a macro-enabled .xlsm), with nothing in it that runs or
+    carries another file, and that unpacks to a sane size."""
+    not_excel = "This file is not an Excel workbook. Save it as .xlsx (Google Sheets: File, Download, .xlsx)."
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            infos = zf.infolist()
+            names = {i.filename for i in infos}
+            if "xl/workbook.xml" not in names or "[Content_Types].xml" not in names:
+                raise DocumentError(not_excel)
+            types = zf.read("[Content_Types].xml")
+    except (zipfile.BadZipFile, KeyError, RuntimeError) as exc:
+        raise DocumentError(not_excel) from exc
+    active = next((n for n in names if _XLSX_ACTIVE.search(n)), None)
+    if active is not None or b"macroEnabled" in types:
+        raise DocumentError("This workbook contains macros or embedded objects, so it was not accepted. "
+                            "Save it again as a plain .xlsx workbook and upload that.")
+    if sum(i.file_size for i in infos) > _XLSX_MAX_UNPACKED:
+        raise DocumentError("This workbook is too large once unpacked.")
+
+
+def _read_upload(upload, allow_xlsx: bool = False) -> tuple[bytes, str, str]:
     if upload is None:
         raise DocumentError("Choose a file to upload.")
     if upload.size == 0:
@@ -87,10 +139,28 @@ def _read_upload(upload) -> tuple[bytes, str, str]:
     if upload.size > MAX_BYTES:
         raise DocumentError(f"The file is larger than {MAX_BYTES // (1024 * 1024)} MB.")
     data = upload.read()
-    content_type, ext = _sniff(data[:16])
+    content_type, ext = _sniff(data[:16], allow_xlsx)
     if content_type == "application/pdf":
         _check_pdf(data)
+    elif content_type == XLSX_TYPE:
+        _check_xlsx(data)
     return data, content_type, ext
+
+
+def _clean_reference(kind: str, value) -> str:
+    """The BOE, license or scrip number, without spaces. A license number
+    is 10 digits; the Drive sheets drop its leading zero (311051817 for
+    0311051817), so a shorter all-digit number is padded back - otherwise
+    one license would file as two."""
+    label = _REFERENCE_LABEL[kind]
+    ref = re.sub(r"\s+", "", str(value or ""))
+    if not ref:
+        raise DocumentError(f"Enter the {label}.")
+    if not _REFERENCE_OK.match(ref):
+        raise DocumentError(f"The {label} may use only letters, digits, '.', '/' and '-', up to 40 characters.")
+    if kind == "ADV_LIC" and ref.isdigit() and len(ref) < 10:
+        ref = ref.zfill(10)
+    return ref
 
 
 def _clean_po_number(po_number) -> str:
@@ -119,8 +189,24 @@ def _store(bucket_kind: str, key: str, data: bytes, content_type: str) -> None:
         os.unlink(path)
 
 
-def _create(*, kind, plant, po_number, mir, siblings, data, content_type, ext, filename, note, user, key_prefix):
-    """Common tail of both uploads. `siblings` is the locked queryset of the
+def _bucket_for(kind: str) -> str:
+    """Invoices have their own bucket; everything filed under a PO goes to "po"."""
+    return "invoice" if kind == "INVOICE" else "po"
+
+
+def _siblings(kind, plant, po_number="", reference="", mir=None):
+    """The earlier files a new one is a revision of."""
+    from apps.core.models import Document
+
+    if kind == Document.Kind.INVOICE:
+        return Document.objects.filter(kind=kind, mir=mir)
+    qs = Document.objects.filter(kind=kind, plant=plant, po_number=po_number)
+    return qs.filter(reference=reference) if kind in Document.REFERENCED_KINDS else qs
+
+
+def _create(*, kind, plant, po_number, mir, siblings, data, content_type, ext, filename, note, user, key_prefix,
+            reference=""):
+    """Common tail of every upload. `siblings` is the locked queryset of the
     same PO's (or MIR's) earlier files."""
     from apps.core.models import Document
 
@@ -129,34 +215,39 @@ def _create(*, kind, plant, po_number, mir, siblings, data, content_type, ext, f
     if same is not None:
         raise DocumentError(f"This file is already on record as revision {same.revision}.")
     revision = max((d.revision for d in siblings), default=0) + 1
-    bucket = "po" if kind == Document.Kind.PO else "invoice"
     key = f"{key_prefix}/r{revision}-{uuid.uuid4().hex[:12]}.{ext}"
     # R2 first: a failed upload leaves no row pointing at nothing.
-    _store(bucket, key, data, content_type)
+    _store(_bucket_for(kind), key, data, content_type)
     siblings.filter(status=Document.Status.CURRENT).update(status=Document.Status.SUPERSEDED)
     return Document.objects.create(
-        kind=kind, plant=plant, po_number=po_number, mir=mir, revision=revision, status=Document.Status.CURRENT,
-        storage_key=key, original_filename=(filename or "")[:255] or f"upload.{ext}", content_type=content_type,
+        kind=kind, plant=plant, po_number=po_number, reference=reference, mir=mir, revision=revision,
+        status=Document.Status.CURRENT, storage_key=key,
+        original_filename=(filename or "")[:255] or f"upload.{ext}", content_type=content_type,
         size_bytes=len(data), sha256=digest, note=(note or "").strip()[:2000],
         uploaded_by=user if getattr(user, "pk", None) else None, uploaded_by_email=getattr(user, "email", "") or "",
     )
 
 
 @transaction.atomic
-def upload_po(plant_code: str, po_number, upload, user, note: str = ""):
+def upload_po(plant_code: str, po_number, upload, user, note: str = "", kind: str = "PO", reference=""):
+    """A file filed under a PO: the PO copy itself (kind PO) or its import
+    paperwork (BOE, ADV_LIC, RODTEP), which also needs `reference`."""
     from apps.core.models import Document, Plant
 
+    if kind != Document.Kind.PO and kind not in Document.REFERENCED_KINDS:
+        raise DocumentError("Pick what kind of document this is.")
     object_storage.require_configured("po")
     # Locking the plant row serialises revision numbering per plant.
     plant = Plant.objects.select_for_update().filter(code=plant_code).first()
     if plant is None:
         raise DocumentError("Pick the plant the PO belongs to.")
     number = _clean_po_number(po_number)
-    data, content_type, ext = _read_upload(upload)
-    siblings = Document.objects.filter(kind=Document.Kind.PO, plant=plant, po_number=number)
-    return _create(kind=Document.Kind.PO, plant=plant, po_number=number, mir=None, siblings=siblings, data=data,
-                   content_type=content_type, ext=ext, filename=getattr(upload, "name", ""), note=note, user=user,
-                   key_prefix=f"{plant.code}/{_safe(number)}")
+    ref = _clean_reference(kind, reference) if kind in Document.REFERENCED_KINDS else ""
+    data, content_type, ext = _read_upload(upload, allow_xlsx=kind in _EXCEL_KINDS)
+    prefix = f"{plant.code}/{_safe(number)}" + (f"/{kind.lower()}-{_safe(ref)}" if ref else "")
+    return _create(kind=kind, plant=plant, po_number=number, reference=ref, mir=None,
+                   siblings=_siblings(kind, plant, number, ref), data=data, content_type=content_type, ext=ext,
+                   filename=getattr(upload, "name", ""), note=note, user=user, key_prefix=prefix)
 
 
 @transaction.atomic
@@ -168,7 +259,7 @@ def upload_invoice(mir, upload, user, note: str = ""):
     if mir.status != Mir.Status.POSTED:
         raise DocumentError("A cancelled MIR takes no new files.")
     data, content_type, ext = _read_upload(upload)
-    siblings = Document.objects.filter(kind=Document.Kind.INVOICE, mir=mir)
+    siblings = _siblings(Document.Kind.INVOICE, mir.plant, mir=mir)
     return _create(kind=Document.Kind.INVOICE, plant=mir.plant, po_number="", mir=mir, siblings=siblings, data=data,
                    content_type=content_type, ext=ext, filename=getattr(upload, "name", ""), note=note, user=user,
                    key_prefix=f"{mir.plant.code}/{_safe(mir.mir_no)}")
@@ -193,8 +284,7 @@ def withdraw(document, user, reason):
     doc.withdraw_reason = reason[:2000]
     doc.save(update_fields=["status", "withdrawn_by_email", "withdrawn_at", "withdraw_reason"])
     if was_current:
-        siblings = (Document.objects.filter(kind=doc.kind, plant=doc.plant, po_number=doc.po_number)
-                    if doc.kind == Document.Kind.PO else Document.objects.filter(kind=doc.kind, mir=doc.mir_id))
+        siblings = _siblings(doc.kind, doc.plant_id, doc.po_number, doc.reference, mir=doc.mir_id)
         previous = siblings.filter(status=Document.Status.SUPERSEDED).order_by("-revision").first()
         if previous is not None:
             previous.status = Document.Status.CURRENT
@@ -203,5 +293,4 @@ def withdraw(document, user, reason):
 
 
 def open_link(document, expires_seconds: int = 300) -> str:
-    bucket = "po" if document.kind == "PO" else "invoice"
-    return object_storage.presigned_url(bucket, document.storage_key, expires_seconds)
+    return object_storage.presigned_url(_bucket_for(document.kind), document.storage_key, expires_seconds)

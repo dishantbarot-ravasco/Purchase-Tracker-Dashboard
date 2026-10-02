@@ -1,10 +1,18 @@
 // po-files.html's page script - see po-files.html's header comment. Uses
 // /api/mir/meta for the plant list (canReceive is the same rule as
 // uploading: Editor or Admin at that plant) and doc-files.js for uploading
-// and opening files.
+// and opening files. The Document picker switches the form between a PO
+// copy and an import paper (BOE, Advance License, RoDTEP scrip), which also
+// needs its own number; the two license kinds take an .xlsx too.
 
 let PO_FILES_META = null;
 let poFilesRows = [];
+const PO_FILES_KINDS = {
+  PO: { file: 'PO file (PDF or photo)', excel: false },
+  BOE: { ref: 'BOE number', refPrompt: 'BOE number', refHint: 'e.g. 4026152', file: 'BOE file (PDF or photo)', excel: false },
+  ADV_LIC: { ref: 'License number', refPrompt: 'license number', refHint: 'e.g. 0311051817', file: 'License file (PDF, photo or .xlsx)', excel: true },
+  RODTEP: { ref: 'Scrip number', refPrompt: 'scrip number', refHint: 'e.g. 2609004872', file: 'Scrip file (.xlsx, PDF or photo)', excel: true },
+};
 
 (async function () {
   const user = await requireAuth();
@@ -27,10 +35,13 @@ let poFilesRows = [];
       uploadable.map(p => '<option value="' + escapeHtml(p.code) + '">' + escapeHtml(p.name) + '</option>').join('');
     document.getElementById('uploadPanel').hidden = false;
     document.getElementById('uploadForm').addEventListener('submit', ev => { ev.preventDefault(); poFilesUpload(); });
+    document.getElementById('upKind').addEventListener('change', poFilesKindChanged);
+    poFilesKindChanged();
   }
   let t;
   const reload = () => { clearTimeout(t); t = setTimeout(poFilesLoad, 250); };
   document.getElementById('listPlant').addEventListener('change', reload);
+  document.getElementById('listKind').addEventListener('change', reload);
   document.getElementById('listSearch').addEventListener('input', reload);
   document.getElementById('listStatus').addEventListener('change', poFilesRender);
   poFilesLoad();
@@ -59,28 +70,51 @@ function poFilesListMessage(text) {
   area.appendChild(d);
 }
 
+/** Relabel the form for the picked document: the number field appears for
+    import papers, and the file input admits .xlsx for the license kinds. */
+function poFilesKindChanged() {
+  const k = PO_FILES_KINDS[document.getElementById('upKind').value] || PO_FILES_KINDS.PO;
+  document.getElementById('upRefGroup').hidden = !k.ref;
+  if (k.ref) {
+    document.getElementById('upRefLabel').textContent = k.ref;
+    document.getElementById('upRef').placeholder = k.refHint;
+  }
+  document.getElementById('upFileLabel').textContent = k.file;
+  document.getElementById('upFile').accept = DOC_FILE_ACCEPT + (k.excel ? ',.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : '');
+  document.getElementById('upFileHint').textContent = k.excel
+    ? 'Up to 20 MB. A Google Sheet: File, Download, Microsoft Excel (.xlsx).' : 'Up to 20 MB.';
+}
+
 async function poFilesUpload() {
   const err = document.getElementById('upErr');
   const ok = document.getElementById('upOk');
   const plant = document.getElementById('upPlant').value;
+  const kind = document.getElementById('upKind').value;
+  const k = PO_FILES_KINDS[kind] || PO_FILES_KINDS.PO;
   const po = document.getElementById('upPo').value.trim();
+  const ref = document.getElementById('upRef').value.trim();
   const file = document.getElementById('upFile').files[0];
   err.textContent = ''; ok.textContent = '';
   if (!plant) { err.textContent = 'Pick the plant.'; return; }
   if (!po) { err.textContent = 'Enter the PO number.'; return; }
-  const problem = docFileProblem(file);
+  if (k.ref && !ref) { err.textContent = 'Enter the ' + k.refPrompt + '.'; return; }
+  const problem = docFileProblem(file, k.excel);
   if (problem) { err.textContent = problem; return; }
   const btn = document.getElementById('upBtn');
   btn.disabled = true;
   try {
     const fd = new FormData();
     fd.append('plant', plant);
+    fd.append('kind', kind);
     fd.append('poNumber', po);
+    if (k.ref) fd.append('reference', ref);
     fd.append('note', document.getElementById('upNote').value.trim());
     fd.append('file', file);
     const doc = await docFileUpload('/api/documents/po/upload', fd);
-    ok.textContent = 'PO ' + doc.poNumber + ' uploaded as revision ' + doc.revision + '.';
+    ok.textContent = (doc.reference ? doc.kindLabel + ' ' + doc.reference + ' for PO ' : 'PO ') + doc.poNumber +
+      ' uploaded as revision ' + doc.revision + '.';
     document.getElementById('upPo').value = '';
+    document.getElementById('upRef').value = '';
     document.getElementById('upNote').value = '';
     document.getElementById('upFile').value = '';
     poFilesLoad();
@@ -94,8 +128,10 @@ async function poFilesUpload() {
 async function poFilesLoad() {
   const params = new URLSearchParams();
   const plant = document.getElementById('listPlant').value;
+  const kind = document.getElementById('listKind').value;
   const q = document.getElementById('listSearch').value.trim();
   if (plant) params.set('plant', plant);
+  if (kind) params.set('kind', kind);
   if (q) params.set('q', q);
   try {
     const data = await poFilesApi('/api/documents/po?' + params.toString());
@@ -116,10 +152,11 @@ function poFilesRender() {
   const wanted = document.getElementById('listStatus').value;
   const rows = poFilesRows.filter(d => !wanted || d.status === wanted);
   const area = document.getElementById('listArea');
-  if (!rows.length) { poFilesListMessage(poFilesRows.length ? 'No files match this view.' : 'No PO files uploaded yet.'); return; }
-  area.innerHTML = '<div class="table-wrap"><table><thead><tr><th>PO number</th><th>Plant</th><th class="num">Rev</th><th>Status</th>' +
+  if (!rows.length) { poFilesListMessage(poFilesRows.length ? 'No files match this view.' : 'No files uploaded yet.'); return; }
+  area.innerHTML = '<div class="table-wrap"><table><thead><tr><th>PO number</th><th>Document</th><th>Plant</th><th class="num">Rev</th><th>Status</th>' +
     '<th>File</th><th>Uploaded</th><th>In the app</th><th></th></tr></thead><tbody>' +
     rows.map(d => '<tr><td><b>' + escapeHtml(d.poNumber) + '</b>' + (d.note ? '<div class="mir-muted">' + escapeHtml(d.note) + '</div>' : '') + '</td>' +
+      '<td>' + escapeHtml(d.kind === 'PO' ? 'PO copy' : d.kindLabel) + (d.reference ? '<div class="mir-muted">' + escapeHtml(d.reference) + '</div>' : '') + '</td>' +
       '<td>' + escapeHtml(poFilesPlantName(d.plant)) + '</td><td class="num">' + d.revision + '</td>' +
       '<td>' + docFileStatusPill(d.status) + (d.withdrawReason ? '<div class="mir-muted">' + escapeHtml(d.withdrawReason) + '</div>' : '') + '</td>' +
       '<td><button type="button" class="mir-link" data-doc-open="' + d.id + '">Open</button><div class="mir-muted">' +
@@ -127,7 +164,7 @@ function poFilesRender() {
       '<td>' + escapeHtml(d.uploadedBy) + '<div class="mir-muted">' + escapeHtml(new Date(d.uploadedAt).toLocaleString('en-IN')) + '</div></td>' +
       '<td>' + (d.poInSystem ? 'Yes' : '<span class="mir-muted" title="No PO with this number at this plant yet">Not yet</span>') + '</td>' +
       '<td>' + (d.status !== 'WITHDRAWN' && poFilesCanWrite(d.plant) ? '<button type="button" class="mir-link" data-withdraw="' + d.id + '">Withdraw</button>' : '') + '</td></tr>' +
-      '<tr class="mir-action-row" data-withdraw-row="' + d.id + '" hidden><td colspan="8"></td></tr>').join('') +
+      '<tr class="mir-action-row" data-withdraw-row="' + d.id + '" hidden><td colspan="9"></td></tr>').join('') +
     '</tbody></table></div>';
   docFileBindOpen(area);
   area.querySelectorAll('[data-withdraw]').forEach(b => { b.onclick = () => poFilesOpenWithdraw(Number(b.dataset.withdraw)); });

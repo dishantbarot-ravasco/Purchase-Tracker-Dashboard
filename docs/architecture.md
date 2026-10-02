@@ -641,13 +641,17 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   `old_value`, `new_value`, `reason` (never blank), who and when.
 - `Document` - an uploaded PO or invoice file kept in Cloudflare R2 (migration `0087`, written only by
   `apps/services/documents.py`; see [api-and-features.md](api-and-features.md#po-and-invoice-files-2026-09-30)).
-  `kind` PO / INVOICE; `plant`; `po_number` (PO files, as uploaded - deliberately no FK to
-  `PurchaseOrder`, since the file can arrive first and a PO number can be revised or cancelled) or
-  `mir` (invoice files, `PROTECT`); `revision` and `status` CURRENT / SUPERSEDED / WITHDRAWN;
-  unique `storage_key`; `original_filename`, `content_type`, `size_bytes`, `sha256`, `note`; who
-  uploaded and when; who withdrew, when and why. Constraints: unique revision per `(plant, po_number)`
-  for PO files and per `mir` for invoice files; a PO file has a PO number and no MIR, an invoice file
-  a MIR and no PO number. Never deleted.
+  `kind` PO / INVOICE, plus the import papers filed under a PO (migration `0091`): BOE (Bill of
+  Entry), ADV_LIC (Advance License), RODTEP (RoDTEP scrip) - `Document.REFERENCED_KINDS`; `plant`;
+  `po_number` (PO-filed kinds, as uploaded - deliberately no FK to `PurchaseOrder`, since the file can
+  arrive first and a PO number can be revised or cancelled) or `mir` (invoice files, `PROTECT`);
+  `reference` (the BOE, license or scrip number of an import paper, blank otherwise); `revision` and
+  `status` CURRENT / SUPERSEDED / WITHDRAWN; unique `storage_key`; `original_filename`,
+  `content_type`, `size_bytes`, `sha256`, `note`; who uploaded and when; who withdrew, when and why.
+  Constraints: unique revision per `(plant, po_number)` for PO files, per `(kind, plant, po_number,
+  reference)` for import papers and per `mir` for invoice files; a PO file has a PO number, no MIR and
+  no reference, an import paper a PO number and a reference and no MIR, an invoice file a MIR and
+  neither. Never deleted.
 
 ### apps/core/models/preferences.py
 

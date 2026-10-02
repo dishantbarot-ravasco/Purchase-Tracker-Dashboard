@@ -3,6 +3,10 @@
 invoice files (2026-09-30). The rules live in apps/services/documents.py;
 this file only gates, parses and serializes.
 
+Import paperwork (2026-10-01) - a Bill of Entry, an Advance License, a
+RoDTEP scrip file - goes through the same upload endpoint with `kind` and
+`reference` and is listed with the PO files; it has the same access rules.
+
 Access:
   - Listing PO files and opening any file: any role, for the plants the
     account may read (user_can_access_plant()).
@@ -24,13 +28,28 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.response import Response
 
 from apps.api.permissions import IsEditor, user_can_access_plant, user_can_edit_plant
-from apps.core.models import Document, Mir, Plant, PurchaseOrder
+from apps.core.models import (
+    Document,
+    HRSImportPurchaseOrder,
+    Mir,
+    Plant,
+    PurchaseOrder,
+    RTPAchhadImportPurchaseOrder,
+    RTPVapiImportPurchaseOrder,
+)
 from apps.services import documents, object_storage
+
+# The per-plant import PO mirrors, for "In the app": import POs are not in
+# PurchaseOrder yet, and BOE and license files belong to import POs.
+_IMPORT_POS = {"hrs": HRSImportPurchaseOrder, "achhad": RTPAchhadImportPurchaseOrder, "vapi": RTPVapiImportPurchaseOrder}
+# Everything filed under a PO (not invoices).
+_PO_FILED_KINDS = (Document.Kind.PO, *Document.REFERENCED_KINDS)
 
 
 def serialize(doc):
     return {
-        "id": doc.id, "kind": doc.kind, "plant": doc.plant.code, "poNumber": doc.po_number, "mirId": doc.mir_id,
+        "id": doc.id, "kind": doc.kind, "kindLabel": doc.get_kind_display(), "plant": doc.plant.code,
+        "poNumber": doc.po_number, "reference": doc.reference, "mirId": doc.mir_id,
         "revision": doc.revision, "status": doc.status, "fileName": doc.original_filename,
         "contentType": doc.content_type, "sizeBytes": doc.size_bytes, "note": doc.note,
         "uploadedBy": doc.uploaded_by_email, "uploadedAt": doc.uploaded_at.isoformat(),
@@ -52,13 +71,16 @@ def _not_configured(exc):
 @permission_classes([IsEditor])
 @parser_classes([MultiPartParser])
 def upload_po_document(request):
-    """Upload a PO file. Form fields: plant, poNumber, note, file."""
+    """Upload a file filed under a PO. Form fields: plant, poNumber, note,
+    file, and kind (PO by default; BOE, ADV_LIC or RODTEP) with reference
+    (the BOE, license or scrip number) for import paperwork."""
     plant = request.data.get("plant") or ""
     if not plant or not user_can_edit_plant(request.user, plant):
         return Response({"error": "You cannot upload POs for that plant."}, status=http.HTTP_403_FORBIDDEN)
     try:
         doc = documents.upload_po(plant, request.data.get("poNumber"), request.FILES.get("file"), request.user,
-                                  request.data.get("note") or "")
+                                  request.data.get("note") or "", kind=request.data.get("kind") or Document.Kind.PO,
+                                  reference=request.data.get("reference") or "")
     except object_storage.StorageNotConfigured as exc:
         return _not_configured(exc)
     except documents.DocumentError as exc:
@@ -68,19 +90,27 @@ def upload_po_document(request):
 
 @api_view(["GET"])
 def po_documents(request):
-    """PO files at the plants the caller may read, newest first. Filters:
-    ?plant= ?q= (PO number). Superseded and withdrawn revisions included."""
+    """Files filed under a PO (PO copies and import paperwork) at the plants
+    the caller may read, newest first. Filters: ?plant= ?kind= ?q= (PO
+    number or BOE / license / scrip number). Superseded and withdrawn
+    revisions included."""
     plants = [p.code for p in Plant.objects.all() if user_can_access_plant(request.user, p.code)]
     wanted = request.query_params.get("plant")
     if wanted:
         plants = [p for p in plants if p == wanted]
-    qs = Document.objects.filter(kind=Document.Kind.PO, plant__code__in=plants).select_related("plant")
+    kind = request.query_params.get("kind") or ""
+    kinds = [kind] if kind in _PO_FILED_KINDS else list(_PO_FILED_KINDS)
+    qs = Document.objects.filter(kind__in=kinds, plant__code__in=plants).select_related("plant")
     q = (request.query_params.get("q") or "").strip()
     if q:
-        qs = qs.filter(po_number__icontains=q)
+        qs = qs.filter(Q(po_number__icontains=q) | Q(reference__icontains=q))
     docs = list(qs.order_by("-uploaded_at", "-id")[:500])
+    numbers = {d.po_number for d in docs}
     known = set(PurchaseOrder.objects.filter(
-        plant__code__in=plants, po_number__in={d.po_number for d in docs}).values_list("plant__code", "po_number"))
+        plant__code__in=plants, po_number__in=numbers).values_list("plant__code", "po_number"))
+    for code, model in _IMPORT_POS.items():
+        if code in plants:
+            known |= {(code, n) for n in model.objects.filter(po_number__in=numbers).values_list("po_number", flat=True)}
     return Response({"documents": [{**serialize(d), "poInSystem": (d.plant.code, d.po_number) in known} for d in docs],
                      "storageReady": object_storage.is_configured("po")})
 

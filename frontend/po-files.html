@@ -3,7 +3,9 @@
   the PO for its plant; the file is stored in Cloudflare R2 through
   /api/documents/... (apps/api/routers/document_views.py). A revised PO is
   uploaded again and becomes the next revision; a cancelled PO or a wrong
-  upload is withdrawn with a reason. Nothing is ever deleted.
+  upload is withdrawn with a reason. Nothing is ever deleted. An import PO's
+  papers - Bill of Entry, Advance License, RoDTEP scrip (2026-10-01) - are
+  filed here under the PO too, each with its BOE / license / scrip number.
 
   Protected page: requireAuth() (js/auth.js). Any role lists and opens the
   files of the plants it may read; uploading and withdrawing need Editor or
@@ -40,7 +42,7 @@
   <div class="wrap mir-wrap" id="main-content" role="main" tabindex="-1">
     <div class="mir-page-head">
       <h2 class="mir-page-title">PO Files</h2>
-      <p class="mir-page-sub">Upload each purchase order's copy for its plant. The store sees the current copy when it receives against the PO.</p>
+      <p class="mir-page-sub">Upload each purchase order's copy for its plant, and for an import PO its Bill of Entry and license files. The store sees the current PO copy when it receives against the PO.</p>
     </div>
 
     <div class="mir-banner mir-banner-warn" id="storageBanner" hidden>
@@ -48,8 +50,8 @@
     </div>
 
     <section class="mir-panel" id="uploadPanel" hidden>
-      <h3 class="mir-panel-title">Upload a PO</h3>
-      <p class="mir-help">A revised PO: upload the new copy under the same number - it becomes the next revision and the older copy is kept.
+      <h3 class="mir-panel-title">Upload a PO or its import papers</h3>
+      <p class="mir-help">A revised PO or a corrected BOE or license: upload the new copy under the same number - it becomes the next revision and the older copy is kept.
         A cancelled PO or a file uploaded by mistake: use Withdraw in the list below.</p>
       <form id="uploadForm" novalidate>
         <div class="mir-grid">
@@ -58,13 +60,26 @@
             <select class="form-control" id="upPlant"></select>
           </div>
           <div class="form-group">
+            <label class="form-label" for="upKind">Document <span class="req-mark">*</span></label>
+            <select class="form-control" id="upKind">
+              <option value="PO">PO copy</option>
+              <option value="BOE">Bill of Entry (import)</option>
+              <option value="ADV_LIC">Advance License</option>
+              <option value="RODTEP">RoDTEP scrip</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label class="form-label" for="upPo">PO number <span class="req-mark">*</span></label>
             <input class="form-control" id="upPo" maxlength="100" autocomplete="off" inputmode="numeric" placeholder="e.g. 3000001104">
           </div>
+          <div class="form-group" id="upRefGroup" hidden>
+            <label class="form-label" for="upRef"><span id="upRefLabel">BOE number</span> <span class="req-mark">*</span></label>
+            <input class="form-control" id="upRef" maxlength="40" autocomplete="off" placeholder="e.g. 4026152">
+          </div>
           <div class="form-group">
-            <label class="form-label" for="upFile">PO file (PDF or photo) <span class="req-mark">*</span></label>
+            <label class="form-label" for="upFile"><span id="upFileLabel">PO file (PDF or photo)</span> <span class="req-mark">*</span></label>
             <input class="form-control" type="file" id="upFile" accept="application/pdf,image/jpeg,image/png,.pdf,.jpg,.jpeg,.png">
-            <span class="mir-hint">Up to 20 MB.</span>
+            <span class="mir-hint" id="upFileHint">Up to 20 MB.</span>
           </div>
           <div class="form-group">
             <label class="form-label" for="upNote">Note</label>
@@ -82,13 +97,21 @@
     <div class="filter-row">
       <label for="listPlant">Plant</label>
       <select id="listPlant"></select>
+      <label for="listKind">Document</label>
+      <select id="listKind">
+        <option value="">All documents</option>
+        <option value="PO">PO copies</option>
+        <option value="BOE">Bills of Entry</option>
+        <option value="ADV_LIC">Advance Licenses</option>
+        <option value="RODTEP">RoDTEP scrips</option>
+      </select>
       <label for="listStatus">Show</label>
       <select id="listStatus">
         <option value="CURRENT">Current copies</option>
         <option value="">All revisions</option>
         <option value="WITHDRAWN">Withdrawn</option>
       </select>
-      <input type="search" id="listSearch" class="mir-filter-search" placeholder="PO number" aria-label="Search by PO number">
+      <input type="search" id="listSearch" class="mir-filter-search" placeholder="PO, BOE, license or scrip no." aria-label="Search by PO, BOE, license or scrip number">
     </div>
     <div id="listArea"></div>
   </div>

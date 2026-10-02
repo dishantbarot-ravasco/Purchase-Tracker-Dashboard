@@ -26,11 +26,17 @@ async function docFileUpload(url, formData) {
 
 /** Checks the browser can make before sending: size and type. Returns an
     error message, or '' when the file may go. The server checks again, by
-    the file's content. */
-function docFileProblem(file) {
+    the file's content. `allowExcel` admits an .xlsx workbook (the license
+    kinds on po-files.html). */
+function docFileProblem(file, allowExcel) {
   if (!file) return 'Choose a file.';
   if (file.size === 0) return 'The file is empty.';
   if (file.size > DOC_FILE_MAX_MB * 1024 * 1024) return 'The file is larger than ' + DOC_FILE_MAX_MB + ' MB.';
+  if (allowExcel) {
+    if (/\.(xls|xlsm|csv)$/i.test(file.name)) return 'Save the sheet as .xlsx (Google Sheets: File, Download, .xlsx) and upload that.';
+    if (!/\.(pdf|jpe?g|png|xlsx)$/i.test(file.name)) return 'Upload a PDF, JPEG, PNG or Excel (.xlsx) file.';
+    return '';
+  }
   if (!/\.(pdf|jpe?g|png)$/i.test(file.name)) return 'Upload a PDF, JPEG or PNG file.';
   return '';
 }

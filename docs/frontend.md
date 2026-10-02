@@ -1461,8 +1461,9 @@ Top-level names were checked against `auth.js` / `shared.js` for collisions (one
 
 Shared by `po-files.html` and `mir.html`; every name starts `docFile` / `DOC_FILE_` (one global scope).
 `docFileUpload(url, formData)` POSTs a multipart upload through `authFetch` (no Content-Type header -
-the browser sets the boundary) and throws the server's message. `docFileProblem(file)` is the
-browser-side size (20 MB) and extension check; the server checks again by content. `docFileOpen(id)`
+the browser sets the boundary) and throws the server's message. `docFileProblem(file, allowExcel)` is
+the browser-side size (20 MB) and extension check (`allowExcel` admits .xlsx and tells a .xls / .xlsm /
+.csv to be saved as .xlsx); the server checks again by content. `docFileOpen(id)`
 opens `/api/documents/<id>/open` in a new tab, where the server redirects to a five-minute R2 link.
 **It must open the app's own URL directly**: fetching the link first and pointing a blank tab at it
 left the tab on `about:blank`, because the app's `Cross-Origin-Opener-Policy: same-origin` stops a
@@ -1475,9 +1476,13 @@ Current / Older revision / Withdrawn, name, size, who, when, withdrawal reason) 
 
 `po-files.html`. Reads `/api/mir/meta` for plants (`canReceive` is the same rule as uploading - Editor
 or Admin at that plant), shows the upload panel only when there is such a plant, and lists
-`/api/documents/po` (plant and PO-number filters re-fetch, debounced; the Show filter - current
-copies, all revisions, withdrawn - filters the fetched rows). `poFilesUpload()` checks plant, PO number
-and file before sending and reports the new revision. Each row: PO number and note, plant, revision,
+`/api/documents/po` (plant, Document and search filters re-fetch, debounced - the search matches a PO,
+BOE, license or scrip number; the Show filter - current copies, all revisions, withdrawn - filters the
+fetched rows). The upload form's Document picker (PO copy, Bill of Entry, Advance License, RoDTEP
+scrip; `PO_FILES_KINDS`) drives `poFilesKindChanged()`: an import paper shows its number field (BOE,
+license or scrip number) and the license kinds let the file input take .xlsx. `poFilesUpload()` checks
+plant, PO number, the number when needed, and file before sending and reports the new revision. Each
+row: PO number and note, document and its number, plant, revision,
 status (with the withdrawal reason), Open, who and when, whether the PO is in the app yet, and
 Withdraw for a plant the account may write - `poFilesOpenWithdraw()` opens an inline reason field
 under the row and POSTs `documents/<id>/withdraw`. `poFilesApi()` is the page's JSON wrapper.

@@ -299,7 +299,11 @@ Read the linked section before breaking any of these. Each is there because it w
 - Uploaded PO and invoice files live in private Cloudflare R2 buckets; `documents.py` is the only writer
   of `Document` rows. A PO file is keyed on (plant, PO number), never a `PurchaseOrder` FK: a re-upload is
   the next revision, a cancelled PO or wrong upload is withdrawn with a reason, and **nothing is ever
-  deleted** (row or object). [files](docs/api-and-features.md#po-and-invoice-files-2026-09-30)
+  deleted** (row or object). Import papers (BOE, Advance License, RoDTEP scrip) are filed under their
+  PO with a required `reference` number, and revise per (kind, plant, PO, reference) through
+  `documents._siblings()` - never per PO alone (one PO has several BOEs). Only the license kinds take
+  .xlsx, and `_check_xlsx()` refuses macros and embedded objects - never loosen it.
+  [files](docs/api-and-features.md#po-and-invoice-files-2026-09-30)
 - A file opens through `/api/documents/<id>/open` (302 to a five-minute link) in a new tab - never
   fetch the link and navigate a blank tab: the app's COOP header leaves it on `about:blank`.
 - **Check uploads in production with real documents or a `TEST-` PO number - never anything else.**

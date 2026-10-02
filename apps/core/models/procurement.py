@@ -518,11 +518,25 @@ class Document(models.Model):
     the PO may reach the app after its file does, and a PO number can be
     revised or cancelled upstream. Each upload for the same PO is the next
     revision; only one revision per PO is CURRENT. An invoice file belongs
-    to one MIR, with the same revision rule."""
+    to one MIR, with the same revision rule.
+
+    Import paperwork (2026-10-01) is filed under its PO the same way, as on
+    Drive, where the BOE, the advance authorisation letter and the RoDTEP
+    scrip file sit in the import PO's folder. Each carries a `reference`:
+    the BOE number, the license number or the scrip number. A PO can clear
+    on several BOEs and draw on several licenses, so revisions count per
+    (kind, plant, PO number, reference); the same license filed under two
+    POs is two records."""
 
     class Kind(models.TextChoices):
         PO = "PO", "Purchase order"
         INVOICE = "INVOICE", "Invoice"
+        BOE = "BOE", "Bill of Entry"
+        ADVANCE_LICENSE = "ADV_LIC", "Advance License"
+        RODTEP = "RODTEP", "RoDTEP scrip"
+
+    # Filed under (plant, PO number) with a reference number.
+    REFERENCED_KINDS = ("BOE", "ADV_LIC", "RODTEP")
 
     class Status(models.TextChoices):
         CURRENT = "CURRENT", "Current"
@@ -533,6 +547,8 @@ class Document(models.Model):
     plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="documents")
     # The PO number as uploaded (PO files); blank for an invoice file.
     po_number = models.CharField(max_length=100, blank=True, default="")
+    # The BOE, license or scrip number (REFERENCED_KINDS); blank for PO and invoice files.
+    reference = models.CharField(max_length=40, blank=True, default="")
     mir = models.ForeignKey(Mir, on_delete=models.PROTECT, null=True, blank=True, related_name="documents")
     revision = models.PositiveIntegerField()
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.CURRENT)
@@ -555,12 +571,18 @@ class Document(models.Model):
                                     name="uniq_po_document_revision"),
             models.UniqueConstraint(fields=["mir", "revision"], condition=Q(kind="INVOICE"),
                                     name="uniq_invoice_document_revision"),
-            models.CheckConstraint(condition=Q(kind="INVOICE", mir__isnull=False, po_number="")
-                                   | Q(kind="PO", mir__isnull=True) & ~Q(po_number=""),
+            models.UniqueConstraint(fields=["kind", "plant", "po_number", "reference", "revision"],
+                                    condition=Q(kind__in=("BOE", "ADV_LIC", "RODTEP")),
+                                    name="uniq_import_document_revision"),
+            models.CheckConstraint(condition=Q(kind="INVOICE", mir__isnull=False, po_number="", reference="")
+                                   | Q(kind="PO", mir__isnull=True, reference="") & ~Q(po_number="")
+                                   | Q(kind__in=("BOE", "ADV_LIC", "RODTEP"), mir__isnull=True)
+                                   & ~Q(po_number="") & ~Q(reference=""),
                                    name="document_kind_shape"),
         ]
         indexes = [models.Index(fields=["kind", "plant", "po_number"]), models.Index(fields=["status"])]
         ordering = ["-uploaded_at", "-id"]
 
     def __str__(self):
-        return f"{self.kind} {self.plant_id} {self.po_number or self.mir_id} r{self.revision}"
+        ref = f" {self.reference}" if self.reference else ""
+        return f"{self.kind} {self.plant_id} {self.po_number or self.mir_id}{ref} r{self.revision}"

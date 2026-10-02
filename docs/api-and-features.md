@@ -108,8 +108,8 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `documents/po?plant=&q=` | `po_documents` | Auth, readable plants only | PO files newest first, every revision and status, with `poInSystem` and `storageReady` |
-| POST | `documents/po/upload` | `upload_po_document` | IsEditor + that plant (403) | Multipart `plant`, `poNumber`, `note`, `file`; 201, 400 with a message, 503 if R2 is not set up |
+| GET | `documents/po?plant=&kind=&q=` | `po_documents` | Auth, readable plants only | Files filed under a PO (PO copies, BOEs, licenses, RoDTEP scrips) newest first, every revision and status, with `poInSystem` and `storageReady`; `q` matches the PO number or the reference |
+| POST | `documents/po/upload` | `upload_po_document` | IsEditor + that plant (403) | Multipart `plant`, `poNumber`, `note`, `file`, and `kind` (PO default; BOE / ADV_LIC / RODTEP) with `reference`; 201, 400 with a message, 503 if R2 is not set up |
 | GET | `documents/<id>/open` | `open_document` | Auth, readable plant (404) | 302 to a five-minute R2 link |
 | POST | `documents/<id>/withdraw` | `withdraw_document` | IsEditor + the file's plant (403) | Withdraw with a `reason` |
 | POST | `mir/entries/<id>/invoice` | `mir_invoice` | IsEditor + MIR's plant (403) | Multipart `file`, `note`: attach or replace a posted MIR's invoice copy |
@@ -1156,19 +1156,38 @@ under a `PurchaseOrder` row**, and nothing is ever deleted:
 - The file may reach the app before its PO does: the list shows **In the app: Not yet** until a
   `PurchaseOrder` with that plant and number exists (worked out at read time, never stored).
 
+**Import papers are filed under their PO too (2026-10-01)**, as they are on Drive, where each import
+PO's folder holds its BOE, the advance authorisation letter and the RoDTEP scrip file. The PO Files
+page's Document picker takes a **Bill of Entry**, an **Advance License** or a **RoDTEP scrip**, each
+with its own number (`reference`: BOE, license or scrip number - required). One PO clears on several
+BOEs and draws on several licenses, so revisions count per **(kind, plant, PO number, reference)**:
+a second BOE on the same PO starts its own revision 1, a corrected copy of the same BOE is revision
+2, and withdrawing it brings back that BOE's earlier copy, never another's. The same license filed
+under two POs is two records (one per PO folder, as on Drive). A license number is 10 digits; the
+Drive sheets drop its leading zero, so a shorter all-digit number is padded back (311051817 files as
+0311051817). The two license kinds also take an **Excel .xlsx** workbook (RoDTEP scrips are kept in
+Excel or Google Sheets: File, Download, .xlsx); a BOE or PO copy does not. These are files only:
+nothing is read out of them yet, and the import PO tables, the license ledgers and matching are
+untouched. "In the app" also counts the plant's import PO mirror, since an import PO is not in
+`PurchaseOrder`. The MIR form's PO view still shows only the PO copy.
+
 An invoice copy belongs to one **posted** MIR, with the same revision rule ("Replace with a newer
 copy"); a cancelled MIR takes no new file. The MIR form uploads the chosen copy right after the MIR
 is saved - the MIR stands even if that upload fails, and the toast says to attach it from the
 register.
 
-Files are accepted by **content, not name**: the first bytes must be a PDF, JPEG or PNG, at most
-20 MB (and any request over 25 MB is refused before it is read - `RequestSizeLimitMiddleware`). **A PDF
+Files are accepted by **content, not name**: the first bytes must be a PDF, JPEG or PNG (or a zip
+that is really an .xlsx, for the license kinds), at most 20 MB (and any request over 25 MB is refused before it is read - `RequestSizeLimitMiddleware`). **A PDF
 with active content is refused** (2026-10-01 security pass): `documents._check_pdf()` looks for the PDF
 names `/JavaScript`, `/JS`, `/Launch`, `/EmbeddedFile(s)` and `/RichMedia`, hex-escaped spellings
 included, and answers "save it again as a plain PDF". A PO or invoice never needs them, and an
 embedded file is how malware usually rides in a PDF. It is a heuristic over the raw bytes (compressed
 object streams are not inflated), so it stops the common case; files still open only from R2's own
-origin. The object key is `<plant>/<PO number or MIR number>/r<revision>-<random>.<ext>`, so a key
+origin. **A workbook is opened as a zip and checked** (`documents._check_xlsx()`): it must hold
+`xl/workbook.xml` (a .docx or a renamed archive is "not an Excel workbook"), and one with VBA macros,
+ActiveX controls, embedded objects or a macro-enabled content type (.xlsm) is refused, as is one
+unpacking past 200 MB. The object key is `<plant>/<PO number or MIR number>/r<revision>-<random>.<ext>`
+(an import paper adds `/<kind>-<reference>` after the PO number; it goes to the `po` bucket), so a key
 never collides or reveals more than the record already does. R2 is written **before** the row: a
 failed upload leaves no row pointing at nothing. A file opens through `documents/<id>/open`, a 302
 to a five-minute link - the page opens that app URL in a new tab rather than fetching the link and
@@ -1577,13 +1596,18 @@ The [PO and invoice file](#po-and-invoice-files-2026-09-30) endpoints. Gates, pa
 only; every rule is in `documents.py`. Listing is a GET open to every role, uploading a separate
 POST (`documents/po/upload`) so the role gate sits on the write alone. `DocumentError` becomes a 400
 with its message, `StorageNotConfigured` a 503 ("storage is not set up yet"). `open_document`
-answers a plain-text 404/503 rather than JSON, since it is opened in a browser tab. `serialize()`,
-`po_files()` and `invoice_files()` are shared with `mir_views`.
+answers a plain-text 404/503 rather than JSON, since it is opened in a browser tab. `serialize()`
+(with `kindLabel` and `reference`), `po_files()` (PO copies only) and `invoice_files()` are shared
+with `mir_views`. `po_documents` lists every PO-filed kind (`_PO_FILED_KINDS`) and works out
+`poInSystem` from `PurchaseOrder` plus the plant's import PO mirror (`_IMPORT_POS`).
 
 ### apps/services/documents.py
 
-`upload_po()`, `upload_invoice()`, `withdraw()`, `open_link()` - the rules in
-[PO and invoice files](#po-and-invoice-files-2026-09-30). Each upload locks (the plant row for a PO,
+`upload_po()` (a PO copy, or with `kind` and `reference` an import paper), `upload_invoice()`,
+`withdraw()`, `open_link()` - the rules in [PO and invoice files](#po-and-invoice-files-2026-09-30).
+`_siblings()` is the one definition of which files a new one is a revision of; `_bucket_for()` puts
+everything but invoices in `po`; `_clean_reference()` checks and pads the number; `_check_xlsx()`
+vets a workbook. Each upload locks (the plant row for a PO-filed file,
 the MIR row for an invoice), sniffs the content type from the first bytes, refuses a duplicate hash,
 numbers the revision, writes R2, supersedes the previous current revision and creates the row, in
 one transaction. `DocumentError` is a `ValueError`, shown to the user as it is.
