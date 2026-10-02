@@ -167,54 +167,77 @@
               <button type="button" class="btn btn-primary" id="addUserBtn">+ Add User</button>
             </div>
             <div class="stat-sub stat-sub-tight">
-              To create the very first account (before any admin exists to use this panel), run <code>manage.py create_pt_user</code> on the server - see CLAUDE.md. Every account after that, including password resets, can be managed right here via Edit.
+              Admins are listed first, then everyone else; inactive accounts sit at the bottom. The very first account is made with <code>manage.py create_pt_user</code> on the server - every account after that is managed here.
+            </div>
+            <div class="users-toolbar">
+              <input type="search" id="usersSearch" class="uf-input" placeholder="Search name, email or designation" autocomplete="off" aria-label="Search users">
+              <div class="users-filter" role="group" aria-label="Show">
+                <button type="button" class="users-filter-btn active" data-users-filter="all">All <span data-users-count="all"></span></button>
+                <button type="button" class="users-filter-btn" data-users-filter="admin">Admins <span data-users-count="admin"></span></button>
+                <button type="button" class="users-filter-btn" data-users-filter="user">Users <span data-users-count="user"></span></button>
+                <button type="button" class="users-filter-btn" data-users-filter="inactive">Inactive <span data-users-count="inactive"></span></button>
+              </div>
             </div>
             <div id="usersArea"></div>
           </div>
 
-          <!-- ── Activity Log (2026-10-01) - js/activity-log.js ────────── -->
+          <!-- ── Activity Log (2026-10-01) - js/activity-log.js ──────────
+               Two sub-pages (People / Log) so neither table sits under the
+               other; the Log is split further by type tabs and paged. -->
           <div class="admin-tab-panel" id="adminTabActivity" hidden>
             <div class="section-title-row">
               <div class="section-title">Activity Log</div>
               <button type="button" class="btn" id="actExportBtn">Export CSV</button>
             </div>
             <div class="stat-sub stat-sub-tight">
-              Private to your account - no other admin can see this tab or its data. Who signed in, what they changed or downloaded, and which pages they opened. Changes, downloads and page visits are kept for 90 days, sign-ins for a year, user management for good. Passwords, codes and tokens are never recorded.
+              Private to your account. Changes, downloads and page visits are kept for 90 days, sign-ins for a year, user management for good. Passwords, codes and tokens are never recorded.
             </div>
 
-            <div class="admin-panel">
-              <h4>People</h4>
-              <div class="admin-panel-sub">Counts cover the last 30 days. Pick a person to see only their activity.</div>
-              <div class="admin-panel-sub" id="actPeopleNote"></div>
-              <div id="actPeopleArea" class="act-scroll"></div>
+            <div class="act-subtabs" role="tablist" aria-label="Activity Log pages">
+              <button type="button" class="act-subtab active" role="tab" aria-selected="true" aria-controls="actViewLog" data-act-view="log">Log</button>
+              <button type="button" class="act-subtab" role="tab" aria-selected="false" aria-controls="actViewPeople" data-act-view="people">People</button>
             </div>
 
-            <div class="admin-panel">
-              <h4>Log</h4>
-              <div class="act-filters">
-                <label class="act-field">Person
-                  <select id="actActor" class="uf-input"><option value="">Everyone</option></select>
-                </label>
-                <label class="act-field">Type
-                  <select id="actGroup" class="uf-input"><option value="">Everything</option></select>
-                </label>
-                <label class="act-field">From
-                  <input type="date" id="actSince" class="uf-input">
-                </label>
-                <label class="act-field">To
-                  <input type="date" id="actUntil" class="uf-input">
-                </label>
-                <label class="act-field act-field-wide">Search
-                  <input type="search" id="actQ" class="uf-input" placeholder="MIR or PO number, page, email, IP" autocomplete="off">
-                </label>
-                <button type="button" class="btn" id="actClearBtn">Clear</button>
+            <div id="actViewLog" role="tabpanel">
+              <div class="admin-panel">
+                <div class="act-types" id="actTypes" role="group" aria-label="Type of activity"></div>
+                <div class="act-filters">
+                  <label class="act-field">Person
+                    <select id="actActor" class="uf-input"><option value="">Everyone</option></select>
+                  </label>
+                  <label class="act-field">From
+                    <input type="date" id="actSince" class="uf-input">
+                  </label>
+                  <label class="act-field">To
+                    <input type="date" id="actUntil" class="uf-input">
+                  </label>
+                  <label class="act-field act-field-wide">Search
+                    <input type="search" id="actQ" class="uf-input" placeholder="MIR or PO number, page, email, IP" autocomplete="off">
+                  </label>
+                  <button type="button" class="btn" id="actClearBtn">Clear</button>
+                </div>
+                <div class="act-summary-row">
+                  <div class="admin-panel-sub" id="actSummary" aria-live="polite"></div>
+                  <label class="act-size">Rows per page
+                    <select id="actPageSize" class="uf-input">
+                      <option value="25">25</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                    </select>
+                  </label>
+                </div>
+                <div id="actLogArea" class="act-scroll"></div>
+                <nav class="act-pager" id="actPager" aria-label="Log pages"></nav>
               </div>
-              <div class="admin-panel-sub" id="actSummary" aria-live="polite"></div>
-              <div id="actLogArea" class="act-scroll"></div>
-              <div class="act-pager">
-                <button type="button" class="btn" id="actNewerBtn">&larr; Newer</button>
-                <span id="actPageInfo"></span>
-                <button type="button" class="btn" id="actOlderBtn">Older &rarr;</button>
+            </div>
+
+            <div id="actViewPeople" role="tabpanel" hidden>
+              <div class="admin-panel">
+                <h4>People</h4>
+                <div class="admin-panel-sub">Counts cover the last 30 days. Pick a person to open the Log filtered to them.</div>
+                <div class="admin-panel-sub" id="actPeopleNote"></div>
+                <div id="actPeopleArea" class="act-scroll"></div>
+                <nav class="act-pager" id="actPeoplePager" aria-label="People pages"></nav>
               </div>
             </div>
           </div>

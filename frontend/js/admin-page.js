@@ -16,9 +16,8 @@
 // (moved to shared.js 2026-09-07 for exactly this reuse) rather than a
 // second near-duplicate aggregation.
 //
-// User management itself (create/edit/activate/deactivate) is unchanged
-// from before this redesign - only which tab it lives under, and a new
-// per-card stats row, changed.
+// The Users tab groups the cards into Admins / Users / Inactive sections,
+// with a search box and a section filter (renderUsers()).
 let USERS = [];
 let editingUserId = null;
 let CURRENT_ADMIN_TAB = 'overview';
@@ -55,6 +54,8 @@ const DELETE_USER_ALLOWED_EMAIL = 'dishant.barot@ravasco.com';
   document.getElementById('sysinfoRole').textContent = user.role;
 
   document.getElementById('addUserBtn').onclick = () => openForm(null);
+  document.getElementById('usersSearch').addEventListener('input', renderUsers);
+  document.querySelectorAll('[data-users-filter]').forEach(btn => btn.onclick = () => setUsersFilter(btn.dataset.usersFilter));
   document.getElementById('uf-close').onclick = closeForm;
   document.getElementById('uf-cancel').onclick = closeForm;
   document.getElementById('uf-submit').onclick = submitForm;
@@ -223,6 +224,26 @@ async function loadUsers() {
   }
 }
 
+// The Users tab lists accounts in sections - admins (the owner first), then
+// active users, then inactive accounts of either role - each sorted by name.
+// The search box and the All / Admins / Users / Inactive buttons only narrow
+// what is shown; USERS itself is never reordered.
+let USERS_FILTER = 'all';
+const USER_SECTIONS = [
+  { key: 'admin', title: 'Admins', sub: 'Every plant and page, and user management', test: u => u.isActive && u.role === 'admin' },
+  { key: 'user', title: 'Users', sub: 'The plants and pages granted to each account', test: u => u.isActive && u.role !== 'admin' },
+  { key: 'inactive', title: 'Inactive', sub: 'Blocked from signing in until activated again', test: u => !u.isActive },
+];
+
+function userSortName(u) {
+  return (u.fullName || u.email || '').toLowerCase();
+}
+
+function userMatchesSearch(u, q) {
+  if (!q) return true;
+  return [u.fullName, u.email, u.designation].some(v => (v || '').toLowerCase().includes(q));
+}
+
 function renderUsers() {
   const el = document.getElementById('usersArea');
   updateUserCounts();
@@ -230,48 +251,84 @@ function renderUsers() {
     el.innerHTML = '<div class="search-empty">' + emptyStateHtml('No users found.') + '</div>';
     return;
   }
-  el.innerHTML = '<div class="users-grid">' + USERS.map(u => {
-    const initials = userInitials(u);
-    return '<div class="user-card' + (u.isActive ? '' : ' inactive') + '">' +
-      '<div class="user-card-head">' +
-        '<div class="user-card-avatar avatar-role-' + escapeHtml(u.role) + '">' + escapeHtml(initials) + '</div>' +
-        '<div><div class="user-card-name">' + escapeHtml(u.fullName || u.email) + '</div>' +
-        '<div class="user-card-email">' + escapeHtml(u.email) + '</div></div>' +
-      '</div>' +
-      '<div class="user-card-meta"><span class="role-pill ' + escapeHtml(u.role) + '">' + escapeHtml(u.isOwner ? 'owner' : u.role) + '</span>' +
-        '<span class="status-pill ' + (u.isActive ? 'active' : 'inactive') + '">' + (u.isActive ? 'Active' : 'Inactive') + '</span>' +
-        '<span class="plants-pill">' + escapeHtml(plantsLabel(u)) + '</span>' +
-        (isLockedAccount(u) ? '<span class="locked-pill" title="No plants or no access granted yet">Locked</span>' : '') + '</div>' +
-      '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
-      accessSummaryHtml(u) +
-      '<div class="user-card-stats">' +
-        '<div><div class="user-card-stat-val">' + (u.correctionsCount || 0) + '</div><div class="user-card-stat-label">Corrections Made</div></div>' +
-        '<div><div class="user-card-stat-val fs-13">' + escapeHtml(u.lastLoginAt ? formatDateIN(localDateOf(u.lastLoginAt)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
-      '</div>' +
-      '<div class="user-card-foot">' +
-        '<span class="fs-11 text-muted">Since ' + escapeHtml(formatDateIN(u.createdAt ? localDateOf(u.createdAt) : null)) + '</span>' +
-        '<div class="user-card-actions">' +
-          // Only the owner changes an admin's account (users_views.py's
-          // _require_owner_for_admin()); other admins see no controls on one.
-          (u.role !== 'admin' || CALLER_IS_OWNER
-            ? '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
-              '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>'
-            : '') +
-          (CURRENT_ADMIN_EMAIL === DELETE_USER_ALLOWED_EMAIL
-            ? '<button type="button" class="icon-btn danger" data-delete="' + u.userId + '">Delete</button>'
-            : '') +
-        '</div>' +
-      '</div>' +
-    '</div>';
-  }).join('') + '</div>';
+  const q = document.getElementById('usersSearch').value.trim().toLowerCase();
+  const sections = USER_SECTIONS
+    .filter(sec => USERS_FILTER === 'all' || USERS_FILTER === sec.key)
+    .map(sec => ({
+      sec,
+      members: USERS.filter(u => sec.test(u) && userMatchesSearch(u, q)).sort((x, y) =>
+        (y.isOwner ? 1 : 0) - (x.isOwner ? 1 : 0) || userSortName(x).localeCompare(userSortName(y))),
+    }))
+    .filter(group => group.members.length);
+  if (!sections.length) {
+    el.innerHTML = '<div class="search-empty">' + emptyStateHtml(q ? 'No account matches that search.' : 'No accounts in this group.') + '</div>';
+    return;
+  }
+  el.innerHTML = sections.map(({ sec, members }) =>
+    '<section class="users-section">' +
+      '<div class="users-section-head"><h4>' + escapeHtml(sec.title) + ' <span class="users-section-count">' + members.length + '</span></h4>' +
+        '<span class="users-section-sub">' + escapeHtml(sec.sub) + '</span></div>' +
+      '<div class="users-grid">' + members.map(userCardHtml).join('') + '</div>' +
+    '</section>'
+  ).join('');
 
   el.querySelectorAll('[data-edit]').forEach(btn => btn.onclick = () => openForm(USERS.find(u => u.userId === Number(btn.dataset.edit))));
   el.querySelectorAll('[data-toggle]').forEach(btn => btn.onclick = () => toggleActive(Number(btn.dataset.toggle)));
   el.querySelectorAll('[data-delete]').forEach(btn => btn.onclick = () => deleteUser(Number(btn.dataset.delete)));
 }
 
+function userCardHtml(u) {
+  const initials = userInitials(u);
+  return '<div class="user-card' + (u.isActive ? '' : ' inactive') + '">' +
+    '<div class="user-card-head">' +
+      '<div class="user-card-avatar avatar-role-' + escapeHtml(u.role) + '">' + escapeHtml(initials) + '</div>' +
+      '<div><div class="user-card-name">' + escapeHtml(u.fullName || u.email) + '</div>' +
+      '<div class="user-card-email">' + escapeHtml(u.email) + '</div></div>' +
+    '</div>' +
+    '<div class="user-card-meta"><span class="role-pill ' + escapeHtml(u.role) + '">' + escapeHtml(u.isOwner ? 'owner' : u.role) + '</span>' +
+      '<span class="status-pill ' + (u.isActive ? 'active' : 'inactive') + '">' + (u.isActive ? 'Active' : 'Inactive') + '</span>' +
+      '<span class="plants-pill">' + escapeHtml(plantsLabel(u)) + '</span>' +
+      (isLockedAccount(u) ? '<span class="locked-pill" title="No plants or no access granted yet">Locked</span>' : '') + '</div>' +
+    '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
+    accessSummaryHtml(u) +
+    '<div class="user-card-stats">' +
+      '<div><div class="user-card-stat-val">' + (u.correctionsCount || 0) + '</div><div class="user-card-stat-label">Corrections Made</div></div>' +
+      '<div><div class="user-card-stat-val fs-13">' + escapeHtml(u.lastLoginAt ? formatDateIN(localDateOf(u.lastLoginAt)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
+    '</div>' +
+    '<div class="user-card-foot">' +
+      '<span class="fs-11 text-muted">Since ' + escapeHtml(formatDateIN(u.createdAt ? localDateOf(u.createdAt) : null)) + '</span>' +
+      '<div class="user-card-actions">' +
+        // Only the owner changes an admin's account (users_views.py's
+        // _require_owner_for_admin()); other admins see no controls on one.
+        (u.role !== 'admin' || CALLER_IS_OWNER
+          ? '<button type="button" class="icon-btn" data-edit="' + u.userId + '">Edit</button>' +
+            '<button type="button" class="icon-btn ' + (u.isActive ? 'danger' : 'go') + '" data-toggle="' + u.userId + '">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button>'
+          : '') +
+        (CURRENT_ADMIN_EMAIL === DELETE_USER_ALLOWED_EMAIL
+          ? '<button type="button" class="icon-btn danger" data-delete="' + u.userId + '">Delete</button>'
+          : '') +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function setUsersFilter(key) {
+  USERS_FILTER = key;
+  document.querySelectorAll('[data-users-filter]').forEach(btn => {
+    const on = btn.dataset.usersFilter === key;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+  renderUsers();
+}
+
 function updateUserCounts() {
   document.getElementById('sidebarUserCount').textContent = String(USERS.length);
+  const counts = { all: USERS.length };
+  USER_SECTIONS.forEach(sec => { counts[sec.key] = USERS.filter(sec.test).length; });
+  document.querySelectorAll('[data-users-count]').forEach(span => {
+    span.textContent = String(counts[span.dataset.usersCount] || 0);
+  });
   document.getElementById('sidebarRoleLine').textContent = 'Admin - full access';
   document.getElementById('sysinfoUserCount').textContent = String(USERS.length);
   document.getElementById('sysinfoActiveCount').textContent = String(USERS.filter(u => u.isActive).length);

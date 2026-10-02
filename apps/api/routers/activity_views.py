@@ -26,7 +26,8 @@ from apps.api.permissions import IsActivityLogOwner
 from apps.api.routers._domestic_base import SafeCsvWriter
 from apps.services import activity_log
 
-PAGE_SIZE = 100
+PAGE_SIZE = 25
+PAGE_SIZES = (25, 50, 100)
 EXPORT_LIMIT = 50_000
 
 
@@ -43,18 +44,25 @@ def page_view(request):
 @permission_classes([IsActivityLogOwner])
 def activity(request):
     """One page of the log, newest first. Filters: ?actor= ?group= ?q=
-    ?since= ?until= (see activity_log.filtered()); ?page= from 1."""
+    ?since= ?until= (see activity_log.filtered()); ?page= from 1; ?pageSize=
+    one of PAGE_SIZES (anything else falls back to PAGE_SIZE)."""
     qs = activity_log.filtered(request.query_params)
     try:
         page = max(1, int(request.query_params.get("page") or 1))
     except ValueError:
         page = 1
+    try:
+        page_size = int(request.query_params.get("pageSize") or PAGE_SIZE)
+    except ValueError:
+        page_size = PAGE_SIZE
+    if page_size not in PAGE_SIZES:
+        page_size = PAGE_SIZE
     total = qs.count()
-    rows = list(qs[(page - 1) * PAGE_SIZE: page * PAGE_SIZE])
+    rows = list(qs[(page - 1) * page_size: page * page_size])
     names = activity_log.user_names(r.actor_id for r in rows)
     return Response({
         "rows": [activity_log.serialize(r, names) for r in rows],
-        "total": total, "page": page, "pageSize": PAGE_SIZE,
+        "total": total, "page": page, "pageSize": page_size,
         "groups": [{"key": k, "label": v[0]} for k, v in activity_log.GROUPS.items()],
     })
 

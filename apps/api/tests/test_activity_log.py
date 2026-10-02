@@ -240,6 +240,20 @@ class TestReadingTheLog:
         assert client.get("/api/activity?group=nonsense").status_code == 400
         assert client.get("/api/activity?since=yesterday").status_code == 400
 
+    def test_pages_are_25_rows_by_default_and_page_size_takes_only_the_offered_sizes(self):
+        PTAuditLog.objects.bulk_create(
+            PTAuditLog(action=PTAuditLog.ACTION_PAGE_VIEW, actor_email="a@ravasco.com", detail=f"v{i}")
+            for i in range(60))
+        client = _client(_owner())
+
+        body = client.get("/api/activity").json()
+        assert (len(body["rows"]), body["pageSize"], body["total"]) == (25, 25, 60)
+        body = client.get("/api/activity?pageSize=50&page=2").json()
+        assert (len(body["rows"]), body["pageSize"]) == (10, 50)
+        # A size the page does not offer falls back to the default, never "all".
+        assert client.get("/api/activity?pageSize=100000").json()["pageSize"] == 25
+        assert client.get("/api/activity?pageSize=abc").json()["pageSize"] == 25
+
     def test_people_counts_the_last_thirty_days(self):
         a, b = self._seed()
         PTAuditLog.objects.create(action=PTAuditLog.ACTION_CHANGE, actor_id=a.pk, actor_email=a.email, detail="old")

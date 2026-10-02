@@ -7,9 +7,11 @@
 // at the top level starts with "act" - all page scripts share one global
 // scope (docs/frontend.md), so a repeated name would silently override.
 //
-// Two parts: the People table (/api/activity/people: last sign-in, last
-// seen, 30-day counts) and the Log (/api/activity, 100 rows a page, newest
-// first, filtered by person / type / dates / free text). A log row opens to
+// Two sub-pages behind the act-subtabs bar, one shown at a time: the Log
+// (/api/activity, newest first, 25 / 50 / 100 rows a page with a numbered
+// pager, split by type tabs and filtered by person / dates / free text) and
+// People (/api/activity/people: last sign-in, last seen, 30-day counts,
+// ACT_PEOPLE_PER_PAGE accounts a page, paged here). A log row opens to
 // show the request it came from - path, IP, browser, time taken and the
 // redacted body that was sent - built with textContent, never innerHTML,
 // because that body is whatever the user typed.
@@ -17,9 +19,13 @@
 let actLoaded = false;
 let actPage = 1;
 let actTotal = 0;
-let actPageSize = 100;
+let actPageSize = 25;
+let actGroupKey = '';
 let actRequestId = 0;
 let actSearchTimer = null;
+let actPeople = [];
+let actPeoplePage = 1;
+const ACT_PEOPLE_PER_PAGE = 15;
 
 const ACT_TYPE_CLASS = {
   login: 'signin', logout: 'signin', sessions_revoked: 'signin', auth_failed: 'failed',
@@ -34,10 +40,13 @@ function openActivityLog() {
   actLoaded = true;
   document.getElementById('actExportBtn').onclick = actExport;
   document.getElementById('actClearBtn').onclick = actClearFilters;
-  document.getElementById('actNewerBtn').onclick = () => actGo(actPage - 1);
-  document.getElementById('actOlderBtn').onclick = () => actGo(actPage + 1);
-  ['actActor', 'actGroup', 'actSince', 'actUntil'].forEach(id => {
+  document.querySelectorAll('[data-act-view]').forEach(btn => btn.addEventListener('click', () => actShowView(btn.dataset.actView)));
+  ['actActor', 'actSince', 'actUntil'].forEach(id => {
     document.getElementById(id).addEventListener('change', () => actGo(1));
+  });
+  document.getElementById('actPageSize').addEventListener('change', e => {
+    actPageSize = Number(e.target.value) || 25;
+    actGo(1);
   });
   document.getElementById('actQ').addEventListener('input', () => {
     clearTimeout(actSearchTimer);
@@ -45,6 +54,75 @@ function openActivityLog() {
   });
   actLoadPeople();
   actGo(1);
+}
+
+/** Shows one sub-page (log / people) and hides the other. */
+function actShowView(view) {
+  document.querySelectorAll('[data-act-view]').forEach(btn => {
+    const on = btn.dataset.actView === view;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', String(on));
+  });
+  document.getElementById('actViewLog').hidden = view !== 'log';
+  document.getElementById('actViewPeople').hidden = view !== 'people';
+}
+
+/** The type tabs over the Log: Everything plus one per server group. */
+function actRenderTypes(groups) {
+  const el = document.getElementById('actTypes');
+  if (el.childElementCount) return;
+  [{ key: '', label: 'Everything' }].concat(groups).forEach(g => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'act-type' + (g.key === actGroupKey ? ' active' : '');
+    btn.dataset.actType = g.key;
+    btn.setAttribute('aria-pressed', String(g.key === actGroupKey));
+    btn.textContent = g.label;
+    btn.addEventListener('click', () => actSetGroup(g.key));
+    el.appendChild(btn);
+  });
+}
+
+function actSetGroup(key) {
+  actGroupKey = key;
+  document.querySelectorAll('[data-act-type]').forEach(btn => {
+    const on = btn.dataset.actType === key;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+  actGo(1);
+}
+
+/** Numbered pager: first, last, and two either side of the current page,
+ * with gaps shown as an ellipsis. `go` is called with the page picked. */
+function actRenderPager(el, page, pages, go) {
+  el.innerHTML = '';
+  if (pages <= 1) return;
+  const wanted = new Set([1, pages]);
+  for (let p = page - 2; p <= page + 2; p++) if (p >= 1 && p <= pages) wanted.add(p);
+  const list = [...wanted].sort((a, b) => a - b);
+  const add = (label, target, opts) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'act-page-btn' + (opts && opts.current ? ' active' : '');
+    btn.textContent = label;
+    if (opts && opts.aria) btn.setAttribute('aria-label', opts.aria);
+    if (opts && opts.current) btn.setAttribute('aria-current', 'page');
+    btn.disabled = !!(opts && opts.disabled);
+    if (!btn.disabled && !(opts && opts.current)) btn.addEventListener('click', () => go(target));
+    el.appendChild(btn);
+  };
+  add('\u2190', page - 1, { disabled: page <= 1, aria: 'Previous page' });
+  list.forEach((p, i) => {
+    if (i && p - list[i - 1] > 1) {
+      const gap = document.createElement('span');
+      gap.className = 'act-page-gap';
+      gap.textContent = '...';
+      el.appendChild(gap);
+    }
+    add(String(p), p, { current: p === page, aria: 'Page ' + p });
+  });
+  add('\u2192', page + 1, { disabled: page >= pages, aria: 'Next page' });
 }
 
 function actWhen(iso) {
@@ -66,17 +144,18 @@ function actAgo(iso) {
 
 function actFilters() {
   const params = new URLSearchParams();
-  const pairs = { actor: 'actActor', group: 'actGroup', since: 'actSince', until: 'actUntil', q: 'actQ' };
+  const pairs = { actor: 'actActor', since: 'actSince', until: 'actUntil', q: 'actQ' };
   Object.keys(pairs).forEach(key => {
     const value = document.getElementById(pairs[key]).value.trim();
     if (value) params.set(key, value);
   });
+  if (actGroupKey) params.set('group', actGroupKey);
   return params;
 }
 
 function actClearFilters() {
-  ['actActor', 'actGroup', 'actSince', 'actUntil', 'actQ'].forEach(id => { document.getElementById(id).value = ''; });
-  actGo(1);
+  ['actActor', 'actSince', 'actUntil', 'actQ'].forEach(id => { document.getElementById(id).value = ''; });
+  actSetGroup('');
 }
 
 function actExport() {
@@ -120,6 +199,15 @@ async function actLoadPeople() {
   document.getElementById('actPeopleNote').textContent = trackingSince
     ? 'Changes, downloads and page visits are counted from ' + actWhen(trackingSince) + ', when the log started.'
     : 'Changes, downloads and page visits are counted from when the log started.';
+  actPeople = people;
+  actRenderPeoplePage(1);
+}
+
+function actRenderPeoplePage(page) {
+  const area = document.getElementById('actPeopleArea');
+  const pages = Math.max(1, Math.ceil(actPeople.length / ACT_PEOPLE_PER_PAGE));
+  actPeoplePage = Math.min(Math.max(1, page), pages);
+  const people = actPeople.slice((actPeoplePage - 1) * ACT_PEOPLE_PER_PAGE, actPeoplePage * ACT_PEOPLE_PER_PAGE);
   const head = '<tr><th>Person</th><th>Role</th>' +
     '<th title="The latest of: any use of the app, the activity log, and saved work">Last active</th>' +
     '<th title="The newest MIR, voucher, upload, correction or other saved change - reaches back before the log">Last saved work</th>' +
@@ -145,9 +233,10 @@ async function actLoadPeople() {
   area.innerHTML = '<table class="admin-activity-table act-table"><thead>' + head + '</thead><tbody>' + body + '</tbody></table>';
   area.querySelectorAll('[data-act-person]').forEach(btn => btn.addEventListener('click', () => {
     document.getElementById('actActor').value = btn.dataset.actPerson;
+    actShowView('log');
     actGo(1);
-    document.getElementById('actLogArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
   }));
+  actRenderPager(document.getElementById('actPeoplePager'), actPeoplePage, pages, actRenderPeoplePage);
 }
 
 // ── Log ──────────────────────────────────────────────────────────
@@ -157,6 +246,7 @@ async function actGo(page) {
   const requestId = ++actRequestId;
   const params = actFilters();
   params.set('page', String(page));
+  params.set('pageSize', String(actPageSize));
   const area = document.getElementById('actLogArea');
   const summary = document.getElementById('actSummary');
   summary.textContent = 'Loading...';
@@ -179,22 +269,15 @@ async function actGo(page) {
   actPage = data.page;
   actTotal = data.total;
   actPageSize = data.pageSize || actPageSize;
-  const groupSelect = document.getElementById('actGroup');
-  if (groupSelect.options.length <= 1) {
-    (data.groups || []).forEach(g => {
-      const opt = document.createElement('option');
-      opt.value = g.key;
-      opt.textContent = g.label;
-      groupSelect.appendChild(opt);
-    });
-  }
+  actRenderTypes(data.groups || []);
   actRenderRows(data.rows || []);
   const first = actTotal ? (actPage - 1) * actPageSize + 1 : 0;
   const last = Math.min(actPage * actPageSize, actTotal);
   summary.textContent = actTotal ? (first + '-' + last + ' of ' + actTotal.toLocaleString('en-IN') + ' entries') : 'No activity matches.';
-  document.getElementById('actPageInfo').textContent = actTotal ? 'Page ' + actPage + ' of ' + Math.max(1, Math.ceil(actTotal / actPageSize)) : '';
-  document.getElementById('actNewerBtn').disabled = actPage <= 1;
-  document.getElementById('actOlderBtn').disabled = last >= actTotal;
+  actRenderPager(document.getElementById('actPager'), actPage, Math.max(1, Math.ceil(actTotal / actPageSize)), p => {
+    actGo(p);
+    document.getElementById('actViewLog').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
 }
 
 function actResult(row) {

@@ -1517,7 +1517,11 @@ via `switchAdminTab()`, which calls `activity-log.js`'s `openActivityLog()` when
 opens. Loads in parallel: `loadSyncCards()` (GET `<prefix>/sync-status` per plant,
 labels "PO Updated"/"MIR"/"RM"/"Matching"), `loadUsers()` (GET `/api/auth/users`), `loadOverviewData()`
 (GET `/api/auth/admin-overview`; Top Correctors / Top Vendors via `renderBarList()` with widths set
-from JS, `renderRecentActivity()`), and `loadKpis()`. User form: `openForm()` (calls `openModalA11y()`
+from JS, `renderRecentActivity()`), and `loadKpis()`. **Users tab** (`renderUsers()`): cards in
+sections from `USER_SECTIONS` - Admins (active admins, the owner first), Users (active non-admins),
+Inactive (either role) - each sorted by name, with a count per section; `#usersSearch` (name, email,
+designation) and the All / Admins / Users / Inactive buttons (`setUsersFilter()`, counts filled by
+`updateUserCounts()`) only narrow what is drawn. One card is `userCardHtml()`. User form: `openForm()` (calls `openModalA11y()`
 then focuses Full Name), `closeForm()`, `submitForm()` (password >= 10, optional on edit; `plants` and
 `permissions` forced to `[]` for admins and both rows hidden), plants and permissions as toggle tiles
 (`.uf-tile`: a real checkbox inside a label, styled from `:checked` in admin-page.css; the modal is
@@ -1544,16 +1548,22 @@ nothing is fetched until `openActivityLog()` runs on the tab's first open. The s
 private to one account, and the server answers 404 to anyone else regardless. Every top-level name starts
 with `act` / `ACT_` (one global scope with `auth.js`, `shared.js`, `admin-page.js`).
 
+Two sub-pages behind `.act-subtabs` (`actShowView('log' | 'people')`), shown one at a time so neither
+table sits under the other; Log is the default.
+
 - `actLoadPeople()` - GET `/api/activity/people`: the People table - Last active (`lastActive`, via
   `actAgo()`), Last saved work (`lastWork` and what it was), Last full sign-in, 30-day counts,
   refused sign-ins in red - with header tooltips saying what each means, `#actPeopleNote` naming
   `trackingSince` (counts before it are not zero activity, just unrecorded), and the Person filter's
-  options. A name is a
-  button that filters the log to that person.
+  options. Drawn `ACT_PEOPLE_PER_PAGE` (15) accounts a page by `actRenderPeoplePage()`. A name is a
+  button that filters the log to that person and switches to the Log sub-page.
 - `actGo(page)` - GET `/api/activity` with `actFilters()` (person, type, from, to, search; the search
-  box debounced 300 ms). `actRequestId` drops a reply that a newer filter change has overtaken. Fills
-  the type select from the response's `groups` once, the "1-100 of N" summary and the Newer / Older
-  pager.
+  box debounced 300 ms) and `pageSize` from `#actPageSize` (25 / 50 / 100, the server's
+  `PAGE_SIZES`). `actRequestId` drops a reply that a newer filter change has overtaken. Builds the type
+  tabs (`actRenderTypes()`: Everything plus the response's `groups`, once; `actSetGroup()` picks one),
+  the "1-25 of N" summary and the numbered pager.
+- `actRenderPager(el, page, pages, go)` - the numbered pager both sub-pages use: previous / next,
+  first, last and two pages either side of the current one, gaps as "...", nothing for one page.
 - `actRenderRows()` / `actToggleDetail()` - the log table; a row (click, Enter or Space) opens a detail
   row with the request, IP, browser, duration and the redacted body as pretty JSON. **The detail is
   built with `textContent`, never `innerHTML`** - the body is whatever the user typed.

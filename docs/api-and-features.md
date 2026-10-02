@@ -124,7 +124,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
 | POST | `activity/page-view` | `activity_views.page_view` | Auth (any signed-in account), own visits only | Body `{"page"}` (an `auth.js` nav key); 202 `{"recorded"}`, false for a repeat within 5 minutes; 400 for an unknown page |
-| GET | `activity?actor=&group=&q=&since=&until=&page=` | `activity_views.activity` | Owner only (`IsActivityLogOwner`), 404 for anyone else, every plant on purpose | 100 log rows a page, newest first, plus `total` and the type `groups` |
+| GET | `activity?actor=&group=&q=&since=&until=&page=&pageSize=` | `activity_views.activity` | Owner only (`IsActivityLogOwner`), 404 for anyone else, every plant on purpose | One page of log rows, newest first (`pageSize` 25 / 50 / 100, default 25), plus `total`, `pageSize` and the type `groups` |
 | GET | `activity/people` | `activity_views.activity_people` | Owner only (`IsActivityLogOwner`), 404 for anyone else | Every account: `lastActive`, `lastWork` / `lastWorkWhat`, `lastLogin`, `lastSeen`, 30-day sign-ins / changes / downloads / page visits / refused sign-ins; plus `trackingSince` |
 | GET | `activity/export?...` | `activity_views.activity_export` | Owner only (`IsActivityLogOwner`), 404 for anyone else | The filtered log as CSV (`SafeCsvWriter`, at most 50,000 rows) |
 | GET | `auth/users` | `users_views.list_users` | IsAdmin | All users with `correctionsCount`, `permissions`, `isOwner`; plus `permissionCatalog` and `callerIsOwner` |
@@ -1277,8 +1277,9 @@ Opening Stock, Received, Issued, Today's Stock, Rate, Value, Lot Currently Activ
 ### Activity log (2026-10-01)
 
 Project owner: "keep track of users, how's their activity, what are changing or interacting with the
-dashboard". It is shown in admin.html's **Activity Log** tab: a People table (last sign-in, last
-active, 30-day counts) and a filterable, paged log whose rows open to show the request behind them.
+dashboard". It is shown in admin.html's **Activity Log** tab as two sub-pages, one at a time: the Log (type
+tabs, filters, 25 rows a page by default with a numbered pager; rows open to show the request behind
+them) and People (last sign-in, last active, 30-day counts, 15 accounts a page).
 
 **Private to one account** (owner, same day: "I need the activity log only for me and private").
 `settings.ACTIVITY_LOG_OWNER_EMAIL` (env `ACTIVITY_LOG_OWNER_EMAIL`, default
@@ -1521,7 +1522,8 @@ tallies the three correction tables; `_top_correctors()` / `_top_vendors()` (top
 The four `activity/...` endpoints ([Activity log](#activity-log-2026-10-01)); gates, parses and
 serializes only. `page_view` (`IsAuthenticated`, written down so the permission guard sees the
 decision) credits the visit to `request.user`, never to anything in the body. `activity` pages with
-`PAGE_SIZE = 100`; `activity_export` caps at `EXPORT_LIMIT = 50_000` rows and names the file
+`?pageSize=`, which must be one of `PAGE_SIZES = (25, 50, 100)` - anything else, garbage included,
+falls back to `PAGE_SIZE = 25`, so no request can ask for the whole log at once; `activity_export` caps at `EXPORT_LIMIT = 50_000` rows and names the file
 `activity-log-<date>.csv`. The read endpoints are `IsActivityLogOwner` (404 for every other
 account) and read every plant: the log is about people, not plant data, so there is no plant scoping. A bad filter (`group`, `actor`, a date) is a
 `ValueError`, so a 400 with its message.
