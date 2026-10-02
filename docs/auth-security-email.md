@@ -834,7 +834,7 @@ and the refresh serializer.
 - `is_allowed_email_domain(email)` - the part after the last `@` must equal one of
   `ALLOWED_EMAIL_DOMAINS` (case-insensitive), with a non-empty local part. `allowed_domains_text()`
   renders "@ravasco.com or @hindustanrubbers.com" for refusal messages.
-- `PLANT_KEYS`, `Perm`, `PERMISSIONS` (key, group, label - what the Admin Panel lists),
+- `PLANT_KEYS`, `Perm`, `PERMISSIONS` (key, group, label, hint - what the Admin Panel lists),
   `ALL_PERMISSIONS`, `ORDER_VIEWS`, `STOCK_VIEWS`.
 - `is_admin(user)`, `is_owner(user)` (an active admin whose email is `OWNER_EMAIL`), `granted(user)`
   (every permission for an admin, none for an inactive account), `has_perm(user, *perms)`.

@@ -103,14 +103,52 @@
 .sync-item { font-size: 12.5px; color: var(--text-muted); }
 .sync-item b { color: var(--text); font-weight: 700; }
 .sync-item.failed { color: var(--red); }
-.uf-plants { display: flex; gap: 14px; flex-wrap: wrap; }
-.uf-plants label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: normal; color: var(--text); cursor: pointer; }
-.uf-perms { display: grid; gap: 10px; }
-.uf-perms-group { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.uf-perms-group-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); min-width: 44px; }
-.uf-perms label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: normal; color: var(--text); cursor: pointer; }
+/* ── User form: plants and permissions as toggle tiles (2026-10-02) ──
+   A tile is a <label> around a real checkbox; it turns blue when ticked. */
+.uf-modal.uf-modal-wide { max-width: 640px; }
+.uf-plants { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.uf-perms { display: grid; gap: 14px; }
+.uf-tile-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.uf-tile { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--bg-card); cursor: pointer; font-weight: normal;
+  transition: border-color .12s ease, background .12s ease; }
+.uf-tile:hover { border-color: var(--border-mid); background: var(--bg-section); }
+.uf-tile input { margin: 2px 0 0; flex: none; accent-color: var(--blue); width: 15px; height: 15px; }
+.uf-tile:has(input:checked) { border-color: var(--blue-border); background: var(--blue-pale); }
+.uf-tile:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: 1px; }
+.uf-tile-text { display: grid; gap: 2px; }
+.uf-tile-title { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.3; }
+.uf-tile-hint { font-size: 11.5px; color: var(--text-muted); line-height: 1.35; }
+.uf-perm-group { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px 14px;
+  display: grid; grid-template-columns: 1fr auto; gap: 10px 12px; align-items: center; }
+.uf-perm-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.uf-perm-name { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--navy); }
+.uf-perm-title { font-size: 12px; color: var(--text-muted); }
+.uf-perm-tools { display: flex; align-items: center; gap: 10px; justify-self: end; }
+.uf-perm-count { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.uf-perm-link { background: none; border: 0; padding: 0; font: inherit; font-size: 11.5px; font-weight: 600; color: var(--blue); cursor: pointer; }
+.uf-perm-link:hover { text-decoration: underline; }
+.uf-perm-group .uf-tile-grid { grid-column: 1 / -1; }
+@media (max-width: 560px) {
+  .uf-plants, .uf-tile-grid { grid-template-columns: 1fr; }
+  .uf-perm-group { grid-template-columns: 1fr; }
+  .uf-perm-tools { justify-self: start; }
+}
+
+/* User card access block: a row of chips per group. */
+.user-access { display: grid; gap: 6px; margin-bottom: 14px; justify-items: start; }
+.user-access-row { display: grid; grid-template-columns: 44px 1fr; gap: 8px; align-items: start; justify-self: stretch; }
+.user-access-group { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); padding-top: 4px; }
+.user-access-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.user-access-empty { font-size: 11.5px; color: var(--text-muted); padding-top: 2px; }
+.user-access-none { font-size: 12px; color: var(--red); }
+.access-chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.5;
+  border: 1px solid var(--border); background: var(--bg-section); color: var(--text); }
+.access-chip-view { background: var(--blue-pale); border-color: var(--blue-border); color: var(--blue); }
+.access-chip-work { background: var(--green-pale); border-color: var(--green-border); color: var(--green); }
+.access-chip-all { background: var(--gold-pale); border-color: var(--gold-border); color: var(--gold-text); }
 .locked-pill { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--red); background: var(--red-pale); border-radius: 6px; padding: 2px 8px; margin-left: 6px; }
-.plants-pill { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--text-muted); background: var(--bg-soft, #f1f5f9); border-radius: 6px; padding: 2px 8px; margin-left: 6px; }
+.plants-pill { display: inline-block; font-size: 10.5px; font-weight: 700; color: var(--text-muted); background: var(--bg-section); border-radius: 6px; padding: 2px 8px; margin-left: 6px; }
 .device-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; }
 .device-row-name { font-size: 12.5px; font-weight: 700; color: var(--text); }
 .device-row-meta { font-size: 11px; color: var(--text-muted); margin-top: 2px; }

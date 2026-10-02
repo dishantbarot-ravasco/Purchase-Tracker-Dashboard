@@ -200,6 +200,11 @@ class TestOwnerAloneManagesAdmins:
         assert _client(self.owner).patch(
             f"/api/auth/users/{self.other_admin.user_id}", {"fullName": "Second"}, format="json").status_code == 200
 
+    def test_the_panel_catalogue_names_and_explains_every_permission(self):
+        catalog = _client(self.other_admin).get("/api/auth/users").json()["permissionCatalog"]
+        assert [p["key"] for p in catalog] == list(ALL_PERMISSIONS)
+        assert all(p["label"] and p["hint"] and p["group"] in ("View", "Work") for p in catalog)
+
     def test_an_unknown_permission_is_refused(self):
         res = _client(self.owner).patch(f"/api/auth/users/{self.user.user_id}", {"permissions": ["fly"]}, format="json")
         assert res.status_code == 400

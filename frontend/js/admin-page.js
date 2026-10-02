@@ -243,7 +243,7 @@ function renderUsers() {
         '<span class="plants-pill">' + escapeHtml(plantsLabel(u)) + '</span>' +
         (isLockedAccount(u) ? '<span class="locked-pill" title="No plants or no access granted yet">Locked</span>' : '') + '</div>' +
       '<div class="user-card-desig">' + escapeHtml(u.designation || '') + '</div>' +
-      '<div class="user-card-desig">' + escapeHtml(accessLabel(u)) + '</div>' +
+      accessSummaryHtml(u) +
       '<div class="user-card-stats">' +
         '<div><div class="user-card-stat-val">' + (u.correctionsCount || 0) + '</div><div class="user-card-stat-label">Corrections Made</div></div>' +
         '<div><div class="user-card-stat-val fs-13">' + escapeHtml(u.lastLoginAt ? formatDateIN(localDateOf(u.lastLoginAt)) : 'Never') + '</div><div class="user-card-stat-label">Last Login</div></div>' +
@@ -283,11 +283,25 @@ function plantsLabel(u) {
   return u.plants.map(k => (PLANTS[k] || { label: k }).label).join(', ');
 }
 
-/** "Inventory, MIR entry" - what a user account was granted. */
-function accessLabel(u) {
-  if (u.role === 'admin') return 'Every page and action';
-  const labels = PERMISSION_CATALOG.filter(p => (u.permissions || []).includes(p.key)).map(p => p.label);
-  return labels.length ? labels.join(', ') : 'No access granted yet';
+/** The card's access block: one row per group (View / Work) of chips for
+ * what the account holds, "Every page and action" for an admin, and a
+ * plain note for a locked account. */
+function accessSummaryHtml(u) {
+  if (u.role === 'admin') {
+    return '<div class="user-access"><span class="access-chip access-chip-all">Every page and action</span></div>';
+  }
+  const held = PERMISSION_CATALOG.filter(p => (u.permissions || []).includes(p.key));
+  if (!held.length) return '<div class="user-access user-access-none">No access granted yet</div>';
+  const groups = [...new Set(PERMISSION_CATALOG.map(p => p.group))];
+  return '<div class="user-access">' + groups.map(g => {
+    const chips = held.filter(p => p.group === g);
+    return '<div class="user-access-row"><span class="user-access-group">' + escapeHtml(g) + '</span>' +
+      '<div class="user-access-chips">' + (chips.length
+        ? chips.map(p => '<span class="access-chip access-chip-' + escapeHtml(g.toLowerCase()) + '" title="' +
+            escapeHtml(p.hint || '') + '">' + escapeHtml(p.label) + '</span>').join('')
+        : '<span class="user-access-empty">None</span>') +
+      '</div></div>';
+  }).join('') + '</div>';
 }
 
 function userInitials(u) {
@@ -300,11 +314,15 @@ function userInitials(u) {
 }
 
 // ── Users: create/edit form ─────────────────────────────────────
+// Plants and permissions are both "toggle tiles": a real checkbox inside a
+// label, so keyboard, screen readers and readPlantsCheckboxes() work as a
+// plain checkbox list would; admin-page.css styles the tile from :checked.
 function renderPlantsCheckboxes(selected) {
   const el = document.getElementById('uf-plants');
   const sel = selected || [];
   el.innerHTML = PLANT_KEYS.map(key =>
-    '<label><input type="checkbox" value="' + key + '"' + (sel.includes(key) ? ' checked' : '') + '> ' + escapeHtml(PLANTS[key].label) + '</label>'
+    '<label class="uf-tile"><input type="checkbox" value="' + key + '"' + (sel.includes(key) ? ' checked' : '') + '>' +
+    '<span class="uf-tile-text"><span class="uf-tile-title">' + escapeHtml(PLANTS[key].label) + '</span></span></label>'
   ).join('');
 }
 
@@ -314,15 +332,36 @@ function readPlantsCheckboxes() {
 
 // The permissions checklist, grouped View / Work, from the server's own
 // catalogue (apps/api/permissions.py's PERMISSIONS) so the two never drift.
+const PERM_GROUP_TITLES = { View: 'What they can see', Work: 'What they can do' };
+
 function renderPermissionCheckboxes(selected) {
   const sel = selected || [];
   const groups = [...new Set(PERMISSION_CATALOG.map(p => p.group))];
-  document.getElementById('uf-perms').innerHTML = groups.map(g =>
-    '<div class="uf-perms-group"><span class="uf-perms-group-label">' + escapeHtml(g) + '</span>' +
-    PERMISSION_CATALOG.filter(p => p.group === g).map(p =>
-      '<label><input type="checkbox" value="' + escapeHtml(p.key) + '"' + (sel.includes(p.key) ? ' checked' : '') + '> ' + escapeHtml(p.label) + '</label>'
-    ).join('') + '</div>'
+  const el = document.getElementById('uf-perms');
+  el.innerHTML = groups.map(g =>
+    '<div class="uf-perm-group" role="group" aria-labelledby="uf-perm-' + escapeHtml(g) + '">' +
+      '<div class="uf-perm-head" id="uf-perm-' + escapeHtml(g) + '"><span class="uf-perm-name">' + escapeHtml(g) + '</span>' +
+        '<span class="uf-perm-title">' + escapeHtml(PERM_GROUP_TITLES[g] || '') + '</span></div>' +
+      '<div class="uf-perm-tools"><span class="uf-perm-count" data-count></span>' +
+        '<button type="button" class="uf-perm-link" data-all>Select all</button>' +
+        '<button type="button" class="uf-perm-link" data-none>Clear</button></div>' +
+      '<div class="uf-tile-grid">' + PERMISSION_CATALOG.filter(p => p.group === g).map(p =>
+        '<label class="uf-tile"><input type="checkbox" value="' + escapeHtml(p.key) + '"' + (sel.includes(p.key) ? ' checked' : '') + '>' +
+        '<span class="uf-tile-text"><span class="uf-tile-title">' + escapeHtml(p.label) + '</span>' +
+        '<span class="uf-tile-hint">' + escapeHtml(p.hint || '') + '</span></span></label>'
+      ).join('') + '</div>' +
+    '</div>'
   ).join('');
+  el.querySelectorAll('.uf-perm-group').forEach(group => {
+    const boxes = Array.from(group.querySelectorAll('input[type="checkbox"]'));
+    const count = () => {
+      group.querySelector('[data-count]').textContent = boxes.filter(b => b.checked).length + ' of ' + boxes.length;
+    };
+    group.querySelector('[data-all]').onclick = () => { boxes.forEach(b => { b.checked = true; }); count(); };
+    group.querySelector('[data-none]').onclick = () => { boxes.forEach(b => { b.checked = false; }); count(); };
+    boxes.forEach(b => b.addEventListener('change', count));
+    count();
+  });
 }
 
 function readPermissionCheckboxes() {

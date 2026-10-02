@@ -1518,12 +1518,15 @@ labels "PO Updated"/"MIR"/"RM"/"Matching"), `loadUsers()` (GET `/api/auth/users`
 (GET `/api/auth/admin-overview`; Top Correctors / Top Vendors via `renderBarList()` with widths set
 from JS, `renderRecentActivity()`), and `loadKpis()`. User form: `openForm()` (calls `openModalA11y()`
 then focuses Full Name), `closeForm()`, `submitForm()` (password >= 10, optional on edit; `plants` and
-`permissions` forced to `[]` for admins and both rows hidden), the permissions checklist
-(`renderPermissionCheckboxes()` / `readPermissionCheckboxes()`, grouped View / Work from the server's
-`permissionCatalog`), the Admin role option disabled unless `CALLER_IS_OWNER` (with `#uf-role-hint`), and
+`permissions` forced to `[]` for admins and both rows hidden), plants and permissions as toggle tiles
+(`.uf-tile`: a real checkbox inside a label, styled from `:checked` in admin-page.css; the modal is
+`.uf-modal-wide`) - `renderPermissionCheckboxes()` / `readPermissionCheckboxes()` build one group panel
+per View / Work from the server's `permissionCatalog` (label and one-line `hint` per permission), each
+with an "n of m" count, Select all and Clear, the Admin role option disabled unless `CALLER_IS_OWNER` (with `#uf-role-hint`), and
 no Edit / Deactivate on an admin's card for anyone but the owner. Cards show the role (`owner` for the
 owner), plants (`All plants` for an admin, `No plants` when empty), a `Locked` pill and the granted
-pages (`accessLabel()`). `createUserApi()` (POST
+pages as chips per group (`accessSummaryHtml()`: blue View chips, green Work chips, gold "Every page and
+action" for an admin, "No access granted yet" for a locked account). `createUserApi()` (POST
 `/api/auth/users/create`), `patchUser()` (PATCH `/api/auth/users/<id>`), `toggleActive()`,
 `deleteUser()` (DELETE `/api/auth/users/<id>`, button only for `DELETE_USER_ALLOWED_EMAIL`),
 `loadDevices()` / `renderDevices()` / `revokeDevice()` (GET and DELETE

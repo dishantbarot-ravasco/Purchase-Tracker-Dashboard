@@ -189,7 +189,7 @@ def list_users(request):
         "users": [_user_out(u, corrections_by_email) for u in users],
         # What the panel's checklist offers, and whether the caller may touch
         # admin accounts at all.
-        "permissionCatalog": [{"key": k, "group": g, "label": label} for k, g, label in PERMISSIONS],
+        "permissionCatalog": [{"key": k, "group": g, "label": label, "hint": hint} for k, g, label, hint in PERMISSIONS],
         "callerIsOwner": is_owner(request.user),
     })
 

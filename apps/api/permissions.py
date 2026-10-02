@@ -61,19 +61,19 @@ class Perm:
     EDIT_FIELDS = "edit_fields"              # inline corrections, MIR pins, flag and match dismissals
 
 
-# Order and labels as the Admin Panel lists them.
+# Order, group, label and one-line hint as the Admin Panel lists them.
 PERMISSIONS = (
-    (Perm.VIEW_DASHBOARD, "View", "PO Dashboard"),
-    (Perm.VIEW_INVENTORY, "View", "Inventory"),
-    (Perm.VIEW_ON_ORDER, "View", "On Order"),
-    (Perm.VIEW_STOCK_ORDERS, "View", "Stock & Orders"),
-    (Perm.PO_UPLOAD, "Work", "PO upload"),
-    (Perm.MIR_ENTRY, "Work", "MIR entry"),
-    (Perm.IMPORT_DOCS, "Work", "Import docs"),
-    (Perm.RM_STORE, "Work", "RM store"),
-    (Perm.EDIT_FIELDS, "Work", "Edit fields"),
+    (Perm.VIEW_DASHBOARD, "View", "PO Dashboard", "Purchase Orders, Import Purchases, Search PO and licences"),
+    (Perm.VIEW_INVENTORY, "View", "Inventory", "Stock held in the store at each plant"),
+    (Perm.VIEW_ON_ORDER, "View", "On Order", "Open orders, and what to reorder soon"),
+    (Perm.VIEW_STOCK_ORDERS, "View", "Stock & Orders", "Stock held and orders coming, together"),
+    (Perm.PO_UPLOAD, "Work", "PO upload", "Upload PO copies; close, reopen or confirm PO lines"),
+    (Perm.MIR_ENTRY, "Work", "MIR entry", "Enter MIRs and attach the vendor's invoice"),
+    (Perm.IMPORT_DOCS, "Work", "Import docs", "Upload Bill of Entry, Advance License and RoDTEP files"),
+    (Perm.RM_STORE, "Work", "RM store", "Issue, return and count stock in the RM store"),
+    (Perm.EDIT_FIELDS, "Work", "Edit fields", "Correct data, pin MIRs, dismiss flags and matches"),
 )
-ALL_PERMISSIONS = tuple(p for p, _, _ in PERMISSIONS)
+ALL_PERMISSIONS = tuple(p for p, *_ in PERMISSIONS)
 
 # The three plant stock tabs read the same stock and order data.
 STOCK_VIEWS = (Perm.VIEW_INVENTORY, Perm.VIEW_ON_ORDER, Perm.VIEW_STOCK_ORDERS)
