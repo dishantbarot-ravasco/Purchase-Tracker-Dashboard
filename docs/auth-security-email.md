@@ -918,8 +918,12 @@ registered in Google Cloud Console) and `auth/google/session-token`.
 outside `create_pt_user` (2026-10-02). Admins never set or reset a working password:
 `users_views.update_user()` refuses a `password` field with a 400. Every path checks the new password
 before spending the code (`verify_otp()` uses it up): present, equal to `confirmPassword`,
-`_validate_password_strength()`, and not the current password. Every success emails the holder a notice
-(`password_service.notify_password_changed()`).
+`_validate_password_strength()`. It must also not be the current password, but **that is said only
+after the code checks out** (`_new_password()` returns the comparison; the caller answers
+`_SAME_AS_CURRENT` after `verify_otp()`, so that code is spent and a new one is needed). Said before
+the code, the public reset form was a password oracle: a guess posted with a junk code read back
+"different from the current one" when right, with no lockout (`test_a_wrong_code_says_nothing_about_whether_a_guess_is_the_password`).
+Every success emails the holder a notice (`password_service.notify_password_changed()`).
 
 Signed in - "Change password" in the account menu:
 

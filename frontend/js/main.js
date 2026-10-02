@@ -453,11 +453,6 @@ async function init() {
         '<button type="button" id="refreshDataBtn" class="refresh-btn">Refresh Data</button>' +
       '</div>' +
     '</div>' +
-    matchingDisclaimerHtml(
-      'PO↔MIR matches are found automatically. Check one before you act on it.',
-      '<p>A PO line item is linked to a MIR entry either by an exact PO-number match, or by a weighted score across vendor, material, quantity, rate and value. The confidence badge on each line item tells you which.</p>' +
-      '<p><strong>Least likely to be right:</strong> anything below <em>high</em> confidence, and anything carrying a qty or rate flag. Verify those by hand before using them in a reconciliation decision.</p>'
-    ) +
     '<div class="view-tabs" id="viewTabs" role="tablist"></div>' +
     '<div class="plant-tabs" id="plantTabs" role="tablist"></div>' +
     '<div class="sub-tabs" id="purchaseTypeTabs" role="tablist"></div>' +

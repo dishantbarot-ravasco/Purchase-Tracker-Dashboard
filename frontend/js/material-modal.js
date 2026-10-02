@@ -387,11 +387,6 @@ async function openMaterialModal(compositeKey) {
     '<div class="modal-head"><div><h2>' + escapeHtml(anchor.description || anchor.materialCode) + '</h2>' +
     '<div class="modal-meta">' + escapeHtml(category || 'Uncategorized') + ' &middot; ' + siblingLots.length + ' stock lot' + (siblingLots.length === 1 ? '' : 's') + ' across ' + plantCount + ' plant' + (plantCount === 1 ? '' : 's') + '</div></div>' +
     '<span class="close-btn">&times;</span></div>' +
-    matchingDisclaimerHtml(
-      'Purchase Activity, Price Trend, Vendors and "Also known as" are matched automatically.',
-      '<p>These four tie this material to PO line items by description, and by vendor where it is known. That is not guaranteed-correct identity resolution - a similarly worded material can be pulled in, and a differently worded one missed.</p>' +
-      '<p>Verify manually before treating anything here as ground truth.</p>'
-    ) +
     '<div class="modal-tabs" id="matModalTabs" role="tablist">' +
       '<div class="modal-tab active" data-tab="overview" tabindex="0" role="tab" aria-selected="true">Overview</div>' +
       '<div class="modal-tab" data-tab="stockplant" tabindex="0" role="tab" aria-selected="false">Stock by Plant</div>' +

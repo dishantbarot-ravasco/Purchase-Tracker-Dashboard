@@ -70,6 +70,10 @@ function stQty(s, uom) {
   if (s === null || s === undefined || s === '') return '-';
   return Number(s).toLocaleString('en-IN', { maximumFractionDigits: 3 }) + (uom ? ' ' + uom : '');
 }
+// stQty() for markup: the unit is free text from the MIR / PO line.
+function stQtyHtml(s, uom) {
+  return escapeHtml(stQty(s, uom));
+}
 function stMoney(s) {
   if (s === null || s === undefined || s === '') return '-';
   return Number(s).toLocaleString('en-IN', { style: 'currency', currency: 'INR', minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -156,7 +160,7 @@ function stConverted(r) { return !!r.mirUom && r.mirUom !== r.uom && Number(r.fa
 
 // "2,000" plus "(2 MT)" when the MIR had it in another unit.
 function stInMirUnit(qty, r) {
-  return stConverted(r) && Number(qty) ? ' <span class="mir-muted">(' + stQty(String(Number(qty) / Number(r.factor)), r.mirUom) + ')</span>' : '';
+  return stConverted(r) && Number(qty) ? ' <span class="mir-muted">(' + stQtyHtml(String(Number(qty) / Number(r.factor)), r.mirUom) + ')</span>' : '';
 }
 
 // ── View tabs ─────────────────────────────────────────────────────────────
@@ -441,7 +445,7 @@ function stIssueForm() {
       if (!box) return;
       const after = pl.qty !== null && !p.errors.some(e => e.field === 'lines.' + pl.index + '.qty') ? Number(ln.r.balance) - Number(pl.qty) : null;
       box.innerHTML = (pl.value !== null ? '<div class="mir-line-figures">Value <b>' + stMoney(pl.value) + '</b>' +
-        (after !== null ? ' &middot; <b>' + stQty(String(after), ln.r.uom) + '</b> left in this MIR after it' : '') + '</div>' : '');
+        (after !== null ? ' &middot; <b>' + stQtyHtml(String(after), ln.r.uom) + '</b> left in this MIR after it' : '') + '</div>' : '');
     }),
     progress: p => stIssueProgress(ctl, p),
     plantSet: () => stIssueDepartments(ctl),
@@ -494,7 +498,7 @@ function stIssueRender(ctl) {
   document.getElementById('isStep3').hidden = !ctl.lines.length;
   area.innerHTML = ctl.lines.map((l, i) =>
     '<div class="mir-line"><div class="mir-line-head"><div class="mir-line-title"><span class="mir-line-no">' + (i + 1) + '</span><div><b>' + escapeHtml(l.r.material.name) + '</b>' +
-      '<div class="mir-muted">' + escapeHtml(stMirRef(l.r) + ' - ' + l.r.plant.name) + ' - ' + stQty(l.r.balance, l.r.uom) + ' left</div></div></div>' +
+      '<div class="mir-muted">' + escapeHtml(stMirRef(l.r) + ' - ' + l.r.plant.name) + ' - ' + stQtyHtml(l.r.balance, l.r.uom) + ' left</div></div></div>' +
       '<button type="button" class="mir-link" data-remove="' + l.key + '">Remove</button></div>' +
     stReceiptChips(l.r) +
     '<div class="mir-line-grid"><div class="form-group"><label class="form-label" for="isQty' + l.key + '">Quantity going out (' + escapeHtml(l.r.uom || 'units') + ') <span class="req-mark">*</span></label>' +
@@ -545,7 +549,7 @@ function stReturnOpen(issue) {
   const reasons = stReasons('RETURN');
   document.getElementById('rtLines').innerHTML = ctl.lines.map((l, i) =>
     '<div class="mir-line"><div class="mir-line-head"><div class="mir-line-title"><span class="mir-line-no">' + (i + 1) + '</span><div><b>' + escapeHtml(l.name) + '</b>' +
-      '<div class="mir-muted">Issued ' + stQty(l.issued, l.uom) + ', still out ' + stQty(l.stillOut, l.uom) + '</div></div></div></div>' +
+      '<div class="mir-muted">Issued ' + stQtyHtml(l.issued, l.uom) + ', still out ' + stQtyHtml(l.stillOut, l.uom) + '</div></div></div></div>' +
     '<div class="mir-line-grid">' +
       '<div class="form-group"><label class="form-label" for="rtQty' + i + '">Quantity back (' + escapeHtml(l.uom || 'units') + ')</label>' +
         '<input class="form-control" id="rtQty' + i + '" data-line="' + l.key + '" data-key="qty" inputmode="decimal" autocomplete="off"></div>' +
@@ -576,8 +580,8 @@ function stDiffForm() {
       let html = '';
       if (l.mode === 'count' && pl.book !== null) {
         const diff = Number(pl.counted) - Number(pl.book);
-        html += '<div class="mir-line-figures">Register on the day <b>' + stQty(pl.book, l.r.uom) + '</b> &middot; counted <b>' + stQty(pl.counted, l.r.uom) + '</b> &middot; ' +
-          (diff === 0 ? 'no difference' : (diff > 0 ? 'found <b>' + stQty(String(diff), l.r.uom) + '</b> more' : '<b>' + stQty(String(-diff), l.r.uom) + '</b> short')) + '</div>';
+        html += '<div class="mir-line-figures">Register on the day <b>' + stQtyHtml(pl.book, l.r.uom) + '</b> &middot; counted <b>' + stQtyHtml(pl.counted, l.r.uom) + '</b> &middot; ' +
+          (diff === 0 ? 'no difference' : (diff > 0 ? 'found <b>' + stQtyHtml(String(diff), l.r.uom) + '</b> more' : '<b>' + stQtyHtml(String(-diff), l.r.uom) + '</b> short')) + '</div>';
       }
       if (pl.value) html += '<div class="mir-line-figures">Value <b>' + stMoney(pl.value) + '</b></div>';
       box.innerHTML = html;
@@ -618,7 +622,7 @@ function stDiffRender(ctl) {
       : '<div class="form-group"><label class="form-label" for="dfQty' + l.key + '">Quantity written off (' + escapeHtml(l.r.uom || 'units') + ') <span class="req-mark">*</span></label>' +
         '<input class="form-control" id="dfQty' + l.key + '" data-line="' + l.key + '" data-key="qty" inputmode="decimal" autocomplete="off" value="' + escapeHtml(l.qty) + '"></div>';
     return '<div class="mir-line"><div class="mir-line-head"><div class="mir-line-title"><span class="mir-line-no">' + (i + 1) + '</span><div><b>' + escapeHtml(l.r.material.name) + '</b>' +
-        '<div class="mir-muted">' + escapeHtml(stMirRef(l.r) + ' - ' + l.r.plant.name) + ' - ' + stQty(l.r.balance, l.r.uom) + ' in the register</div></div></div>' +
+        '<div class="mir-muted">' + escapeHtml(stMirRef(l.r) + ' - ' + l.r.plant.name) + ' - ' + stQtyHtml(l.r.balance, l.r.uom) + ' in the register</div></div></div>' +
         '<button type="button" class="mir-link" data-remove="' + l.key + '">Remove</button></div>' +
       '<div class="mir-line-grid">' +
         '<div class="form-group"><label class="form-label" for="dfMode' + l.key + '">Kind of difference <span class="req-mark">*</span></label><select class="form-control" id="dfMode' + l.key + '" data-line="' + l.key + '" data-key="mode">' +
@@ -911,8 +915,8 @@ async function stLoadVoucher(id, areaId) {
         '<td class="nowrap">' + (l.receipt ? '<button type="button" class="mir-link" data-receipt="' + l.receipt.id + '">' + escapeHtml(stMirRef(l.receipt)) + '</button>'
           : escapeHtml(l.draws.map(d => d.doc).join(', ') || '-')) + '</td>' +
         '<td>' + escapeHtml(l.material.name) + '</td>' +
-        '<td class="num nowrap">' + (l.direction > 0 ? '+' : '-') + stQty(l.qty, l.uom) +
-          (l.counted !== null ? '<div class="mir-muted">Counted ' + stQty(l.counted, l.uom) + ', register ' + stQty(l.book, l.uom) + '</div>' : '') + '</td>' +
+        '<td class="num nowrap">' + (l.direction > 0 ? '+' : '-') + stQtyHtml(l.qty, l.uom) +
+          (l.counted !== null ? '<div class="mir-muted">Counted ' + stQtyHtml(l.counted, l.uom) + ', register ' + stQtyHtml(l.book, l.uom) + '</div>' : '') + '</td>' +
         '<td>' + escapeHtml(l.reason || '-') + (l.note ? '<div class="mir-muted">' + escapeHtml(l.note) + '</div>' : '') + '</td>' +
         '<td class="num">' + (l.value !== null ? stMoney(l.value) : '-') + '</td></tr>').join('') +
     '</tbody></table></div>' +
@@ -997,8 +1001,8 @@ async function stLoadMismatches() {
     list.map((d, i) => '<tr data-row="' + i + '" tabindex="0"><td class="nowrap"><b>' + escapeHtml(d.voucherNo) + '</b></td><td class="nowrap">' + stDate(d.date) + '</td>' +
       '<td class="nowrap">' + escapeHtml(d.receipt ? stMirRef(d.receipt) : '-') + '</td><td class="st-text">' + escapeHtml(d.material.name) + '</td>' +
       '<td>' + escapeHtml(ST_DIFF_LABEL[d.kind] || d.kind) + '</td>' +
-      '<td class="num nowrap">' + (d.book !== null ? stQty(d.book, d.uom) : '-') + '</td><td class="num nowrap">' + (d.counted !== null ? stQty(d.counted, d.uom) : '-') + '</td>' +
-      '<td class="num nowrap"><b>' + (d.direction > 0 ? '+' : '-') + stQty(d.qty, d.uom) + '</b></td><td class="num nowrap">' + (d.value !== null ? stMoney(d.value) : '-') + '</td>' +
+      '<td class="num nowrap">' + (d.book !== null ? stQtyHtml(d.book, d.uom) : '-') + '</td><td class="num nowrap">' + (d.counted !== null ? stQtyHtml(d.counted, d.uom) : '-') + '</td>' +
+      '<td class="num nowrap"><b>' + (d.direction > 0 ? '+' : '-') + stQtyHtml(d.qty, d.uom) + '</b></td><td class="num nowrap">' + (d.value !== null ? stMoney(d.value) : '-') + '</td>' +
       '<td class="st-text">' + escapeHtml(d.reason || '-') + (d.note ? '<div class="mir-muted">' + escapeHtml(d.note) + '</div>' : '') + '</td>' +
       '<td>' + escapeHtml(d.createdBy) + '</td><td>' + stPill(d.statusLabel, ST_STATUS_TONE[d.status]) + '</td></tr>').join('') +
     '</tbody></table></div>';

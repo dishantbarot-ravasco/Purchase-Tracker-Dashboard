@@ -232,20 +232,14 @@ risk**: the link still opens the PO for whoever follows it, once. The clear runs
 link that missed or threw is consumed too - otherwise the failure message replays on every refresh,
 which is the more confusing half of it.
 
-#### One line visible, detail one click away
+#### The UI does not explain how matching works (owner, 2026-10-02)
 
-Reported as *"instructions are everywhere on dashboard can we make them simpler"*. Three
-near-identical 60-word amber `.validation-note` banners sat permanently above the PO dashboard, the
-Raw Material list and the Material modal, all saying a version of "matching is automatic, verify
-manually" - which every confidence badge and flag badge already says on hover. `shared.js`'s
-`matchingDisclaimerHtml(summary, detailHtml)` replaces all three with one sentence plus a **How
-matching works** disclosure (call sites: `main.js`'s `init()`, `materials.js`'s
-`renderMaterialsView()`, `material-modal.js`'s `openMaterialModal()`). Built on a native
-`<details>`/`<summary>` rather than a state flag + re-render like the Data Quality legend's
-(`state.legendOpen`): the three live in three different render paths (one a modal that re-renders on
-every field save), and the browser handles open/close with no wiring, no shared state and no
-CSP-blocked inline style. `detailHtml` is trusted markup from a literal at each call site, never user
-data. `.validation-note` survives for the deep-link miss message and the bucket help text in
+The amber "How matching works" disclosures that sat above the PO dashboard, the Raw Material list,
+the Material modal and the On Order / Stock & Orders tabs were removed at the owner's request, along
+with their helper and CSS. Don't add method text back - no description of the matching rules, weights
+or score anywhere on screen. The per-line confidence badge (`reconControlsHtml()`) is the one
+remaining cue: its title names the level, says to verify manually below high, and never shows the
+score. `.validation-note` remains for the deep-link miss message and the bucket help text in
 `no-po-panel.js`.
 
 `DISCREPANCY_LEGEND` entries (`flags.js`) have an optional `detail`, so the one-sentence definition
@@ -589,7 +583,6 @@ few module-level variables for the correction box and modal a11y.
   `wireJumpToPage()` (invalid page numbers are ignored, not clamped), `revealFilteredList(regionId)`
   (announces the list heading; scrolls only if the region's top is off-screen; jumps instead of
   gliding under reduced motion).
-- **Disclaimer:** `matchingDisclaimerHtml(summary, detailHtml)`.
 - **Permissions:** `canEditField(plantKey)` - `userHasPerm('edit_fields')`, and an admin or a
   `CURRENT_USER.plants` containing the plant. Mirrors the backend check so a pencil or dismiss link is
   never rendered for a write that would 403.
@@ -773,6 +766,8 @@ whichever tab it is typed on.
 
 ### frontend/js/po-reconcile.js
 
+The line's unit is free text an editor can correct, so it is escaped everywhere it reaches markup, including inside the `fmt` passed to `reconDiffHtml()`.
+
 Renders the per-line reconciliation cards both PO modals show (Ordered / Received / Difference in
 real figures, every matched MIR receipt with its MIR sheet row). The received side comes from the
 API (`received`, `matchedMirs`); it is never summed in the browser, so units always agree with the
@@ -786,7 +781,7 @@ shows `notes` instead - the line's share of the receipt (`receiptShareNote(share
 a pooled line's share of its order's identical lines when `poolLineRefs` is set, a BOE share on tier
 `boe_number`, otherwise a "Keep both" manual match's share; Domestic lines carry it too), and for an exchange-rate difference both rates. Tier `boe_number` gets the high-confidence badge, like `po_number`. `reconItemsHtml(lines, plantKey, currencyLabel)` = `reconSummaryHtml()` (fulfilled % caps
 each line at its own ordered value) + one `reconLineHtml()` per line. `reconControlsHtml()` carries the
-confidence badge (high = `po_number` tier, medium >= 0.75), "manual" tag (its title names who set the
+confidence badge (high = `po_number` or `boe_number` tier, medium >= 0.75; its title names the level only, never the method or score), "manual" tag (its title names who set the
 pin), dismiss/reinstate link (only when `reconAnyFlag(m, isFlagged)`, whose qty half is
 `isQtyMismatch()`) and the "edit receipts" `.mir-change-link` with `data-item-ref`/`data-current-mir`.
 `manualNoteText(note, poNumber)` turns a receipt's `manualNote` into "Added by Dishant Barot on
@@ -1204,7 +1199,7 @@ narrow the list only; showAll for "View all") with `psDefaultState()` / `resetPl
   sort presets for the selected plants, then renders unless the reader switched view or plant meanwhile. `renderPlantView()` builds
   the scope once (`psBuildScope()`: `materialScope()` + `computeMaterialPoLinkage()`), applies the
   category filters, and lays out the tab's parts (`psInventoryParts()` / `psOnOrderParts()` /
-  `psCombinedParts()`: title, subtitle, disclaimer, six cards, status options, two charts).
+  `psCombinedParts()`: title, subtitle, six cards, status options, two charts).
 - Rows, each carrying `sv` (its sort values): `psInventoryRows()` (every stock material;
   `PS_STOCK_STATUS`: low / below zero / out / in stock / not used lately; out-of-stock rows hidden until
   picked), `psOrderRows()` (every material with an open line, plus the reorder-soon ones;
@@ -1298,7 +1293,7 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   `ensurePOsLoaded(keys)` (GET `<prefix>/purchase-orders`), `ensureImportPOsLoaded()` (via
   `shared.js`'s `apiImports()`), `clearDataCaches()`.
 - `init()` - `requireAuth()`, deep-link read, nav/user/theme, the `#root` shell (sync bar with
-  `#syncBadges`, `#refreshStatus`, Export Data and Refresh Data buttons, the disclaimer, three tab
+  `#syncBadges`, `#refreshStatus`, Export Data and Refresh Data buttons, three tab
   rows, `#viewContent`), first `loadAndRender()`, deep-link open, `startFreshnessWatch()`,
   `resumeSyncIfRunning()`. Refresh Data for an admin runs `triggerRealSyncAndRefresh()`; for anyone
   else it clears caches and re-reads the DB.
@@ -1381,6 +1376,8 @@ again. `runSearch()` awaits both sorters' presets with the data. The sort styles
 
 ### frontend/js/stock-page.js
 
+A unit (`uom`) is free text from the MIR / PO line, so markup takes figures through `stQtyHtml()` (escaped); `stQty()` is for text that is escaped later (`stFacts()`, `escapeHtml(...)` wraps).
+
 `stock.html`'s page ("RM Store"), built like MIR entry (2026-09-30): three views - **Issue from MIR**,
 **RM register** (Stock by MIR / Issue slips) and **Open mismatches**. Like `mir-page.js` it never draws
 stock or values a line: every input change sends the form to `/api/stock/preview` (debounced, stale
@@ -1420,6 +1417,8 @@ top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.
   `stPaintPending()` keeps the tab's count of differences waiting for approval.
 
 ### frontend/js/mir-page.js
+
+`fact(label, valueHtml)` takes markup and never escapes for the caller: every caller escapes what came from the server (the PO line's unit is free text an editor can correct).
 
 `mir.html`, self-contained (no `main.js`): `apiMir(path, opts)` wraps `/api/mir` (JSON body
 encoded for it, `err.errors` carries the server's `[{field, message}]`). **It never prices a line or
@@ -1628,7 +1627,7 @@ to anchor on; wires the static `#themeToggleBtn` with the same `pt-theme` key.
   and a `<colgroup>` of percentage widths per table (`.po-col-*` Domestic, `.imp-col-*` Import,
   `.mat-col-*` Raw Material; each class list must match its table's column count and order).
   Inside them the date-range filter's two inputs stack, and stepper labels and long rates wrap,
-  so nothing spills into the next column), status pills and badges, legend, disclaimer, modal shell, correction
+  so nothing spills into the next column), status pills and badges, legend, modal shell, correction
   box, MIR picker and its "already matched" choice (`.mir-choice*`), reconciliation cards, steppers, the Domestic list's "Also in Import Purchases"
   box (`.cross-kind-*`), chart panels (`.chart-head`, `.chart-legend` / `.legend-chip`, `.chart-foot`
   and its month `.chart-filter-chip`; `.doughnut-layout` puts the rings beside their legend through a

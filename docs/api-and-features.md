@@ -225,13 +225,14 @@ pairing to PO↔MIR** - the headline percentages have different denominators.
 **There is no sample-based accuracy check, so treat every match as a suggestion, not a fact.** This is a
 process instruction, not just a UI note. Do not wire any downstream action - auto-approving a PO,
 auto-updating stock - off a match without a human in the loop. The dashboard prompts for it through
-`shared.js`'s `matchingDisclaimerHtml()` (one sentence plus a "How matching works" disclosure) and the
-per-line confidence badge.
+the per-line confidence badge only. **The UI never explains how matching works** (owner, 2026-10-02):
+no method text, no weights, no score on screen - the badge's title names its level and, below high,
+says to verify manually.
 
 **Triage signals.** `_line_item_dict()` exposes `matchScore`, `matchTier`, `qtyDiffPct`, `rateDiffPct`,
 `valueDiffPct`, the split mismatch booleans and `severity` per line item. The confidence badge is
-rendered by `po-reconcile.js`'s `reconControlsHtml()`: **high** = tier `po_number`, **medium** =
-weighted score ≥ 0.75, **low** = below that. The reconcile card shows Ordered / Received / Difference
+rendered by `po-reconcile.js`'s `reconControlsHtml()`: **high** = tier `po_number` or `boe_number`,
+**medium** = score ≥ 0.75, **low** = below that; the score itself is not shown. The reconcile card shows Ordered / Received / Difference
 in real figures rather than per-flag delta badges, so a partial delivery (qty short, rate in line) is
 visibly different from a price discrepancy.
 
@@ -1196,8 +1197,10 @@ embedded file is how malware usually rides in a PDF. It is a heuristic over the 
 object streams are not inflated), so it stops the common case; files still open only from R2's own
 origin. **A workbook is opened as a zip and checked** (`documents._check_xlsx()`): it must hold
 `xl/workbook.xml` (a .docx or a renamed archive is "not an Excel workbook"), and one with VBA macros,
-ActiveX controls, embedded objects or a macro-enabled content type (.xlsm) is refused, as is one
-unpacking past 200 MB. The object key is `<plant>/<PO number or MIR number>/r<revision>-<random>.<ext>`
+ActiveX controls, embedded objects, external workbook links (`xl/externalLinks/`) or a
+macro-enabled content type (.xlsm) is refused, as is one unpacking past 200 MB. The size is judged on
+the declared sizes **before anything is inflated**, and `[Content_Types].xml` is read capped at 1 MB
+(`_XLSX_TYPES_MAX`) - read first, one zip-bomb member would take the worker down. The object key is `<plant>/<PO number or MIR number>/r<revision>-<random>.<ext>`
 (an import paper adds `/<kind>-<reference>` after the PO number; it goes to the `po` bucket), so a key
 never collides or reveals more than the record already does. R2 is written **before** the row: a
 failed upload leaves no row pointing at nothing. A file opens through `documents/<id>/open`, a 302

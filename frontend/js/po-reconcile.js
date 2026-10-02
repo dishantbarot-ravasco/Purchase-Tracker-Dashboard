@@ -113,8 +113,7 @@ function reconControlsHtml(line, plantKey) {
   if (line.matched) {
     const exactTier = line.tier === 'po_number' || line.tier === 'boe_number';
     const conf = exactTier ? 'high' : (line.score != null && line.score >= 0.75 ? 'medium' : 'low');
-    const confTitle = { high: line.tier === 'boe_number' ? 'High confidence: MIR cites the Bill of Entry number of this shipment' : 'High confidence: exact PO number match', medium: 'Medium confidence: weighted score ≥ 0.75', low: 'Low confidence: weighted score below 0.75 - verify manually' }[conf] +
-      (line.score != null ? ' (score ' + line.score.toFixed(2) + ')' : '');
+    const confTitle = { high: 'High confidence', medium: 'Medium confidence - verify manually', low: 'Low confidence - verify manually' }[conf];
     out += '<span class="conf-badge conf-' + conf + '" title="' + escapeHtml(confTitle) + '">' + conf + '</span>';
   }
   if (line.pinned) {
@@ -334,7 +333,7 @@ function reconLineHtml(line, plantKey) {
   const rows =
     '<tr><th scope="row">Quantity</th><td class="num">' + reconQty(o.qty) + qtyUnit + '</td>' +
       '<td class="num">' + (r ? (rQty != null ? reconQty(rQty) + qtyUnit : '<span class="recon-muted">see receipts</span>') : '<span class="recon-muted">0</span>') + '</td>' +
-      (r ? reconDiffHtml(o.qty, rQty, 'qty', v => reconQty(v) + ' ' + (line.uom || ''), RECON_QTY_EPS, line.qtyWithinTolerance) : '<td class="recon-diff diff-short"><span class="recon-diff-val">' + reconQty(o.qty) + ' ' + escapeHtml(line.uom || '') + '</span><span class="recon-diff-note">pending</span></td>') + '</tr>' +
+      (r ? reconDiffHtml(o.qty, rQty, 'qty', v => reconQty(v) + ' ' + escapeHtml(line.uom || ''), RECON_QTY_EPS, line.qtyWithinTolerance) : '<td class="recon-diff diff-short"><span class="recon-diff-val">' + reconQty(o.qty) + ' ' + escapeHtml(line.uom || '') + '</span><span class="recon-diff-note">pending</span></td>') + '</tr>' +
     '<tr><th scope="row">Rate' + (line.rateNote ? ' <span class="recon-muted">' + escapeHtml(line.rateNote) + '</span>' : '') + '</th><td class="num">' + reconMoney(o.rate) + '</td>' +
       '<td class="num">' + (r ? reconMoney(r.rate) : '-') + '</td>' +
       (r ? reconDiffHtml(o.rate, r.rate, 'rate', v => reconMoney(v), RECON_RATE_EPS) : '<td class="recon-diff">-</td>') + '</tr>' +

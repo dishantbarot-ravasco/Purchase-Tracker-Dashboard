@@ -139,8 +139,21 @@ class TestConfirm:
 
     def test_the_current_password_is_refused_as_the_new_one(self):
         code = generate_otp(self.user.email, OTPCode.Purpose.PASSWORD_RESET)
-        assert _confirm(self.client, self.user.email, code, new="Str0ngPassw0rd!").status_code == 400
+        res = _confirm(self.client, self.user.email, code, new="Str0ngPassw0rd!")
+        assert res.status_code == 400 and "different from the current" in res.json()["detail"]
+        # Said only once the code checked out, so that code is spent.
+        assert _confirm(self.client, self.user.email, code).status_code == 400
+        code = generate_otp(self.user.email, OTPCode.Purpose.PASSWORD_RESET)
         assert _confirm(self.client, self.user.email, code).status_code == 200
+
+    def test_a_wrong_code_says_nothing_about_whether_a_guess_is_the_password(self):
+        """No code needed to ask: if a wrong code with the real password
+        answered differently from a wrong code with any other password, the
+        form would confirm password guesses with no lockout."""
+        right_guess = _confirm(self.client, self.user.email, "000000", new="Str0ngPassw0rd!")
+        wrong_guess = _confirm(self.client, self.user.email, "000000", new="N0tTheirPassw0rd!")
+        assert right_guess.status_code == wrong_guess.status_code == 400
+        assert right_guess.json() == wrong_guess.json()
 
 
 @pytest.mark.django_db

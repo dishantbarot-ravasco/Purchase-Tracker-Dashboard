@@ -105,10 +105,16 @@ class PasswordResetConfirmThrottle(_EmailKeyedThrottle):
     scope = "otp_verify"
 
 
-def _new_password(data, email, current_hash=None) -> str:
+_SAME_AS_CURRENT = "Choose a password different from the current one. Request a new code to try again."
+
+
+def _new_password(data, email, current_hash=None) -> tuple[str, bool]:
     """The new password from the body, checked before any code is spent:
-    present, matching its confirmation, strong enough, and not the current
-    one. Raises ValidationError (400)."""
+    present, matching its confirmation and strong enough (ValidationError,
+    400). Also returns whether it is the current password - which the caller
+    may say only AFTER the emailed code checks out. Saying it earlier made
+    the reset form a password oracle: anyone could post a guess with a junk
+    code and read "different from the current one" back, with no lockout."""
     new_password = data.get("newPassword") or ""
     if not new_password:
         raise ValidationError({"detail": "Enter a new password."})
@@ -117,9 +123,8 @@ def _new_password(data, email, current_hash=None) -> str:
     _validate_password_strength(new_password, email)
     if current_hash is None:
         _dummy_verify()  # no account: the same bcrypt cost as the comparison below
-    elif _verify_password(new_password, current_hash):
-        raise ValidationError({"detail": "Choose a password different from the current one."})
-    return new_password
+        return new_password, False
+    return new_password, _verify_password(new_password, current_hash)
 
 
 # ── Signed in: Change password ───────────────────────────────────────────
@@ -151,9 +156,11 @@ def confirm_password_change(request):
     if not otp:
         return Response({"detail": "Enter the code we emailed you."}, status=400)
     user = PTUser.objects.get(pk=request.user.pk)
-    new_password = _new_password(data, user.email, user.password_hash)
+    new_password, is_current = _new_password(data, user.email, user.password_hash)
     if not verify_otp(user.email, otp, OTPCode.Purpose.PASSWORD_CHANGE):
         return Response({"detail": _BAD_CODE}, status=400)
+    if is_current:
+        return Response({"detail": _SAME_AS_CURRENT}, status=400)
 
     user.password_hash = _hash_password(new_password)
     user.save(update_fields=["password_hash"])
@@ -225,12 +232,14 @@ def confirm_password_reset(request):
     user = _reset_account(email)
     # Checked whatever the address, so a weak password reads the same for
     # an unknown one; the current-password comparison needs the account.
-    new_password = _new_password(data, email, user.password_hash if user else None)
+    new_password, is_current = _new_password(data, email, user.password_hash if user else None)
     if user is None:
         burn_code_check(otp)  # what verify_otp() costs, so timing says nothing
         return Response({"detail": _BAD_CODE}, status=400)
     if not verify_otp(user.email, otp, OTPCode.Purpose.PASSWORD_RESET):
         return Response({"detail": _BAD_CODE}, status=400)
+    if is_current:
+        return Response({"detail": _SAME_AS_CURRENT}, status=400)
 
     with transaction.atomic():
         PTUser.objects.filter(pk=user.pk).update(

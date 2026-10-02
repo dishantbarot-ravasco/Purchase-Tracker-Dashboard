@@ -844,46 +844,6 @@ function wireKpiCountUps(root) {
   });
 }
 
-// ── Automated-matching disclaimer ───────────────────────────────────────
-// Readability pass (project owner, 2026-09-21: "instructions are everywhere
-// on dashboard can we make them simpler, in readable and understandable
-// manner"). Three near-identical 60-word amber banners used to sit
-// permanently above the PO dashboard, the Raw Material list and the
-// Material modal, all saying a version of "matching is automatic, verify
-// manually" - which every confidence badge and flag badge already says on
-// hover. They are now one short line with the detail behind a disclosure,
-// the same "one line visible, detail one click away" shape po-list.js's
-// Data Quality legend already uses (.legend-toggle / state.legendOpen).
-//
-// Built on a native <details>/<summary> rather than a state flag + re-render
-// like the legend's: these three live in three different render paths (one
-// of them a modal that re-renders on every field save), and the browser
-// handles open/close with no wiring, no shared state and no CSP-blocked
-// inline style. Open state resets on re-render, which is correct here - the
-// collapsed one-liner is the intended resting state.
-//
-// `summary` is the single sentence always on screen; `detailHtml` is the
-// full explanation, and is trusted markup supplied by the caller (each call
-// site passes a literal), never user data.
-function matchingDisclaimerHtml(summary, detailHtml) {
-  return '<details class="auto-note">' +
-    // The <summary> itself is the flex row (`display:flex` on it, see
-    // style.css). Verified in the browser that this does not disturb the
-    // native disclosure - body hidden while closed, toggles both ways -
-    // since overriding a <summary>'s `display` has a reputation for doing
-    // exactly that, and an A/B probe against a plain <summary> behaved
-    // identically here.
-    '<summary class="auto-note-summary">' +
-      '<svg class="auto-note-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        '<path d="M12 3 2 21h20L12 3Z"/><line x1="12" y1="10" x2="12" y2="14"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/>' +
-      '</svg>' +
-      '<span class="auto-note-line">' + escapeHtml(summary) + '</span>' +
-      '<span class="auto-note-more">How matching works</span>' +
-    '</summary>' +
-    '<div class="auto-note-body">' + detailHtml + '</div>' +
-  '</details>';
-}
-
 // ── Inline "Edit Everywhere" ─────────────────────────────────────────────
 // Shared by the Domestic PO modal (main.js's openPoModal()) and the Import
 // PO modal (main.js's renderImportPoModalBody()) - each backed by its own

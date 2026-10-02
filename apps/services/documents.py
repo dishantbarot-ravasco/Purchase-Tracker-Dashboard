@@ -69,11 +69,14 @@ _PDF_HEX_ESCAPE = re.compile(rb"#([0-9A-Fa-f]{2})")
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _ZIP_MAGIC = b"PK\x03\x04"
 # Parts of a workbook that run something or carry another file: VBA macros,
-# ActiveX controls, embedded OLE objects. A RoDTEP or license sheet is plain
-# cells and never needs them.
-_XLSX_ACTIVE = re.compile(r"(^|/)(vbaProject\.bin|vbaProjectSignature\.bin)$|^xl/(activeX|embeddings)/", re.I)
-# A zip bomb's unpacked size, not its upload size, is what hurts.
+# ActiveX controls, embedded OLE objects, links that pull in another
+# workbook. A RoDTEP or license sheet is plain cells and never needs them.
+_XLSX_ACTIVE = re.compile(r"(^|/)(vbaProject\.bin|vbaProjectSignature\.bin)$|^xl/(activeX|embeddings|externalLinks)/", re.I)
+# A zip bomb's unpacked size, not its upload size, is what hurts. Checked
+# on the declared sizes BEFORE anything is inflated, and the one part read
+# ([Content_Types].xml, a few KB in a real workbook) is read capped as well.
 _XLSX_MAX_UNPACKED = 200 * 1024 * 1024
+_XLSX_TYPES_MAX = 1024 * 1024
 
 # Which file types each kind takes. Excel only for the license kinds.
 _EXCEL_KINDS = ("ADV_LIC", "RODTEP")
@@ -120,15 +123,16 @@ def _check_xlsx(data: bytes) -> None:
             names = {i.filename for i in infos}
             if "xl/workbook.xml" not in names or "[Content_Types].xml" not in names:
                 raise DocumentError(not_excel)
-            types = zf.read("[Content_Types].xml")
+            if sum(i.file_size for i in infos) > _XLSX_MAX_UNPACKED:
+                raise DocumentError("This workbook is too large once unpacked.")
+            with zf.open("[Content_Types].xml") as part:
+                types = part.read(_XLSX_TYPES_MAX)
     except (zipfile.BadZipFile, KeyError, RuntimeError) as exc:
         raise DocumentError(not_excel) from exc
     active = next((n for n in names if _XLSX_ACTIVE.search(n)), None)
     if active is not None or b"macroEnabled" in types:
-        raise DocumentError("This workbook contains macros or embedded objects, so it was not accepted. "
-                            "Save it again as a plain .xlsx workbook and upload that.")
-    if sum(i.file_size for i in infos) > _XLSX_MAX_UNPACKED:
-        raise DocumentError("This workbook is too large once unpacked.")
+        raise DocumentError("This workbook contains macros, embedded objects or links to other workbooks, so it "
+                            "was not accepted. Save it again as a plain .xlsx workbook and upload that.")
 
 
 def _read_upload(upload, allow_xlsx: bool = False) -> tuple[bytes, str, str]:

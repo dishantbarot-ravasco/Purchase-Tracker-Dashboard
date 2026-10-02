@@ -127,14 +127,44 @@ class TestImportPapers:
     @pytest.mark.parametrize("body", [
         _xlsx(extra={"xl/vbaProject.bin": b"\x00macro"}),
         _xlsx(extra={"xl/embeddings/oleObject1.bin": b"\x00ole"}),
+        _xlsx(extra={"xl/externalLinks/externalLink1.xml": b"<externalLink/>"}),
         _xlsx(content_types_patch=lambda d: d.replace(b"sheet.main+xml", b"sheet.macroEnabled.main+xml")),
-    ], ids=["macros", "embedded-object", "xlsm"])
+    ], ids=["macros", "embedded-object", "external-link", "xlsm"])
     def test_a_workbook_that_runs_or_carries_something_is_refused(self, r2, body):
         res = _paper(_client(), kind="RODTEP", ref="2609004872", body=body, name="s.xlsx")
-        assert res.status_code == 400 and "macros or embedded objects" in res.json()["error"]
+        assert res.status_code == 400 and "macros, embedded objects or links" in res.json()["error"]
         assert Document.objects.count() == 0 and r2.stored == {}
 
-    @pytest.mark.parametrize("body", [_docx_like(), b"PK\x03\x04 not really a zip"], ids=["docx", "broken-zip"])
+    def test_a_zip_bomb_is_refused_before_anything_is_inflated(self, monkeypatch):
+        """The unpacked size is judged on the declared sizes first: a part
+        read before that check could inflate far past the worker's memory."""
+        from apps.services import documents
+
+        reads = []
+        real_read = zipfile.ZipExtFile.read
+        monkeypatch.setattr(zipfile.ZipExtFile, "read", lambda self, n=-1: reads.append(n) or real_read(self, n))
+        monkeypatch.setattr(documents, "_XLSX_MAX_UNPACKED", 1000)  # a real workbook is bigger than this
+        with pytest.raises(documents.DocumentError, match="too large once unpacked"):
+            documents._check_xlsx(_xlsx())
+        assert reads == []
+
+    def test_the_content_types_part_is_read_capped(self, monkeypatch):
+        from apps.services import documents
+
+        padded = _xlsx(content_types_patch=lambda d: d + b" " * (2 * documents._XLSX_TYPES_MAX))
+        returned = []
+        real_read = zipfile.ZipExtFile.read
+
+        def spy(self, n=-1):
+            data = real_read(self, n)
+            returned.append(len(data))
+            return data
+
+        monkeypatch.setattr(zipfile.ZipExtFile, "read", spy)
+        documents._check_xlsx(padded)  # still a plain workbook, so accepted
+        assert returned and max(returned) <= documents._XLSX_TYPES_MAX
+
+    @pytest.mark.parametrize("body", [_docx_like(),b"PK\x03\x04 not really a zip"], ids=["docx", "broken-zip"])
     def test_a_zip_that_is_not_a_workbook_is_refused(self, r2, body):
         res = _paper(_client(), kind="RODTEP", ref="2609004872", body=body, name="s.xlsx")
         assert res.status_code == 400 and "not an Excel workbook" in res.json()["error"]

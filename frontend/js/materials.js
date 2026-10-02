@@ -1167,12 +1167,6 @@ function renderMaterialsView() {
   el.innerHTML =
     '<div class="section-title">Raw Material and Inventory Analysis: ' + escapeHtml(plantDisplayLabel()) + '</div>' +
     '<div class="section-sub">One row per unique material' + (isAllPlants() ? ', summed across every vendor lot and all 3 plants' : ', summed across every vendor lot at this plant') + ', plus anything on an open order that has no stock lot yet. Click a row for its full cross-plant analysis.</div>' +
-    matchingDisclaimerHtml(
-      'Ordered qty, in-transit value, pending delivery, pipeline and the flag columns are matched automatically. Days Left is an estimate.',
-      '<p><strong>Matched columns.</strong> "Value in Transit", "Quantity to Come", the Pending Delivery and Open PO Pipeline columns and the mismatch/flag columns link each material to PO line items by description, and by vendor where it is known - the same best-effort approach used for PO&harr;MIR matching. It is not guaranteed-correct identity resolution, so verify before relying on it.</p>' +
-      '<p><strong>Pending Delivery and Open PO Pipeline.</strong> Pending Delivery is what is still to arrive on this material\'s open PO lines (ordered less what MIR has received), valued at each line\'s PO rate. Open PO Pipeline is the full quantity and value of those open POs, with how much of it has already been received. Both are pre-tax and in INR (import prices converted at the PO\'s exchange rate).</p>' +
-      '<p><strong>Days Left.</strong> Estimated from recent stock-snapshot history, not reported by the sheet. The confidence dot beside it shows how much history it is based on.</p>'
-    ) +
     '<div class="kpi-grid mat-kpi-grid">' + kpiHtml + '</div>' +
     // "Filter by Category" / "Filter by Sub Category" / "Filter by Flags"
     // bar - moved above the chart (project owner, 2026-09-04) so the chart

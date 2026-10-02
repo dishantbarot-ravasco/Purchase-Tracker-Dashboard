@@ -471,9 +471,9 @@ function renderLines() {
         '<button type="button" class="mir-link" data-remove="' + i + '">Remove</button>' +
       '</div>' +
       '<div class="mir-line-facts">' +
-        fact('Ordered', qty(l.qtyOrdered) + ' ' + unit) + fact('Received so far', qty(l.accepted) + ' ' + unit) +
-        fact('Still open', '<b>' + qty(l.openQty) + ' ' + escapeHtml(unit) + '</b>', true) + fact('PO rate', money(l.rate, cur) + ' / ' + unit) +
-        (l.poGstRate ? fact('PO GST', Number(l.poGstRate) + '%') : '') + (l.deliveryDate ? fact('Due', dateIN(l.deliveryDate)) : '') +
+        fact('Ordered', escapeHtml(qty(l.qtyOrdered) + ' ' + unit)) + fact('Received so far', escapeHtml(qty(l.accepted) + ' ' + unit)) +
+        fact('Still open', '<b>' + qty(l.openQty) + ' ' + escapeHtml(unit) + '</b>', true) + fact('PO rate', escapeHtml(money(l.rate, cur) + ' / ' + unit)) +
+        (l.poGstRate ? fact('PO GST', escapeHtml(Number(l.poGstRate) + '%')) : '') + (l.deliveryDate ? fact('Due', escapeHtml(dateIN(l.deliveryDate))) : '') +
       '</div>' +
       '<div class="mir-line-group"><div class="mir-line-group-title">1. What came in</div><div class="mir-line-grid">' +
         field('Qty received (' + escapeHtml(unit) + ')' + req(), input('qty_received', 'inputmode="decimal" autocomplete="off" placeholder="As weighed / counted"') +
@@ -570,9 +570,11 @@ function showEntrySections(on) {
   ['invoiceCard', 'linesCard', 'saveBar'].forEach(id => { document.getElementById(id).hidden = !on; });
 }
 
+// `valueHtml` is markup: the caller escapes anything from the server (a PO
+// line's unit is free text an editor can correct).
 function fact(label, valueHtml, strong) {
   return '<div class="mir-fact' + (strong ? ' is-strong' : '') + '"><span class="mir-kv-k">' + escapeHtml(label) + '</span><span>' +
-    (valueHtml.indexOf('<') === -1 ? escapeHtml(valueHtml) : valueHtml) + '</span></div>';
+    valueHtml + '</span></div>';
 }
 
 function field(labelHtml, control) {

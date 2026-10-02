@@ -252,6 +252,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - Deep-link params are attacker-supplied: whitelist, render via `textContent`, consume in `finally`.
   `?po=` is Domestic unless `kind=import` - one PO number can be both.
   [deep links](docs/frontend.md#search-po-deep-links-into-the-dashboard-rather-than-)
+- The UI never explains how matching works (owner, 2026-10-02): no method, weights or score on screen;
+  the confidence badge names its level only. [matching copy](docs/frontend.md#the-ui-does-not-explain-how-matching-works-owner-2026-10-02)
 - Don't merge `brand.css` and `style.css`, and never define the same custom property in both.
   [CSS collisions](docs/frontend.md#css-custom-property-collisions)
 - A selected or primary control uses `--dash-solid` (navy light, gold dark), never `--navy-solid`,

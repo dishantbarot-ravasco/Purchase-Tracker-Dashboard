@@ -132,7 +132,15 @@ class TestChangePasswordConfirm:
         res = self.client.post("/api/auth/change-password/confirm",
                                {"otp": code, "newPassword": "Str0ngPassw0rd!", "confirmPassword": "Str0ngPassw0rd!"},
                                format="json")
-        assert res.status_code == 400
+        assert res.status_code == 400 and "different from the current" in res.json()["detail"]
+
+    def test_a_wrong_code_says_nothing_about_whether_a_guess_is_the_password(self):
+        self._real_otp_code()
+        answers = [self.client.post("/api/auth/change-password/confirm",
+                                    {"otp": "000000", "newPassword": guess, "confirmPassword": guess}, format="json")
+                   for guess in ("Str0ngPassw0rd!", "N0tTheirPassw0rd!")]
+        assert [a.status_code for a in answers] == [400, 400]
+        assert answers[0].json() == answers[1].json()
 
     def test_a_reset_code_cannot_change_a_password(self):
         from apps.services.otp_service import generate_otp

@@ -29,8 +29,7 @@
 //
 // A material's PO lines are tied to it by the same best-effort description
 // (and vendor) link Raw Material Analysis uses (materials.js's
-// buildLineLinks()), so On Order and Stock & Orders carry that view's
-// disclaimer. A line tied to two materials counts under both rows; the KPI
+// buildLineLinks()). A line tied to two materials counts under both rows; the KPI
 // totals count each line once.
 
 // `perm` is the permission that shows the tab (auth.js's userHasPerm(),
@@ -421,7 +420,6 @@ function renderPlantView() {
   el.innerHTML =
     '<div class="section-title">' + escapeHtml(parts.title) + ': ' + escapeHtml(plantDisplayLabel()) + '</div>' +
     '<div class="section-sub">' + parts.sub + '</div>' +
-    (parts.disclaimer || '') +
     '<div class="kpi-grid mat-kpi-grid ps-kpi-grid">' + parts.cards.map(c => psKpiCardHtml(c, f.status)).join('') + '</div>' +
     '<div class="filter-row">' +
       '<div class="filter-group"><label for="psCatSelect">Filter by Category</label>' +
@@ -697,10 +695,6 @@ function psOnOrderParts(rows) {
   return {
     title: 'On Order',
     sub: 'The material on order' + (plantKeys.length ? ' for each plant, side by side' : '') + ' (domestic and import POs), and what to reorder soon: materials low on stock with nothing on order. What has arrived comes from the MIR receipts matched to each line. Click a material for its PO lines.',
-    disclaimer: matchingDisclaimerHtml(
-      'PO lines are tied to materials by name, the same way Raw Material Analysis does it.',
-      '<p>A PO line counts for the material whose name it matches best, and by vendor where the stock sheet names one. A differently worded order can sit under its own row, so search before placing a new order.</p>' +
-      '<p>Still to come is the ordered quantity less what the matched MIR receipts add up to, valued at the PO rate in INR before tax.</p>'),
     cards: [
       { label: 'Materials on Order', raw: onOrder.length, tip: lines.length.toLocaleString('en-IN') + ' open PO lines across ' + onOrder.length.toLocaleString('en-IN') + ' materials, domestic and import.' },
       { label: 'Value Still to Come', raw: toCome, fmt: 'inr', tip: 'What is still to arrive on the open lines, at each line\'s PO rate in INR, before tax. Each line counted once.' },
@@ -848,10 +842,6 @@ function psCombinedParts(rows) {
   return {
     title: 'Stock & Orders',
     sub: 'What each material has in the store and what is on order for it, side by side' + (plantKeys.length ? ', with each plant\'s share under the totals' : '') + '. Materials with nothing held and nothing on order are left out unless you pick Nothing Held. Click a material for its lots and PO lines.',
-    disclaimer: matchingDisclaimerHtml(
-      'PO lines are tied to materials by name, the same way Raw Material Analysis does it. Days Left is an estimate.',
-      '<p>A PO line counts for the stock material whose name it matches best, and by vendor where the stock sheet names one. A differently worded order can sit under its own row.</p>' +
-      '<p>Days Left comes from recent stock-sheet history, not from the sheet itself; the dot beside it shows how much history it rests on.' + (plantKeys.length ? ' On All Plants it is the plant that runs out first.' : '') + '</p>'),
     cards: [
       { label: 'Materials', raw: rows.filter(r => r.status !== 'none').length, tip: 'Materials held or on order.' },
       { label: 'Stock Value', raw: value, fmt: 'inr', tip: 'The stock sheet\'s own Value column, summed.' },
