@@ -320,6 +320,34 @@ function clearDeepLinkParams() {
   window.history.replaceState(null, '', url.pathname + (search ? '?' + search : '') + url.hash);
 }
 
+/** The selected view / plant / purchase type live in the URL hash
+ * (#view=inventory&plant=hrs, plus &type=import on Purchase Orders) so a
+ * reload lands back on the same tabs instead of the Purchase Orders /
+ * Domestic / All Plants default. A hash, not query params, so it never
+ * mixes with the deep-link params above; replaceState, so tab clicks do
+ * not pile up Back entries. Values are checked here and again by
+ * renderViewTabs(), which drops a view this account does not have. */
+function applyTabsHashToState() {
+  let params;
+  try { params = new URLSearchParams(window.location.hash.replace(/^#/, '')); } catch (e) { return; }
+  const view = params.get('view');
+  if (view) state.view = view;
+  const plant = params.get('plant');
+  if (plant === 'all' || PLANT_KEYS.indexOf(plant) !== -1) state.plant = plant;
+  if (params.get('type') === 'import') state.purchaseType = 'import';
+}
+
+function writeTabsHash() {
+  if (!window.history || !window.history.replaceState) return;
+  const params = new URLSearchParams();
+  params.set('view', state.view);
+  params.set('plant', state.plant);
+  if (state.view === 'po' && state.purchaseType === 'import') params.set('type', 'import');
+  const hash = '#' + params.toString();
+  if (window.location.hash === hash) return;
+  window.history.replaceState(null, '', window.location.pathname + window.location.search + hash);
+}
+
 /** A target that can't be found is reported in place rather than silently
  * ignored - a renamed/retired PO (see CLAUDE.md's "Purchase orders are
  * retired, not deleted") is exactly the case where a saved link stops
@@ -421,7 +449,10 @@ async function init() {
   // Before the tabs render and before the first fetch - see
   // applyDeepLinkToState()'s own comment.
   const deepLink = readDeepLinkParams();
+  // A deep link wins over the remembered tabs; otherwise a reload comes
+  // back to the tabs it was on (applyTabsHashToState()).
   if (deepLink) applyDeepLinkToState(deepLink);
+  else applyTabsHashToState();
 
   // Brand/nav/user identity now live in the static topnav in index.html
   // (shared with home.html/search-po.html/admin.html - see js/auth.js's
@@ -883,6 +914,7 @@ function renderViewTabs() {
   el.innerHTML = tabs.map(t =>
     '<div class="view-tab ' + (state.view === t.key ? 'active' : '') + '" data-view="' + t.key + '" tabindex="0" role="tab" aria-selected="' + (state.view === t.key) + '">' + escapeHtml(t.label) + '</div>'
   ).join('');
+  writeTabsHash();
   el.querySelectorAll('[data-view]').forEach(t => t.onclick = async () => {
     if (t.dataset.view === state.view) return;
     state.view = t.dataset.view;
@@ -916,6 +948,7 @@ function renderPlantTabs() {
   el.innerHTML = tabs.map(t =>
     '<div class="plant-tab ' + (state.plant === t.key ? 'active' : '') + '" data-plant="' + t.key + '" tabindex="0" role="tab" aria-selected="' + (state.plant === t.key) + '">' + escapeHtml(t.label) + '</div>'
   ).join('');
+  writeTabsHash();
   el.querySelectorAll('[data-plant]').forEach(t => t.onclick = async () => {
     if (t.dataset.plant === state.plant) return;
     state.plant = t.dataset.plant;
@@ -934,6 +967,7 @@ function renderPurchaseTypeTabs() {
   el.innerHTML = PURCHASE_TYPES.map(pt =>
     '<div class="sub-tab ' + (state.purchaseType === pt.key ? 'active' : '') + '" data-ptype="' + pt.key + '" tabindex="0" role="tab" aria-selected="' + (state.purchaseType === pt.key) + '">' + escapeHtml(pt.label) + '</div>'
   ).join('');
+  writeTabsHash();
   el.querySelectorAll('[data-ptype]').forEach(t => t.onclick = () => {
     if (t.dataset.ptype === state.purchaseType) return;
     switchPurchaseType(t.dataset.ptype);

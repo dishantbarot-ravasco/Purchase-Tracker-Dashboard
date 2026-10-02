@@ -63,6 +63,12 @@ const DELETE_USER_ALLOWED_EMAIL = 'dishant.barot@ravasco.com';
 
   document.querySelectorAll('[data-admin-tab]').forEach(btn => btn.onclick = () => switchAdminTab(btn.dataset.adminTab));
   renderSystemInfoPlants();
+  // A reload stays on the tab it was on (#activity etc. - see
+  // switchAdminTab()). A hidden tab (Activity Log for anyone but its owner)
+  // or an unknown one leaves the page on Overview.
+  const hashTab = window.location.hash.replace(/^#/, '');
+  const hashBtn = hashTab && document.querySelector('[data-admin-tab="' + CSS.escape(hashTab) + '"]');
+  if (hashBtn && !hashBtn.hidden) switchAdminTab(hashTab);
 
   await Promise.all([loadSyncCards(), loadUsers(), loadOverviewData(), loadKpis()]);
 })();
@@ -71,6 +77,10 @@ const DELETE_USER_ALLOWED_EMAIL = 'dishant.barot@ravasco.com';
 function switchAdminTab(tab) {
   if (tab === CURRENT_ADMIN_TAB) return;
   CURRENT_ADMIN_TAB = tab;
+  // replaceState, not pushState: tab clicks should not fill Back history.
+  if (window.history && window.history.replaceState) {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search + (tab === 'overview' ? '' : '#' + tab));
+  }
   document.querySelectorAll('[data-admin-tab]').forEach(btn => btn.classList.toggle('active', btn.dataset.adminTab === tab));
   ['overview', 'users', 'activity', 'sync', 'system'].forEach(key => {
     document.getElementById('adminTab' + key.charAt(0).toUpperCase() + key.slice(1)).hidden = key !== tab;

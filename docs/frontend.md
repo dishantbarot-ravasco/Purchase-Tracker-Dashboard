@@ -1327,6 +1327,10 @@ Dashboard bootstrap, shared state and sync/refresh orchestration. Globals: `PURC
   `showDeepLinkMiss()`, `openDeepLinkTarget()`. A `?material=` link opens through `openMaterialLink()`:
   an admin lands on Raw Material Analysis, anyone else on Inventory with the plant material panel
   (which also covers a material that is only on order).
+- Tabs survive a reload: `writeTabsHash()` (called by the three tab renderers) keeps
+  `#view=..&plant=..` (plus `&type=import` on Purchase Orders) in the address bar via `replaceState`,
+  and `init()` reads it back with `applyTabsHashToState()` when there is no deep link. A view the
+  account lacks still falls back in `renderViewTabs()`.
 - `resetFilters()` also calls plant-stock.js's `resetPlantViewFilters()`.
 
 Some of this file's header comments predate later work (for example that Import has "no
@@ -1513,7 +1517,8 @@ under the row and POSTs `documents/<id>/withdraw`. `poFilesApi()` is the page's 
 `admin.html` bootstrap and Users panel. `requireAuth()` already stops a non-admin
 (`showNoAccess()`); `#deniedContent` stays as a fallback. Sidebar tabs
 via `switchAdminTab()`, which calls `activity-log.js`'s `openActivityLog()` when the Activity Log tab
-opens. Loads in parallel: `loadSyncCards()` (GET `<prefix>/sync-status` per plant,
+opens. The open tab is kept in the URL hash (`#users`, `#activity`, ...; none for Overview, via
+`replaceState`) so a reload stays on it; a hidden or unknown hash tab falls back to Overview. Loads in parallel: `loadSyncCards()` (GET `<prefix>/sync-status` per plant,
 labels "PO Updated"/"MIR"/"RM"/"Matching"), `loadUsers()` (GET `/api/auth/users`), `loadOverviewData()`
 (GET `/api/auth/admin-overview`; Top Correctors / Top Vendors via `renderBarList()` with widths set
 from JS, `renderRecentActivity()`), and `loadKpis()`. **Users tab** (`renderUsers()`): cards in
