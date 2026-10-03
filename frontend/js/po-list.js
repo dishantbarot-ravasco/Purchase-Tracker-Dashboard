@@ -797,6 +797,7 @@ function wirePoListRegion() {
   if (toggleBtn) toggleBtn.onclick = () => { state.showAllPOs = !state.showAllPOs; state.tablePage = 1; renderPoListRegion(); };
   region.querySelectorAll('[data-po]').forEach(el2 => el2.onclick = () => openPoModal(el2.dataset.po));
   region.querySelectorAll('[data-import-po]').forEach(el2 => el2.onclick = () => openImportPoFromDomestic(el2.dataset.importPo));
+  wirePoLineToggles(region);
 
   const prevPageBtn = document.getElementById('prevPageBtn');
   if (prevPageBtn) prevPageBtn.onclick = () => { state.tablePage = Math.max(1, state.tablePage - 1); renderPoListRegion(); };

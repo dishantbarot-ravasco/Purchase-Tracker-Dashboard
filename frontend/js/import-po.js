@@ -776,7 +776,7 @@ function importListRegionHtml() {
               importShipmentCellHtml(po),
               shipmentStepperHtml(po),
               '<span class="row-link mat-view-link" data-impo="' + key + '">View details</span>',
-            ]);
+            ], 'import');
           }).join('') + '</tbody></table></div>' + paginationHtml;
       }
       return '<div class="mat-grid-scroll imp-grid-scroll"><div class="list-header-row imp-grid-cols">' + IMPORT_LIST_COLUMNS.map(c => headerCell(c, 'div')).join('') + '</div>' +
@@ -786,7 +786,7 @@ function importListRegionHtml() {
           return '<div class="top5-row imp-grid-cols' + rowTintClass(po) + '">' +
             '<div>' + importPoCellHtml(po) + '</div>' +
             '<div>' + importVendorCellHtml(po) + '</div>' +
-            poLinesBlockHtml(po, cf.material, 'Not available') +
+            poLinesBlockHtml(po, cf.material, 'Not available', 'import') +
             '<div>' + importDeliveryCellHtml(po) + '</div>' +
             '<div>' + importValueCellHtml(po) + '</div>' +
             '<div>' + importShipmentCellHtml(po) + '</div>' +
@@ -876,6 +876,7 @@ function wireImportListRegion() {
   region.querySelectorAll('[data-impo]').forEach(el2 => el2.onclick = () => openImportPoModal(el2.dataset.impo));
   region.querySelectorAll('[data-domestic-po]').forEach(el2 => el2.onclick = () => openDomesticPoFromImport(el2.dataset.domesticPo));
   region.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = (e) => { e.stopPropagation(); trackBlNumber(el2.dataset.trackBl); });
+  wirePoLineToggles(region);
 
   const prevPageBtn = document.getElementById('importPrevPageBtn');
   if (prevPageBtn) prevPageBtn.onclick = () => { state.importTablePage = Math.max(1, state.importTablePage - 1); renderImportListRegion(); };

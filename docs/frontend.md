@@ -704,7 +704,8 @@ Status, flag and badge logic shared by every list and modal. Feature semantics a
   `materialStepperHtml(m)`, `poHasMaterial(po, text)` (Material search on both PO lists: any line
   `description` contains the text, case-insensitive, whitespace collapsed), `poListLines()` /
   `poTableRowsHtml()` / `poLinesBlockHtml()` / `formatUnitRate()` / `PO_LIST_MAX_LINES` (the Material + Rate
-  line rows), `applyColFilters(recs)`
+  line rows; both take an optional `listKind`), `poLinesToggleHtml()` / `wirePoLineToggles(region)` /
+  `PO_LINES_EXPANDED` (the See more toggle), `applyColFilters(recs)`
   (Domestic table-only filters), `FILTER_ATTRS` and
   `preserveFocus(container, renderFn)`.
 
@@ -754,7 +755,16 @@ read as the rate of all of them. The "View all" table gives each line its own `<
 (`poTableRowsHtml()`: the order-level cells are `rowspan`'d over the order's line rows, a dashed rule
 between them); the top-5 card puts one `.po-lines-block` across the two tracks with its own two
 columns (`poLinesBlockHtml()`). Lines are numbered when there is more than one; past
-`PO_LIST_MAX_LINES` (4) the rest are counted in a "+N more lines" row, and while a Material search is
+`PO_LIST_MAX_LINES` (4) the rest are hidden, and every description is clipped to two text lines
+(`.po-line-clamp`) - a four-line fabric order filled a whole screen (project owner, 2026-10-03). A
+**See more** button under the lines (`poLinesToggleHtml()`, its own `.po-line-toggle-row` counted in the
+rowspan) shows every line in full in place, and See less folds it back. It is rendered only when lines
+are past the cap; otherwise `wirePoLineToggles(region)` (called by both lists' wire functions) reveals it
+after render if a clipped description actually overflows - two lines hold a different number of
+characters at each column width, so it is measured, not guessed. The toggle flips the order's nodes in
+place (no re-render, so a header filter keeps focus), and open orders are remembered in
+`PO_LINES_EXPANDED` (keyed `<listKind>::<plant>::<poNumber>`, `listKind` `domestic` or `import`, since one
+number can be both) so a filter keystroke, sort or page keeps them open. While a Material search is
 active the matching lines are shown first (and bold) so the cap never hides why a row is listed. The
 rate is the line's per-unit `netPrice` / `uom` in `po.currency` (`formatUnitRate()`: INR or blank
 shows as ₹, 2 decimals, 4 below 1); the Rate column has no header filter, like Value. The Material

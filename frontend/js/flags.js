@@ -964,12 +964,21 @@ function poHasMaterial(po, text) {
 // reads as the rate of all of them. The "View all" table gives each line its
 // own <tr> (poTableRowsHtml(), the order-level cells rowspan'd across them);
 // the top-5 card puts one block across the two columns (poLinesBlockHtml()).
-// Lines keep their PO order; past PO_LIST_MAX_LINES the rest are counted in
-// a "+N more lines" row, and while a Material search is active the matching
-// lines are shown first so the cap never hides the reason a row is listed.
+// Lines keep their PO order. Collapsed (the default), an order shows its
+// first PO_LIST_MAX_LINES lines and each description is clipped to two text
+// lines (.po-line-clamp) - a four-line fabric order otherwise filled a whole
+// screen (project owner, 2026-10-03). A "See more" button under the lines
+// shows every line in full, in place; it appears only when something is
+// actually hidden - a line past the cap, or a description the clamp cut
+// (measured after render by wirePoLineToggles(), since how many characters
+// fit in two lines depends on the column width). While a Material search is
+// active the matching lines are shown first so the cap never hides the
+// reason a row is listed. Open orders are kept in PO_LINES_EXPANDED, so a
+// re-render (filter keystroke, sort, page) keeps them open.
 // Rates are per unit, in the PO's own currency (po.currency - "Currency (As
 // Per PO)" on imports, the figure the PO states); INR or blank shows as ₹.
 const PO_LIST_MAX_LINES = 4;
+const PO_LINES_EXPANDED = new Set();
 
 function formatUnitRate(n, currency) {
   if (n == null || isNaN(n)) return '-';
@@ -979,57 +988,117 @@ function formatUnitRate(n, currency) {
   return code && code.toUpperCase() !== 'INR' ? code + ' ' + num : '₹' + num;
 }
 
-// [{descHtml, rateHtml}] per shown line, plus how many lines were left out.
-function poListLines(po, searchText, emptyText) {
+// `listKind` keeps a Domestic and an Import order of the same number apart.
+function poLinesKey(po, listKind) {
+  return (listKind || 'domestic') + '::' + (po.plant || '') + '::' + po.poNumber;
+}
+
+function poLinesToggleLabel(open, hidden) {
+  return open ? 'See less' : 'See more' + (hidden ? ' (+' + hidden + ' line' + (hidden > 1 ? 's' : '') + ')' : '');
+}
+
+// Every line as {descHtml, rateHtml, extra} (extra = past the cap, hidden
+// while collapsed), plus how many are extra and whether the order is open.
+function poListLines(po, searchText, emptyText, listKind) {
   const want = normMaterialText(searchText);
+  const key = poLinesKey(po, listKind);
+  const open = PO_LINES_EXPANDED.has(key);
   const all = (po.items || []).map((it, i) => ({
     n: i + 1,
     desc: String(it.description || '').trim(),
     rate: it.netPrice == null ? '-' : formatUnitRate(it.netPrice, po.currency) + (it.uom ? ' / ' + it.uom : ''),
     hit: !!want && normMaterialText(it.description).includes(want),
   }));
-  if (!all.length) return { lines: [{ descHtml: escapeHtml(emptyText), rateHtml: escapeHtml(emptyText) }], hidden: 0 };
+  if (!all.length) return { key, open, lines: [{ descHtml: escapeHtml(emptyText), rateHtml: escapeHtml(emptyText), extra: false }], hidden: 0 };
   const ordered = want ? all.filter(l => l.hit).concat(all.filter(l => !l.hit)) : all;
-  const shown = ordered.slice(0, PO_LIST_MAX_LINES).sort((x, y) => x.n - y.n);
+  const capped = new Set(ordered.slice(0, PO_LIST_MAX_LINES).map(l => l.n));
   const numbered = all.length > 1;
+  const no = l => (numbered ? '<span class="po-line-no">' + l.n + '</span>' : '');
+  // Collapsed: capped lines first (in PO order), so the first row is always
+  // one shown. Open: plain PO order.
+  const shownFirst = open ? all : all.filter(l => capped.has(l.n)).concat(all.filter(l => !capped.has(l.n)));
   return {
-    lines: shown.map(l => ({
-      descHtml: '<span class="po-line' + (l.hit ? ' po-line-hit' : '') + '">' +
-        (numbered ? '<span class="po-line-no">' + l.n + '</span>' : '') + escapeHtml(l.desc || '-') + '</span>',
-      rateHtml: '<span class="po-line nowrap' + (l.hit ? ' po-line-hit' : '') + '">' +
-        (numbered ? '<span class="po-line-no">' + l.n + '</span>' : '') + escapeHtml(l.rate) + '</span>',
+    key,
+    open,
+    lines: shownFirst.map(l => ({
+      descHtml: '<span class="po-line' + (l.hit ? ' po-line-hit' : '') + '">' + no(l) +
+        '<span class="po-line-text' + (open ? '' : ' po-line-clamp') + '">' + escapeHtml(l.desc || '-') + '</span></span>',
+      rateHtml: '<span class="po-line nowrap' + (l.hit ? ' po-line-hit' : '') + '">' + no(l) + escapeHtml(l.rate) + '</span>',
+      extra: !capped.has(l.n),
     })),
-    hidden: all.length - shown.length,
+    hidden: all.length - capped.size,
   };
 }
 
-function poLinesMoreHtml(hidden) {
-  return '<span class="text-muted fs-11">+' + hidden + ' more line' + (hidden > 1 ? 's' : '') + ' - open View details for all</span>';
+// Rendered hidden unless lines are past the cap (or the order is open);
+// wirePoLineToggles() reveals it when a clipped description needs it.
+function poLinesToggleHtml(key, open, hidden) {
+  return '<button type="button" class="po-lines-toggle" data-po-lines="' + escapeHtml(key) + '"' +
+    ' data-hidden-lines="' + hidden + '" aria-expanded="' + (open ? 'true' : 'false') + '"' +
+    (open || hidden ? '' : ' hidden') + '>' + escapeHtml(poLinesToggleLabel(open, hidden)) + '</button>';
 }
 
 // Top-5 card: one grid item spanning the Material and Rate tracks, laid out
 // as its own two-column grid so each rate sits on its line's row.
-function poLinesBlockHtml(po, searchText, emptyText) {
-  const { lines, hidden } = poListLines(po, searchText, emptyText);
+function poLinesBlockHtml(po, searchText, emptyText, listKind) {
+  const { key, open, lines, hidden } = poListLines(po, searchText, emptyText, listKind);
+  const cell = (l, html) => '<div' + (l.extra ? ' class="po-line-extra"' + (open ? '' : ' hidden') : '') + '>' + html + '</div>';
   return '<div class="po-lines-block">' +
-    lines.map(l => '<div>' + l.descHtml + '</div><div>' + l.rateHtml + '</div>').join('') +
-    (hidden ? '<div class="po-lines-more">' + poLinesMoreHtml(hidden) + '</div>' : '') +
+    lines.map(l => cell(l, l.descHtml) + cell(l, l.rateHtml)).join('') +
+    '<div class="po-lines-more">' + poLinesToggleHtml(key, open, hidden) + '</div>' +
   '</div>';
 }
 
 // "View all" table: `lead` / `tail` are the order-level cells before and
-// after Material + Rate (inner HTML), rowspan'd over the order's line rows.
-function poTableRowsHtml(po, searchText, trClass, lead, tail) {
-  const { lines, hidden } = poListLines(po, searchText, '-');
-  const span = lines.length + (hidden ? 1 : 0);
-  const rs = span > 1 ? ' rowspan="' + span + '"' : '';
+// after Material + Rate (inner HTML), rowspan'd over the order's line rows
+// plus its See more row (a hidden row still counts in the rowspan and takes
+// no height).
+function poTableRowsHtml(po, searchText, trClass, lead, tail, listKind) {
+  const { key, open, lines, hidden } = poListLines(po, searchText, '-', listKind);
+  const rs = ' rowspan="' + (lines.length + 1) + '"';
   const cls = (extra) => ' class="' + (trClass + extra).trim() + '"';
   const pair = l => '<td>' + l.descHtml + '</td><td>' + l.rateHtml + '</td>';
-  return '<tr' + cls(span > 1 ? ' po-line-first' : '') + '>' +
+  return '<tr' + cls(' po-line-first') + '>' +
       lead.map(c => '<td' + rs + '>' + c + '</td>').join('') + pair(lines[0]) + tail.map(c => '<td' + rs + '>' + c + '</td>').join('') +
     '</tr>' +
-    lines.slice(1).map(l => '<tr' + cls(' po-line-cont') + '>' + pair(l) + '</tr>').join('') +
-    (hidden ? '<tr' + cls(' po-line-cont') + '><td colspan="2">' + poLinesMoreHtml(hidden) + '</td></tr>' : '');
+    lines.slice(1).map(l => '<tr' + cls(' po-line-cont' + (l.extra ? ' po-line-extra' : '')) + (l.extra && !open ? ' hidden' : '') + '>' + pair(l) + '</tr>').join('') +
+    '<tr' + cls(' po-line-cont po-line-toggle-row') + '><td colspan="2">' + poLinesToggleHtml(key, open, hidden) + '</td></tr>';
+}
+
+// The nodes one toggle governs: the order's <tr>s (from its po-line-first
+// row down to the toggle's own row) or its top-5 block.
+function poLineNodesOf(btn) {
+  const block = btn.closest('.po-lines-block');
+  if (block) return [block];
+  const rows = [btn.closest('tr')];
+  let r = rows[0].previousElementSibling;
+  while (r) { rows.unshift(r); if (r.classList.contains('po-line-first')) break; r = r.previousElementSibling; }
+  return rows;
+}
+
+// After a list region renders: reveal a collapsed order's See more when one
+// of its clipped descriptions actually overflows, and wire every toggle.
+// Opening or closing flips the order's nodes in place - no re-render, so a
+// header filter's focus and the scroll position are untouched.
+function wirePoLineToggles(region) {
+  region.querySelectorAll('[data-po-lines]').forEach(btn => {
+    const nodes = poLineNodesOf(btn);
+    if (btn.hidden && nodes.some(n => [...n.querySelectorAll('.po-line-clamp')].some(t => t.scrollHeight > t.clientHeight + 1))) {
+      btn.hidden = false;
+    }
+    btn.onclick = () => {
+      const key = btn.dataset.poLines;
+      const open = !PO_LINES_EXPANDED.has(key);
+      if (open) PO_LINES_EXPANDED.add(key); else PO_LINES_EXPANDED.delete(key);
+      nodes.forEach(n => {
+        n.querySelectorAll('.po-line-text').forEach(t => t.classList.toggle('po-line-clamp', !open));
+        if (n.classList.contains('po-line-extra')) n.hidden = !open;
+        n.querySelectorAll('.po-line-extra').forEach(x => { x.hidden = !open; });
+      });
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      btn.textContent = poLinesToggleLabel(open, Number(btn.dataset.hiddenLines) || 0);
+    };
+  });
 }
 
 function applyColFilters(recs) {

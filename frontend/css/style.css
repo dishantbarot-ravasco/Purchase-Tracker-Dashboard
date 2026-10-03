@@ -792,6 +792,15 @@ tr.po-line-cont > td { border-top-style:dashed; border-bottom-style:dashed; }
 .po-lines-block { grid-column:span 2; display:grid; grid-template-columns:1fr 1fr; column-gap:12px; row-gap:6px; align-items:start; }
 .po-lines-block > div:nth-child(4n+3), .po-lines-block > div:nth-child(4n+4) { border-top:1px dashed var(--border); padding-top:6px; }
 .po-lines-more { grid-column:span 2; }
+/* Collapsed order: each description clipped to two text lines; See more
+   (flags.js's wirePoLineToggles()) shows them in full. */
+.po-line-text { overflow-wrap:anywhere; }
+.po-line-clamp { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; overflow:hidden; }
+.po-lines-toggle { background:none; border:0; padding:0; font:inherit; font-size:12px; font-weight:700; color:var(--gold-accent-text); cursor:pointer; text-decoration:none; }
+.po-lines-toggle:hover { text-decoration:underline; }
+.po-lines-toggle:focus-visible { outline:2px solid var(--dash-solid); outline-offset:2px; }
+tr.po-line-toggle-row > td { padding-top:2px; padding-bottom:6px; border-top:0; }
+tr.po-line-toggle-row:has(> td > .po-lines-toggle[hidden]) > td { padding:0; border:0; }
 .badge-warn { display:inline-block; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.02em; border-radius:99px; padding:2px 7px; margin-left:4px; background:var(--red-soft); color:var(--red-text); }
 .dismiss-link { display:inline-block; font-size:10.5px; font-weight:600; margin-left:6px; color:var(--gold-accent-text); cursor:pointer; }
 .dismiss-link:hover { text-decoration:underline; }
