@@ -927,7 +927,9 @@ Rewrites every `frontend/js/*.js` (or `--dir`) without comments, through
 `apps/services/js_comments.strip_comments()`, and prints the file count and bytes before and after.
 **Run only by the Dockerfile**, before `collectstatic`: the image serves the scripts without their
 comments (`/js` is public and the comments describe the matching), the repository keeps them. Never
-run it on a working copy - it rewrites the files in place.
+run it on a working copy - it rewrites the files in place. `requires_system_checks = []`: the build has
+no `DJANGO_SECRET_KEY` on purpose, and `apps.core.E001` stopped the first deploy that ran it with checks
+(release.sh's `migrate` still runs them).
 
 ### [apps/core/management/commands/prune_revoked_tokens.py](../apps/core/management/commands/prune_revoked_tokens.py)
 

@@ -52,3 +52,23 @@ class TestEveryRealScript:
         assert once.count("\n") == src.count("\n")
         assert strip_comments(once) == once
         assert len(once) < len(src) or "//" not in src
+
+
+def test_the_command_runs_like_the_docker_build_with_no_secrets(tmp_path):
+    """The build has no DJANGO_SECRET_KEY on purpose; apps.core.E001 stopped
+    the first deploy because the command ran the system checks."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    sample = sorted(FRONTEND_JS.glob("*.js"))[0]
+    shutil.copy(sample, tmp_path / sample.name)
+    env = dict(os.environ, DJANGO_SETTINGS_MODULE="config.settings", DJANGO_DEBUG="false", DJANGO_SECRET_KEY="")
+    out = subprocess.run(
+        [sys.executable, "manage.py", "strip_js_comments", "--dir", str(tmp_path)],
+        cwd=FRONTEND_JS.parents[1], env=env, capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stderr
+    assert "1 files" in out.stdout
+    assert (tmp_path / sample.name).read_text(encoding="utf-8") == strip_comments(sample.read_text(encoding="utf-8"))

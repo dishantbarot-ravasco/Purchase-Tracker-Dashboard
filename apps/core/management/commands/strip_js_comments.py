@@ -20,6 +20,10 @@ from apps.services.js_comments import strip_comments
 
 class Command(BaseCommand):
     help = "Remove comments from frontend/js/*.js in place (Docker build only)."
+    # Runs in the Docker build, which has no secrets on purpose, so the
+    # system checks (apps.core.E001 among them) would stop it. It only
+    # rewrites text files; the checks run again at release.sh's migrate.
+    requires_system_checks = []
 
     def add_arguments(self, parser):
         parser.add_argument("--dir", default=str(Path(settings.BASE_DIR) / "frontend" / "js"))
