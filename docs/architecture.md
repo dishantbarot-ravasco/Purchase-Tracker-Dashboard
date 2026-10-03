@@ -597,7 +597,10 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   (`procurement_rules.vendor_name_key()`).
 - `PurchaseOrder` - unique `(plant, po_number)` (one number exists at two plants); `vendor` null only
   for the legacy HRS orders naming none; `po_date`, `currency`, `payment_terms`, `incoterms`,
-  `billing_address`, `ship_to`, `total_value`, `total_inclusive_value`, `remarks`; `tax_type` canonical
+  `billing_address`, `ship_to`, `total_value`, `total_inclusive_value`, `remarks`; `billing_plant` (FK,
+  null when unresolved - the plant the billing address names, `procurement_rules.billing_plant_code()`,
+  set wherever `billing_address` is written and backfilled by migration `0094`; a PO belongs to its
+  billing plant, owner 2026-10-03); `tax_type` canonical
   or blank, `tax_type_raw` as typed; `is_active`; `source` - `csv` (projected from the Drive PO CSV)
   or `app` (entered or confirmed in the app; the projection never writes one, migration `0086`, see
   [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)); `source_hash` (the
@@ -621,13 +624,18 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   `INVOICE_DATE`, `INVOICE_TOTAL`, `TAX_TYPE`),
   `closes_line` (only a shortfall may), `note_required`.
 - `MirSequence` - unique `(plant, fy)` counter, row-locked when a MIR number is issued.
-- `Mir` - receiving `plant`, `fy`/`seq`/unique `mir_no`, `vendor`, invoice fields with `invoice_key`
+- `Mir` - receiving `plant` (the PO's own plant since 2026-10-03), `fy`/`seq`/unique `mir_no`, `vendor`,
+  `vendor_state` (a `procurement_rules.GST_STATES` code: the vendor GSTIN's state, or the clerk's pick
+  when it has none; blank only on older MIRs of a vendor with no GSTIN - migration `0095` filled the
+  rest), invoice fields with `invoice_key`
   and `invoice_fy`, entered `invoice_total`, `tcs_amount`, `tax_type` and `tax_type_expected`,
   transport fields, optional `sap_grn_number`, `status` POSTED/CANCELLED, who created and cancelled
   (user link and email). Constraints: invoice date not after MIR date; a cancelled MIR has a reason.
   The invoice is NOT unique (one invoice can be several deliveries); `invoice_key` is indexed for the
   form's "already on MIR ..." notice.
-- `MirLine` - `po_line` (`PROTECT`), received and rejected quantity (rejected within received,
+- `MirLine` - `po_line` (`PROTECT`), `description` and `uom` (the PO line's, snapshotted at posting so a
+  later PO sheet edit cannot change what a posted receipt says it received or in which unit; migration
+  `0095` filled them for older lines; readers fall back to the PO line only when blank), received and rejected quantity (rejected within received,
   received above zero), invoice `rate`, the `po_rate` and `open_qty_before` snapshots, discount, other
   charges (0 from the form), `gst_rate` (0-40), computed gross/taxable/igst/cgst/sgst/line_total,
   dept, remarks, and rolls / batch (blank from the form). No category of its own: it reads its PO line's

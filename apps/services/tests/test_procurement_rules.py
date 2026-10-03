@@ -119,3 +119,50 @@ def test_rate_differs_is_exact_at_four_places():
 def test_gst_slabs():
     assert r.is_gst_slab(Decimal("18")) and r.is_gst_slab(Decimal("18.00"))
     assert not r.is_gst_slab(Decimal("17")) and not r.is_gst_slab(None)
+
+
+@pytest.mark.parametrize("address, code", [
+    ("Hindustan Rubbers Silvassa, Kharadpada, Naroli, 375/4/2, 396230", "hrs"),
+    ("Ravasco Transmission and Packing, 95-99, Achhad Industrial estate, Talasari, Acchad, Thane", "achhad"),
+    ("Ravasco Transmission And Packing Pvt Ltd, 164,165/P&166/P, 2nd Phase, GIDC Ind. Estate, 396195 Vapi", "vapi"),
+    ("Ravasco Transmission and Packing Private Limited, Acchad Industrial estate, 95-99, Talsari, Achhad, Thane", "achhad"),
+    ("", ""),
+    ("Some vendor's own office, Mumbai", ""),
+    # Naming two plants is ambiguous - unresolved, never guessed.
+    ("Bill to Vapi, deliver to Silvassa", ""),
+])
+def test_billing_plant_code(address, code):
+    assert r.billing_plant_code(address) == code
+
+
+GOOD_GSTIN = "27AAACP5506B1ZW"
+
+
+def _po_line(n=1, qty="100", rate="50", net="5000.00", **extra):
+    return {"line_no": n, "description": "SBR 1502", "qty": qty, "uom": "KG", "rate": rate, "net_value": net, **extra}
+
+
+class TestPoChecks:
+    def test_a_po_that_adds_up_has_no_checks(self):
+        lines = [_po_line(1), _po_line(2, "10", "100", "1000.00")]
+        assert r.po_checks(lines, "6000.00", "7080.00", GOOD_GSTIN, datetime.date(2026, 9, 1)) == []
+
+    def test_each_disagreement_is_named(self):
+        lines = [_po_line(1, net="5500.00"), _po_line(2, "10", "100", "1000.00", description="", uom="")]
+        checks = {c["check"]: c for c in r.po_checks(lines, "9000.00", "8000.00", "27BADGSTIN", None)}
+        assert set(checks) == {"po_date", "vendor_gstin", "line_value", "line_description", "line_uom",
+                               "total_value", "total_inclusive_value"}
+        assert checks["line_value"]["line"] == 1 and "5000.00" in checks["line_value"]["message"]
+        assert "6500.00" in checks["total_value"]["message"]
+
+    def test_the_rupee_of_rounding_is_allowed(self):
+        lines = [_po_line(1, qty="3", rate="33.33", net="100.00")]
+        assert r.po_checks(lines, "100.50", "118.59", GOOD_GSTIN, datetime.date(2026, 9, 1)) == []
+
+    def test_tax_on_no_single_slab_is_flagged_but_mixed_rates_only_explain_it(self):
+        checks = r.po_checks([_po_line()], "5000.00", "5650.00", GOOD_GSTIN, datetime.date(2026, 9, 1))
+        assert [c["check"] for c in checks] == ["tax_rate"]
+
+    def test_missing_figures_are_named_not_crashed_on(self):
+        checks = {c["check"] for c in r.po_checks([_po_line(qty=None, rate="x", net=None)], None, None, "", None)}
+        assert {"line_qty", "line_rate", "total_value", "total_inclusive_value", "vendor_gstin"} <= checks

@@ -153,11 +153,13 @@ combined result (the same "you see less, not an error" shape the endpoint alread
 zero rows); `purchase_order_detail` **404s** rather than 403, matching its existing unknown-plant
 behaviour rather than confirming a PO exists.
 
-**One deliberate exception to plant scoping:** MIR entry's PO lookups (`open_pos`, `purchase_order`,
-`vendors`) return every plant's open POs, by the project owner's rule that any plant's store may
-receive any plant's PO (2026-09-28); the MIR it then saves is scoped to the receiving plant, the MIR
-register narrows by plant, and `purchase_order` lists the PO's **files** only to an account that has
-the PO's plant. `IsAdmin` gates: every plant `sync_trigger` and the imports/RoDTEP/Advance Licence sync
+**MIR entry is plant-scoped end to end (owner, 2026-10-03):** a PO belongs to the plant on its billing
+address, and only that plant files it or receives against it. `open_pos` searches the caller's plants
+only, `purchase_order` 404s another plant's PO, `evaluate()` refuses a MIR line whose PO is at another
+plant, the duplicate-invoice notice stays within the receiving plant, a mismatch is resolved only at
+its MIR's plant, and `documents.upload_po()` refuses a PO number on record at other plants only or
+billed elsewhere. The vendor master (`vendors`) is the one company-wide lookup. (Until 2026-10-03 any
+plant could receive any plant's PO and the lookups were cross-plant; that rule is gone.) `IsAdmin` gates: every plant `sync_trigger` and the imports/RoDTEP/Advance Licence sync
 triggers, `admin_overview`, approving or turning down an RM stock difference, and every
 [users_views.py](../apps/api/routers/users_views.py) endpoint. The per-endpoint list lives in
 [api-and-features.md](api-and-features.md); treat this one as a summary.

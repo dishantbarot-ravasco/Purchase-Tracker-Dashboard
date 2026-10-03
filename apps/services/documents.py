@@ -232,6 +232,21 @@ def _create(*, kind, plant, po_number, mir, siblings, data, content_type, ext, f
     )
 
 
+def _check_po_plant(plant, number):
+    """A PO is filed only by the plant it belongs to - the plant on its
+    billing address (project owner, 2026-10-03). A domestic PO already on
+    record at other plants only, or billed to another plant, is refused; a
+    number not on record yet (a new order) is filed where the uploader says."""
+    from apps.core.models import PurchaseOrder
+
+    known = list(PurchaseOrder.objects.filter(po_number=number).select_related("plant", "billing_plant"))
+    here = next((po for po in known if po.plant_id == plant.id), None)
+    if here is None and known:
+        raise DocumentError(f"PO {number} belongs to {known[0].plant.name} - only {known[0].plant.name} can file it.")
+    if here is not None and here.billing_plant_id and here.billing_plant_id != plant.id:
+        raise DocumentError(f"PO {number} is billed to {here.billing_plant.name} - only {here.billing_plant.name} can file it.")
+
+
 @transaction.atomic
 def upload_po(plant_code: str, po_number, upload, user, note: str = "", kind: str = "PO", reference=""):
     """A file filed under a PO: the PO copy itself (kind PO) or its import
@@ -246,6 +261,8 @@ def upload_po(plant_code: str, po_number, upload, user, note: str = "", kind: st
     if plant is None:
         raise DocumentError("Pick the plant the PO belongs to.")
     number = _clean_po_number(po_number)
+    if kind == Document.Kind.PO:
+        _check_po_plant(plant, number)
     ref = _clean_reference(kind, reference) if kind in Document.REFERENCED_KINDS else ""
     data, content_type, ext = _read_upload(upload, allow_xlsx=kind in _EXCEL_KINDS)
     prefix = f"{plant.code}/{_safe(number)}" + (f"/{kind.lower()}-{_safe(ref)}" if ref else "")

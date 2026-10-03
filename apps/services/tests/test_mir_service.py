@@ -4,8 +4,8 @@ apps/services/mir_service.py - MIR entry's rules, on real Postgres.
 Each class is one rule of the design (2026-09-28): the quantity and rate
 mismatches that need a reason, partial and split deliveries, rejected
 quantity and its reason, an invoice number that may repeat (with a notice), the
-GST rate against the PO's, the material category, receiving another
-plant's PO, one vendor per MIR, the date and number checks, numbering,
+GST rate against the PO's, the material category, a PO
+of another plant (refused), one vendor per MIR, the date and number checks, numbering,
 cancelling, and two clerks posting at the same moment.
 """
 
@@ -33,7 +33,7 @@ def _vendor(gstin=MH, name="Prime Chemicals"):
     return Vendor.objects.create(gstin=gstin, name=name, name_key=name.lower().replace(" ", ""))
 
 
-def _po(plant="vapi", number="1000009001", vendor="default", lines=((Decimal("100"), Decimal("50")),), po_date=None, tax_type="IGST"):
+def _po(plant="hrs", number="1000009001", vendor="default", lines=((Decimal("100"), Decimal("50")),), po_date=None, tax_type="IGST"):
     if vendor == "default":
         vendor = Vendor.objects.filter(gstin=MH).first() or _vendor()
     po = PurchaseOrder.objects.create(plant=Plant.objects.get(code=plant), po_number=number, vendor=vendor,
@@ -50,7 +50,7 @@ def _line(po, n=1):
 
 def _payload(lines, *, plant="hrs", invoice_no="INV-42", invoice_total=None, **extra):
     body = {"plant": plant, "mir_date": TODAY.isoformat(), "invoice_no": invoice_no,
-            "invoice_date": TODAY.isoformat(), "lines": lines}
+            "invoice_date": TODAY.isoformat(), "tcs_amount": "0", "lines": lines}
     body.update(extra)
     if invoice_total is None:
         preview = mir_service.evaluate(body)
@@ -104,7 +104,7 @@ class TestTaxType:
         assert mir.tax_type == "CGST_UGST" and (ml.cgst, ml.sgst, ml.igst) == (Decimal("450.00"), Decimal("450.00"), Decimal("0.00"))
 
     def test_same_state_is_cgst_sgst(self, user):
-        line = _line(_po(vendor=_vendor(GJ, "Gujarat Supplier")))
+        line = _line(_po(plant="vapi", vendor=_vendor(GJ, "Gujarat Supplier")))
         mir = mir_service.post_mir(_payload([_ln(line)], plant="vapi"), user)
         assert mir.tax_type == "CGST_SGST"
 
@@ -116,6 +116,52 @@ class TestTaxType:
         mir = mir_service.post_mir(_payload([_ln(line)], tax_type="CGST_UGST", tax_type_reason="VENDOR_WRONG_TAX"), user)
         mm = mir.mismatches.get()
         assert (mm.kind, mm.mir_line, mm.status) == ("TAX_TYPE", None, "OPEN")
+
+
+@pytest.mark.django_db
+class TestVendorStateAndTcs:
+    """State and TCS are compulsory on a MIR (owner, 2026-10-03)."""
+
+    def test_the_state_comes_from_the_gstin_and_cannot_be_contradicted(self, user):
+        line = _line(_po())
+        mir = mir_service.post_mir(_payload([_ln(line)]), user)
+        assert mir.vendor_state == "27"
+        line2 = _line(_po(number="1000009002"))
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line2)], vendor_state="24", invoice_no="INV-43", invoice_total="1"), user)
+        assert "vendor_state" in _fields(exc) and "Maharashtra" in str(exc.value)
+
+    def test_a_vendor_without_a_gstin_needs_the_state_chosen_and_it_sets_the_tax_type(self, user):
+        no_gstin = Vendor.objects.create(gstin="", name="Local Trader", name_key="localtrader")
+        line = _line(_po(vendor=no_gstin, tax_type=""))
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line)], invoice_total="1"), user)
+        assert "vendor_state" in _fields(exc)
+        # HRS is in 26 (a union territory): a vendor there is CGST + UGST.
+        mir = mir_service.post_mir(_payload([_ln(line)], vendor_state="26"), user)
+        assert (mir.vendor_state, mir.tax_type) == ("26", "CGST_UGST")
+        other = mir_service.evaluate(_payload([_ln(line)], vendor_state="27", invoice_no="INV-9"))
+        assert other["tax_type_expected"] == "IGST"
+
+    def test_tcs_must_be_typed_zero_included(self, user):
+        line = _line(_po())
+        body = _payload([_ln(line)])
+        del body["tcs_amount"]
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(body, user)
+        assert "tcs_amount" in _fields(exc)
+        body["tcs_amount"] = "0"
+        assert mir_service.post_mir(body, user).tcs_amount == Decimal("0")
+
+    def test_a_po_with_no_date_or_a_line_with_no_material_takes_no_receipt(self, user):
+        po = _po()
+        PurchaseOrder.objects.filter(pk=po.pk).update(po_date=None)
+        state = mir_service.line_state(PurchaseOrderLine.objects.get(purchase_order=po), Decimal("0"))
+        assert state["receivable"] is False and "no PO date" in state["blocked_reason"]
+        po2 = _po(number="1000009002")
+        PurchaseOrderLine.objects.filter(purchase_order=po2).update(material=None, description="")
+        state = mir_service.line_state(PurchaseOrderLine.objects.get(purchase_order=po2), Decimal("0"))
+        assert state["receivable"] is False and "no material description" in state["blocked_reason"]
 
 
 @pytest.mark.django_db
@@ -280,14 +326,22 @@ class TestRepeatedInvoice:
 
     def test_the_same_invoice_is_saved_again_with_a_notice_naming_the_earlier_mir(self, user):
         line_a = _line(_po(number="1000009001"))
-        line_b = _line(_po(plant="achhad", number="1100009001", vendor=Vendor.objects.get(gstin=MH)))
+        line_b = _line(_po(number="1000009002", vendor=Vendor.objects.get(gstin=MH)))
         first = mir_service.post_mir(_payload([_ln(line_a)], invoice_no="INV-0042"), user)
-        body = _payload([_ln(line_b)], plant="vapi", invoice_no="inv - 42")
+        body = _payload([_ln(line_b)], invoice_no="inv - 42")
         preview = mir_service.evaluate(body)
         assert preview["ok"] is True
         assert len(preview["notices"]) == 1 and first.mir_no in preview["notices"][0]
         second = mir_service.post_mir(body, user)
         assert second.mir_no != first.mir_no
+
+    def test_another_plants_mir_of_the_invoice_is_not_named(self, user):
+        """The notice stays within the receiving plant: another plant's MIR
+        numbers and who entered them are not this clerk's to see."""
+        mir_service.post_mir(_payload([_ln(_line(_po(plant="achhad", number="1100009001")))], plant="achhad",
+                                      invoice_no="INV-0042"), user)
+        preview = mir_service.evaluate(_payload([_ln(_line(_po(number="1000009002")))], invoice_no="INV-0042"))
+        assert preview["ok"] is True and preview["notices"] == []
 
     def test_the_invoice_number_is_required(self, user):
         line = _line(_po())
@@ -310,10 +364,35 @@ class TestRepeatedInvoice:
 
 @pytest.mark.django_db
 class TestCrossPlantAndVendor:
-    def test_hrs_receives_a_vapi_po(self, user):
+    def test_only_the_pos_own_plant_receives_it(self, user):
+        """A PO belongs to its billing plant and only that plant enters a MIR
+        against it (owner, 2026-10-03) - HRS cannot receive a Vapi PO."""
         line = _line(_po(plant="vapi"))
-        mir = mir_service.post_mir(_payload([_ln(line)], plant="hrs"), user)
-        assert mir.plant.code == "hrs" and mir.lines.get().po_line.purchase_order.plant.code == "vapi"
+        with pytest.raises(MirValidationError) as exc:
+            mir_service.post_mir(_payload([_ln(line)], plant="hrs", invoice_total="1"), user)
+        assert "lines.0.po_line_id" in _fields(exc) and "only RTP - Vapi" in str(exc.value)
+        mir = mir_service.post_mir(_payload([_ln(line)], plant="vapi"), user)
+        assert mir.plant.code == "vapi"
+
+    def test_a_po_billed_to_another_plant_takes_no_receipt_until_moved(self, user):
+        """Filed in HRS's sheet but billed to Achhad: a wrong-sheet PO, so
+        neither plant receives it until it is moved."""
+        po = _po()
+        po.billing_plant = Plant.objects.get(code="achhad")
+        po.save()
+        state = mir_service.line_state(_line(po), Decimal("0"))
+        assert state["receivable"] is False and "billed to RTP - Achhad" in state["blocked_reason"]
+        with pytest.raises(MirValidationError):
+            mir_service.post_mir(_payload([_ln(_line(po))], invoice_total="1"), user)
+        po.billing_plant = Plant.objects.get(code="hrs")
+        po.save()
+        assert mir_service.post_mir(_payload([_ln(_line(po))]), user).plant.code == "hrs"
+
+    def test_the_po_search_covers_only_the_plants_given(self, user):
+        _po(plant="vapi", number="1000009001")
+        _po(plant="hrs", number="1000009002")
+        assert [p.po_number for p in mir_service.search_open_pos("100000900", ["hrs"])] == ["1000009002"]
+        assert len(mir_service.search_open_pos("100000900", ["hrs", "vapi"])) == 2
 
     def test_lines_of_two_pos_of_one_vendor_share_a_mir(self, user):
         a = _line(_po(number="1000009001"))
@@ -430,7 +509,8 @@ class TestNumberingAndCancelling:
         m1 = mir_service.post_mir(_payload([_ln(_line(po, 1), qty="10")], invoice_no="1"), user)
         mir_service.cancel_mir(m1, user, "Wrong vendor invoice")
         m2 = mir_service.post_mir(_payload([_ln(_line(po, 2), qty="10")], invoice_no="2"), user)
-        v1 = mir_service.post_mir(_payload([_ln(_line(po, 3), qty="10")], invoice_no="3", plant="vapi"), user)
+        vapi_po = _po(plant="vapi", number="1000009002")
+        v1 = mir_service.post_mir(_payload([_ln(_line(vapi_po), qty="100")], invoice_no="3", plant="vapi"), user)
         assert (m1.seq, m2.seq, v1.seq) == (1, 2, 1)
         assert v1.mir_no.startswith("VAPI/")
 

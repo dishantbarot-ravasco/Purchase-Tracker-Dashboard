@@ -101,7 +101,7 @@ def _receipt(lot, balance=None):
         "rate": _s(lot.rate), "currency": lot.currency, "stocked": lot.stocked, "batchNo": lot.batch_no,
         # The MIR line's own unit and how many stock units one of it is, so
         # a converted receipt can show "2 MT" beside "2,000 KG".
-        "mirUom": mir_line.po_line.uom if mir_line else lot.uom, "factor": _n(lot.factor),
+        "mirUom": (mir_line.uom or mir_line.po_line.uom) if mir_line else lot.uom, "factor": _n(lot.factor),
         "balance": _s(balance),
         "days": (timezone.localdate() - lot.received_date).days,
     }

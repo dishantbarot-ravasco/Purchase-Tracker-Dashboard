@@ -118,9 +118,14 @@
               <span class="mir-hint" id="taxTypeHint"></span>
             </div>
             <div class="form-group">
-              <label class="form-label" for="tcsAmount">TCS (<span data-currency>INR</span>)</label>
-              <input class="form-control" id="tcsAmount" data-field="tcs_amount" inputmode="decimal" placeholder="0">
-              <span class="mir-hint">Only if the invoice shows TCS.</span>
+              <label class="form-label" for="vendorState">Vendor State <span class="req-mark">*</span></label>
+              <select class="form-control" id="vendorState" data-field="vendor_state"></select>
+              <span class="mir-hint" id="vendorStateHint">Where the vendor supplies from, as the invoice prints it.</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="tcsAmount">TCS (<span data-currency>INR</span>) <span class="req-mark">*</span></label>
+              <input class="form-control" id="tcsAmount" data-field="tcs_amount" inputmode="decimal" placeholder="e.g. 0">
+              <span class="mir-hint">Type 0 when the invoice shows no TCS.</span>
             </div>
           </div>
           <div class="form-group">

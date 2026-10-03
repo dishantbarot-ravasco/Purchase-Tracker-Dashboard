@@ -211,6 +211,12 @@ class PurchaseOrder(models.Model):
     # address, GSTIN, email and code live once on Vendor.
     billing_address = models.TextField(blank=True, default="")
     ship_to = models.TextField(blank=True, default="")
+    # The plant the billing address names (procurement_rules.billing_plant_code),
+    # set wherever billing_address is written; null when it names none. A PO
+    # belongs to its billing plant (owner, 2026-10-03): when this differs from
+    # `plant` the PO sits in the wrong plant's sheet and takes no receipt
+    # until it is moved (mir_service.line_state()).
+    billing_plant = models.ForeignKey(Plant, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     total_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     total_inclusive_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
     remarks = models.TextField(blank=True, default="")
@@ -333,13 +339,20 @@ class Mir(models.Model):
         POSTED = "POSTED", "Posted"
         CANCELLED = "CANCELLED", "Cancelled"
 
-    # The plant that RECEIVED the goods - not necessarily the PO's plant.
+    # The plant that RECEIVED the goods - always the PO's own plant (a PO is
+    # received only at the plant it is billed to, owner 2026-10-03; MIRs
+    # posted before that may name another plant's PO).
     plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="mirs")
     fy = models.CharField(max_length=7)
     seq = models.PositiveIntegerField()
     mir_no = models.CharField(max_length=30, unique=True)
     mir_date = models.DateField()
     vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="mirs")
+    # The vendor's State on the invoice (procurement_rules.GST_STATES code):
+    # its GSTIN's when it has one, else chosen by the clerk. Decides the
+    # expected tax type. Blank only on MIRs posted before 2026-10-03 whose
+    # vendor had no GSTIN.
+    vendor_state = models.CharField(max_length=2, blank=True, default="")
     invoice_no = models.CharField(max_length=60)
     # procurement_rules.invoice_key() - how the form finds earlier MIRs of the same invoice.
     invoice_key = models.CharField(max_length=60)
@@ -397,6 +410,11 @@ class MirLine(models.Model):
     line_no = models.PositiveSmallIntegerField()
     # PROTECT: a PO line with a receipt can never be deleted from under it.
     po_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="mir_lines")
+    # The PO line's description and unit as they were when posted: the
+    # quantity was entered in this unit, and a later PO sheet edit must not
+    # change what a posted receipt says it received.
+    description = models.CharField(max_length=500, blank=True, default="")
+    uom = models.CharField(max_length=20, blank=True, default="")
     qty_received = models.DecimalField(max_digits=14, decimal_places=3)
     # Rejected at the quality check. Accepted = received - rejected, and only
     # accepted quantity counts against the PO line.

@@ -9,14 +9,13 @@ Access (apps/api/permissions.py):
   - Entering, previewing, editing and cancelling a MIR, and a material's
     category: Perm.MIR_ENTRY, at the RECEIVING plant.
   - Finding a PO to receive against (open-pos, purchase-orders/<id>):
-    Perm.MIR_ENTRY or PO_UPLOAD, across EVERY plant, by the project owner's
-    rule - any plant's store may receive any plant's open PO. These return
-    PO data for plants the account may not otherwise read, which is the
-    point; test_endpoint_permission_guard.py records it. The PO's files are
-    listed only when the account has the PO's plant.
-  - Resolving a mismatch, closing/reopening a PO line and clearing a line's
-    review flag: Perm.MIR_ENTRY or PO_UPLOAD at the PO's plant (or the MIR's
-    plant, for a mismatch).
+    Perm.MIR_ENTRY or PO_UPLOAD, at the account's own plants only. A PO
+    belongs to the plant on its billing address and only that plant may
+    receive against it (project owner, 2026-10-03, replacing the 2026-09-28
+    rule that any plant could receive any plant's PO).
+  - Resolving a mismatch: Perm.MIR_ENTRY or PO_UPLOAD at the MIR's plant.
+    Closing/reopening a PO line and clearing a line's review flag: the same
+    permissions at the PO's plant.
 
 Money and quantities travel as strings, never floats, so what the screen
 shows is exactly what was stored.
@@ -103,6 +102,7 @@ def _po_line(line, state):
 def _po_summary(po):
     return {
         "id": po.id, "poNumber": po.po_number, "poDate": _d(po.po_date), "plant": _plant(po.plant),
+        "billingPlant": _plant(po.billing_plant) if po.billing_plant_id else None,
         "vendor": _vendor(po.vendor), "taxType": po.tax_type, "currency": po.currency,
         "gstRate": _s(rules.po_gst_rate(po.total_value, po.total_inclusive_value)),
     }
@@ -144,21 +144,23 @@ def meta(request):
                 "importDocs": has_perm(user, Perm.IMPORT_DOCS), "manageLines": has_perm(user, *PO_MANAGERS)},
         "taxTypes": [{"code": c, "label": rules.TaxType.LABELS[c]} for c in rules.TaxType.ALL],
         "gstSlabs": [str(s) for s in rules.GST_SLABS],
+        "gstStates": [{"code": c, "name": n} for c, n in rules.GST_STATES.items()],
         "categories": [{"name": c, "subcategories": subs} for c, subs in mir_service.category_options().items()],
         "invoiceRoundingTolerance": str(rules.INVOICE_ROUNDING_TOLERANCE),
         "today": _d(timezone.localdate()),
     })
 
 
-# ── Finding a PO (cross-plant by the owner's rule) ────────────────────────
+# ── Finding a PO (the account's own plants) ───────────────────────────────
 
 
 @api_view(["GET"])
 @permission_classes([requires(*PO_MANAGERS)])
 def open_pos(request):
-    """Open POs at every plant whose PO number contains ?q=."""
+    """Open POs at the caller's plants whose PO number contains ?q=."""
     results = []
-    for po in mir_service.search_open_pos(request.query_params.get("q", "")):
+    plants = [p.code for p in Plant.objects.all() if user_can_access_plant(request.user, p.code)]
+    for po in mir_service.search_open_pos(request.query_params.get("q", ""), plants):
         lines = mir_service.po_lines_with_state(po)
         open_lines = [1 for _line, st in lines if st["receivable"]]
         results.append({**_po_summary(po), "openLines": len(open_lines), "totalLines": len(lines)})
@@ -168,17 +170,24 @@ def open_pos(request):
 @api_view(["GET"])
 @permission_classes([requires(*PO_MANAGERS)])
 def purchase_order(request, po_id):
-    po = get_object_or_404(PurchaseOrder.objects.select_related("plant", "vendor"), pk=po_id)
+    po = get_object_or_404(PurchaseOrder.objects.select_related("plant", "vendor", "billing_plant"), pk=po_id)
+    # Another plant's PO answers 404, not 403, so its id does not even
+    # confirm that it exists.
+    if not user_can_access_plant(request.user, po.plant.code):
+        return Response({"error": "Not found."}, status=http.HTTP_404_NOT_FOUND)
     lines = mir_service.po_lines_with_state(po)
-    # Short-close / reopen / confirm need PO_MANAGERS at the PO's own plant
+    # Short-close / reopen / confirm need PO_MANAGERS at the PO's plant
     # (close_line and friends check the same); the page offers the buttons
-    # only when this is true. The PO itself is cross-plant by the owner's
-    # rule, its files are not: they are listed only to an account that has
-    # the PO's plant.
-    has_plant = user_can_access_plant(request.user, po.plant.code)
-    can_manage = has_plant and has_perm(request.user, *PO_MANAGERS)
+    # only when this is true.
+    can_manage = has_perm(request.user, *PO_MANAGERS)
+    # What does not add up on the PO as written - shown above its lines, never
+    # blocking (procurement_rules.po_checks()).
+    checks = rules.po_checks(
+        [{"line_no": ln.line_no, "description": ln.description, "qty": ln.qty_ordered, "uom": ln.uom, "rate": ln.rate,
+          "net_value": ln.net_value} for ln, _st in lines if ln.is_active],
+        po.total_value, po.total_inclusive_value, po.vendor.gstin if po.vendor else "", po.po_date)
     return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active, "canManage": can_manage,
-                     "poFiles": po_files(po) if has_plant else [], "lines": [_po_line(line, st) for line, st in lines]})
+                     "poFiles": po_files(po), "checks": checks, "lines": [_po_line(line, st) for line, st in lines]})
 
 
 @api_view(["GET"])
@@ -207,7 +216,7 @@ def _preview_payload(result):
                         "expectedText": m.get("expected_text"), "actualText": m.get("actual_text"),
                         "differencePct": _s(m["difference_pct"]), "reason": m["reason"].code if m["reason"] else None}
                        for m in result["mismatches"]],
-        "lines": lines, "vendor": _vendor(result["vendor"]), "taxType": result["tax_type"],
+        "lines": lines, "vendor": _vendor(result["vendor"]), "vendorState": result["vendor_state"], "taxType": result["tax_type"],
         "taxTypeExpected": result["tax_type_expected"], "computedTotal": _s(result["computed_total"]),
         "invoiceTotal": _s(result["invoice_total"]), "notices": result["notices"],
     }
@@ -260,6 +269,7 @@ def _mir_detail(mir):
     stock = stock_service.mir_line_stock(mir)
     return {
         **_mir_row(mir, total), "taxType": mir.tax_type, "taxTypeExpected": mir.tax_type_expected,
+        "vendorState": mir.vendor_state, "vendorStateName": rules.GST_STATES.get(mir.vendor_state, ""),
         "tcsAmount": _s(mir.tcs_amount), "challanNo": mir.challan_no, "lrNo": mir.lr_no, "vehicleNo": mir.vehicle_no,
         "ewayBillNo": mir.eway_bill_no, "gateEntryNo": mir.gate_entry_no, "weighbridgeSlipNo": mir.weighbridge_slip_no,
         "sapGrnNumber": mir.sap_grn_number, "remarks": mir.remarks, "cancelledBy": mir.cancelled_by_email, "cancelledAt": mir.cancelled_at.isoformat() if mir.cancelled_at else None,
@@ -271,8 +281,8 @@ def _mir_detail(mir):
                     for c in mir.changes.select_related("mir_line").all()],
         "lines": [{
             "lineNo": ln.line_no, "poNumber": ln.po_line.purchase_order.po_number, "poPlant": ln.po_line.purchase_order.plant.code,
-            "poLineNo": ln.po_line.line_no, "description": ln.po_line.description, "itemCode": ln.po_line.item_code,
-            "uom": ln.po_line.uom, "qtyReceived": _s(ln.qty_received), "qtyRejected": _s(ln.qty_rejected),
+            "poLineNo": ln.po_line.line_no, "description": ln.description or ln.po_line.description, "itemCode": ln.po_line.item_code,
+            "uom": ln.uom or ln.po_line.uom, "qtyReceived": _s(ln.qty_received), "qtyRejected": _s(ln.qty_rejected),
             "openQtyBefore": _s(ln.open_qty_before), "rate": _s(ln.rate), "poRate": _s(ln.po_rate), "discount": _s(ln.discount),
             "otherCharges": _s(ln.other_charges), "gstRate": _s(ln.gst_rate), "taxable": _s(ln.taxable), "igst": _s(ln.igst),
             "cgst": _s(ln.cgst), "sgst": _s(ln.sgst), "lineTotal": _s(ln.line_total), "rolls": ln.rolls,
@@ -433,16 +443,15 @@ def mismatches(request):
         out.append({**_mismatch(m), "mirId": m.mir_id, "mirNo": m.mir.mir_no, "mirDate": _d(m.mir.mir_date),
                     "plant": _plant(m.mir.plant), "vendor": _vendor(m.mir.vendor), "invoiceNo": m.mir.invoice_no,
                     "poNumber": line.po_line.purchase_order.po_number if line else None,
-                    "description": line.po_line.description if line else None})
+                    "description": (line.description or line.po_line.description) if line else None})
     return Response({"mismatches": out})
 
 
 @api_view(["POST"])
 @permission_classes([requires(*PO_MANAGERS)])
 def resolve(request, mismatch_id):
-    mm = get_object_or_404(MirMismatch.objects.select_related("mir__plant", "mir_line__po_line__purchase_order__plant"), pk=mismatch_id)
-    po_plant = mm.mir_line.po_line.purchase_order.plant.code if mm.mir_line else None
-    if not (user_can_access_plant(request.user, mm.mir.plant.code) or (po_plant and user_can_access_plant(request.user, po_plant))):
+    mm = get_object_or_404(MirMismatch.objects.select_related("mir__plant"), pk=mismatch_id)
+    if not user_can_access_plant(request.user, mm.mir.plant.code):
         return _forbidden()
     try:
         mm = mir_service.resolve_mismatch(mm, request.user, (request.data or {}).get("note"))

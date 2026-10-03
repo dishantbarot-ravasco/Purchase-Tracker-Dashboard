@@ -248,7 +248,10 @@ The PO master CSV feeds two places. Each plant's own mirror (`HRSDomesticPurchas
 the reconciliation dashboard and its matcher, as before. The normalized `PurchaseOrder` /
 `PurchaseOrderLine` tables ([architecture.md](architecture.md#appscoremodelsprocurementpy)) serve MIR
 entry, and are projected from the mirror by `procurement_sync.project_plant_orders()` at the end of
-every `sync_*_po_csv` run. Both are written as a **diff, never delete-and-rebuild** (project owner,
+every `sync_*_po_csv` run. The projection also resolves each order's `billing_plant` from its billing
+address (`procurement_rules.billing_plant_code()`): a PO belongs to the plant it is billed to (owner,
+2026-10-03), so one sitting in another plant's CSV takes no MIR until it is moved to the right sheet.
+Both are written as a **diff, never delete-and-rebuild** (project owner,
 2026-09-28):
 
 - **The mirror** - a changed order's lines go through `sync_utils.sync_line_items()`: line N is

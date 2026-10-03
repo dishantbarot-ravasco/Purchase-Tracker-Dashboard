@@ -248,7 +248,7 @@ class TestPurchaseManagerLineActions:
     def test_a_po_whose_only_line_is_closed_is_still_found(self, user):
         line = _line(_po())
         mir_service.close_po_line(line, user, "VENDOR_SHORT_CLOSE", "")
-        found = mir_service.search_open_pos("1000009001")
+        found = mir_service.search_open_pos("1000009001", ["hrs"])
         assert [po.po_number for po in found] == ["1000009001"]
         state = mir_service.po_lines_with_state(found[0])[0][1]
         assert state["receivable"] is False and "reopen" in state["blocked_reason"]
@@ -258,7 +258,7 @@ class TestPurchaseManagerLineActions:
     def test_a_review_flagged_line_is_found_and_confirmed(self, user):
         line = _line(_po())
         type(line).objects.filter(pk=line.pk).update(needs_review=True, review_note="Rate changed")
-        assert mir_service.search_open_pos("1000009001")
+        assert mir_service.search_open_pos("1000009001", ["hrs"])
         line.refresh_from_db()
         mir_service.clear_line_review(line, user, "Checked the MIRs")
         line.refresh_from_db()
@@ -267,11 +267,11 @@ class TestPurchaseManagerLineActions:
     def test_the_po_payload_says_who_may_act(self, user):
         po = _po()
         editor = APIClient()
-        editor.force_authenticate(user=make_user(email="pm@ravasco.com", role="editor", plants=["vapi"]))
-        other = APIClient()
-        other.force_authenticate(user=make_user(email="hrs@ravasco.com", role="editor", plants=["hrs"]))
+        editor.force_authenticate(user=make_user(email="pm@ravasco.com", role="editor", plants=["hrs"]))
+        viewer = APIClient()
+        viewer.force_authenticate(user=make_user(email="hrs-viewer@ravasco.com", role="viewer", plants=["hrs"]))
         assert editor.get(f"/api/mir/purchase-orders/{po.id}").json()["canManage"] is True
-        assert other.get(f"/api/mir/purchase-orders/{po.id}").json()["canManage"] is False
+        assert viewer.get(f"/api/mir/purchase-orders/{po.id}").status_code == 403
 
 
 @pytest.mark.django_db

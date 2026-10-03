@@ -92,13 +92,13 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | POST | `stock/vouchers/<id>/approve` | `approve_voucher` | IsAdmin + plant | Approve a pending difference (re-checked now) |
 | POST | `stock/vouchers/<id>/reject` | `reject_voucher` | IsAdmin + plant | Turn one down; a note is required |
 
-### MIR entry, cross-plant (`mir_views`)
+### MIR entry (`mir_views`)
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
 | GET | `mir/meta` | `meta` | `HasAnyAccess` | Plants with `canRead` / `canReceive`, reason codes, tax types, GST slabs, today |
-| GET | `mir/open-pos?q=` | `open_pos` | `PO_MANAGERS`, every plant on purpose | Active POs with an open line whose number, vendor name or GSTIN matches |
-| GET | `mir/purchase-orders/<id>` | `purchase_order` | `PO_MANAGERS`, every plant on purpose; files only for the PO's plant | A normalized PO with each line's received-so-far, open quantity and whether it can take a receipt, plus its uploaded copies (`poFiles`, withdrawn ones left out) |
+| GET | `mir/open-pos?q=` | `open_pos` | `PO_MANAGERS`, the caller's plants only | Active POs at the caller's plants with an open line whose PO number contains `q` |
+| GET | `mir/purchase-orders/<id>` | `purchase_order` | `PO_MANAGERS` + the PO's plant (404 otherwise) | A normalized PO (with `billingPlant`) with each line's received-so-far, open quantity and whether it can take a receipt, plus its uploaded copies (`poFiles`, withdrawn ones left out) |
 | GET | `mir/vendors?q=` | `vendors` | `mir_entry` | Vendor picker for a PO that names no vendor |
 | POST | `mir/preview` | `preview` | `mir_entry` + receiving plant (403) | Check and price the form; saves nothing |
 | POST | `mir/entries/new` | `post_entry` | `mir_entry` + receiving plant (403) | Save a MIR; 201, or 400 with `errors: [{field, message}]` |
@@ -106,7 +106,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `mir/entries/<id>` | `entry` | `MIR_READERS`, readable plant (404) | One MIR with lines, mismatches and `invoiceFiles` |
 | POST | `mir/entries/<id>/cancel` | `cancel_entry` | `mir_entry` + MIR's plant (403) | Cancel with a reason |
 | GET | `mir/mismatches?status=&plant=` | `mismatches` | `MIR_READERS`, readable plants only | Mismatches, `OPEN` by default |
-| POST | `mir/mismatches/<id>/resolve` | `resolve` | `PO_MANAGERS` + MIR's or PO's plant (403) | Resolve with a note |
+| POST | `mir/mismatches/<id>/resolve` | `resolve` | `PO_MANAGERS` + MIR's plant (403) | Resolve with a note |
 | POST | `mir/po-lines/<id>/close` / `reopen` / `review` | `close_line` / `reopen_line` / `review_line` | `PO_MANAGERS` + PO's plant (403) | Short-close a line, reopen it, or clear a `needs_review` flag |
 
 ### PO and invoice files (`document_views`)
@@ -909,13 +909,27 @@ so nothing is counted twice while both exist.
 
 **The flow.** The clerk picks the receiving plant and searches open POs by **PO number only** (owner,
 2026-09-29 - a vendor-name search offered every open order of that vendor, which is how a receipt lands
-on the wrong one). **Every
-plant's open POs are offered** (owner rule: any plant's store may receive any plant's PO), then lines
+on the wrong one). **Only the caller's own plants' POs are offered, and a PO is received only at its own
+plant** - the plant on its billing address (owner, 2026-10-03, replacing the 2026-09-28 rule that any
+plant could receive any plant's PO). Picking the first line sets the receiving plant to the PO's; once
+lines are picked, another plant's PO cannot join (`plantClash()`), and `evaluate()` refuses a line whose
+PO is at another plant. `PurchaseOrder.billing_plant` is read from the billing address
+(`procurement_rules.billing_plant_code()`: a few words of each plant's printed address, unresolved when it
+names none or several); a PO billed to a plant other than the sheet it sits in takes no receipt
+(`line_state()`) until it is moved to the right plant's sheet. Then lines
 of one or several POs of **one vendor** (one MIR is one vendor's invoice). Opening a PO shows its header
 as the purchase team raised it (PO date, payment terms, incoterms, currency, tax type, GST %, values,
-Bill To, Ship To, vendor address, remarks) above its lines. Per MIR the clerk types the invoice number,
-date and total, TCS, the tax type, an optional SAP GRN number and optional transport details; per line
-the quantity received and rejected (in the PO line's own unit), the invoice rate (in the PO's currency
+Bill To, Ship To, vendor address, remarks) above its lines, and under them **what does not add up on
+the PO as written** (`procurement_rules.po_checks()`, owner 2026-10-03: quantity x price against each
+line's net value, the lines against the PO total, a tax total on no single GST rate, a total including
+tax below the total, a missing PO date, GSTIN, description, quantity, unit or price) - a warning to
+take to purchase, never a block, since a mixed-rate order legitimately fails the tax check. Per MIR
+the clerk types the invoice number, date and total, **TCS (required - 0 when the invoice shows none,
+typed so a missed TCS is not mistaken for none)**, the **vendor's State** (required: fixed by the
+vendor's GSTIN when it has one, which the server enforces; otherwise picked from `GST_STATES`, and it
+then decides the expected tax type), the tax type, an optional SAP GRN number and optional transport details; per line
+the quantity received and rejected (in the PO line's own unit, which the MIR line keeps as posted, with
+the description), the invoice rate (in the PO's currency
 per that unit), discount, GST %, the **material category** and department use. The category belongs to
 the **material master** (`Material`, see below), not to the receipt: a filed material's category is shown
 read-only ("From the material master"), and only a material's first MIR asks for one (required, from
@@ -928,7 +942,8 @@ transaction.
 
 **The invoice number is required but not unique** (owner, 2026-09-29). One invoice can arrive as
 several deliveries, each its own MIR - the Drive MIR files do this (one BST Elastomers invoice on five
-HRS MIRs). So earlier POSTED MIRs of the same vendor invoice in its financial year, at any plant, come
+HRS MIRs). So earlier POSTED MIRs of the same vendor invoice in its financial year, at the receiving
+plant (another plant's MIRs are not this clerk's to see), come
 back from `evaluate()` as `notices` ("Invoice X is already on HRS/26-27/0003 ... Save only if this is
 another delivery"), shown in blue above the lines, never as an error. Invoice numbers are compared
 after upper-casing, removing spaces and leading zeros (`invoice_key()`); there is no database
@@ -1604,11 +1619,12 @@ quantities are returned as strings, never floats. `_po_line()` / `_po_summary()`
 `_mismatch()` are the payload shapes; `_readable_plants()` filters reads; `_receiving_plant_allowed()`
 gates preview and post. `MIR_READERS` (MIR entry, PO upload, RM store) and `PO_MANAGERS` (MIR entry, PO
 upload) are the shared permission tuples; `meta` returns `can` (`mirEntry`, `poUpload`, `importDocs`,
-`manageLines`) for mir.html and po-files.html. The PO lookups are cross-plant by owner rule
-(`open_pos` and `vendors` are listed as such in `test_endpoint_permission_guard.py`). `entries` orders
-explicitly: Django ignores `Meta.ordering` on its aggregate query. `purchase_order` adds the PO's
-copies (`document_views.po_files()`) only when the caller has the PO's plant, and `_mir_detail()` the
-MIR's invoice copies (`document_views.invoice_files()`).
+`manageLines`) for mir.html and po-files.html. The PO lookups cover the caller's plants only:
+`open_pos` passes them to `search_open_pos()`, and `purchase_order` answers 404 for another plant's PO
+(not 403, so an id does not confirm that a PO exists). `vendors` is the one company-wide lookup (listed in
+`test_endpoint_permission_guard.py`). `entries` orders explicitly: Django ignores `Meta.ordering` on its
+aggregate query. `purchase_order` adds the PO's copies (`document_views.po_files()`) and `_mir_detail()`
+the MIR's invoice copies (`document_views.invoice_files()`).
 
 ### apps/api/routers/document_views.py
 
@@ -1627,7 +1643,9 @@ with `mir_views`. `po_documents` lists every PO-filed kind (`_PO_FILED_KINDS`) a
 `withdraw()`, `open_link()` - the rules in [PO and invoice files](#po-and-invoice-files-2026-09-30).
 `_siblings()` is the one definition of which files a new one is a revision of; `_bucket_for()` puts
 everything but invoices in `po`; `_clean_reference()` checks and pads the number; `_check_xlsx()`
-vets a workbook. Each upload locks (the plant row for a PO-filed file,
+vets a workbook. `_check_po_plant()` refuses a PO copy filed at the wrong plant: a domestic PO number on
+record only at other plants, or one billed to another plant (owner, 2026-10-03 - only the PO's own
+plant files it); a number not on record yet is filed where the uploader says. Each upload locks (the plant row for a PO-filed file,
 the MIR row for an invoice), sniffs the content type from the first bytes, refuses a duplicate hash,
 numbers the revision, writes R2, supersedes the previous current revision and creates the row, in
 one transaction. `DocumentError` is a `ValueError`, shown to the user as it is.
@@ -1688,7 +1706,7 @@ line closure in one transaction, then the MIR's stock lots (`stock_service.recei
 two MIRs posted at once at one plant get consecutive numbers. `cancel_mir()` (refused while
 its stock is issued - `stock_service.check_mir_cancel()`; `record_rejection()` likewise), `resolve_mismatch()`, `close_po_line()`, `reopen_po_line()`, `clear_line_review()` - the other writes,
 each row-locked and requiring a reason or note. `accepted_by_line()` / `line_state()` - received so far
-and whether a line can take a receipt. `search_open_pos()` - open POs whose PO number contains the query.
+and whether a line can take a receipt (not when the PO is billed to another plant, has no PO date, or the line has no material description - a receipt that could never reach RM stock). `search_open_pos(query, plant_codes)` - open POs at the given plants whose PO number contains the query.
 `MirValidationError.errors` is `[{field, message}]`, the field in the payload's own terms
 (`lines.0.qty_reason`).
 
@@ -1728,9 +1746,11 @@ balance of a lot on or after a day, which every posting checks stays at or above
 
 ### apps/services/procurement_rules.py
 
-Pure rules, no Django imports: `canonical_uom()` (spellings of one unit folded, KG and MT kept apart -
-KG, MT, G, L, ML, KL, M, CM, MM, M2, NOS, ROLL, SET, BAG - an unknown unit kept and flagged), `clean_gstin()` / `gstin_state()`, `canonical_tax_type()`,
-`expected_tax_type()`, `po_gst_rate()`, `GST_SLABS` / `is_gst_slab()`, `financial_year()`,
+Pure rules, no Django imports (migration `0094` imports it): `canonical_uom()` (spellings of one unit folded, KG and MT kept apart -
+KG, MT, G, L, ML, KL, M, CM, MM, M2, NOS, ROLL, SET, BAG - an unknown unit kept and flagged), `clean_gstin()` / `gstin_state()`,
+`billing_plant_code()` (the plant a billing address names, from `PLANT_ADDRESS_MARKERS`; "" when none or several), `canonical_tax_type()`,
+`expected_tax_type()` (the vendor's state from its GSTIN, else the MIR's chosen `vendor_state`), `GST_STATES`,
+`po_checks()` (what does not add up on a PO as written - see the MIR flow), `po_gst_rate()`, `GST_SLABS` / `is_gst_slab()`, `financial_year()`,
 `mir_number()`, `invoice_key()`, `vendor_name_key()`, `line_amounts()`, `rate_differs()`, `pct_of()`
 (clamped to +-`MAX_PCT`, `MirMismatch.difference_pct`'s numeric(9, 2) ceiling),
 `INVOICE_ROUNDING_TOLERANCE` (Rs 1).

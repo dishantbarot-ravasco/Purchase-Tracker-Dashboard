@@ -95,14 +95,27 @@ def line_state(line, accepted: Decimal) -> dict:
     ordered = line.qty_ordered
     open_qty = (ordered - accepted) if ordered is not None else None
     blocked = ""
-    if not line.purchase_order.is_active:
+    po = line.purchase_order
+    if not po.is_active:
         blocked = "The PO is no longer in the master PO sheet."
+    elif po.billing_plant_id is not None and po.billing_plant_id != po.plant_id:
+        # A PO belongs to its billing plant (owner, 2026-10-03); one filed in
+        # another plant's sheet waits until it is moved there.
+        blocked = (f"The PO is billed to {po.billing_plant.name} but sits in {po.plant.name}'s PO sheet - "
+                   f"move it to {po.billing_plant.name}'s sheet before receiving against it.")
     elif not line.is_active:
         blocked = "This line is no longer on the PO."
     elif line.needs_review:
         blocked = "The PO sheet changed this line after receipts - a purchase manager must review it first."
     elif line.closed_at is not None:
         blocked = "Short-closed" + (f": {line.close_note}" if line.close_note else "") + " - a purchase manager can reopen it."
+    elif line.material_id is None:
+        # No description means no material, and so no stock lot - a receipt
+        # that would never reach RM stock is refused instead.
+        blocked = "The PO sheet gives no material description for this line."
+    elif po.po_date is None:
+        # The PO created date is compulsory on a MIR (owner, 2026-10-03).
+        blocked = "The PO sheet gives no PO date for this order."
     elif ordered is None or ordered <= 0:
         blocked = "The PO sheet gives no quantity for this line."
     elif line.rate is None:
@@ -120,8 +133,10 @@ def line_state(line, accepted: Decimal) -> dict:
     return {"accepted": accepted, "open_qty": open_qty, "status": status, "receivable": not blocked, "blocked_reason": blocked}
 
 
-def search_open_pos(query: str, limit: int = 25) -> list:
-    """Active POs at every plant with at least one line not yet received in
+def search_open_pos(query: str, plant_codes, limit: int = 25) -> list:
+    """Active POs at the plants in `plant_codes` (the caller's own - a PO is
+    received only at its own plant, owner 2026-10-03) with at least one line
+    not yet received in
     full - open, short-closed or waiting for a purchase manager's review -
     whose PO number contains `query` (case-insensitive). Newest first.
     Closed and review-flagged lines are included so a purchase manager can
@@ -140,9 +155,9 @@ def search_open_pos(query: str, limit: int = 25) -> list:
     open_line = (PurchaseOrderLine.objects.filter(is_active=True, qty_ordered__gt=0, rate__isnull=False)
                  .annotate(acc=_accepted_annotation()).filter(acc__lt=F("qty_ordered")))
     return list(
-        PurchaseOrder.objects.filter(is_active=True, lines__in=open_line)
+        PurchaseOrder.objects.filter(is_active=True, lines__in=open_line, plant__code__in=list(plant_codes))
         .filter(po_number__icontains=query)
-        .select_related("plant", "vendor").distinct().order_by("-po_date", "-id")[:limit]
+        .select_related("plant", "vendor", "billing_plant").distinct().order_by("-po_date", "-id")[:limit]
     )
 
 
@@ -251,8 +266,12 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
     invoice_total = _dec(payload.get("invoice_total"), "invoice_total", errors, places=2)
     if invoice_total is not None and invoice_total < 0:
         errors.append({"field": "invoice_total", "message": "Cannot be negative."})
-    tcs = _dec(payload.get("tcs_amount"), "tcs_amount", errors, required=False, places=2, default=Decimal("0"))
-    if tcs is not None and tcs < 0:
+    # Required (owner, 2026-10-03): 0 when the invoice shows none, but typed,
+    # so a missed TCS is not mistaken for none.
+    tcs = _dec(payload.get("tcs_amount"), "tcs_amount", errors, places=2)
+    if tcs is None:
+        tcs = Decimal("0")
+    elif tcs < 0:
         errors.append({"field": "tcs_amount", "message": "Cannot be negative."})
         tcs = Decimal("0")
 
@@ -272,7 +291,8 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
             errors.append({"field": f"lines.{i}.po_line_id", "message": "Not a PO line."})
             ids.append(None)
     wanted = [x for x in ids if x is not None]
-    qs = PurchaseOrderLine.objects.select_related("purchase_order__plant", "purchase_order__vendor", "material")
+    qs = PurchaseOrderLine.objects.select_related("purchase_order__plant", "purchase_order__vendor",
+                                                  "purchase_order__billing_plant", "material")
     if lock:
         # Plain FOR UPDATE on the lines only (the joined tables are not
         # locked), in id order so two posts never deadlock.
@@ -299,23 +319,39 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
     elif wanted and vendor is None and chosen_vendor_id in (None, ""):
         errors.append({"field": "vendor_id", "message": "This PO names no vendor - choose the vendor on the invoice."})
 
-    # ── The same invoice on earlier MIRs, at every plant: allowed (one
-    # invoice can come as several deliveries), but said, so a clerk entering
-    # the same delivery twice sees it before saving.
+    # ── The same invoice on earlier MIRs at this plant: allowed (one invoice
+    # can come as several deliveries), but said, so a clerk entering the same
+    # delivery twice sees it before saving. This plant only - a PO is received
+    # only at its own plant, and another plant's MIRs are not this clerk's to
+    # see.
     invoice_key = rules.invoice_key(invoice_no)
     invoice_fy = rules.financial_year(invoice_date) if invoice_date else ""
-    if vendor is not None and invoice_key and invoice_fy:
-        earlier = (Mir.objects.filter(vendor=vendor, invoice_key=invoice_key, invoice_fy=invoice_fy, status="POSTED")
+    if vendor is not None and invoice_key and invoice_fy and plant is not None:
+        earlier = (Mir.objects.filter(plant=plant, vendor=vendor, invoice_key=invoice_key, invoice_fy=invoice_fy, status="POSTED")
                    .select_related("plant").order_by("mir_date", "id")[:5])
         for dup in earlier:
             notices.append(f"Invoice {dup.invoice_no} is already on {dup.mir_no} ({dup.plant.name}, "
                            f"{dup.mir_date:%d-%m-%Y}, entered by {dup.created_by_email}). "
                            "Save only if this is another delivery.")
 
+    # ── The vendor's State (required, owner 2026-10-03): its GSTIN says it;
+    # with no GSTIN on file the clerk picks it from the invoice.
+    chosen_state = str(payload.get("vendor_state") or "").strip()
+    gst_state = rules.gstin_state(vendor.gstin) if vendor else ""
+    vendor_state = ""
+    if gst_state:
+        vendor_state = gst_state
+        if chosen_state and chosen_state != gst_state:
+            errors.append({"field": "vendor_state", "message": f"The vendor's GSTIN is from {rules.GST_STATES.get(gst_state, gst_state)}."})
+    elif chosen_state in rules.GST_STATES:
+        vendor_state = chosen_state
+    elif vendor is not None:
+        errors.append({"field": "vendor_state", "message": "Choose the vendor's State, as the invoice prints it."})
+
     # ── Tax type.
     po_tax = next((po_lines[x].purchase_order.tax_type for x in wanted if x in po_lines and po_lines[x].purchase_order.tax_type), "")
     expected_tax = rules.expected_tax_type(vendor.gstin if vendor else "", plant.state_code if plant else "",
-                                           plant.is_union_territory if plant else False, po_tax)
+                                           plant.is_union_territory if plant else False, po_tax, vendor_state)
     tax_type = payload.get("tax_type") or expected_tax
     if tax_type not in rules.TaxType.ALL:
         errors.append({"field": "tax_type", "message": "Choose IGST, CGST + SGST or CGST + UGST."})
@@ -347,6 +383,12 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
             errors.append({"field": f"{f}.po_line_id", "message": state["blocked_reason"]})
             continue
         po = line.purchase_order
+        if plant is not None and po.plant_id != plant.id:
+            # Only the PO's own (billing) plant receives against it (owner,
+            # 2026-10-03).
+            errors.append({"field": f"{f}.po_line_id",
+                           "message": f"PO {po.po_number} belongs to {po.plant.name} - only {po.plant.name} can enter a MIR against it."})
+            continue
         if mir_date and po.po_date and mir_date < po.po_date:
             errors.append({"field": "mir_date", "message": f"The MIR date is before PO {po.po_number}'s date ({po.po_date:%d-%m-%Y})."})
         qty = _dec(raw.get("qty_received"), f"{f}.qty_received", errors, places=3)
@@ -467,6 +509,7 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         "ok": not errors, "errors": errors, "mismatches": mismatches, "lines": lines_out,
         "plant": plant, "vendor": vendor, "mir_date": mir_date, "invoice_no": invoice_no, "invoice_key": invoice_key,
         "invoice_date": invoice_date, "invoice_fy": invoice_fy, "invoice_total": invoice_total, "tcs_amount": tcs,
+        "vendor_state": vendor_state,
         "tax_type": tax_type, "tax_type_expected": expected_tax, "computed_total": computed_total,
         # Each cut to its own column (EDITABLE_HEADER): a flat 60 let a
         # 31-60 character vehicle or e-way bill number through to a 500.
@@ -504,7 +547,7 @@ def post_mir(payload: dict, user):
         seq = _next_seq(plant, fy)
         mir = Mir.objects.create(
             plant=plant, fy=fy, seq=seq, mir_no=rules.mir_number(plant.mir_prefix, fy, seq),
-            mir_date=result["mir_date"], vendor=result["vendor"], invoice_no=result["invoice_no"],
+            mir_date=result["mir_date"], vendor=result["vendor"], vendor_state=result["vendor_state"], invoice_no=result["invoice_no"],
             invoice_key=result["invoice_key"], invoice_date=result["invoice_date"], invoice_fy=result["invoice_fy"],
             invoice_total=result["invoice_total"], tcs_amount=result["tcs_amount"], tax_type=result["tax_type"],
             tax_type_expected=result["tax_type_expected"], remarks=result["remarks"],
@@ -514,7 +557,8 @@ def post_mir(payload: dict, user):
         for n, ln in enumerate(result["lines"], start=1):
             a = ln["amounts"]
             saved[ln["index"]] = MirLine.objects.create(
-                mir=mir, line_no=n, po_line=ln["po_line"], qty_received=ln["qty_received"],
+                mir=mir, line_no=n, po_line=ln["po_line"], description=ln["po_line"].description[:500],
+                uom=ln["po_line"].uom[:20], qty_received=ln["qty_received"],
                 qty_rejected=ln["qty_rejected"], rate=ln["rate"], po_rate=ln["po_line"].rate,
                 open_qty_before=ln["state"]["open_qty"], discount=ln["discount"], other_charges=ln["other_charges"],
                 gst_rate=ln["gst_rate"], gross=a["gross"], taxable=a["taxable"], igst=a["igst"], cgst=a["cgst"],

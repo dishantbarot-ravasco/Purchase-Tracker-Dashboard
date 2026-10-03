@@ -1434,6 +1434,14 @@ top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.
 
 `fact(label, valueHtml)` takes markup and never escapes for the caller: every caller escapes what came from the server (the PO line's unit is free text an editor can correct).
 
+A PO is received only at its own plant: the PO search returns only the caller's plants, picking the
+first line sets `#plantSel` to the PO's plant (`addLines()`), and once lines are picked another plant's PO
+shows "Another plant" and cannot be added (`plantClash()`, beside `vendorClash()`). The Invoice step has
+a required **Vendor State** select (`#vendorState`, from `META.gstStates`): `syncVendorState()` fixes and
+disables it from the vendor's GSTIN when there is one, and `resetForm()` re-enables it. TCS is required
+(0 when the invoice shows none). `poChecksHtml()` lists the PO's `checks` (what does not add up on the PO
+as written) under its header as an amber note - a warning, never a block.
+
 `mir.html`, self-contained (no `main.js`): `apiMir(path, opts)` wraps `/api/mir` (JSON body
 encoded for it, `err.errors` carries the server's `[{field, message}]`). **It never prices a line or
 decides a mismatch**: every input change runs the debounced `schedulePreview` -> `runPreview()` (POST

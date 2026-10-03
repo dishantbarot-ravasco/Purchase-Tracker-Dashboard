@@ -60,13 +60,14 @@ def _po(qty="100", rate="50", *, plant="vapi", description="SBR 1502", uom="KG")
                                             qty_ordered=Decimal(qty), rate=Decimal(rate), material=materials.material_for(description, uom=uom))
 
 
-def _receive(user, qty="100", rate="50", *, days_ago=0, plant="hrs", description="SBR 1502", uom="KG", rejected=None, po_plant="vapi"):
-    """Post a MIR for a whole PO line at `plant`, dated `days_ago`."""
-    line = _po(qty, rate, plant=po_plant, description=description, uom=uom)
+def _receive(user, qty="100", rate="50", *, days_ago=0, plant="hrs", description="SBR 1502", uom="KG", rejected=None, po_plant=None):
+    """Post a MIR for a whole PO line at `plant` (the PO's own plant unless
+    `po_plant` says otherwise), dated `days_ago`."""
+    line = _po(qty, rate, plant=po_plant or plant, description=description, uom=uom)
     ln = {"po_line_id": line.id, "qty_received": qty, "rate": rate, "gst_rate": "18", "material_category": "Synthetic Rubber"}
     if rejected:
         ln.update(qty_rejected=rejected, reject_reason="REJ_QUALITY", qty_reason="PARTIAL_BALANCE_DUE")
-    body = {"plant": plant, "mir_date": _day(days_ago).isoformat(), "invoice_no": f"INV-{line.id}",
+    body = {"plant": plant, "mir_date": _day(days_ago).isoformat(), "invoice_no": f"INV-{line.id}", "tcs_amount": "0",
             "invoice_date": _day(days_ago).isoformat(), "lines": [ln]}
     body["invoice_total"] = str(mir_service.evaluate(body)["computed_total"])
     return mir_service.post_mir(body, user)
@@ -175,12 +176,22 @@ class TestStockRules:
 @pytest.mark.django_db
 class TestReceipts:
     def test_a_posted_mir_puts_its_accepted_quantity_into_the_receiving_plants_store(self, user):
-        mir = _receive(user, "100", "50", plant="hrs", po_plant="vapi")
+        mir = _receive(user, "100", "50", plant="hrs")
         lot = StockLot.objects.get(mir_line__mir=mir)
         assert (lot.plant.code, lot.uom, lot.rate, lot.stocked) == ("hrs", "KG", Decimal("50.0000"), True)
-        # Vapi's PO, received at HRS: it sits at HRS, and says who paid.
-        assert lot.bill_to_plant.code == "vapi"
+        # A PO is received only at its own plant now, so nobody else paid.
+        assert lot.bill_to_plant is None
         assert _on_hand("hrs") == Decimal("100") and _on_hand("vapi") == Decimal("0")
+
+    def test_the_lot_takes_the_unit_snapshotted_on_the_mir_line(self, user):
+        """A PO sheet edit after posting must not change the unit a posted
+        receipt is in (the MIR line keeps its own)."""
+        mir = _receive(user, "2", "50000", uom="MT")
+        ml = mir.lines.get()
+        assert (ml.uom, ml.description) == ("MT", "SBR 1502")
+        type(ml.po_line).objects.filter(pk=ml.po_line_id).update(uom="KG", description="SBR 1502 (renamed)")
+        ml.refresh_from_db()
+        assert (ml.uom, ml.description) == ("MT", "SBR 1502")
 
     def test_mt_is_received_into_the_materials_base_unit_kg(self, user):
         # Owner, 2026-09-30: base units KG, L, Nos, m.

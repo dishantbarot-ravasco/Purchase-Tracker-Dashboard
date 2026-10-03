@@ -92,6 +92,44 @@ def gstin_state(gstin: str) -> str:
     return gstin[:2] if clean_gstin(gstin) else ""
 
 
+# GST state codes - the vendor's State on a MIR (where the supply comes
+# from). 25 (Daman and Diu) merged into 26 in 2020 and 28 (old Andhra
+# Pradesh) is retired, so neither is offered; 96 is a supplier abroad.
+GST_STATES = {
+    "01": "Jammu and Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+    "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+    "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur",
+    "15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
+    "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh", "24": "Gujarat",
+    "26": "Dadra and Nagar Haveli and Daman and Diu", "27": "Maharashtra", "29": "Karnataka", "30": "Goa",
+    "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu", "34": "Puducherry",
+    "35": "Andaman and Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh", "38": "Ladakh",
+    "96": "Outside India", "97": "Other Territory",
+}
+
+
+# ── Which plant a PO is billed to ──────────────────────────────────────────
+# A PO belongs to the plant on its BILLING address (project owner,
+# 2026-10-03): only that plant may file the PO or receive against it,
+# whatever Ship To says. The billing addresses the three plants print are
+# stable (checked over every PO on 2026-10-03), so a few words of each
+# identify it; an address naming none of them, or more than one plant, is
+# unresolved ("") rather than guessed.
+PLANT_ADDRESS_MARKERS = {
+    "hrs": ("hindustan rubber", "silvassa", "naroli", "kharadpada"),
+    "achhad": ("achhad", "acchad", "talasari", "talsari"),
+    "vapi": ("vapi",),
+}
+
+
+def billing_plant_code(billing_address: str) -> str:
+    """The plant code a PO's billing address names, or "" when it names none
+    or several."""
+    text = re.sub(r"\s+", " ", (billing_address or "").lower())
+    hits = {code for code, words in PLANT_ADDRESS_MARKERS.items() if any(w in text for w in words)}
+    return next(iter(hits)) if len(hits) == 1 else ""
+
+
 def canonical_tax_type(raw: str) -> str:
     """The PO sheet's tax type as one of TaxType, or "" when it is blank or
     not one type ("CGST+SGST+IGST (mixed - flag)")."""
@@ -107,12 +145,14 @@ def canonical_tax_type(raw: str) -> str:
     return ""
 
 
-def expected_tax_type(vendor_gstin: str, plant_state: str, plant_is_union_territory: bool, po_tax_type: str) -> str:
+def expected_tax_type(vendor_gstin: str, plant_state: str, plant_is_union_territory: bool, po_tax_type: str,
+                      vendor_state: str = "") -> str:
     """The tax type a receipt at this plant should carry: CGST with SGST (or
     UGST in a union territory) when the vendor is in the plant's state, IGST
-    otherwise. Falls back to the PO's own tax type when the vendor has no
-    GSTIN on file; "" when neither says."""
-    vendor_state = gstin_state(vendor_gstin)
+    otherwise. The vendor's state is its GSTIN's, else `vendor_state` (the
+    State the MIR clerk chose); falls back to the PO's own tax type when
+    neither is known; "" when nothing says."""
+    vendor_state = gstin_state(vendor_gstin) or (vendor_state if vendor_state in GST_STATES else "")
     if vendor_state and plant_state:
         if vendor_state != plant_state:
             return TaxType.IGST
@@ -138,6 +178,71 @@ def po_gst_rate(total_value, total_inclusive_value) -> Decimal | None:
 
 def is_gst_slab(rate) -> bool:
     return rate is not None and Decimal(rate) in GST_SLABS
+
+
+# ── Checks on a PO as written (owner, 2026-10-03) ──────────────────────────
+# Shown wherever a PO is read before it is relied on (the MIR form's PO
+# header, the extraction review). They flag, never block or correct: the PO
+# is the purchase team's document, and a mixed-rate order legitimately has
+# a tax total on no single slab. Each sum is allowed the rupee the printed
+# figures round to (INVOICE_ROUNDING_TOLERANCE).
+PO_CHECK_TOLERANCE = INVOICE_ROUNDING_TOLERANCE
+
+
+def _d(value):
+    if value is None or value == "":
+        return None
+    try:
+        return Decimal(str(value))
+    except ArithmeticError:
+        return None
+
+
+def po_checks(lines, total_value, total_inclusive_value, vendor_gstin: str, po_date=None) -> list[dict]:
+    """What does not add up on a PO. `lines` is a list of dicts with
+    line_no, description, qty, uom, rate, net_value. Returns
+    [{"check", "line", "message"}], empty when everything agrees."""
+    out = []
+
+    def add(check, message, line=None):
+        out.append({"check": check, "line": line, "message": message})
+
+    if po_date is None:
+        add("po_date", "The PO has no created date.")
+    if not clean_gstin(vendor_gstin or ""):
+        add("vendor_gstin", "The vendor has no valid GSTIN on the PO." if (vendor_gstin or "").strip()
+            else "The vendor's GSTIN is missing.")
+    line_sum, sum_known = Decimal("0"), True
+    for ln in lines:
+        n = ln.get("line_no")
+        qty, rate, net = _d(ln.get("qty")), _d(ln.get("rate")), _d(ln.get("net_value"))
+        if not (ln.get("description") or "").strip():
+            add("line_description", f"Line {n} has no material description.", n)
+        if qty is None or qty <= 0:
+            add("line_qty", f"Line {n} has no quantity.", n)
+        if not (ln.get("uom") or "").strip():
+            add("line_uom", f"Line {n} has no unit.", n)
+        if rate is None:
+            add("line_rate", f"Line {n} has no net price.", n)
+        if net is None:
+            sum_known = False
+        elif qty is not None and rate is not None and abs(qty * rate - net) > PO_CHECK_TOLERANCE:
+            add("line_value", f"Line {n}: quantity x price is {money(qty * rate)} but its net value says {money(net)}.", n)
+        if net is not None:
+            line_sum += net
+    total, inclusive = _d(total_value), _d(total_inclusive_value)
+    if total is None:
+        add("total_value", "The PO has no total value.")
+    elif lines and sum_known and abs(line_sum - total) > PO_CHECK_TOLERANCE:
+        add("total_value", f"The lines' net values add up to {money(line_sum)} but the PO total says {money(total)}.")
+    if inclusive is None:
+        add("total_inclusive_value", "The PO has no total including tax.")
+    elif total is not None and inclusive < total:
+        add("total_inclusive_value", f"The total including tax ({money(inclusive)}) is less than the total ({money(total)}).")
+    elif total is not None and inclusive > total and po_gst_rate(total, inclusive) is None:
+        add("tax_rate", f"The tax ({money(inclusive - total)}) is not one GST rate of the total - "
+                        "check the totals, unless the PO mixes GST rates.")
+    return out
 
 
 # ── Identity helpers ────────────────────────────────────────────────────────

@@ -35,7 +35,7 @@ def _stock(plant="hrs", qty="100"):
                                       po_date=TODAY - datetime.timedelta(days=10), tax_type="IGST")
     line = PurchaseOrderLine.objects.create(purchase_order=po, line_no=1, description="SBR 1502", uom="KG", item_code="22001132",
                                             qty_ordered=Decimal(qty), rate=Decimal("50"), material=materials.material_for("SBR 1502"))
-    body = {"plant": plant, "mir_date": TODAY.isoformat(), "invoice_no": f"INV-{n}", "invoice_date": TODAY.isoformat(),
+    body = {"plant": plant, "mir_date": TODAY.isoformat(), "invoice_no": f"INV-{n}", "invoice_date": TODAY.isoformat(), "tcs_amount": "0",
             "lines": [{"po_line_id": line.id, "qty_received": qty, "rate": "50", "gst_rate": "18", "material_category": "Synthetic Rubber"}]}
     body["invoice_total"] = str(mir_service.evaluate(body)["computed_total"])
     mir = mir_service.post_mir(body, make_user(email=f"clerk{n}@ravasco.com", role="editor"))

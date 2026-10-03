@@ -288,8 +288,11 @@ Read the linked section before breaking any of these. Each is there because it w
   and never computes a figure. Received-so-far is summed from POSTED lines, never stored.
 - The invoice number is required but NOT unique (owner, 2026-09-29): one invoice can be several
   deliveries, so earlier MIRs of it come back as a notice, never an error - don't add a uniqueness
-  check. Any plant may receive any plant's open PO (the PO lookups are cross-plant on purpose, and search
-  by PO number only); posting is scoped to the receiving plant.
+  check. **A PO belongs to the plant on its billing address (owner, 2026-10-03)**: only that plant files it
+  or enters a MIR against it. `PurchaseOrder.billing_plant` comes from `procurement_rules.billing_plant_code()`;
+  a PO billed to a plant other than its sheet's takes no receipt until moved. The PO lookups cover the
+  caller's plants only (another plant's PO is a 404), search by PO number only, and the duplicate-invoice
+  notice stays within the receiving plant. Never reintroduce cross-plant receiving.
 - A posted MIR's figures (qty received, rates, GST, discount, tax type, invoice total, lines) are never
   edited - cancel and re-enter. `edit_mir()` takes paperwork within 7 days (the SAP GRN any time) and
   `record_rejection()` raises a rejection within 30 days; both need a reason and log to `MirChange`.

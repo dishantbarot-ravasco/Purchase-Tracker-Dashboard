@@ -158,12 +158,14 @@ function initNewMir() {
   mirDate.max = META.today;
   document.getElementById('invoiceDate').max = META.today;
   document.getElementById('taxType').innerHTML = META.taxTypes.map(t => '<option value="' + t.code + '">' + escapeHtml(t.label) + '</option>').join('');
+  document.getElementById('vendorState').innerHTML = '<option value="">Choose the State</option>' +
+    (META.gstStates || []).map(st => '<option value="' + st.code + '">' + escapeHtml(st.code + ' - ' + st.name) + '</option>').join('');
 
   const search = debounce(runSearch, 300);
   document.getElementById('poSearch').addEventListener('input', search);
   schedulePreview = debounce(runPreview, 350);
   const schedule = schedulePreview;
-  ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount', 'sapGrnNo'].forEach(id =>
+  ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount', 'sapGrnNo', 'vendorState'].forEach(id =>
     document.getElementById(id).addEventListener('input', schedule));
   document.getElementById('taxType').addEventListener('change', () => { S.taxTouched = true; schedule(); });
   document.getElementById('mirForm').addEventListener('submit', e => { e.preventDefault(); postMir(); });
@@ -186,7 +188,7 @@ function updateProgress(p) {
   const has = prefix => errs.some(e => (e.field || '').startsWith(prefix));
   const receipt = !has('plant') && !has('mir_date') && !!document.getElementById('mirDate').value;
   const po = S.lines.length > 0;
-  const invoice = po && !!p && !['invoice_no', 'invoice_date', 'invoice_total', 'tcs_amount', 'tax_type', 'vendor_id']
+  const invoice = po && !!p && !['invoice_no', 'invoice_date', 'invoice_total', 'tcs_amount', 'vendor_state', 'tax_type', 'vendor_id']
     .some(f => errs.some(e => e.field === f || e.field === f + '_reason' || e.field === f + '_note'));
   const lines = po && !!p && !has('lines');
   const done = { 1: receipt, 2: po, 3: invoice, 4: lines };
@@ -223,14 +225,23 @@ function vendorClash(po) {
   return S.lines.length && S.vendor && po.vendor && po.vendor.id !== S.vendor.id;
 }
 
+// A PO is received only at its own plant (owner, 2026-10-03); the search
+// returns only the caller's plants, and picking the first line sets the
+// receiving plant to the PO's. Once lines are picked, another plant's PO
+// cannot join this MIR.
+function plantClash(po) {
+  return S.lines.length && po.plant.code !== document.getElementById('plantSel').value;
+}
+
 function poResultHtml(po) {
-  const clash = vendorClash(po);
+  const plantClashes = plantClash(po);
+  const clash = plantClashes || vendorClash(po);
   return '<div class="mir-po' + (clash ? ' is-disabled' : '') + '">' +
     '<div class="mir-po-head">' +
       '<div class="mir-po-id"><b>PO ' + escapeHtml(po.poNumber) + '</b><span class="mir-plant-tag">' + escapeHtml(po.plant.name) + '</span></div>' +
       '<div class="mir-po-vendor">' + escapeHtml(po.vendor ? po.vendor.name : 'No vendor on the PO') + '</div>' +
       '<div class="mir-muted">Dated ' + dateIN(po.poDate) + ' &middot; ' + po.openLines + ' of ' + po.totalLines + ' lines open</div>' +
-      (clash ? '<div class="mir-muted">Another vendor - one MIR is one invoice</div>'
+      (clash ? '<div class="mir-muted">' + (plantClashes ? 'Another plant - one MIR is one plant\'s receipt' : 'Another vendor - one MIR is one invoice') + '</div>'
         : '<button type="button" class="btn btn-navy btn-small" data-open-po="' + po.id + '">Show lines</button>') +
     '</div><div class="mir-po-lines"></div></div>';
 }
@@ -271,7 +282,16 @@ function poHeaderHtml(po) {
       chip('GST', po.gstRate ? Number(po.gstRate) + '%' : '') + chip('Currency', po.currency) +
       chip('Value incl. GST', po.totalInclusiveValue ? money(po.totalInclusiveValue, po.currency) : '') +
     '</div>' +
-    (more ? '<details class="mir-po-more"><summary>More PO details (terms, addresses, remarks)</summary>' + more + '</details>' : '');
+    (more ? '<details class="mir-po-more"><summary>More PO details (terms, addresses, remarks)</summary>' + more + '</details>' : '') +
+    poChecksHtml(po.checks);
+}
+
+/** What does not add up on the PO as written (the server's po_checks()) -
+    a warning for the purchase team, never a block on receiving. */
+function poChecksHtml(checks) {
+  if (!checks || !checks.length) return '';
+  return '<div class="mir-po-checks" role="note"><b>Check this PO with purchase:</b><ul>' +
+    checks.map(c => '<li>' + escapeHtml(c.message) + '</li>').join('') + '</ul></div>';
 }
 
 /** The PO's uploaded copy (po-files.html), so the store can check the
@@ -372,6 +392,11 @@ function openLineAction(action, line, container, done) {
 function addLines(po, lines) {
   if (!lines.length) return;
   if (!S.lines.length) {
+    const plantSel = document.getElementById('plantSel');
+    if (plantSel.value !== po.plant.code && [...plantSel.options].some(o => o.value === po.plant.code)) {
+      plantSel.value = po.plant.code;
+      plantSel.dispatchEvent(new Event('change'));
+    }
     S.vendor = po.vendor;
     S.vendorFromPo = !!po.vendor;
   } else if (!S.vendor && po.vendor) {
@@ -398,7 +423,21 @@ function addLines(po, lines) {
   if (first && !first.value) setTimeout(() => document.getElementById('invoiceNo').focus({ preventScroll: true }), 400);
 }
 
+// The vendor's State: fixed by its GSTIN when it has one (the server says
+// so too), otherwise picked by the clerk from the invoice.
+function syncVendorState() {
+  const sel = document.getElementById('vendorState');
+  const fromGstin = S.vendor && S.vendor.gstin ? S.vendor.gstin.slice(0, 2) : '';
+  if (fromGstin) sel.value = fromGstin;
+  else if (sel.disabled) sel.value = ''; // was another vendor's GSTIN state
+  sel.disabled = !!fromGstin;
+  document.getElementById('vendorStateHint').textContent = fromGstin
+    ? "From the vendor's GSTIN."
+    : 'Where the vendor supplies from, as the invoice prints it.';
+}
+
 function renderVendor() {
+  syncVendorState();
   const box = document.getElementById('vendorBox');
   if (S.vendor) {
     box.innerHTML = '<span class="mir-kv-k">Vendor</span> <b>' + escapeHtml(S.vendor.name) + '</b>' +
@@ -585,7 +624,7 @@ function payload() {
   const val = id => document.getElementById(id).value;
   const body = {
     plant: val('plantSel'), mir_date: val('mirDate'), invoice_no: val('invoiceNo'), invoice_date: val('invoiceDate'),
-    invoice_total: val('invoiceTotal'), tcs_amount: val('tcsAmount'), sap_grn_number: val('sapGrnNo'),
+    invoice_total: val('invoiceTotal'), tcs_amount: val('tcsAmount'), vendor_state: val('vendorState'), sap_grn_number: val('sapGrnNo'),
     challan_no: val('challanNo'), lr_no: val('lrNo'), vehicle_no: val('vehicleNo'), eway_bill_no: val('ewayBillNo'),
     gate_entry_no: val('gateEntryNo'), weighbridge_slip_no: val('weighbridgeSlipNo'), remarks: val('remarks'),
     tax_type_reason: S.header.tax_type_reason || '', tax_type_note: S.header.tax_type_note || '',
@@ -642,7 +681,7 @@ function paintPreview(p) {
   const taxSel = document.getElementById('taxType');
   if (!S.taxTouched && p.taxTypeExpected) taxSel.value = p.taxTypeExpected;
   const expected = META.taxTypes.find(t => t.code === p.taxTypeExpected);
-  document.getElementById('taxTypeHint').textContent = expected ? 'Expected from the vendor\'s and plant\'s states: ' + expected.label : 'Vendor state unknown - choose the tax type on the invoice.';
+  document.getElementById('taxTypeHint').textContent = expected ? 'Expected from the vendor\'s and plant\'s states: ' + expected.label : 'Choose the vendor\'s State to see the expected tax type.';
   headerDiff('TAX_TYPE', 'taxReasonRow', p);
   headerDiff('INVOICE_BEFORE_PO', 'invoiceDateReasonRow', p);
   headerDiff('INVOICE_TOTAL', 'totalReasonRow', p);
@@ -753,7 +792,7 @@ function headerDiff(kind, rowId, p) {
 
 const FIELD_LABELS = {
   plant: 'the receiving plant', mir_date: 'the MIR date', invoice_no: 'the invoice number', invoice_date: 'the invoice date',
-  invoice_total: 'the invoice grand total', tcs_amount: 'TCS', tax_type: 'the tax type', vendor_id: 'the vendor', lines: 'Lines',
+  invoice_total: 'the invoice grand total', tcs_amount: 'TCS', vendor_state: "the vendor's State", tax_type: 'the tax type', vendor_id: 'the vendor', lines: 'Lines',
   sap_grn_number: 'the SAP GRN number',
   tax_type_reason: 'the tax type difference', tax_type_note: 'the note on the tax type difference',
   invoice_total_reason: 'the invoice total difference', invoice_total_note: 'the note on the invoice total difference',
@@ -874,7 +913,7 @@ async function postMir() {
 // offered back (never restored silently) when the page opens. Restoring
 // re-reads each PO from the server, so a line closed or received meanwhile
 // is dropped rather than resurrected.
-const DRAFT_FIELDS = ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount', 'taxType', 'sapGrnNo',
+const DRAFT_FIELDS = ['plantSel', 'mirDate', 'invoiceNo', 'invoiceDate', 'invoiceTotal', 'tcsAmount', 'vendorState', 'taxType', 'sapGrnNo',
   'challanNo', 'lrNo', 'vehicleNo', 'ewayBillNo', 'gateEntryNo', 'weighbridgeSlipNo', 'remarks'];
 const DRAFT_MAX_AGE_MS = 3 * 24 * 3600 * 1000;
 // CURRENT_USER is auth.js's own (set by requireAuth()); this page must not declare it again.
@@ -981,6 +1020,7 @@ function resetForm(keepDraft) {
   document.getElementById('mirForm').reset();
   document.getElementById('plantSel').value = plant;
   document.getElementById('mirDate').value = META.today;
+  document.getElementById('vendorState').disabled = false;
   ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox', 'noticeBox', 'todoBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
   ['taxReasonRow', 'totalReasonRow', 'invoiceDateReasonRow'].forEach(id => { const r = document.getElementById(id); r.hidden = true; r.innerHTML = ''; r.dataset.sig = ''; });
   showEntrySections(false);
@@ -1045,7 +1085,7 @@ async function loadDetail(id) {
     ['Plant', m.plant.name], ['MIR date', dateIN(m.mirDate)],
     ['Vendor', m.vendor.name + (m.vendor.gstin ? ' (' + m.vendor.gstin + ')' : '')], ['Invoice', m.invoiceNo + ', ' + dateIN(m.invoiceDate)],
     ['Invoice total', money(m.invoiceTotal, cur)], ['Computed total', money(m.computedTotal, cur)],
-    ['Tax type', tax ? tax.label : m.taxType], ['TCS', Number(m.tcsAmount) ? money(m.tcsAmount, cur) : ''],
+    ['Vendor State', m.vendorStateName || ''], ['Tax type', tax ? tax.label : m.taxType], ['TCS', money(m.tcsAmount, cur)],
     ['SAP GRN number', m.sapGrnNumber], ['Vehicle', m.vehicleNo], ['Challan', m.challanNo], ['LR', m.lrNo],
     ['E-way bill', m.ewayBillNo], ['Gate entry', m.gateEntryNo], ['Weighbridge slip', m.weighbridgeSlipNo],
     ['Entered by', m.createdBy + ', ' + new Date(m.createdAt).toLocaleString('en-IN')],

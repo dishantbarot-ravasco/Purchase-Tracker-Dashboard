@@ -185,6 +185,7 @@ def project_plant_orders(plant_code: str) -> ProjectionResult:
     from apps.core.models import Plant, PurchaseOrder
 
     plant = Plant.objects.get(code=plant_code)
+    plants_by_code = {p.code: p for p in Plant.objects.all()}
     legacy_model = _legacy_model(plant_code)
     result = ProjectionResult()
     current = {po.po_number: po for po in PurchaseOrder.objects.filter(plant=plant)}
@@ -209,6 +210,7 @@ def project_plant_orders(plant_code: str) -> ProjectionResult:
             "payment_terms": legacy.payment_terms or "",
             "incoterms": legacy.incoterms or "",
             "billing_address": legacy.billing_address or "",
+            "billing_plant": plants_by_code.get(rules.billing_plant_code(legacy.billing_address or "")),
             "ship_to": legacy.ship_to or "",
             "total_value": legacy.total_value,
             "total_inclusive_value": legacy.total_inclusive_value,

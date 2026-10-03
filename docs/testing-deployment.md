@@ -89,8 +89,8 @@ single-unit test:
   which is precisely why it is a test and not a one-time cleanup.
 - `test_endpoint_permission_guard.py` - every write endpoint declares `permission_classes` and every
   plant endpoint calls a plant-scoping helper (see
-  [auth-security-email.md](auth-security-email.md)). The MIR page's three PO lookups are listed in
-  its allow-list as cross-plant by the owner's rule.
+  [auth-security-email.md](auth-security-email.md)). The MIR page's vendor picker (`vendors`, the
+  company vendor master) is the one MIR lookup on its allow-list.
 - `test_email_delivery_is_observable.py` - no application module passes `fail_silently=True`, and a
   failed send logs an ERROR (see [auth-security-email.md](auth-security-email.md)).
 - `test_dockerignore_mirrors_gitignore.py` - `.dockerignore` must exclude everything `.gitignore`
@@ -651,7 +651,7 @@ Configuration is `pyproject.toml` plus these:
 | test_manual_mir_match_imports.py | yes | Import MIR pins: `po_kind` separation, domestic vs import pins competing for one MIR table. |
 | test_matching.py | no | Pure PO<->MIR<->Stock scoring helpers (`_closeness`, `_diff_pct`, `_token_overlap`, vendor/PO-number matching). |
 | test_matching_query_scaling.py | yes | `run_full_match()` query count does not scale with row count (N+1 regression). |
-| test_mir_service.py | yes | MIR entry rules: exact receipt, tax type by state, short/over/rejected quantity and their reasons, rate differences, invoice total within the rounding rupee, the cross-plant duplicate-invoice refusal, receiving another plant's PO, one vendor per MIR, lines that cannot be received, dates and field checks, numbering, cancel, resolve, line close/reopen/review, and two threaded tests of simultaneous posting (one invoice twice, one line in full twice). |
+| test_mir_service.py | yes | MIR entry rules: exact receipt, tax type by state, short/over/rejected quantity and their reasons, rate differences, invoice total within the rounding rupee, the duplicate-invoice notice (receiving plant only), refusing another plant's PO and a PO billed to another plant, the plant-scoped PO search, one vendor per MIR, lines that cannot be received, dates and field checks, numbering, cancel, resolve, line close/reopen/review, and two threaded tests of simultaneous posting (one invoice twice, one line in full twice). |
 | test_stock_service.py | yes | RM stock entry rules: stock units and lot rates, the day-by-day balance, a MIR as the only way in (MT into KG, rejected never stocked, not-kept-in-store, cross-plant), issues out of the MIR receipt picked (never another receipt, its value, refusals: more than it holds, before it came in, a backdated issue that fits today but not its day, the date window, one line per receipt, another plant's, a cancelled or straight-to-use receipt; department optional), returns (back into the same receipt, no more than still out, dates, plant, reasons), cancelling rules, a MIR whose stock was issued refused cancel or rejection, stock differences (pending until an admin approves, counts against that receipt's books, a count that found more back into the same receipt, no adding stock by hand, re-check on approval, no self-approval, the open list), the register (opening / movements / closing for a period, empty receipts left out, search), a receipt's movements, the picker, migration `0082`'s lots for earlier MIRs, and a threaded test of the last of a receipt issued twice at once. |
 | test_material_category_reference_parser.py | no | Material category reference sheet parser. |
 | test_mir_stock_identification.py | no | MIR<->Stock description cleaning, fuzzy tokens, grade-code contradiction gate, `NO_RM_STOCK_VENDORS`. |

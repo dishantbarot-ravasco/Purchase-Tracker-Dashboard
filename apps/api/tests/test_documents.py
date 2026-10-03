@@ -122,6 +122,22 @@ class TestPoUpload:
         assert _upload(_client(plants=["vapi"]), plant="hrs").status_code == 403
         assert Document.objects.count() == 0
 
+    def test_a_po_on_record_at_another_plant_is_filed_only_there(self, r2):
+        """A PO is filed only by the plant it belongs to (owner, 2026-10-03)."""
+        from apps.core.models import Plant, PurchaseOrder
+        PurchaseOrder.objects.create(plant=Plant.objects.get(code="vapi"), po_number="1000009001")
+        res = _upload(_client(plants=["hrs", "vapi"]), po="1000009001", plant="hrs")
+        assert res.status_code == 400 and "only RTP - Vapi" in res.json()["error"]
+        assert _upload(_client(plants=["vapi"], email="v@ravasco.com"), po="1000009001", plant="vapi").status_code == 201
+
+    def test_a_po_billed_to_another_plant_is_refused(self, r2):
+        from apps.core.models import Plant, PurchaseOrder
+        PurchaseOrder.objects.create(plant=Plant.objects.get(code="hrs"), po_number="3000009001",
+                                     billing_plant=Plant.objects.get(code="achhad"))
+        res = _upload(_client(plants=["hrs"]), po="3000009001", plant="hrs")
+        assert res.status_code == 400 and "billed to RTP - Achhad" in res.json()["error"]
+        assert Document.objects.count() == 0
+
     def test_without_storage_set_up_the_upload_says_so(self, settings):
         settings.R2_ACCOUNT_ID = ""
         res = _upload(_client())

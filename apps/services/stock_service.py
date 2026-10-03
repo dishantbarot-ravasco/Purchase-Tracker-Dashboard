@@ -98,8 +98,9 @@ def receive_mir(mir) -> list:
             continue
         # In the material's base unit - KG, L, NOS or M - converted exactly
         # (MT into KG) or by its pack factor (ROLL into M); otherwise the MIR
-        # line's own unit (stock_rules BASE UNITS, materials.unit_factor()).
-        uom, factor = materials.unit_factor(po_line.material, po_line.uom)
+        # line's own unit (stock_rules BASE UNITS, materials.unit_factor()) -
+        # the unit snapshotted on the MIR line, the one its quantity is in.
+        uom, factor = materials.unit_factor(po_line.material, line.uom or po_line.uom)
         po = po_line.purchase_order
         lots.append(StockLot.objects.create(
             plant=mir.plant, material=po_line.material, uom=uom, source=StockLot.Source.MIR, mir_line=line,

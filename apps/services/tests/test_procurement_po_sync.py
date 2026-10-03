@@ -126,6 +126,14 @@ class TestProjection:
         line = _lines()[0]
         assert (line.item_code, line.hsn, line.uom, line.rate, line.delivery_date.isoformat()) == ("1", "4002", "KG", Decimal("100"), "2026-05-15")
 
+    def test_the_billing_plant_is_read_from_the_billing_address(self, tmp_path):
+        """A PO belongs to the plant its billing address names (owner,
+        2026-10-03); an HRS-sheet PO billed to Achhad is recorded as such."""
+        _sync(tmp_path, [_row("1", "SBR 1502", 1000, 100, **{
+            "Billing Address": "Ravasco Transmission and Packing, 95-99, Achhad Industrial estate, Talasari, Thane"})])
+        po = PurchaseOrder.objects.get(plant__code="hrs", po_number="3000009001")
+        assert po.billing_plant.code == "achhad"
+
     def test_a_second_run_writes_nothing(self, tmp_path):
         _sync(tmp_path, _three_lines())
         result = project_plant_orders("hrs")

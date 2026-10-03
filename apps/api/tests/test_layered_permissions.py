@@ -156,19 +156,17 @@ class TestFilesFollowTheirKind:
 
 
 @pytest.mark.django_db
-class TestCrossPlantPoLookupHidesFiles:
-    def test_another_plants_po_is_found_but_its_files_are_listed_only_to_that_plant(self):
-        """Any plant may receive any plant's PO (owner rule 2026-09-28), so
-        the PO itself is cross-plant - its uploaded copies are not."""
+class TestPoLookupIsOwnPlantOnly:
+    def test_another_plants_po_and_its_files_are_not_found(self):
+        """A PO is received only at its own plant (owner, 2026-10-03), so the
+        MIR lookup never shows another plant's PO or its uploaded copies."""
         vapi = Plant.objects.get(code="vapi")
         po = PurchaseOrder.objects.create(plant=vapi, po_number="1000009999")
         Document.objects.create(kind="PO", plant=vapi, po_number=po.po_number, revision=1, storage_key="vapi/k.pdf",
                                 original_filename="k.pdf", content_type="application/pdf", size_bytes=1,
                                 sha256="0" * 64, uploaded_by_email="seed@ravasco.com")
         hrs_store = _client(_user("hrs-store@ravasco.com", [Perm.MIR_ENTRY], plants=("hrs",)))
-        res = hrs_store.get(f"/api/mir/purchase-orders/{po.id}")
-        assert res.status_code == 200
-        assert (res.json()["poFiles"], res.json()["canManage"]) == ([], False)
+        assert hrs_store.get(f"/api/mir/purchase-orders/{po.id}").status_code == 404
         vapi_store = _client(_user("vapi-store@ravasco.com", [Perm.MIR_ENTRY], plants=("vapi",)))
         assert len(vapi_store.get(f"/api/mir/purchase-orders/{po.id}").json()["poFiles"]) == 1
 

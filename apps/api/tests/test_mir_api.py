@@ -13,6 +13,7 @@ from rest_framework.test import APIClient
 
 from apps.api.tests.factories import make_user
 from apps.core.models import Mir, Plant, PurchaseOrder, PurchaseOrderLine, Vendor
+from apps.services import materials
 
 TODAY = timezone.localdate()
 
@@ -30,13 +31,13 @@ def _po(plant="vapi", number="1000009001"):
                                       po_date=TODAY - datetime.timedelta(days=10), tax_type="IGST",
                                       total_value=Decimal("5000"), total_inclusive_value=Decimal("5900"))
     PurchaseOrderLine.objects.create(purchase_order=po, line_no=1, description="SBR 1502", uom="KG",
-                                     qty_ordered=Decimal("100"), rate=Decimal("50"))
+                                     qty_ordered=Decimal("100"), rate=Decimal("50"), material=materials.material_for("SBR 1502"))
     return po
 
 
-def _body(po, plant="hrs", qty="100", **extra):
-    body = {"plant": plant, "mir_date": TODAY.isoformat(), "invoice_no": "INV-1", "invoice_date": TODAY.isoformat(),
-            "invoice_total": "5900.00", "lines": [{"po_line_id": po.lines.get().id, "qty_received": qty,
+def _body(po, plant=None, qty="100", **extra):
+    body = {"plant": plant or po.plant.code, "mir_date": TODAY.isoformat(), "invoice_no": "INV-1", "invoice_date": TODAY.isoformat(),
+            "invoice_total": "5900.00", "tcs_amount": "0", "lines": [{"po_line_id": po.lines.get().id, "qty_received": qty,
                                                     "rate": "50", "gst_rate": "18", "material_category": "Carbon Black"}]}
     body.update(extra)
     return body
@@ -50,19 +51,27 @@ class TestPostingPermissions:
         assert client.post("/api/mir/entries/new", _body(po), format="json").status_code == 403
         assert Mir.objects.count() == 0
 
-    def test_an_editor_scoped_to_hrs_posts_at_hrs_even_against_a_vapi_po(self):
-        client, po = _client(plants=["hrs"]), _po(plant="vapi")
-        res = client.post("/api/mir/entries/new", _body(po, plant="hrs"), format="json")
+    def test_an_editor_scoped_to_hrs_posts_at_hrs_against_an_hrs_po(self):
+        client, po = _client(plants=["hrs"]), _po(plant="hrs")
+        res = client.post("/api/mir/entries/new", _body(po), format="json")
         assert res.status_code == 201, res.json()
         data = res.json()
         assert data["mirNo"].startswith("HRS/") and data["createdBy"] == "e@ravasco.com"
-        assert data["lines"][0]["poPlant"] == "vapi"
+        assert data["lines"][0]["poPlant"] == "hrs"
         # money travels as exact strings
         assert data["lines"][0]["lineTotal"] == "5900.00"
 
     def test_an_editor_scoped_to_hrs_cannot_post_at_vapi(self):
         client, po = _client(plants=["hrs"]), _po()
         assert client.post("/api/mir/entries/new", _body(po, plant="vapi"), format="json").status_code == 403
+
+    def test_an_hrs_mir_against_a_vapi_po_is_refused(self):
+        """A PO is received only at its own (billing) plant (owner,
+        2026-10-03) - even by an account that has both plants."""
+        client, po = _client(plants=["hrs", "vapi"]), _po(plant="vapi")
+        res = client.post("/api/mir/entries/new", _body(po, plant="hrs"), format="json")
+        assert res.status_code == 400 and res.json()["errors"][0]["field"] == "lines.0.po_line_id"
+        assert Mir.objects.count() == 0
 
     def test_a_validation_failure_is_a_400_naming_the_field(self):
         client, po = _client(), _po()
@@ -81,13 +90,20 @@ class TestPostingPermissions:
 
 @pytest.mark.django_db
 class TestFindingPOs:
-    def test_open_pos_span_every_plant_for_an_editor(self):
+    def test_open_pos_cover_only_the_callers_plants(self):
         _po(plant="vapi", number="1000009001")
         _po(plant="achhad", number="1100009001")
-        client = _client(plants=["hrs"])
-        found = client.get("/api/mir/open-pos?q=9001").json()["purchaseOrders"]
-        assert {p["plant"]["code"] for p in found} == {"vapi", "achhad"}
+        _po(plant="hrs", number="3000009001")
+        found = _client(plants=["hrs"]).get("/api/mir/open-pos?q=9001").json()["purchaseOrders"]
+        assert [p["plant"]["code"] for p in found] == ["hrs"]
         assert found[0]["gstRate"] == "18" and found[0]["openLines"] == 1
+        both = _client(plants=["vapi", "achhad"], email="b@ravasco.com").get("/api/mir/open-pos?q=9001").json()
+        assert {p["plant"]["code"] for p in both["purchaseOrders"]} == {"vapi", "achhad"}
+
+    def test_another_plants_po_detail_is_a_404(self):
+        po = _po(plant="vapi")
+        assert _client(plants=["hrs"]).get(f"/api/mir/purchase-orders/{po.id}").status_code == 404
+        assert _client(plants=["vapi"], email="v@ravasco.com").get(f"/api/mir/purchase-orders/{po.id}").status_code == 200
 
     def test_the_search_takes_the_po_number_only(self):
         """A vendor name or GSTIN finds nothing: a vendor search offered every
@@ -117,7 +133,7 @@ class TestFindingPOs:
 @pytest.mark.django_db
 class TestRegisterScoping:
     def _post(self, plant):
-        po = _po(number=f"10000090{plant[:2]}")
+        po = _po(plant=plant, number=f"10000090{plant[:2]}")
         client = _client(email=f"{plant}@ravasco.com")
         return client.post("/api/mir/entries/new", _body(po, plant=plant, invoice_no=f"INV-{plant}"), format="json").json()
 
