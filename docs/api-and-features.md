@@ -82,6 +82,7 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `stock/receipts/<lot_id>` | `receipt` | `rm_store`, readable plant (404) | One MIR receipt: its MIR facts, balances, every movement with the running balance, the plant's store setting for the material |
 | GET | `stock/register?plant=&from=&to=&q=&category=&all=` | `register` | `rm_store`, readable plants | The RM register: one row per MIR receipt for the period (default this month to today) - opening, received, issued, returned, adjusted, closing, rate, value, days in store. `all=1` keeps receipts that held nothing all period |
 | GET | `stock/differences?status=&plant=` | `differences` | `rm_store`, readable plants | Stock differences (Open mismatches): `OPEN` (waiting for an admin, default), `RESOLVED`, `CANCELLED`, `ALL` |
+| POST | `stock/receipts/<lot_id>/location` | `receipt_location` | `rm_store` + the lot's plant (404) | Where in the plant's store a receipt sits (`{"location": name or ""}`); a new name joins the plant's list |
 | POST | `stock/settings` | `settings` | `rm_store` + plant (403) | Whether the plant keeps a material in store, and its minimum level |
 | POST | `stock/materials/<id>/units` | `material_units` | `rm_store` (company-wide) | A material's base unit (KG / L / NOS / M) and pack factors `{unit: factor or ""}`, with a reason; company-wide, logged; used by MIRs posted afterwards |
 | POST | `stock/preview` | `preview` | `rm_store` + plant (403) | Check and value an issue / return / difference; saves nothing |
@@ -1154,6 +1155,15 @@ stops counting at once. A material a plant does not keep in store (`StockSetting
 conveyor fabric) has its MIR lots recorded as "straight to use", holding nothing and never offered for
 issue; the flag is read when the MIR is posted and kept on the lot.
 
+**Where a receipt sits (owner, 2026-10-03).** The HRS RM sheet tags each lot with where it is kept (its
+location column: HRS, or the shared warehouse "RTP-1"). A receipt's detail has a **Location** field for
+the storekeeper (`stock_service.set_location()`): pick one of the plant's `StockLocation` names or type a
+new one, which joins the plant's list (case and spacing do not make a second one - `location_key()`);
+blank clears it. Who set it and when are kept on the lot. The register shows "At ..." under the MIR,
+filters by `?location=` and its search matches a location name; `stock/meta` lists each readable plant's
+locations. A location is never deleted. It is where the goods sit inside the plant that owns them - stock
+still belongs to the receiving plant, which is the PO's billing plant.
+
 **Not built yet:** transfers between plants (challan, job work), an Excel export of the register, and a
 way to bring the Drive sheets' current stock in (it has to be entered as MIRs). Voucher lines entered
 before 2026-09-30 that drew several lots keep working through their allocations; a pending difference
@@ -1718,7 +1728,7 @@ RM stock entry's rules (see [RM stock entry](#rm-stock-entry-2026-09-29)). The M
 `record_rejection()`, which turn the refusal into a `MirValidationError`), `mir_line_stock(mir)`.
 Reading: `lot_events()` (a lot's dated movements, with overrides for a change being checked),
 `lot_balances()` (in, issued, returned, adjusted, balance),
-`register_rows(plant_codes, from, to, q=, category=, include_empty=)`, `receipts_for_issue(plant_codes, q, limit=80)`
+`register_rows(plant_codes, from, to, q=, category=, include_empty=, location=)`, `receipts_for_issue(plant_codes, q, limit=80)`
 (the picker: oldest MIR first, read in `_PICKER_BATCH` (500) batches until `limit` receipts with stock
 are found - never a fixed cap taken before the balance filter, which let fully issued receipts crowd
 newer stock out), `lot_detail(lot)` (movements with
@@ -1734,6 +1744,10 @@ also row-locks the issue it names (`_evaluate_return(lock=True)`), the row `canc
 return and that issue's cancellation can never both commit.
 `StockValidationError.errors` is `[{field, message}]` in the payload's own terms (`lines.0.qty`).
 `BACKDATE_DAYS` (7), `MAX_LINES` (50), `ADJUST_MODES`.
+
+Where a receipt sits: `location_key()` (upper-cased, spaces collapsed), `locations(plant)` (the plant's
+`StockLocation` names), `set_location(lot, name, user)` (row-locks the lot, finds or creates the plant's
+location by key, blank clears, at most `LOCATION_MAX` characters, records who and when).
 
 ### apps/services/stock_rules.py
 

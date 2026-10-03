@@ -59,6 +59,31 @@ class StockReasonCode(models.Model):
         return self.code
 
 
+class StockLocation(models.Model):
+    """Where in a plant's store a receipt physically sits - a godown, a shed,
+    or the shared warehouse the HRS RM sheet tags "RTP-1" (owner, 2026-10-03:
+    the RM file's location column). Named by the storekeepers themselves, one
+    list per plant; never deleted, so a lot always keeps its place's name."""
+
+    plant = models.ForeignKey("core.Plant", on_delete=models.PROTECT, related_name="stock_locations")
+    name = models.CharField(max_length=60)
+    # stock_service.location_key(): upper-cased, spaces collapsed - "rtp 1"
+    # and "RTP  1" are one place.
+    name_key = models.CharField(max_length=60)
+    created_by_email = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plant", "name_key"], name="uniq_stock_location_per_plant"),
+            models.CheckConstraint(condition=~Q(name_key=""), name="stock_location_named"),
+        ]
+        ordering = ["plant_id", "name"]
+
+    def __str__(self):
+        return f"{self.plant_id}:{self.name}"
+
+
 class StockSetting(models.Model):
     """What a plant's store does with a material. A material with no row is
     stocked, with no minimum level. `is_stocked` False means receipts of it
@@ -216,6 +241,12 @@ class StockLot(models.Model):
     # straight to use and holds nothing.
     stocked = models.BooleanField(default=True)
     batch_no = models.CharField(max_length=60, blank=True, default="")
+    # Where in the plant's store it sits (StockLocation, at this lot's plant);
+    # null until the storekeeper says. Set and changed only by
+    # stock_service.set_location(), which records who and when.
+    location = models.ForeignKey(StockLocation, on_delete=models.PROTECT, null=True, blank=True, related_name="lots")
+    location_set_by_email = models.CharField(max_length=255, blank=True, default="")
+    location_set_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

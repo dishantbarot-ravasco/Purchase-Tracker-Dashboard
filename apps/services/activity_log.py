@@ -91,6 +91,7 @@ ROUTE_LABELS = {
     "stock-approve": "Approved a stock difference",
     "stock-reject": "Rejected a stock difference",
     "stock-settings": "Changed stock settings",
+    "stock-receipt-location": "Set where a stock receipt sits",
     "stock-material-units": "Changed a material's stock units",
     # Dashboard corrections and decisions
     "correct-field": "Corrected a PO field",

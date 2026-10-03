@@ -86,6 +86,7 @@ urlpatterns = [
     path("stock/meta", stock_views.meta, name="stock-meta"),
     path("stock/receipts", stock_views.receipts, name="stock-receipts"),
     path("stock/receipts/<int:lot_id>", stock_views.receipt, name="stock-receipt"),
+    path("stock/receipts/<int:lot_id>/location", stock_views.receipt_location, name="stock-receipt-location"),
     path("stock/register", stock_views.register, name="stock-register"),
     path("stock/differences", stock_views.differences, name="stock-differences"),
     path("stock/settings", stock_views.settings, name="stock-settings"),

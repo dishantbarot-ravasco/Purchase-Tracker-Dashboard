@@ -579,7 +579,9 @@ level), `StockSequence`, `StockVoucher` / `StockVoucherLine` (issue, return, sto
 / `POSTED` / `REJECTED` / `CANCELLED`, constraints for the issue a return names, a decision on every
 non-pending difference and a reason on every cancellation; each line's `lot` is the MIR receipt it acts
 on), `StockLot` (one per MIR line - the only way stock comes in since 2026-09-30; the old hand-made
-`ADJUSTMENT` lots still count; **no stored quantity** - derived from its MIR line while that is posted)
+`ADJUSTMENT` lots still count; **no stored quantity** - derived from its MIR line while that is posted;
+`location` - where in the plant's store it sits, with who set it and when), `StockLocation` (a plant's
+store locations by name, unique per plant on `name_key`, never deleted; migration `0096`)
 and `StockAllocation` (how much a voucher line took from or put back into a lot). See
 [api-and-features.md](api-and-features.md#rm-stock-entry-2026-09-29).
 

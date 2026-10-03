@@ -148,6 +148,7 @@ from .procurement import (  # noqa: F401
 )
 from .stock import (  # noqa: F401
     StockReasonCode,
+    StockLocation,
     StockSetting,
     StockSequence,
     StockVoucher,
@@ -230,6 +231,7 @@ __all__ = [
     "MirChange",
     "Document",
     "StockReasonCode",
+    "StockLocation",
     "StockSetting",
     "StockSequence",
     "StockVoucher",

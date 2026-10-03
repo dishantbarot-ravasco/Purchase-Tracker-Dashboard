@@ -99,6 +99,7 @@ def _receipt(lot, balance=None):
         "receivedDate": _d(lot.received_date), "plant": _plant(lot.plant), "material": _material(lot.material), "uom": lot.uom,
         "vendor": lot.vendor.name if lot.vendor else "", "billToPlant": _plant(lot.bill_to_plant),
         "rate": _s(lot.rate), "currency": lot.currency, "stocked": lot.stocked, "batchNo": lot.batch_no,
+        "location": lot.location.name if lot.location_id else "", "locationSetBy": lot.location_set_by_email,
         # The MIR line's own unit and how many stock units one of it is, so
         # a converted receipt can show "2 MT" beside "2,000 KG".
         "mirUom": (mir_line.uom or mir_line.po_line.uom) if mir_line else lot.uom, "factor": _n(lot.factor),
@@ -117,7 +118,7 @@ def meta(request):
     backdating window, departments used before, categories held, and how
     many differences wait for approval."""
     user = request.user
-    plants, departments, readable = [], {}, []
+    plants, departments, locations, readable = [], {}, {}, []
     for p in Plant.objects.all():
         can_read = user_can_access_plant(user, p.code)
         can_write = can_read and _is_writer(user)
@@ -126,6 +127,7 @@ def meta(request):
         if can_read:
             readable.append(p.code)
             departments[p.code] = stock_service.departments(p)
+            locations[p.code] = stock_service.locations(p)
     pending = StockVoucher.objects.filter(plant__code__in=readable, status="PENDING").count()
     categories = sorted({c for c in StockLot.objects.filter(plant__code__in=readable)
                          .values_list("material__category", flat=True).distinct() if c})
@@ -135,7 +137,7 @@ def meta(request):
                     # Stock comes in only through a MIR now: no opening-balance reason.
                     for r in StockReasonCode.objects.filter(is_active=True).exclude(code="OPENING_BALANCE")],
         "today": _d(timezone.localdate()), "backdateDays": stock_service.BACKDATE_DAYS,
-        "departments": departments, "pendingApprovals": pending, "isAdmin": is_admin(user),
+        "departments": departments, "locations": locations, "pendingApprovals": pending, "isAdmin": is_admin(user),
         "categories": categories,
         "baseUnits": [{"code": c, "label": label} for c, label in Material.BaseUnit.choices],
         # Units a pack factor may be entered for: every known unit nothing exact converts.
@@ -172,7 +174,7 @@ def receipts(request):
 def register(request):
     """One row per MIR receipt for a period, like the store's Stock sheet.
     ?plant= ?from= ?to= (default: this month to today) ?q= ?category=
-    ?all=1 keeps receipts that held nothing all period."""
+    ?location= ?all=1 keeps receipts that held nothing all period."""
     plants = _readable_plants(request.user, request.query_params.get("plant"))
     today = timezone.localdate()
     date_to = _date(request.query_params.get("to"), today)
@@ -181,6 +183,7 @@ def register(request):
         return Response({"error": "The From date is after the To date."}, status=http.HTTP_400_BAD_REQUEST)
     rows = stock_service.register_rows(plants, date_from, date_to, q=request.query_params.get("q", ""),
                                        category=request.query_params.get("category", ""),
+                                       location=request.query_params.get("location", ""),
                                        include_empty=request.query_params.get("all") == "1")
     return Response({
         "from": _d(date_from), "to": _d(date_to),
@@ -231,6 +234,22 @@ def settings(request):
     except stock_service.StockValidationError as exc:
         return _bad(exc)
     return Response({"ok": True})
+
+
+@api_view(["POST"])
+@permission_classes([requires(Perm.RM_STORE)])
+def receipt_location(request, lot_id):
+    """Where in its plant's store a MIR receipt sits. Body: {"location": name
+    or ""}. At the lot's own plant only (404 for another plant's)."""
+    lot = get_object_or_404(StockLot.objects.select_related("plant"), pk=lot_id)
+    if not user_can_access_plant(request.user, lot.plant.code):
+        return _not_found()
+    try:
+        lot = stock_service.set_location(lot, str((request.data or {}).get("location") or ""), request.user)
+    except stock_service.StockValidationError as exc:
+        return _bad(exc)
+    return Response({"location": lot.location.name if lot.location_id else "", "locationSetBy": lot.location_set_by_email,
+                     "locations": stock_service.locations(lot.plant)})
 
 
 def _material_units(material):

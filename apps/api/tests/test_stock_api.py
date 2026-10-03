@@ -271,3 +271,44 @@ class TestTheRestOfThePage:
         assert len(client.get(f"/api/stock/vouchers?q={lot.mir_line.mir.mir_no}").json()["vouchers"]) == 1
         assert client.get("/api/stock/vouchers?kind=RETURN").json()["vouchers"] == []
         assert client.get(f"/api/stock/vouchers?from={TODAY + datetime.timedelta(days=1)}").json()["vouchers"] == []
+
+
+@pytest.mark.django_db
+class TestLocation:
+    """Where a receipt sits in its plant's store - the HRS RM sheet's
+    location column (owner, 2026-10-03)."""
+
+    def test_a_new_name_joins_the_plants_list_and_spelling_does_not_split_it(self):
+        lot, client = _stock(), _client(plants=["hrs"])
+        res = client.post(f"/api/stock/receipts/{lot.id}/location", {"location": "  RTP-1 "}, format="json")
+        assert res.status_code == 200 and res.json()["location"] == "RTP-1" and res.json()["locations"] == ["RTP-1"]
+        other = _stock()
+        assert client.post(f"/api/stock/receipts/{other.id}/location", {"location": "rtp-1"}, format="json").json()["location"] == "RTP-1"
+        from apps.core.models import StockLocation
+        assert StockLocation.objects.filter(plant__code="hrs").count() == 1
+        detail = client.get(f"/api/stock/receipts/{lot.id}").json()
+        assert (detail["location"], detail["locationSetBy"]) == ("RTP-1", "e@ravasco.com")
+        assert client.get("/api/stock/meta").json()["locations"]["hrs"] == ["RTP-1"]
+
+    def test_the_register_filters_and_searches_by_location(self):
+        a, b = _stock(), _stock()
+        client = _client(plants=["hrs"])
+        client.post(f"/api/stock/receipts/{a.id}/location", {"location": "Main godown"}, format="json")
+        client.post(f"/api/stock/receipts/{b.id}/location", {"location": "RTP-1"}, format="json")
+        assert [r["id"] for r in client.get("/api/stock/register?location=rtp-1").json()["rows"]] == [b.id]
+        assert [r["id"] for r in client.get("/api/stock/register?q=godown").json()["rows"]] == [a.id]
+
+    def test_a_blank_name_clears_it_and_too_long_is_refused(self):
+        lot, client = _stock(), _client(plants=["hrs"])
+        client.post(f"/api/stock/receipts/{lot.id}/location", {"location": "Shed"}, format="json")
+        assert client.post(f"/api/stock/receipts/{lot.id}/location", {"location": ""}, format="json").json()["location"] == ""
+        assert client.post(f"/api/stock/receipts/{lot.id}/location", {"location": "x" * 61}, format="json").status_code == 400
+
+    def test_only_the_lots_plant_and_the_rm_store_may_set_it(self):
+        lot = _stock()
+        assert _client(plants=["vapi"], email="v@ravasco.com").post(
+            f"/api/stock/receipts/{lot.id}/location", {"location": "X"}, format="json").status_code == 404
+        assert _client(role="viewer", plants=["hrs"], email="w@ravasco.com").post(
+            f"/api/stock/receipts/{lot.id}/location", {"location": "X"}, format="json").status_code == 403
+        lot.refresh_from_db()
+        assert lot.location is None

@@ -60,7 +60,7 @@ BACKDATE_DAYS = 7
 KIND_CODES = {"ISSUE": "ISS", "RETURN": "RET", "ADJUST": "ADJ"}
 ZERO = Decimal("0")
 LOT_RELATED = ("mir_line__mir", "mir_line__po_line__purchase_order", "voucher_line__voucher", "material", "vendor",
-                "plant", "bill_to_plant")
+                "plant", "bill_to_plant", "location")
 
 
 class StockValidationError(Exception):
@@ -240,13 +240,13 @@ def _settings(plant_ids, material_ids=None) -> dict:
 
 def _search(qs, q: str):
     """Narrow a StockLot queryset to a MIR number, material, vendor,
-    invoice, PO number or item code."""
+    invoice, PO number, item code or store location."""
     q = (q or "").strip()
     if not q:
         return qs
     return qs.filter(Q(mir_line__mir__mir_no__icontains=q) | Q(material__name__icontains=q) | Q(vendor__name__icontains=q)
                      | Q(mir_line__mir__invoice_no__icontains=q) | Q(mir_line__po_line__purchase_order__po_number__icontains=q)
-                     | Q(mir_line__po_line__item_code__icontains=q))
+                     | Q(mir_line__po_line__item_code__icontains=q) | Q(location__name__icontains=q))
 
 
 def receipts_for_issue(plant_codes, q: str = "", *, limit: int = 80) -> list:
@@ -299,7 +299,7 @@ def _movements(lots) -> dict:
 
 
 def register_rows(plant_codes, date_from: datetime.date, date_to: datetime.date, *, q: str = "", category: str = "",
-                  include_empty: bool = False) -> list[dict]:
+                  include_empty: bool = False, location: str = "") -> list[dict]:
     """The RM register, one row per MIR receipt, like the store's own Stock
     sheet: what it held at the start of the period (opening), what came in,
     went out, came back and was adjusted within it, and what it held at the
@@ -311,6 +311,8 @@ def register_rows(plant_codes, date_from: datetime.date, date_to: datetime.date,
     qs = StockLot.objects.filter(plant__code__in=list(plant_codes), received_date__lte=date_to)
     if category:
         qs = qs.filter(material__category=category)
+    if location:
+        qs = qs.filter(location__name_key=location_key(location))
     lots = list(_search(qs, q).select_related(*LOT_RELATED))
     moves = _movements(lots)
     today = timezone.localdate()
@@ -937,3 +939,41 @@ def departments(plant, limit: int = 30) -> list[str]:
     rows = (StockVoucher.objects.filter(plant=plant, kind="ISSUE").exclude(department="")
             .values("department").annotate(n=Count("id")).order_by("-n", "department")[:limit])
     return [r["department"] for r in rows]
+
+
+# ── Where a receipt sits (owner, 2026-10-03) ──────────────────────────────
+LOCATION_MAX = 60
+
+
+def location_key(name: str) -> str:
+    return " ".join((name or "").split()).upper()
+
+
+def locations(plant) -> list[str]:
+    """The plant's store locations, by name - the location picker's list."""
+    from apps.core.models import StockLocation
+
+    return list(StockLocation.objects.filter(plant=plant).values_list("name", flat=True))
+
+
+@transaction.atomic
+def set_location(lot, name: str, user):
+    """Say where in its plant's store a receipt sits. A name the plant has
+    not used before becomes one of its locations (case and spacing do not
+    make a new one); a blank name clears it. Records who and when."""
+    from apps.core.models import StockLocation, StockLot
+
+    lot = StockLot.objects.select_for_update().get(pk=lot.pk)
+    name = " ".join((name or "").split())
+    if len(name) > LOCATION_MAX:
+        raise StockValidationError([{"field": "location", "message": f"At most {LOCATION_MAX} characters."}])
+    location = None
+    if name:
+        location, _ = StockLocation.objects.get_or_create(
+            plant_id=lot.plant_id, name_key=location_key(name),
+            defaults={"name": name, "created_by_email": getattr(user, "email", "") or ""})
+    lot.location = location
+    lot.location_set_by_email = getattr(user, "email", "") or ""
+    lot.location_set_at = timezone.now()
+    lot.save(update_fields=["location", "location_set_by_email", "location_set_at"])
+    return lot

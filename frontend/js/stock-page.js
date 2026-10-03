@@ -648,10 +648,12 @@ function stInitRegister() {
   ['rgPlant', 'slPlant', 'mmPlant'].forEach(id => { document.getElementById(id).innerHTML = stPlantOptions(readable, true); });
   document.getElementById('rgCategory').innerHTML = '<option value="">All</option>' +
     (ST_META.categories || []).map(c => '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>').join('');
+  stFillLocationFilter();
   document.getElementById('rgFrom').value = ST_META.today.slice(0, 8) + '01';
   document.getElementById('rgTo').value = ST_META.today;
   const reload = stDebounce(stLoadRegister, 300);
-  ['rgPlant', 'rgFrom', 'rgTo', 'rgCategory', 'rgSearch', 'rgAll'].forEach(id => document.getElementById(id).addEventListener('input', reload));
+  ['rgPlant', 'rgFrom', 'rgTo', 'rgCategory', 'rgLocation', 'rgSearch', 'rgAll'].forEach(id => document.getElementById(id).addEventListener('input', reload));
+  document.getElementById('rgPlant').addEventListener('input', stFillLocationFilter);
   const reloadSlips = stDebounce(stLoadSlips, 300);
   ['slPlant', 'slKind', 'slFrom', 'slTo', 'slSearch'].forEach(id => document.getElementById(id).addEventListener('input', reloadSlips));
   const pick = slips => {
@@ -668,6 +670,22 @@ function stInitRegister() {
   document.getElementById('rgShowSlips').onclick = () => pick(true);
 }
 
+// Store locations (StockLocation): the register's filter offers the chosen
+// plant's, or every readable plant's on "All plants".
+function stLocationsFor(plant) {
+  const by = ST_META.locations || {};
+  const names = plant ? (by[plant] || []) : Object.values(by).flat();
+  return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+}
+
+function stFillLocationFilter() {
+  const sel = document.getElementById('rgLocation');
+  const keep = sel.value;
+  const names = stLocationsFor(document.getElementById('rgPlant').value);
+  sel.innerHTML = '<option value="">All</option>' + names.map(n => '<option value="' + escapeHtml(n) + '">' + escapeHtml(n) + '</option>').join('');
+  sel.value = names.includes(keep) ? keep : '';
+}
+
 function stLoadRegisterView() {
   if (document.getElementById('rgSlips').hidden) stLoadRegister();
   else stLoadSlips();
@@ -676,7 +694,7 @@ function stLoadRegisterView() {
 async function stLoadRegister() {
   const area = document.getElementById('registerArea');
   const params = new URLSearchParams();
-  [['plant', 'rgPlant'], ['from', 'rgFrom'], ['to', 'rgTo'], ['category', 'rgCategory'], ['q', 'rgSearch']].forEach(([k, id]) => {
+  [['plant', 'rgPlant'], ['from', 'rgFrom'], ['to', 'rgTo'], ['category', 'rgCategory'], ['location', 'rgLocation'], ['q', 'rgSearch']].forEach(([k, id]) => {
     const v = document.getElementById(id).value.trim();
     if (v) params.set(k, v);
   });
@@ -711,7 +729,8 @@ async function stLoadRegister() {
     '<th class="num">Closing</th><th class="num">Rate</th><th class="num">Value</th><th class="num">In store</th></tr></thead><tbody>' +
     rows.map((r, i) => '<tr data-row="' + i + '" tabindex="0">' +
       '<td class="nowrap"><b>' + escapeHtml(r.mirNo || r.doc) + '</b><div class="mir-muted">' +
-        escapeHtml([r.lineNo ? 'Line ' + r.lineNo : '', stDate(r.receivedDate), allPlants ? r.plant.code.toUpperCase() : ''].filter(Boolean).join(' - ')) + '</div></td>' +
+        escapeHtml([r.lineNo ? 'Line ' + r.lineNo : '', stDate(r.receivedDate), allPlants ? r.plant.code.toUpperCase() : ''].filter(Boolean).join(' - ')) + '</div>' +
+        (r.location ? '<div class="mir-muted">At ' + escapeHtml(r.location) + '</div>' : '') + '</td>' +
       '<td class="st-text"><b>' + escapeHtml(r.material.name) + '</b><div class="mir-muted">' +
         escapeHtml([r.itemCode, catText(r.material)].filter(Boolean).join(' - ') || 'No category') + '</div></td>' +
       '<td class="st-text">' + escapeHtml(r.vendor || '-') + (r.billToPlant ? '<div class="mir-muted">PO of ' + escapeHtml(r.billToPlant.name) + '</div>' : '') + '</td>' +
@@ -745,6 +764,7 @@ async function stLoadReceipt(lotId) {
       ['Issued', stQty(d.issued, d.uom)],
       ['Returned', stQty(d.returned, d.uom)], ['Stock differences', Number(d.adjusted) ? stQty(d.adjusted, d.uom) : ''],
       ['Left in store', stQty(d.balance, d.uom)], ['Value (before GST)', stMoney(d.value)], ['Batch', d.batchNo],
+      ['Location', d.location ? d.location + (d.locationSetBy ? ' (set by ' + d.locationSetBy + ')' : '') : ''],
       ['Kept in store', d.stocked ? 'Yes' : 'No - went straight to use']]) +
     (d.canWrite ? '<div class="st-settings"><h4 class="mir-subtitle">Store settings for ' + escapeHtml(d.material.name) + ' at ' + escapeHtml(d.plant.name) + '</h4>' +
       '<div class="mir-grid">' +
@@ -755,6 +775,7 @@ async function stLoadReceipt(lotId) {
       '<p class="mir-hint">Not kept in store: its future MIRs record the receipt but put nothing into stock (for material that goes straight to use). MIRs already made keep what they are.' +
         (s.updatedBy ? ' Last changed by ' + escapeHtml(s.updatedBy) + '.' : '') + '</p>' +
       '<div class="mir-actions"><button type="button" class="btn btn-navy btn-small" id="setSave">Save settings</button><span class="mir-error-text" id="setErr"></span></div></div>' : '') +
+    stLocationPanel(d) +
     stUnitsPanel(d) +
     '<h4 class="mir-subtitle">Movements</h4><div class="table-wrap"><table><thead><tr><th>Date</th><th>Document</th><th>What</th><th>Detail</th><th class="num">In / out</th><th class="num">Balance</th></tr></thead><tbody>' +
       (d.movements.length ? d.movements.map(m => '<tr><td class="nowrap">' + stDate(m.date) + '</td>' +
@@ -770,6 +791,7 @@ async function stLoadReceipt(lotId) {
   const diffBtn = document.getElementById('rcDiff');
   if (diffBtn) diffBtn.onclick = () => { stShowView('viewMismatch'); stOpenDiffForm(); stSendTo(ST_FORMS.ADJUST, null, d); };
   stWireUnits(d, lotId);
+  stWireLocation(d, lotId);
   const save = document.getElementById('setSave');
   if (save) save.onclick = async () => {
     try {
@@ -778,6 +800,34 @@ async function stLoadReceipt(lotId) {
       stToast('Settings saved for ' + d.material.name + '.');
       stLoadReceipt(lotId);
     } catch (e) { document.getElementById('setErr').textContent = e.message; }
+  };
+}
+
+// ── Where the receipt sits (StockLocation, per plant) ────────────────────
+// The HRS RM sheet's location column (HRS / RTP-1): which godown or shared
+// warehouse holds this receipt. A new name joins the plant's list.
+function stLocationPanel(d) {
+  if (!d.canWrite || d.source !== 'MIR') return '';
+  const names = stLocationsFor(d.plant.code);
+  return '<div class="st-settings"><h4 class="mir-subtitle">Where it sits in the store</h4>' +
+    '<div class="mir-grid"><div class="form-group"><label class="form-label" for="rcLocation">Location at ' + escapeHtml(d.plant.name) + '</label>' +
+      '<input class="form-control" id="rcLocation" list="rcLocationList" maxlength="60" autocomplete="off" value="' + escapeHtml(d.location || '') + '" placeholder="e.g. Main godown, RTP-1">' +
+      '<datalist id="rcLocationList">' + names.map(n => '<option value="' + escapeHtml(n) + '">').join('') + '</datalist>' +
+      '<span class="mir-hint">Pick one of the plant\'s locations or type a new one. Leave blank to clear.</span></div></div>' +
+    '<div class="mir-actions"><button type="button" class="btn btn-navy btn-small" id="rcLocationSave">Save location</button><span class="mir-error-text" id="rcLocationErr"></span></div></div>';
+}
+
+function stWireLocation(d, lotId) {
+  const btn = document.getElementById('rcLocationSave');
+  if (!btn) return;
+  btn.onclick = async () => {
+    try {
+      const res = await apiStock('/receipts/' + lotId + '/location', { method: 'POST', body: { location: document.getElementById('rcLocation').value } });
+      (ST_META.locations = ST_META.locations || {})[d.plant.code] = res.locations;
+      stFillLocationFilter();
+      stToast(res.location ? 'Location saved: ' + res.location + '.' : 'Location cleared.');
+      stLoadReceipt(lotId);
+    } catch (e) { document.getElementById('rcLocationErr').textContent = e.message; }
   };
 }
 

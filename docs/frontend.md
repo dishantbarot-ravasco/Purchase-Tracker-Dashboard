@@ -1397,7 +1397,11 @@ A unit (`uom`) is free text from the MIR / PO line, so markup takes figures thro
 stock or values a line: every input change sends the form to `/api/stock/preview` (debounced, stale
 responses dropped; the register, slips and mismatch lists drop theirs too, through `stLoadTicket()`) and paints the value, what the MIR has left after it, the "Still to do" list and
 notices; saving re-runs the same check server-side. Inputs are not re-rendered on a preview. Every
-top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.js`).
+top-level name is `st...` / `ST_...` (one global scope with `auth.js` / `shared.js`). A receipt's detail
+has a **Where it sits in the store** panel for RM store writers (`stLocationPanel()` / `stWireLocation()`:
+a text field with the plant's locations as a datalist, saved to `/receipts/<id>/location`); the register
+shows "At ..." under the MIR and has a Location filter (`stFillLocationFilter()`, from `ST_META.locations`,
+the chosen plant's or every readable plant's).
 
 - `apiStock()` - the fetch wrapper. `stSetupForm(formId, kind, hooks)` - the shared form machinery for
   the three forms (plant and date within `backdateDays`, preview, errors mapped to fields - red only
