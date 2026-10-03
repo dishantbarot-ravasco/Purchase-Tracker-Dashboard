@@ -23,7 +23,12 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "dev-only-insecure-key-change-in-production")
+# The fallback lets the Docker build's collectstatic run with no secrets. It
+# never reaches a running server: apps.core.E001 (apps/core/checks.py) is an
+# Error whenever DEBUG is off and this is still the key, and release.sh's
+# `migrate` runs the checks, so a deploy missing DJANGO_SECRET_KEY fails.
+DEV_SECRET_KEY = "dev-only-insecure-key-change-in-production"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "").strip() or DEV_SECRET_KEY
 DEBUG = os.environ.get("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
 
@@ -233,6 +238,10 @@ else:
         "default": {
             "BACKEND": "django.core.cache.backends.db.DatabaseCache",
             "LOCATION": "pt_cache_table",
+            # Django's default of 300 entries culls a third of the table when
+            # full, which would silently forget throttle and brute-force
+            # counters (otp_service's reset-failure count) under load.
+            "OPTIONS": {"MAX_ENTRIES": 100_000},
         }
     }
 
@@ -475,8 +484,18 @@ MISMATCH_REPORT_PLANT_HEADS_ENABLED = os.environ.get("MISMATCH_REPORT_PLANT_HEAD
 # fires on a genuinely missed DAY, not on every night.
 HEALTH_SYNC_STALE_HOURS = int(os.environ.get("HEALTH_SYNC_STALE_HOURS", "26"))
 
+# A sign-in lasts at most this long however often it is renewed: the refresh
+# token's auth_time claim is checked on every rotation
+# (apps/api/auth_serializers.py). Then the password again (and no emailed code
+# on a trusted device).
+PT_SESSION_MAX_AGE = timedelta(days=30)
+
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(hours=12),
+    # One hour: a copied access token is a bearer
+    # credential until it expires, and auth.js renews the session silently
+    # (authFetch() on a 401, plus a keep-alive while a page is open), so a
+    # short life costs users nothing.
+    "ACCESS_TOKEN_LIFETIME": timedelta(hours=1),
     # 30 days - backs the persistent 'remember me' pt_refresh cookie.
     "REFRESH_TOKEN_LIFETIME": timedelta(days=30),
     "ALGORITHM": "HS256",

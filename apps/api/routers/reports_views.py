@@ -13,8 +13,8 @@ selection), trigger_mismatch_report on whatever interval is chosen (e.g.
 trigger_advance_license_expiry_report once a day (see
 apps/services/advance_license_report.py - it dedupes per license, so a daily
 hit is enough without risking a repeat alert). Because the caller has no
-login session or JWT, all five are protected by a shared-secret query param /
-header instead - REPORT_CRON_SECRET, set as a Render environment variable and
+login session or JWT, all five are protected by a shared secret in the X-Report-Secret
+header (or a POST body field, never the URL) - REPORT_CRON_SECRET, set as a Render environment variable and
 given only to the scheduler config, never to a browser or the frontend. Five
 separate endpoints (not one with a mode flag) since each runs on its own
 independent schedule with a real external scheduler - one cron job per
@@ -53,9 +53,17 @@ def _check_report_secret(request):
     403 for a wrong/missing one - nothing is revealed about which). Shared
     by both trigger_daily_report/trigger_monthly_report below - same check,
     same secret, don't diverge per endpoint."""
+    # Never in the URL (2026-10-03): a query string lands in Render's access
+    # logs, cron-job.org's history and any proxy on the way. Refused loudly
+    # (an ERROR reaches Sentry), so a job still sending it is noticed at once.
+    if "secret" in request.query_params:
+        log.error("reports_views: refused a cron call carrying ?secret= - send the X-Report-Secret header instead")
+        return Response(
+            {"detail": "Send the secret in the X-Report-Secret header, never in the URL."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     provided = (
         request.headers.get("X-Report-Secret")
-        or request.query_params.get("secret")
         or (request.data.get("secret") if hasattr(request.data, "get") else None)
         or ""
     )
@@ -90,7 +98,7 @@ def _report_response(result: dict) -> Response:
 @permission_classes([AllowAny])
 def trigger_daily_report(request):
     """
-    GET/POST /api/internal/send-daily-report?secret=<REPORT_CRON_SECRET>
+    GET/POST /api/internal/send-daily-report (X-Report-Secret header)
     (or header 'X-Report-Secret: <REPORT_CRON_SECRET>')
 
     Runs send_daily_consumption_reports() and emails every active admin, one
@@ -113,7 +121,7 @@ def trigger_daily_report(request):
 @permission_classes([AllowAny])
 def trigger_monthly_report(request):
     """
-    GET/POST /api/internal/send-monthly-report?secret=<REPORT_CRON_SECRET>
+    GET/POST /api/internal/send-monthly-report (X-Report-Secret header)
     (or header 'X-Report-Secret: <REPORT_CRON_SECRET>')
 
     Runs send_monthly_consumption_reports() and emails every active admin,
@@ -153,7 +161,7 @@ def trigger_monthly_report(request):
 @permission_classes([AllowAny])
 def trigger_mismatch_report(request):
     """
-    GET/POST /api/internal/send-mismatch-report?secret=<REPORT_CRON_SECRET>
+    GET/POST /api/internal/send-mismatch-report (X-Report-Secret header)
     (or header 'X-Report-Secret: <REPORT_CRON_SECRET>')
 
     Runs send_plant_mismatch_reports() - emails each plant's own plant head
@@ -185,7 +193,7 @@ def trigger_mismatch_report(request):
 @permission_classes([AllowAny])
 def trigger_prune_revoked_tokens(request):
     """
-    GET/POST /api/internal/prune-revoked-tokens?secret=<REPORT_CRON_SECRET>
+    GET/POST /api/internal/prune-revoked-tokens (X-Report-Secret header)
     (or header 'X-Report-Secret: <REPORT_CRON_SECRET>')
 
     Deletes RevokedRefreshToken rows past their own expiry (same logic as
@@ -213,7 +221,7 @@ def trigger_prune_revoked_tokens(request):
 @permission_classes([AllowAny])
 def trigger_advance_license_expiry_report(request):
     """
-    GET/POST /api/internal/send-advance-license-expiry-report?secret=<REPORT_CRON_SECRET>
+    GET/POST /api/internal/send-advance-license-expiry-report (X-Report-Secret header)
     (or header 'X-Report-Secret: <REPORT_CRON_SECRET>')
 
     Runs send_advance_license_expiry_reports() - two consolidated alert

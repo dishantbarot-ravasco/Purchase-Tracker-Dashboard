@@ -480,7 +480,13 @@ would never fire). Replaces the old inline `onerror` attributes.
 `downloadWithSession(url)` is how every CSV export downloads: it renews the session through
 `authFetch('/api/auth/me')`, then clicks a hidden `<a download>` - no new tab (so no popup blocker after
 the await) and the page never navigates; a session that cannot be renewed goes to `/login.html`. A bare
-`window.open()` skipped the renewal, so after 12 idle hours the new tab showed a 401 JSON page.
+`window.open()` skips the renewal and would show a 401 JSON page once the access cookie expired.
+
+`startSessionKeepAlive()` (started by `requireAuth()`) renews the session through `refreshSession()`
+every `SESSION_KEEPALIVE_MS` (40 minutes) while the page is in front - checked every minute and on
+`visibilitychange` - because the access token lasts one hour and a stored file still opens with a plain
+`window.open()` (`doc-files.js`), which cannot renew on a 401. Hidden tabs never renew, so background
+tabs do not keep rotating the shared refresh cookie.
 
 `requireAuth()` sends the reader to `/login.html` only for a 401/403. A network failure or a 5xx
 (a deploy, a restart) shows `showAuthUnavailable()`'s notice with a Retry button instead - it used to
@@ -494,7 +500,7 @@ fetches from `PLANT_KEYS`, so a plant-scoped account used to request plants the 
 dashboard read "Couldn't load" and Home/Search warned on every load.
 
 Session gate and shared nav chrome for every protected page. Exports `CURRENT_USER`, `authFetch`,
-`refreshSession`, `requireAuth`, `logout`, `renderUserBadge`, `renderNavTabs`, `userInitials`,
+`refreshSession`, `startSessionKeepAlive`, `requireAuth`, `logout`, `renderUserBadge`, `renderNavTabs`, `userInitials`,
 `initThemeToggle`, `applyTheme`, `isEffectivelyDark`, `escapeHtmlAuth`, and the layered-access helpers
 (2026-10-02) `PAGE_ACCESS`, `PAGE_BY_PATH`, `isAdminAccount()`, `userHasPerm(...perms)`,
 `isLockedAccount(user)`, `canOpenPage(page)`, `showNoAccess(page)`. Depends on

@@ -345,7 +345,7 @@ Seven middleware classes and one WhiteNoise hook.
 `SecurityHeadersMiddleware` adds `X-Content-Type-Options`, `X-Frame-Options: DENY`,
 `Referrer-Policy`, a restrictive `Permissions-Policy`, HSTS (production only, decided once at
 init from `settings.DEBUG`), and the CSP from `_build_csp()`: `default-src 'self'`, `script-src
-'self' https://cdn.jsdelivr.net` (Chart.js), `style-src 'self' https://fonts.googleapis.com`,
+'self' <the Chart.js file URL>` (exactly `security_headers.CHART_JS_URL`, not the CDN origin), `style-src 'self' https://fonts.googleapis.com`,
 `font-src 'self' https://fonts.gstatic.com`, `img-src 'self' data: blob:`, `connect-src 'self'`,
 `frame-src 'self'`, `frame-ancestors 'none'`, `object-src 'none'`, `base-uri 'self'`,
 `form-action 'self'`, plus an optional `settings.CSP_EXTRA_DIRECTIVES` (not defined in settings
@@ -696,7 +696,7 @@ import tables. Custom classes where the default would fight the design:
 `MaterialCategoryReferenceAdmin` (search/filter, `normalized_description` read-only),
 `ImportPOCorrectionAdmin` and `PTAuditLogAdmin` (all fields read-only, add/change/delete disabled;
 `PTAuditLogAdmin` is also hidden from every account but `ACTIVITY_LOG_OWNER_EMAIL`),
-`PTUserAdmin` (excludes `password_hash`), `TrustedDeviceAdmin` (hash read-only; revoke in the app).
+`PTUserAdmin` (view-only - no add, change or delete, since it would skip the owner and password rules `users_views.py` enforces; excludes `password_hash`), `TrustedDeviceAdmin` (hash read-only; revoke in the app).
 Not registered at all: `DomesticPOCorrection`, `MaterialCorrection`, `FlagDismissal`,
 `ManualMirMatch`, `RTPAchhadRMDailyMovement`, the ledger, consumption, `ReportSendLog` and
 `RevokedRefreshToken` models, and the `*ImportPOMirMatch` tables.
@@ -708,7 +708,11 @@ Not registered at all: `DomesticPOCorrection`, `MaterialCorrection`, `FlagDismis
 
 ### apps/core/checks.py
 
-Two system checks, both surfaced by `manage.py check --deploy --fail-level WARNING` (a CI gate).
+Three system checks, all surfaced by `manage.py check --deploy --fail-level WARNING` (a CI gate).
+
+- `check_secret_key_is_set` - `apps.core.E001` outside DEBUG while `SECRET_KEY` is
+  `settings.DEV_SECRET_KEY`. An `Error`, so release.sh's `migrate` stops the deploy too; the Docker
+  build's `collectstatic` runs only staticfiles checks and still builds with the fallback.
 
 - `check_jwt_signing_key_is_independent` - `apps.core.W001` outside DEBUG when `JWT_SIGNING_KEY ==
   SECRET_KEY`.

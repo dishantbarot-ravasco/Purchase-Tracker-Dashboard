@@ -149,6 +149,19 @@ class PTUserAdmin(admin.ModelAdmin):
     exclude = ("password_hash",)
     readonly_fields = ("created_at", "last_login_at")
 
+    # View-only: the Admin Panel's users_views.py enforces who may change a
+    # role, an admin or a password (only the owner touches an admin), and
+    # this form would skip every one of those rules. Accounts are managed
+    # there or with `manage.py create_pt_user`.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
 
 @admin.register(TrustedDevice)
 class TrustedDeviceAdmin(admin.ModelAdmin):

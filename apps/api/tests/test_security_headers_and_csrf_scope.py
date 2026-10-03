@@ -86,11 +86,23 @@ class TestContentSecurityPolicy:
     def test_locked_down_directives_are_present(self, expected):
         assert expected in self._csp()
 
-    def test_chartjs_cdn_is_still_allowed(self):
-        """A negative test would pass if someone dropped the CDN entirely -
-        which silently breaks every chart on the dashboard (a real, confirmed
-        2026-09-03 failure mode documented in security_headers.py)."""
-        assert "https://cdn.jsdelivr.net" in self._csp()
+    def test_chartjs_is_allowed_as_exactly_the_file_the_page_loads(self):
+        """Allowed: dropping it silently breaks every chart on the dashboard
+        (a real, confirmed 2026-09-03 failure mode documented in
+        security_headers.py). Exactly that file: allowing the bare CDN origin
+        would let any npm package run on the page. And the allowed URL must
+        be the one index.html actually loads, or the charts break again."""
+        from pathlib import Path
+
+        from config.security_headers import CHART_JS_URL
+
+        directive = next(d for d in self._csp().split(";") if d.strip().startswith("script-src"))
+        tokens = directive.split()
+        assert CHART_JS_URL in tokens
+        assert "https://cdn.jsdelivr.net" not in tokens
+        assert not any(t.startswith("https://") and t != CHART_JS_URL for t in tokens), directive
+        index = (Path(__file__).resolve().parents[3] / "frontend" / "index.html").read_text(encoding="utf-8")
+        assert f'src="{CHART_JS_URL}"' in index
 
 
 class TestOtherSecurityHeaders:

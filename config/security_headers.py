@@ -64,7 +64,8 @@ CSP notes:
     flag actually removed, not just by code inspection - zero console CSP
     violations, zero regressions in manual click-through (login/OTP, PO/
     import/material modals, admin user create/edit, search).
-  - cdn.jsdelivr.net is explicitly allowed on script-src: frontend/index.html
+  - script-src allows exactly CHART_JS_URL, not all of cdn.jsdelivr.net
+    (anything published to npm would otherwise be loadable). frontend/index.html
     loads Chart.js from there (no vendored/bundled copy, consistent with the
     no-build-step approach above). Without this, the browser silently drops
     the CSP-blocked <script> tag - Chart.js never loads, `Chart` stays
@@ -83,6 +84,9 @@ CSP notes:
 """
 
 from django.conf import settings
+
+# Must equal the <script src> in frontend/index.html (a test checks).
+CHART_JS_URL = "https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js"
 
 
 class SecurityHeadersMiddleware:
@@ -122,7 +126,9 @@ class SecurityHeadersMiddleware:
             "style-src 'self' https://fonts.googleapis.com",
             "font-src 'self' https://fonts.gstatic.com",
             "img-src 'self' data: blob:",
-            "script-src 'self' https://cdn.jsdelivr.net",
+            # The one file index.html loads (it also carries an SRI hash), never
+            # the whole CDN: any package on jsdelivr would otherwise run here.
+            f"script-src 'self' {CHART_JS_URL}",
             "connect-src 'self'",
             "frame-src 'self'",
             "frame-ancestors 'none'",

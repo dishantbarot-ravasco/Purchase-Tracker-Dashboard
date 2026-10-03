@@ -459,7 +459,7 @@ row the first time it is seen inside the window, so a daily run means "alerted w
 crossing 30 days out" with no dependence on one specific run firing. Scheduling it to fire only on a
 licence's 30-days-out date would need a job per licence and would miss one entirely on any skipped run.
 
-The secret is passed as an `X-Report-Secret` header rather than `?secret=` so it stays out of
+The secret is passed as an `X-Report-Secret` header - a `?secret=` is refused with a 400 - so it stays out of
 cron-job.org's execution history and Render's access logs. Note that `REPORT_CRON_SECRET` is
 base64-ish and can contain `+`, which decodes as a space in a query string - a URL-embedded secret
 must be percent-encoded, another reason to prefer the header.

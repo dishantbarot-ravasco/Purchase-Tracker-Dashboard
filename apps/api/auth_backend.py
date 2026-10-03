@@ -52,9 +52,11 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import AuthenticationFailed, InvalidToken
+from rest_framework_simplejwt.settings import api_settings
 
 from apps.api.permissions import is_allowed_email_domain
 from apps.core.models import PTUser
+from apps.services.token_revocation import is_refresh_jti_revoked
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +241,12 @@ class PTJWTAuthentication(JWTAuthentication):
         # request - this is what makes "log out everywhere" actually revoke
         # a live session instead of only blocking a future token refresh.
         if validated_token.get("ver", 0) != user.token_version:
+            raise AuthenticationFailed("Session has been revoked.", code="session_revoked")
+
+        # Signed out: logout_view records the access token's jti in the same
+        # revocation table as refresh tokens (a jti is unique either way).
+        jti = validated_token.get(api_settings.JTI_CLAIM)
+        if jti and is_refresh_jti_revoked(jti):
             raise AuthenticationFailed("Session has been revoked.", code="session_revoked")
 
         return user

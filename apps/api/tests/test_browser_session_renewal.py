@@ -46,7 +46,7 @@ class TestBrowserSessionRenewal:
         assert login.status_code == 200, login.data
 
     def _expire_access_cookie(self):
-        """A 12-hour-old pt_access: the browser has dropped it (its max-age
+        """An hour-old pt_access: the browser has dropped it (its max-age
         elapsed) while pt_refresh, 30 days, is still held."""
         del self.client.cookies["pt_access"]
 

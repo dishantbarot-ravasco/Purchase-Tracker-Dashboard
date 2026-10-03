@@ -57,6 +57,8 @@ import logging
 import os
 
 import bcrypt
+from django.contrib.auth.password_validation import CommonPasswordValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.response import Response
@@ -100,6 +102,15 @@ def _validate_password_strength(password: str, email: str) -> None:
     local_part = (email or "").split("@")[0].lower()
     if local_part and password.lower() == local_part:
         raise ValidationError({"detail": "Password must not be the same as your email address."})
+    # Django's list of 20,000 leaked passwords (2026-10-03) - the first ones
+    # any guessing run tries ("password123", "qwerty12345").
+    try:
+        _COMMON_PASSWORDS.validate(password)
+    except DjangoValidationError:
+        raise ValidationError({"detail": "That password is too common. Choose one that is harder to guess."}) from None
+
+
+_COMMON_PASSWORDS = CommonPasswordValidator()
 
 
 def _clean_plants(raw) -> list:
@@ -132,6 +143,15 @@ def _require_owner_for_admin(request, *, target=None, new_role=None) -> None:
     touches_admin = (target is not None and target.role == PTUser.Role.ADMIN) or new_role == PTUser.Role.ADMIN
     if touches_admin and not is_owner(request.user):
         raise PermissionDenied("Only the application owner can create, change or remove an admin.")
+
+
+def _require_owner_for_session_kill(request, target: PTUser) -> None:
+    """Signing an admin out (one device or everywhere) is changing that
+    admin's account, so only the owner may do it - otherwise any admin could
+    lock the owner or another admin out of their own sessions. An admin may
+    still end their own sessions here."""
+    if target.pk != request.user.pk:
+        _require_owner_for_admin(request, target=target)
 
 
 def _hash_password(plain: str) -> str:
@@ -460,6 +480,7 @@ def revoke_user_device(request, user_id, device_id):
         raise NotFound(f"Device {device_id} not found for user {user_id}.")
 
     user = device.user
+    _require_owner_for_session_kill(request, user)
     device_name = device.device_name
     device.delete()
 
@@ -489,6 +510,7 @@ def admin_logout_everywhere(request, user_id):
     user = PTUser.objects.filter(pk=user_id).first()
     if not user:
         raise NotFound(f"User {user_id} not found.")
+    _require_owner_for_session_kill(request, user)
 
     revoke_all_sessions(user)
     logger.info("users_views: admin %s revoked all sessions for PTUser %s", request.user.email, user.email)

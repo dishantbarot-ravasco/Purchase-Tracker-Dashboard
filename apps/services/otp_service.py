@@ -24,11 +24,13 @@ Security design
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 from datetime import timedelta
 
 import bcrypt
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
@@ -37,11 +39,65 @@ log = logging.getLogger(__name__)
 _OTP_TTL_MINUTES = 10
 _MAX_ATTEMPTS = 5
 
-# Wrong codes allowed per account per 24 hours, across every code issued -
+# Wrong codes allowed per account per 24 hours, across every code issued (a
+# reset code counts apart, see _RESET_FAILURE_PREFIX) -
 # see PTUser.otp_failed_attempts. Past it, no code verifies until the window
 # ends, however many new codes are requested.
 _MAX_DAILY_FAILURES = 20
 _DAILY_WINDOW = timedelta(hours=24)
+_RESET = "password_reset"  # OTPCode.Purpose.PASSWORD_RESET, without importing models here
+
+
+# A forgotten-password reset is requested signed out, by anyone who knows an
+# address, so its wrong codes count on their own (2026-10-03). On the shared
+# PTUser counter, 20 junk reset guesses blocked that person's new-device
+# sign-in and password change for a day. The sign-in and password-change
+# codes stay on PTUser: both are only sent after the password or a live
+# session, so a stranger cannot spend them.
+#
+# Stored in the cache (DatabaseCache in production, shared by every worker)
+# as {"count", "since"}, with the window's own expiry - cache.incr() would
+# re-set the entry with the default 5-minute timeout. The read-modify-write
+# is safe because verify_otp() runs it while holding the row lock on this
+# address's reset code, which serializes every reset guess for it.
+_RESET_FAILURE_PREFIX = "otp-reset-failures:"
+
+
+def _reset_failure_key(key: str) -> str:
+    return _RESET_FAILURE_PREFIX + hashlib.sha256(key.encode()).hexdigest()
+
+
+def _reset_failures(key: str, now) -> dict | None:
+    entry = cache.get(_reset_failure_key(key))
+    if not entry or entry["since"] < now - _DAILY_WINDOW:
+        return None
+    return entry
+
+
+def _failures_exhausted(key: str, purpose: str, now) -> bool:
+    if purpose == _RESET:
+        entry = _reset_failures(key, now)
+        return bool(entry) and entry["count"] >= _MAX_DAILY_FAILURES
+    return _daily_failures_exhausted(key, now)
+
+
+def _record_failure(key: str, purpose: str, now) -> None:
+    if purpose == _RESET:
+        entry = _reset_failures(key, now) or {"count": 0, "since": now}
+        entry["count"] += 1
+        remaining = (entry["since"] + _DAILY_WINDOW - now).total_seconds()
+        cache.set(_reset_failure_key(key), entry, timeout=max(1, int(remaining)))
+        return
+    _record_daily_failure(key, now)
+
+
+def _clear_failures(key: str, purpose: str) -> None:
+    if purpose == _RESET:
+        cache.delete(_reset_failure_key(key))
+        return
+    from apps.core.models import PTUser
+
+    PTUser.objects.filter(email__iexact=key).update(otp_failed_attempts=0, otp_failures_since=None)
 
 
 def _daily_failures_exhausted(key: str, now) -> bool:
@@ -170,7 +226,7 @@ def verify_otp(email: str, code: str, purpose: str) -> bool:
 
         now = timezone.now()
 
-        if _daily_failures_exhausted(key, now):
+        if _failures_exhausted(key, purpose, now):
             entry.delete()
             log.warning("verify_otp: %s is past %d wrong codes in 24h - refusing every code", key, _MAX_DAILY_FAILURES)
             return False
@@ -195,13 +251,12 @@ def verify_otp(email: str, code: str, purpose: str) -> bool:
         # constant-time wrapper needed here).
         if not _check_code(code.strip(), entry.code_hash):
             entry.save(update_fields=["attempts"])
-            _record_daily_failure(key, now)
+            _record_failure(key, purpose, now)
             log.debug("verify_otp: wrong code for %s (attempt %d)", key, entry.attempts)
             return False
 
         # Success - consume the OTP immediately so it can't be replayed.
         entry.delete()
-        from apps.core.models import PTUser
-        PTUser.objects.filter(email__iexact=key).update(otp_failed_attempts=0, otp_failures_since=None)
+        _clear_failures(key, purpose)
         log.info("verify_otp: success for %s", key)
         return True

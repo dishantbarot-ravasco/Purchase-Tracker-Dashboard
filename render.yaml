@@ -179,8 +179,8 @@ services:
         sync: false
 
       # ── Report cron triggers - a free external scheduler (cron-job.org)
-      #    hits three separate endpoints with this value as ?secret=... or
-      #    an X-Report-Secret header, one cron-job.org job per endpoint:
+      #    hits separate endpoints with this value as an X-Report-Secret
+      #    header (never ?secret=, which is refused), one job per endpoint:
       #      POST /api/internal/send-daily-report     - once a day, e.g. 20:30 IST
       #      POST /api/internal/send-monthly-report    - once a month, 1st, e.g. 10:00 IST
       #      POST /api/internal/send-mismatch-report   - whatever cadence you want, e.g. 10:30 IST daily

@@ -31,6 +31,7 @@ import secrets
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -44,6 +45,8 @@ log = logging.getLogger(__name__)
 
 DEVICE_COOKIE_NAME = "pt_device"
 DEVICE_COOKIE_MAX_AGE = 365 * 24 * 60 * 60  # 1 year in seconds
+# A trusted device unused this long asks for an emailed code again.
+DEVICE_IDLE_LIMIT = timedelta(days=90)
 
 # 'Remember me' refresh-token cookie. Scoped to /api/auth/ only - it's never
 # needed outside the login/refresh/logout endpoints.
@@ -244,13 +247,22 @@ def is_trusted_device(request, user_id: int) -> bool:
 
     Looks up by the cookie's own SHA-256 hash, never the plaintext value -
     see TrustedDevice's own docstring (apps/core/models/) for why the
-    stored column is device_token_hash, not the raw token."""
+    stored column is device_token_hash, not the raw token.
+
+    Trust ends on the server too (2026-10-03), not only when the browser
+    drops the cookie: a row older than the cookie's own year, or unused for
+    DEVICE_IDLE_LIMIT, no longer matches, so a copied cookie cannot skip the
+    emailed code forever. That sign-in then asks for a code and registers
+    the browser again."""
     device_token = request.COOKIES.get(DEVICE_COOKIE_NAME, "").strip()
     if not device_token:
         return False
+    now = timezone.now()
     try:
         device = TrustedDevice.objects.only("pk").get(
-            device_token_hash=_hash_device_token(device_token), user_id=user_id
+            device_token_hash=_hash_device_token(device_token), user_id=user_id,
+            created_at__gte=now - timedelta(seconds=DEVICE_COOKIE_MAX_AGE),
+            last_used_at__gte=now - DEVICE_IDLE_LIMIT,
         )
         TrustedDevice.objects.filter(pk=device.pk).update(last_used_at=timezone.now())
         return True

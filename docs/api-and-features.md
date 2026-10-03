@@ -1582,7 +1582,7 @@ active" above. **`prune_routine()`** / **`scheduled_prune()`**: delete
 ### apps/api/routers/reports_views.py
 
 Shared-secret endpoints for the external scheduler (cron-job.org), since the caller has no session.
-`_check_report_secret()` accepts `X-Report-Secret` (preferred), `?secret=` or a body `secret`, compares
+`_check_report_secret()` accepts `X-Report-Secret` or a body `secret` (a `?secret=` is refused with a 400, even when correct), compares
 with `hmac.compare_digest`, and answers 503 when `REPORT_CRON_SECRET` is unset, 403 otherwise.
 `_report_response()` turns any `failures` into a **502 `partial`** so the scheduler flags a partly failed
 run (daily and monthly only; the mismatch and licence endpoints always 200). `trigger_monthly_report`

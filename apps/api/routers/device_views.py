@@ -156,7 +156,7 @@ def logout_view(request):
     from django.conf import settings
     from rest_framework_simplejwt.exceptions import TokenError
     from rest_framework_simplejwt.settings import api_settings
-    from rest_framework_simplejwt.tokens import RefreshToken
+    from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
     from rest_framework_simplejwt.utils import datetime_from_epoch
 
     from apps.services.device_service import REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH
@@ -178,6 +178,20 @@ def logout_view(request):
             # Already expired/invalid - logout should still succeed either
             # way, this is a best-effort revocation, not a precondition for
             # clearing the cookies below.
+            pass
+
+    # The access token too (2026-10-03): deleting the cookie only stops this
+    # browser sending it - a copy stayed good until it expired.
+    # PTJWTAuthentication.get_user() refuses a revoked jti on every request.
+    raw_access = request.COOKIES.get(settings.PT_COOKIE_NAME)
+    if raw_access:
+        try:
+            token = AccessToken(raw_access)
+            jti = token.payload.get(api_settings.JTI_CLAIM)
+            exp = token.payload.get("exp")
+            if jti and exp:
+                revoke_refresh_jti(jti, datetime_from_epoch(exp))
+        except TokenError:
             pass
 
     request.session.flush()

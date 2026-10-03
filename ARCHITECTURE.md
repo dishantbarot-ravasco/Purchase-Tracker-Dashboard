@@ -112,7 +112,7 @@ sequenceDiagram
     B->>D: subsequent requests (cookie sent automatically)
 ```
 
-`pt_access` (12h) and `pt_refresh` (30 days, path-scoped to `/api/auth/`) are httpOnly, and the
+`pt_access` (1 hour) and `pt_refresh` (30 days, path-scoped to `/api/auth/`) are httpOnly, and the
 refresh token never appears in a response body. A non-browser client can skip cookies and send
 `Authorization: Bearer <access_token>` instead - `PTCookieJWTAuthentication` tries the cookie first,
 then the header. Google OAuth (`GET /api/auth/google/login/`) goes through the identical

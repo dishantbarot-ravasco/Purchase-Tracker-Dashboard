@@ -14,7 +14,7 @@ behaviour), [consumption.md](consumption.md) (what the consumption report emails
 1. `POST /api/auth/login` with email + password. `PTUserBackend` checks lockout, then bcrypt
    ([auth_backend.py](../apps/api/auth_backend.py)).
 2. **Trusted device** (a `pt_device` cookie whose SHA-256 matches a `TrustedDevice` row for that
-   user): the response sets `pt_access` (12h) and `pt_refresh` (30 days) httpOnly cookies and returns
+   user, used within 90 days and under a year old): the response sets `pt_access` (1 hour) and `pt_refresh` (30 days) httpOnly cookies and returns
    `{"status": "ok", "access_token": ...}`. Done.
 3. **New device**: the server stores `pending_user_id` in the Django session, emails a 6-digit OTP
    and returns `{"status": "device_verify"}`. The browser then posts the code to
@@ -213,6 +213,16 @@ IP within 15 minutes, and logs each failure to the activity log as `auth_failed`
   `otp_failures_since` (migration `0063`) count wrong codes across every code for 24 hours, with
   atomic `F()` updates; past `otp_service._MAX_DAILY_FAILURES` (20) no code verifies until the window
   ends. A right code clears the count.
+- **Reset codes count apart (2026-10-03).** A Forgot-password code is requested signed out by anyone
+  who knows an address, so on the shared counter 20 junk reset guesses blocked that person's
+  new-device sign-in and password change for a day. Reset failures now have their own 24-hour count
+  of 20 in the cache (`_RESET_FAILURE_PREFIX`, keyed on a SHA-256 of the address), stored with the
+  window's own expiry (never `cache.incr()`, which re-sets the default 5-minute timeout). The
+  read-modify-write is safe because `verify_otp()` holds the row lock on that address's reset code.
+  Sign-in and password-change codes stay on `PTUser`: both are sent only after the password or a
+  live session. A stranger can still use up one address's reset tries for a day, which leaves
+  signing in untouched. The production `DatabaseCache` has `MAX_ENTRIES` 100,000 so Django's default
+  cull (a third of the table at 300 entries) cannot forget this count or the throttles.
 - **`REST_FRAMEWORK["NUM_PROXIES"] = 1`**, the same one-proxy trust `get_client_ip()` applies. Unset,
   DRF keyed its IP throttles on the whole client-written `X-Forwarded-For`, so a new header value per
   request was a new "IP". Sign-in still has no per-IP throttle, deliberately (a shared office IP).
@@ -286,7 +296,7 @@ password change (a code for one verifies the other - Low); cookie-authenticated 
 SameSite=Lax, which is sound on `*.onrender.com` (a public-suffix domain) but should gain an Origin
 check before the app moves to a custom domain whose subdomains are not all trusted.
 
-`pt_access` (12h, path `/`) and `pt_refresh` (30 days, path-scoped to `/api/auth/`) are httpOnly,
+`pt_access` (1 hour, path `/`) and `pt_refresh` (30 days, path-scoped to `/api/auth/`) are httpOnly,
 `SameSite=Lax`, and `Secure` whenever `DEBUG` is off. Their `max_age` is read from
 `SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"]`/`["REFRESH_TOKEN_LIFETIME"]`, so the cookie and token lifetimes
 cannot drift. A non-browser client can send `Authorization: Bearer <token>` instead -
@@ -351,7 +361,7 @@ login redirect, which now fires only when renewal genuinely failed. Three detail
 
 - **`refreshSession()` is single-flight.** Refresh tokens rotate and the spent one is revoked, so two
   concurrent renewals present the same token twice and the loser is refused - signing the user out
-  exactly when several requests expire together, which is every page load after hour 12. Every caller
+  exactly when several requests expire together, which is every page load after the access token's hour. Every caller
   awaits the one in-flight promise.
 - **The request is replayed even when renewal fails.** With two tabs open, the other tab may have just
   rotated the shared cookie, so this tab's renewal is refused while the cookie jar already holds a
@@ -364,6 +374,24 @@ login redirect, which now fires only when renewal genuinely failed. Three detail
 a copied refresh token cannot resurrect a revoked session); the frontend was verified in the Browser
 pane with a stubbed `fetch` (single-flight, two-tab race, PATCH body replayed intact, every wrapper).
 See [frontend.md](frontend.md) for `auth.js` itself.
+
+**Session limits (2026-10-03, go-live pass).** Three changes, all tested in
+`test_security_hardening_2026_10_03.py`:
+
+- **Access tokens last one hour.** A copied access token is a bearer credential until it expires.
+  Users do not notice: `authFetch()` renews on a 401, and `auth.js`'s `startSessionKeepAlive()`
+  renews every 40 minutes while a page is in front (checked each minute and when a tab is shown again;
+  hidden tabs never renew), so a plain navigation to `/api/` - a stored file opened in a new tab,
+  which cannot renew on a 401 - finds a live cookie.
+- **Logout revokes the access token itself.** `logout_view` records the `pt_access` jti in
+  `RevokedRefreshToken` (a jti is unique whichever kind of token it names) and
+  `PTJWTAuthentication.get_user()` refuses a revoked jti on every request. Deleting the cookie only
+  ever stopped this browser sending it.
+- **A sign-in renews for at most `PT_SESSION_MAX_AGE` (30 days).** `get_token()` stamps an
+  `auth_time` claim; rotation keeps it and `PTTokenRefreshSerializer` refuses a refresh token whose
+  sign-in is older than the cap. Before, each rotation issued a fresh 30-day refresh token, so a
+  session - or a stolen refresh cookie - renewed forever. A token minted before the claim existed
+  starts its clock at its next refresh rather than signing everyone out on deploy.
 
 `prune_revoked_tokens` deletes `RevokedRefreshToken` rows past their own `expires_at` (safe: an
 expired token is rejected by JWT validation before this table is consulted). It is also reachable as
@@ -454,6 +482,8 @@ falls through to a generic 500 now, still logged with a traceback.
 [apps/core/checks.py](../apps/core/checks.py) (registered by importing it in `CoreConfig.ready()`)
 runs as part of `manage.py check --deploy --fail-level WARNING`, the same command CI gates on:
 
+- `check_secret_key_is_set` (`apps.core.E001`) is an error (outside `DEBUG`) while `SECRET_KEY` is
+  the built-in development key - anyone reading the repository could sign admin sessions with it.
 - `check_jwt_signing_key_is_independent` (`apps.core.W001`) warns (outside `DEBUG`) if
   `JWT_SIGNING_KEY` equals `SECRET_KEY`, i.e. is still falling back to it.
 - `check_no_unexpected_django_superuser` (`apps.core.W002`) warns if an active `auth.User` superuser
@@ -466,7 +496,8 @@ uses session CSRF, and `AdminOnlyCsrfMiddleware` restores the unmodified check f
 `CsrfViewMiddleware` app-wide would 403 every unsafe API call regardless of how it authenticates.
 
 **CSP** ([config/security_headers.py](../config/security_headers.py)):
-`script-src 'self' https://cdn.jsdelivr.net`, `style-src 'self' https://fonts.googleapis.com` - **no
+`script-src 'self' <CHART_JS_URL>` - the one Chart.js file `index.html` loads, never the whole CDN
+origin (anything on npm would be loadable; a test checks the two URLs are equal) - `style-src 'self' https://fonts.googleapis.com` - **no
 `'unsafe-inline'` in either**. Dropping `script-src`'s required extracting every inline `<script>` to
 its own file and converting every inline event-handler attribute to a real listener (the
 logo-fallback `onerror` pattern is one capture-phase listener in `theme-init.js` keyed on
@@ -548,9 +579,10 @@ Emails 1-7 are sent from the web process through `_dispatch_email()` (see
 [Dispatch](#dispatch-two-bounded-thread-pools-not-the-task-queue)). Emails 8-12 are sent
 synchronously inside a request to one of the shared-secret `POST /api/internal/*` endpoints in
 [reports_views.py](../apps/api/routers/reports_views.py), which an external scheduler (cron-job.org)
-calls. The secret is `REPORT_CRON_SECRET`, accepted as an `X-Report-Secret` header (preferred), a
-`?secret=` param or a body field, compared with `hmac.compare_digest`; a blank setting makes every
-endpoint answer 503 rather than fail open, a wrong secret 403. The cron schedule and the "never use
+calls. The secret is `REPORT_CRON_SECRET`, accepted as an `X-Report-Secret` header or a body field,
+compared with `hmac.compare_digest`; a blank setting makes every endpoint answer 503 rather than fail
+open, a wrong secret 403. A `?secret=` in the URL is refused with a 400 and an ERROR log (Sentry),
+even when correct: a query string lands in Render's access logs and cron-job.org's history. The cron schedule and the "never use
 cron-job.org's test run" rule are in [data-sync.md](data-sync.md).
 
 **8 - Daily RM Consumption Report.** Triggered by the external scheduler hitting
@@ -776,8 +808,8 @@ classes, all resolving `PTUser` directly (see [Non-negotiables](#non-negotiables
   wrong password, and off-domain emails. Returns the `PTUser` or None. `get_user(user_id)` for
   Django's session machinery.
 - `PTJWTAuthentication.get_user(validated_token)` - reads `sub`, loads the `PTUser`, rejects missing
-  (`user_not_found`), inactive (`user_inactive`) and a `ver` claim that differs from `token_version`
-  (`session_revoked`). Runs on every authenticated request.
+  (`user_not_found`), inactive (`user_inactive`), a `ver` claim that differs from `token_version` and
+  a jti that logout revoked (both `session_revoked`). Runs on every authenticated request.
 - `PTCookieJWTAuthentication.authenticate(request)` - tries the `pt_access` cookie, falls back to the
   Bearer header. Expected token errors log at DEBUG; anything else logs at WARNING with a traceback;
   neither raises. It is `DEFAULT_AUTHENTICATION_CLASSES`' only entry.
@@ -790,7 +822,8 @@ classes, all resolving `PTUser` directly (see [Non-negotiables](#non-negotiables
 and the refresh serializer.
 
 - `PTTokenObtainPairSerializer.get_token(user)` - classmethod; claims `sub` (user id as string),
-  `role`, `email`, `full_name`, `ver`, plus simplejwt's own `user_id`. Also called directly by
+  `role`, `email`, `full_name`, `ver`, `auth_time` (the sign-in's epoch seconds, kept through
+  rotation), plus simplejwt's own `user_id`. Also called directly by
   `device_verify`, Google OAuth and the password-change view to mint tokens.
 - `PTTokenObtainPairSerializer.validate(attrs)` - lower-cases the email, calls Django `authenticate()`
   (so `PTUserBackend`). Failure -> 400 "Invalid email or password." (one message for every cause).
@@ -801,8 +834,9 @@ and the refresh serializer.
   backgrounded) it returns 400 `otp_send_failed` rather than sending the user to a code screen that can
   never work.
 - `PTTokenRefreshSerializer.validate(attrs)` - decodes the refresh token (expiry checked by simplejwt),
-  rejects a revoked jti, loads the `PTUser` and rejects inactive or `ver` mismatch (all as
-  `no_active_account`), mints an access token with `ver` copied explicitly, then (rotation on) revokes
+  rejects a revoked jti, loads the `PTUser` and rejects inactive or `ver` mismatch, then a sign-in
+  older than `PT_SESSION_MAX_AGE` by `auth_time` (a token without the claim gets it stamped now) (all
+  as `no_active_account`), mints an access token with `ver` copied explicitly, then (rotation on) revokes
   the old jti until its own `exp` and returns a new refresh token. Non-obvious: if the payload has no
   `user_id` claim at all, the user checks are skipped; every token this app mints carries one.
 
@@ -862,8 +896,8 @@ and the refresh serializer.
   cookies, sends emails 2 and 3, pops `pending_user_id`, writes the `login` audit row ("new device
   (email OTP verified)") and `last_login_at`. Same response shape as a trusted-device login, without
   the refresh token.
-- `logout_view` (`POST /api/auth/logout`, `AllowAny`) - audit row, revokes the `pt_refresh` jti
-  (best-effort: an already-invalid token is ignored), flushes the session, deletes `pt_access` and
+- `logout_view` (`POST /api/auth/logout`, `AllowAny`) - audit row, revokes the `pt_refresh` jti and
+  the `pt_access` jti (best-effort: an already-invalid token is ignored), flushes the session, deletes `pt_access` and
   `pt_refresh` (with matching path/samesite). Keeps `pt_device`.
 - `logout_everywhere_view` (`POST /api/auth/logout-everywhere`, `IsAuthenticated`) -
   `revoke_all_sessions(request.user)`, `sessions_revoked` audit row, then clears this browser's
@@ -974,6 +1008,11 @@ Signed out - "Forgot password" on the sign-in page:
   be a list of `Perm` values; returned de-duplicated in the panel's order.
 - `_require_owner_for_admin(request, target=, new_role=)` - 403 unless the caller is the owner, when
   the target account is an admin or the new role is admin.
+- `_require_owner_for_session_kill(request, target)` - the same rule for signing an admin out
+  (`revoke_user_device`, `admin_logout_everywhere`): otherwise any admin could sign the owner out
+  everywhere. An admin may still end their own sessions here.
+- `_validate_password_strength(password, email)` also refuses Django's `CommonPasswordValidator`
+  list (20,000 leaked passwords) with "That password is too common".
 - `list_users` also returns `permissionCatalog` and `callerIsOwner`; each user carries `permissions`
   and `isOwner`.
 - `create_user` (`POST /api/auth/users/create`, `AdminWriteThrottle`) - domain check, 409 on a
@@ -991,10 +1030,12 @@ Signed out - "Forgot password" on the sign-in page:
   triggers `revoke_all_tokens(user)` after save; audit detail names role, active, plant and permission
   changes and password resets.
 - `list_user_devices` / `revoke_user_device` (`GET` / `DELETE /api/auth/users/<id>/devices[/<id>]`) -
-  never return `device_token_hash`; revoking writes `device_revoked`. The revoked browser is
+  never return `device_token_hash`; revoking writes `device_revoked`; an admin's device only by the
+  owner or that admin. The revoked browser is
   re-challenged at its next sign-in (existing JWT cookies are unaffected until they expire).
 - `admin_logout_everywhere` (`POST /api/auth/users/<id>/logout-everywhere`, `AdminWriteThrottle`) -
-  `revoke_all_sessions(user)`, audit `sessions_revoked`. Does not deactivate or change the password.
+  `revoke_all_sessions(user)`, audit `sessions_revoked`; an admin's only by the owner or that admin.
+  Does not deactivate or change the password.
 
 ### apps/api/routers/users_urls.py
 
@@ -1017,8 +1058,12 @@ because a trailing-slash distinction is fragile.
 - `verify_otp(email, code, purpose)` - only a code issued for the same `purpose` matches (a sign-in
   code cannot reset a password, a reset code cannot sign in). Under `select_for_update()` + `atomic()`:
   missing -> `burn_code_check()`, False; expired -> delete, `burn_code_check()`, False; increments `attempts` first, and past `_MAX_ATTEMPTS = 5` deletes the row; wrong
-  code saves the count; correct code deletes the row (single use). `_check_code()` fails closed on a
-  corrupt hash.
+  code saves the count and records a daily failure; correct code deletes the row (single use) and
+  clears that flow's daily count. `_check_code()` fails closed on a corrupt hash.
+- Daily failure counts (`_MAX_DAILY_FAILURES` 20 per 24 hours): `_failures_exhausted()`,
+  `_record_failure()` and `_clear_failures()` route a `password_reset` code to its own cache entry
+  (`_reset_failure_key()`) and every other purpose to `PTUser.otp_failed_attempts` (see
+  [Throttling](#throttling-lockout-and-brute-force-counters)).
 
 ### apps/services/password_service.py
 
@@ -1034,7 +1079,7 @@ logs failures: `send_password_change_otp(user)` (a `password_change` code, email
 [device_service.py](../apps/services/device_service.py) - device trust, JWT cookie helpers, the
 login/new-device emails and the shared email dispatcher.
 
-- Constants: `DEVICE_COOKIE_NAME = "pt_device"`, `DEVICE_COOKIE_MAX_AGE` 365 days,
+- Constants: `DEVICE_COOKIE_NAME = "pt_device"`, `DEVICE_COOKIE_MAX_AGE` 365 days, `DEVICE_IDLE_LIMIT` 90 days,
   `REFRESH_COOKIE_NAME = "pt_refresh"`, `REFRESH_COOKIE_PATH = "/api/auth/"`.
 - `get_client_ip(request)` - the **last** `X-Forwarded-For` entry (the one Render's edge appended; the
   first is client-controlled), else `REMOTE_ADDR`. Used for audit rows, device rows and emails.
@@ -1049,7 +1094,9 @@ login/new-device emails and the shared email dispatcher.
 - `set_access_cookie(response, token)` / `set_refresh_cookie(response, token)` - httpOnly, `Secure`
   per `PT_COOKIE_SECURE`, `SameSite` per `PT_COOKIE_SAMESITE`, `max_age` from `SIMPLE_JWT`.
 - `is_trusted_device(request, user_id)` - looks up the cookie's hash for that user and bumps
-  `last_used_at` via `.update()`.
+  `last_used_at` via `.update()`. A row older than `DEVICE_COOKIE_MAX_AGE` or unused for
+  `DEVICE_IDLE_LIMIT` does not match, so trust also ends on the server and a copied cookie cannot
+  skip the emailed code forever; that sign-in asks for a code and registers the browser again.
 - `register_device(response, user_id, request)` - `secrets.token_hex(32)`, stores only the hash, name
   and IP, sets `pt_device` (httpOnly, `SameSite=Lax`, `Secure` from `PT_DEVICE_COOKIE_SECURE` read
   directly so a removed setting fails loudly).
@@ -1065,7 +1112,8 @@ login/new-device emails and the shared email dispatcher.
 [token_revocation.py](../apps/services/token_revocation.py) - refresh-token revocation and the two
 "invalidate everything" levels.
 
-- `revoke_refresh_jti(jti, expires_at)` - idempotent `get_or_create`.
+- `revoke_refresh_jti(jti, expires_at)` - idempotent `get_or_create`. Also takes an access token's
+  jti at logout (the table is jti-keyed, whichever token it names).
 - `is_refresh_jti_revoked(jti)` - existence check.
 - `prune_expired_revoked_tokens()` - deletes rows past `expires_at`, returns the count. Shared by the
   management command and `reports_views.trigger_prune_revoked_tokens` (the view does not use
@@ -1159,7 +1207,8 @@ submodule.
 [security_headers.py](../config/security_headers.py) - `SecurityHeadersMiddleware` sets the headers
 listed in [Deploy-time checks and headers](#deploy-time-checks-and-headers) on every response,
 including WhiteNoise's (hence its position). `_build_csp()` assembles the policy and appends
-`settings.CSP_EXTRA_DIRECTIVES` when set. HSTS is added only when `DEBUG` is off. The module
+`settings.CSP_EXTRA_DIRECTIVES` when set. `CHART_JS_URL` is the one script origin allowed, as a
+full file URL; it must equal `index.html`'s Chart.js `src` (a test checks). HSTS is added only when `DEBUG` is off. The module
 docstring records what was moved where to drop `'unsafe-inline'`. The CSP contents are pinned by
 `test_security_headers_and_csrf_scope.py`.
 
@@ -1167,12 +1216,16 @@ docstring records what was moved where to drop `'unsafe-inline'`. The CSP conten
 
 [settings.py](../config/settings.py):
 
-- `SECRET_KEY` from `DJANGO_SECRET_KEY` (insecure dev default); `JWT_SIGNING_KEY` from its own env
+- `SECRET_KEY` from `DJANGO_SECRET_KEY`, falling back (also when blank) to `DEV_SECRET_KEY` so the
+  Docker build's `collectstatic` runs without secrets; `apps.core.E001` stops `migrate` (and so the
+  deploy) when that fallback is in use with DEBUG off; `JWT_SIGNING_KEY` from its own env
   var, falling back to `SECRET_KEY` when unset **or blank** (`os.environ.get(...).strip() or
   SECRET_KEY`). A get() default alone would have signed every JWT with an empty key for the
   `JWT_SIGNING_KEY=` line `.env.example` ships, with W001 silent;
   `test_signing_key_and_cli_reset.py` checks blank, whitespace and real values in a fresh process.
-- `SIMPLE_JWT` - access 12h, refresh 30 days, HS256, rotation + "blacklist" after rotation (served by
+- `PT_SESSION_MAX_AGE` (30 days) - the absolute cap on one sign-in, checked against the `auth_time`
+  claim on every refresh.
+- `SIMPLE_JWT` - access 1 hour, refresh 30 days, HS256, rotation + "blacklist" after rotation (served by
   `RevokedRefreshToken`), `USER_ID_FIELD`/`USER_ID_CLAIM` `user_id`, `UPDATE_LAST_LOGIN` False,
   `USER_AUTHENTICATION_RULE` `pt_user_authentication_rule`.
 - `REST_FRAMEWORK` - `PTCookieJWTAuthentication`, default `IsAuthenticated`, the shared exception
@@ -1186,15 +1239,19 @@ docstring records what was moved where to drop `'unsafe-inline'`. The CSP conten
   (separate from the Drive service-account settings).
 - Outside DEBUG: `SECURE_PROXY_SSL_HEADER`, `SECURE_SSL_REDIRECT` (forced off under pytest), HSTS one
   year with subdomains and preload. `SILENCED_SYSTEM_CHECKS = ["security.W003"]`.
-- `CACHES` - `DatabaseCache` (`pt_cache_table`, needs `createcachetable`), `LocMemCache` under pytest;
-  the login-burst counter lives here.
+- `CACHES` - `DatabaseCache` (`pt_cache_table`, needs `createcachetable`, `MAX_ENTRIES` 100,000),
+  `LocMemCache` under pytest; the login-burst counter, the throttles and the reset-code failure count
+  live here.
 
 ### apps/core/checks.py
 
-[checks.py](../apps/core/checks.py) - `check_jwt_signing_key_is_independent` (W001, skipped in DEBUG)
-and `check_no_unexpected_django_superuser` (W002, returns nothing if the DB is not migrated yet).
-Registered by `apps/core/apps.py`'s `CoreConfig.ready()` import. Both are `Warning`s, so they only
-fail a build under `--fail-level WARNING`. Tested by `test_deploy_checks.py`.
+[checks.py](../apps/core/checks.py) - `check_secret_key_is_set` (E001: the development
+`SECRET_KEY` with DEBUG off - an `Error`, so it stops `migrate` and the deploy, not only CI),
+`check_jwt_signing_key_is_independent` (W001, skipped in DEBUG) and
+`check_no_unexpected_django_superuser` (W002, returns nothing if the DB is not migrated yet).
+Registered by `apps/core/apps.py`'s `CoreConfig.ready()` import. The two `Warning`s only fail a build
+under `--fail-level WARNING`. Tested by `test_deploy_checks.py` and
+`test_security_hardening_2026_10_03.py`.
 
 ### apps/core/management/commands/create_pt_user.py
 

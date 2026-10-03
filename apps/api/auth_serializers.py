@@ -12,7 +12,9 @@ validate() implements the device-aware 2FA gate:
 """
 
 import logging
+import time
 
+from django.conf import settings
 from django.contrib.auth import authenticate
 from rest_framework import serializers
 from rest_framework_simplejwt.exceptions import AuthenticationFailed
@@ -48,6 +50,11 @@ class PTTokenObtainPairSerializer(TokenObtainPairSerializer):
         token["full_name"] = user.full_name or ""
         # "Log out everywhere" - see PTUser.token_version's own docstring.
         token["ver"] = user.token_version
+        # When this sign-in happened. Rotation keeps it, so a session renews
+        # only until settings.PT_SESSION_MAX_AGE after it (2026-10-03) - before
+        # that, each rotation issued a fresh 30-day refresh token and a
+        # session (or a stolen refresh cookie) could renew forever.
+        token["auth_time"] = int(time.time())
         return token
 
     def validate(self, attrs):
@@ -186,6 +193,17 @@ class PTTokenRefreshSerializer(TokenRefreshSerializer):
                     self.error_messages["no_active_account"],
                     "no_active_account",
                 )
+
+        # The absolute session cap. A token minted before auth_time existed
+        # starts its clock now, rather than signing everyone out on deploy.
+        auth_time = refresh.payload.get("auth_time")
+        if auth_time is None:
+            refresh["auth_time"] = auth_time = int(time.time())
+        if time.time() - auth_time > settings.PT_SESSION_MAX_AGE.total_seconds():
+            raise AuthenticationFailed(
+                self.error_messages["no_active_account"],
+                "no_active_account",
+            )
 
         new_access = refresh.access_token
         # Explicit, not relying on simplejwt's claim-copying behavior on

@@ -48,6 +48,7 @@ let _sessionRefresh = null;
  */
 function refreshSession() {
   if (!_sessionRefresh) {
+    _lastSessionRenewal = Date.now();
     _sessionRefresh = fetch('/api/auth/token/refresh', {
       method: 'POST',
       credentials: 'same-origin',
@@ -58,6 +59,29 @@ function refreshSession() {
       .finally(() => { _sessionRefresh = null; });
   }
   return _sessionRefresh;
+}
+
+/**
+ * Keeps the one-hour access cookie fresh while a page is in front of the
+ * reader. authFetch() already renews on a 401, but a plain navigation to
+ * /api/ (a stored file opened in a new tab) cannot, and would meet a JSON
+ * 401. Renews once SESSION_KEEPALIVE_MS has passed, checked every minute and
+ * the moment a tab is shown again; hidden tabs never renew, so background
+ * tabs do not keep rotating the shared refresh cookie.
+ */
+const SESSION_KEEPALIVE_MS = 40 * 60 * 1000;
+let _lastSessionRenewal = Date.now();
+let _sessionKeepAliveStarted = false;
+
+function startSessionKeepAlive() {
+  if (_sessionKeepAliveStarted) return;
+  _sessionKeepAliveStarted = true;
+  const renewIfDue = () => {
+    if (document.hidden || Date.now() - _lastSessionRenewal < SESSION_KEEPALIVE_MS) return;
+    refreshSession();
+  };
+  setInterval(renewIfDue, 60 * 1000);
+  document.addEventListener('visibilitychange', renewIfDue);
 }
 
 /**
@@ -150,6 +174,7 @@ async function requireAuth() {
   try {
     if (!res.ok) throw new Error('not authenticated (HTTP ' + res.status + ')');
     CURRENT_USER = await res.json();
+    startSessionKeepAlive();
     // shared.js, when the page loads it (login.html does not).
     if (typeof scopePlantKeysToUser === 'function') scopePlantKeysToUser(CURRENT_USER);
     // A page this account may not open shows the nav and a "no access"

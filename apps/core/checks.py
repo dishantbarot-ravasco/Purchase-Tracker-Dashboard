@@ -2,7 +2,7 @@
 apps/core/checks.py - custom Django system checks (added 2026-09-05,
 hardening pass).
 
-Both checks below run as part of `manage.py check --deploy --fail-level
+The checks below run as part of `manage.py check --deploy --fail-level
 WARNING` - the same command CI already runs on every push (see
 .github/workflows/ci.yml) - so a real misconfiguration in either area fails
 CI instead of silently shipping. Neither check touches request-time
@@ -10,7 +10,26 @@ behavior at all; they only inspect settings/DB state at check-time.
 """
 
 from django.conf import settings
-from django.core.checks import Warning, register
+from django.core.checks import Error, Warning, register
+
+
+@register()
+def check_secret_key_is_set(app_configs, **kwargs):
+    """With DEBUG off, the built-in development key is an Error, not a
+    warning: anyone who reads this repository could sign admin sessions with
+    it, and JWT_SIGNING_KEY falls back to it. An Error stops `migrate`, so
+    release.sh fails the deploy rather than serving with a public key. The
+    Docker build's collectstatic runs only staticfiles-tagged checks, so the
+    fallback still lets the image build."""
+    if settings.DEBUG or settings.SECRET_KEY != settings.DEV_SECRET_KEY:
+        return []
+    return [
+        Error(
+            "DJANGO_SECRET_KEY is not set, so the built-in development key is in use with DEBUG off.",
+            hint="Set DJANGO_SECRET_KEY to a long random value.",
+            id="apps.core.E001",
+        )
+    ]
 
 
 @register()

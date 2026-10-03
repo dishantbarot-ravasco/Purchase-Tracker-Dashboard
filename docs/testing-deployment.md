@@ -528,7 +528,8 @@ IST. `keys_to_prune()` is pure: dumps under `postgres/` past the retention windo
 ### .github/workflows/ci.yml
 
 [.github/workflows/ci.yml](../.github/workflows/ci.yml). Jobs `django`, `docker-image`,
-`frontend-lint` as described in [CI jobs](#ci-jobs). The `django` job's env holds CI-only dummy
+`frontend-lint` as described in [CI jobs](#ci-jobs). A top-level `permissions: contents: read` gives
+the workflow's `GITHUB_TOKEN` read access only - no job writes to the repository. The `django` job's env holds CI-only dummy
 keys, `DATABASE_URL` for the `pt_ci` Postgres service, blank/placeholder Google values (no live
 Drive/OAuth call happens in CI) and `UV_PYTHON: "3.12"`. `DJANGO_DEBUG` is `false` in CI, which
 turns on `SECURE_SSL_REDIRECT`; `settings.py` switches it off when pytest is loaded. `docker-image`

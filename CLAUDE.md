@@ -413,6 +413,13 @@ Read the linked section before breaking any of these. Each is there because it w
   `generate_otp()`/`verify_otp()` take it with no default. The reset endpoints answer identically and
   at equal bcrypt cost for every address; keep both when changing them (`test_password_reset.py`).
   [password_views.py](docs/auth-security-email.md#appsapirouterspassword_viewspy)
+- **Session limits (2026-10-03):** access tokens last 1 hour (`auth.js` keeps a page's session alive);
+  a sign-in renews for at most `PT_SESSION_MAX_AGE` (the `auth_time` claim survives rotation); logout
+  revokes the access jti too; a trusted device lapses after 90 idle days or a year. A Forgot-password
+  code's wrong guesses count apart from the account's (`otp_service._RESET_FAILURE_PREFIX`), so a
+  stranger cannot block someone's sign-in. Only the owner signs an admin out. The cron secret travels
+  only in `X-Report-Secret` (or a body field); `?secret=` is refused.
+  [session limits](docs/auth-security-email.md#sessions-and-tokens)
 - If the bcrypt cost changes, regenerate `_DUMMY_HASH`.
   [throttling](docs/auth-security-email.md#throttling-lockout-and-brute-force-counters)
 - Never `fail_silently=True`; test send failures with `refusing_email_backends.py`, not by

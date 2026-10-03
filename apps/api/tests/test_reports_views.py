@@ -19,12 +19,12 @@ from rest_framework.test import APIClient
 class TestTriggerDailyReport:
     def test_missing_secret_setting_returns_503(self, settings):
         settings.REPORT_CRON_SECRET = ""
-        response = APIClient().get("/api/internal/send-daily-report", {"secret": "anything"})
+        response = APIClient().get("/api/internal/send-daily-report", HTTP_X_REPORT_SECRET="anything")
         assert response.status_code == 503
 
     def test_wrong_secret_returns_403(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
-        response = APIClient().get("/api/internal/send-daily-report", {"secret": "wrong"})
+        response = APIClient().get("/api/internal/send-daily-report", HTTP_X_REPORT_SECRET="wrong")
         assert response.status_code == 403
 
     def test_missing_secret_param_returns_403(self, settings):
@@ -32,9 +32,24 @@ class TestTriggerDailyReport:
         response = APIClient().get("/api/internal/send-daily-report")
         assert response.status_code == 403
 
-    def test_correct_secret_via_query_param_runs_and_returns_ok(self, settings):
+    def test_a_secret_in_the_url_is_refused_even_when_correct(self, settings, mailoutbox):
+        """A query string lands in access logs and the scheduler's history,
+        so ?secret= is refused outright - nothing runs, nothing is sent.
+        The header test below is the success it guards."""
         settings.REPORT_CRON_SECRET = "the-real-secret"
         response = APIClient().get("/api/internal/send-daily-report", {"secret": "the-real-secret"})
+        assert response.status_code == 400
+        assert "X-Report-Secret" in response.json()["detail"]
+        assert not mailoutbox
+        both = APIClient().get(
+            "/api/internal/send-daily-report", {"secret": "the-real-secret"},
+            HTTP_X_REPORT_SECRET="the-real-secret",
+        )
+        assert both.status_code == 400
+
+    def test_correct_secret_runs_and_returns_ok(self, settings):
+        settings.REPORT_CRON_SECRET = "the-real-secret"
+        response = APIClient().get("/api/internal/send-daily-report", HTTP_X_REPORT_SECRET="the-real-secret")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
@@ -87,17 +102,17 @@ class TestTriggerDailyReport:
 class TestTriggerMonthlyReport:
     def test_missing_secret_setting_returns_503(self, settings):
         settings.REPORT_CRON_SECRET = ""
-        response = APIClient().get("/api/internal/send-monthly-report", {"secret": "anything"})
+        response = APIClient().get("/api/internal/send-monthly-report", HTTP_X_REPORT_SECRET="anything")
         assert response.status_code == 503
 
     def test_wrong_secret_returns_403(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
-        response = APIClient().get("/api/internal/send-monthly-report", {"secret": "wrong"})
+        response = APIClient().get("/api/internal/send-monthly-report", HTTP_X_REPORT_SECRET="wrong")
         assert response.status_code == 403
 
     def test_correct_secret_runs_and_returns_ok(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
-        response = APIClient().get("/api/internal/send-monthly-report", {"secret": "the-real-secret"})
+        response = APIClient().get("/api/internal/send-monthly-report", HTTP_X_REPORT_SECRET="the-real-secret")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
@@ -111,7 +126,7 @@ class TestTriggerMonthlyReport:
         settings.REPORT_CRON_SECRET = "the-real-secret"
         response = APIClient().get(
             "/api/internal/send-monthly-report",
-            {"secret": "the-real-secret", "year": "2025", "month": "3"},
+            {"year": "2025", "month": "3"}, HTTP_X_REPORT_SECRET="the-real-secret",
         )
         assert response.status_code == 200
         assert response.json()["month"] == "2025-03"
@@ -119,7 +134,7 @@ class TestTriggerMonthlyReport:
     def test_year_without_month_is_rejected(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
         response = APIClient().get(
-            "/api/internal/send-monthly-report", {"secret": "the-real-secret", "year": "2025"},
+            "/api/internal/send-monthly-report", {"year": "2025"}, HTTP_X_REPORT_SECRET="the-real-secret",
         )
         assert response.status_code == 400
 
@@ -127,7 +142,7 @@ class TestTriggerMonthlyReport:
         settings.REPORT_CRON_SECRET = "the-real-secret"
         response = APIClient().get(
             "/api/internal/send-monthly-report",
-            {"secret": "the-real-secret", "year": "2025", "month": "not-a-number"},
+            {"year": "2025", "month": "not-a-number"}, HTTP_X_REPORT_SECRET="the-real-secret",
         )
         assert response.status_code == 400
 
@@ -135,7 +150,7 @@ class TestTriggerMonthlyReport:
         settings.REPORT_CRON_SECRET = "the-real-secret"
         response = APIClient().get(
             "/api/internal/send-monthly-report",
-            {"secret": "the-real-secret", "year": "2025", "month": "13"},
+            {"year": "2025", "month": "13"}, HTTP_X_REPORT_SECRET="the-real-secret",
         )
         assert response.status_code == 400
 
@@ -148,17 +163,17 @@ class TestTriggerMonthlyReport:
 class TestTriggerPruneRevokedTokens:
     def test_missing_secret_setting_returns_503(self, settings):
         settings.REPORT_CRON_SECRET = ""
-        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "anything"})
+        response = APIClient().get("/api/internal/prune-revoked-tokens", HTTP_X_REPORT_SECRET="anything")
         assert response.status_code == 503
 
     def test_wrong_secret_returns_403(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
-        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "wrong"})
+        response = APIClient().get("/api/internal/prune-revoked-tokens", HTTP_X_REPORT_SECRET="wrong")
         assert response.status_code == 403
 
     def test_correct_secret_runs_and_returns_deleted_count(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
-        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "the-real-secret"})
+        response = APIClient().get("/api/internal/prune-revoked-tokens", HTTP_X_REPORT_SECRET="the-real-secret")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
@@ -175,7 +190,7 @@ class TestTriggerPruneRevokedTokens:
         RevokedRefreshToken.objects.create(jti="expired-1", expires_at=timezone.now() - datetime.timedelta(days=1))
         RevokedRefreshToken.objects.create(jti="still-valid", expires_at=timezone.now() + datetime.timedelta(days=1))
 
-        response = APIClient().get("/api/internal/prune-revoked-tokens", {"secret": "the-real-secret"})
+        response = APIClient().get("/api/internal/prune-revoked-tokens", HTTP_X_REPORT_SECRET="the-real-secret")
         assert response.status_code == 200
         assert response.json()["deleted"] == 1
         assert RevokedRefreshToken.objects.filter(jti="still-valid").exists()
@@ -190,12 +205,12 @@ class TestTriggerPruneRevokedTokens:
 class TestTriggerMismatchReport:
     def test_missing_secret_setting_returns_503(self, settings):
         settings.REPORT_CRON_SECRET = ""
-        response = APIClient().get("/api/internal/send-mismatch-report", {"secret": "anything"})
+        response = APIClient().get("/api/internal/send-mismatch-report", HTTP_X_REPORT_SECRET="anything")
         assert response.status_code == 503
 
     def test_wrong_secret_returns_403(self, settings):
         settings.REPORT_CRON_SECRET = "the-real-secret"
-        response = APIClient().get("/api/internal/send-mismatch-report", {"secret": "wrong"})
+        response = APIClient().get("/api/internal/send-mismatch-report", HTTP_X_REPORT_SECRET="wrong")
         assert response.status_code == 403
 
     def test_correct_secret_runs_and_returns_ok(self, settings):
@@ -206,7 +221,7 @@ class TestTriggerMismatchReport:
         # without_sending below covers the actual default.
         settings.REPORT_CRON_SECRET = "the-real-secret"
         settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED = True
-        response = APIClient().get("/api/internal/send-mismatch-report", {"secret": "the-real-secret"})
+        response = APIClient().get("/api/internal/send-mismatch-report", HTTP_X_REPORT_SECRET="the-real-secret")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
@@ -220,7 +235,7 @@ class TestTriggerMismatchReport:
         instead of a real send count."""
         settings.REPORT_CRON_SECRET = "the-real-secret"
         assert settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED is False
-        response = APIClient().get("/api/internal/send-mismatch-report", {"secret": "the-real-secret"})
+        response = APIClient().get("/api/internal/send-mismatch-report", HTTP_X_REPORT_SECRET="the-real-secret")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "ok"
@@ -232,7 +247,7 @@ class TestTriggerMismatchReport:
         assert settings.MISMATCH_REPORT_PLANT_HEADS_ENABLED is False
         response = APIClient().get(
             "/api/internal/send-mismatch-report",
-            {"secret": "the-real-secret", "test_recipient": "dishant.barot@ravasco.com"},
+            {"test_recipient": "dishant.barot@ravasco.com"}, HTTP_X_REPORT_SECRET="the-real-secret",
         )
         assert response.status_code == 200
         assert response.json().get("plant_heads_disabled") is not True
