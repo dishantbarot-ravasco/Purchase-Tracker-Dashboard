@@ -760,7 +760,12 @@ under `achhad/` and `vapi/`; the cross-plant `imports/*` routes with the plant a
 `custom_exception_handler(exc, context)` - wired via `REST_FRAMEWORK["EXCEPTION_HANDLER"]`. When
 DRF handles the exception itself, it wraps a dict body lacking `detail` into `{"detail": ...}`.
 When DRF does not (`response is None`), it logs with traceback and returns 400 with `str(exc)` for
-`_DESCRIBABLE_EXCEPTIONS` (`ValueError`, Django `ValidationError`, `ObjectDoesNotExist`), 400 with
+a Django `ValidationError` (its messages are written for users), and for a `ValueError` or
+`ObjectDoesNotExist` only when `_raised_by_own_code()` - the innermost traceback frame is under
+`apps/` (our `raise`, or a builtin like `int()` called from our line). One raised inside Django or a
+library gets `_NOT_DESCRIBED` ("That request could not be processed...") instead, still a 400:
+"PTUser matching query does not exist." named a model, and a library's wording can quote internals.
+An exception that was never raised (no traceback) is described. Then 400 with
 `_describe_integrity_error()`'s SQL-free message for `IntegrityError`, else a generic 500 (with the
 exception type appended in DEBUG). `KeyError` is deliberately **not** describable: its message is a
 bare internal key name and it is a server bug, so it is a 500. To show a user a message, raise

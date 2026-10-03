@@ -78,6 +78,10 @@ RUN uv sync --frozen --no-dev
 # ARG lines anywhere in this file on purpose: Render only forwards a
 # service's env vars into a build as declared ARGs, so none of its secrets
 # can end up baked into an image layer.
+# The image serves frontend/js without its comments (they describe how the
+# app matches records, and /js is public); the repository keeps them.
+# Before collectstatic so staticfiles/ gets the stripped copies too.
+RUN python manage.py strip_js_comments
 RUN python manage.py collectstatic --noinput
 
 # Non-root runtime user. The only path the app writes to at runtime is

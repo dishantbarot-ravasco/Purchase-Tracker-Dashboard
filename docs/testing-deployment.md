@@ -136,7 +136,7 @@ an exhaustive hand-maintained globals list that would itself become a second sou
 ### CI jobs
 
 [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on every push and pull request, on
-any branch, as three jobs on `ubuntu-22.04`:
+any branch, as four jobs on `ubuntu-22.04`:
 
 - **`django`** (Postgres 16 service): enables the PostgreSQL apt repository (postgresql-common's
   `apt.postgresql.org.sh` - the runner does not have it, so installing client 16 directly fails),
@@ -149,11 +149,21 @@ any branch, as three jobs on `ubuntu-22.04`:
   the API uses JWT, not session CSRF), `migrate`, `createcachetable`, then the test suite with the
   coverage ratchet.
 - **`docker-image`** - builds and boots the production image (see [Render](#render)).
-- **`frontend-lint`** (Node 22): `node --check` on every `frontend/js/*.js`, then ESLint 8.
+- **`frontend-lint`** (Node 22): `node --check` on every `frontend/js/*.js`, then ESLint 8, then
+  the comment-stripping check: every script goes through `apps/services/js_comments.py` (run with
+  plain `python3`, no Django) and acorn must parse the stripped copy to the same syntax tree as the
+  original, with no comment left.
+- **`secrets-scan`**: gitleaks 8.30.1 (release tarball, SHA-256 checked) over the commits being
+  pushed (`github.event.before..HEAD`) or a pull request's (`base..HEAD`), `HEAD~1..HEAD` when
+  neither exists. Only new commits, on purpose: older history has known hits that were never
+  rewritten (see CLAUDE.md's Known gaps), so a full-history gate could not pass. A false positive
+  takes a `gitleaks:allow` comment on its line or a `.gitleaksignore` fingerprint, with a reason.
 
 **CI actions run on Node 24** (`actions/checkout@v7`, `actions/setup-node@v7`,
 `astral-sh/setup-uv@v7`): older majors targeted the deprecated Node 20 runtime and warned on every
 run (`setup-uv@v6` is still Node 20 - v7 is the first on Node 24). ESLint itself runs on Node 22 LTS.
+Every action is **pinned to a commit SHA** with its version in a comment (2026-10-03), so a moved
+tag cannot change what CI runs; bump the SHA and the comment together.
 
 ### CI runs Python 3.12 via UV_PYTHON
 
@@ -456,7 +466,9 @@ here without re-locking changes nothing that is tested.
 `uv` via pip, then `postgresql-client-18` (pg_dump / pg_restore for the nightly backup) from the
 PostgreSQL apt repository - curl fetches the repository key and is purged in the same layer; see
 [Backups](#backups-2026-09-30) for why that major version must stay at or above the server's - then `uv sync --frozen --no-dev --no-install-project` on the manifests alone (cached
-layer), `COPY . .`, a second `uv sync --frozen --no-dev`, and `collectstatic` at build time (the
+layer), `COPY . .`, a second `uv sync --frozen --no-dev`, `manage.py strip_js_comments` (the image's
+`frontend/js` loses its comments - they describe the matching and `/js` is public; the repository
+keeps them, and line numbers are unchanged), and `collectstatic` at build time (the
 dev-only `SECRET_KEY` fallback covers it; no DB needed). There are **no `ARG` lines on purpose**:
 Render only forwards env vars into a build as declared ARGs, so no secret can be baked into a layer.
 Creates user `app` (uid 10001), which owns only `/app/logs`. `ENTRYPOINT` is
@@ -648,6 +660,7 @@ Configuration is `pyproject.toml` plus these:
 | test_email_delivery_is_observable.py | yes | Source guard: no `fail_silently=True`; a failed admin alert logs ERROR and never claims "sent". |
 | test_email_dispatch_pool.py | yes | Bounded OTP/bulk email thread pools: no thread per email, OTP lane never blocked, inline fallback. |
 | test_google_client_query.py | no | `find_file_id_by_title()` Drive query construction and escaping, newest-first pick among duplicates, `list_files_in_folder()` pagination (fake service, no API call). |
+| test_js_comments.py | no | `strip_comments()`: comments go, look-alikes in strings, templates and regex literals stay; unterminated input raises; every real script keeps its line count and strips idempotently. |
 | test_import_flags.py | no | Import PO stage (placed/shipped/cleared), BOE qty discrepancy, and the MIR-receipt rules for delivery status, partial delivery and Material Inwarded (cleared-but-not-received is Overdue; BOE short is not partial). |
 | test_license_links.py | yes | Import line License Type/Number normalisation and join to the RoDTEP/Advance License ledgers. |
 | test_manual_mir_match.py | yes | Domestic manual MIR pins in `run_full_match()`: pin outranks matcher, survives rematch, forced-unmatched, collisions. |
@@ -707,6 +720,7 @@ Configuration is `pyproject.toml` plus these:
 | test_csv_formula_injection.py | yes | CSV exports neutralise formula-prefixed cells. |
 | test_delete_user.py | yes | User delete restricted to one configured admin; last admin protected. |
 | test_deploy_checks.py | yes | Custom deploy checks: JWT key fallback, active superuser warning. |
+| test_security_hardening_2026_10_03.py | yes | Go-live pass: reset-code failures counted apart, logout revokes the access token, 30-day session cap, trusted-device expiry, owner-only session kill for admins, E001, view-only PTUserAdmin, common passwords. |
 | test_signing_key_and_cli_reset.py | yes | A blank or whitespace `JWT_SIGNING_KEY` falls back to `SECRET_KEY` (fresh interpreter); a `create_pt_user` reset bumps `token_version`. |
 | test_device_hashing.py | yes | Trusted-device tokens stored only as SHA-256 hashes. |
 | test_dismiss_flag.py | yes | HRS and import PO-level flag dismiss/reinstate. |
@@ -733,7 +747,7 @@ Configuration is `pyproject.toml` plus these:
 | test_mir_without_po_endpoint.py | yes | `mir-without-po` drill-down: shape, bucket filter, plant gate, CSV. |
 | test_models_package.py | no | `apps/core/models/` package re-exports every model. |
 | test_no_em_dashes.py | no | No em dash in any text file in the repo (code, docs, config; skips `.venv`, migrations, `staticfiles`). |
-| test_oauth_lockout_and_error_leak.py | yes | Google OAuth respects lockout; exception handler does not leak internals. |
+| test_oauth_lockout_and_error_leak.py | yes | Google OAuth respects lockout; exception handler does not leak internals (a library's or Django's message is not repeated). |
 | test_password_change.py | yes | Self-service password change: the current password required (a wrong one sends nothing and counts towards the lockout), the confirmation must match, the current password refused, a reset code refused, OTP single-use. |
 | test_password_change_revokes_sessions.py | yes | Password change/reset revokes other sessions, keeps device trust. |
 | test_password_policy.py | yes | Password strength policy on create/reset. |

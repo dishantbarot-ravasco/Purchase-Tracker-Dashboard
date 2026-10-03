@@ -52,7 +52,7 @@ jobs:
       UV_PYTHON: "3.12"
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install the PostgreSQL 16 client
         # test_db_backup.py runs the real pg_dump against the postgres:16
@@ -69,7 +69,7 @@ jobs:
           echo "/usr/lib/postgresql/16/bin" >> "$GITHUB_PATH"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
 
       - name: Install dependencies
         run: uv sync
@@ -148,7 +148,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Build production image
         run: docker build -t pt-dashboard:ci .
@@ -217,12 +217,39 @@ jobs:
           docker logs pt-worker
           [ "$(docker inspect -f '{{.State.Running}}' pt-worker)" = "true" ] || { echo "qcluster exited"; exit 1; }
 
+  # Fails when a commit being pushed (or a pull request's commits) adds
+  # something that looks like a secret. Only the new commits are scanned:
+  # older history has known hits that were deliberately not rewritten (see
+  # CLAUDE.md's Known gaps), and a full-history gate would never pass. A
+  # false positive goes in .gitleaksignore by its fingerprint, with a reason.
+  secrets-scan:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Scan the new commits for secrets (gitleaks)
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE" ]; then RANGE="$BASE..HEAD"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then RANGE="$BEFORE..HEAD"
+          else RANGE="HEAD~1..HEAD"
+          fi
+          echo "Scanning $RANGE"
+          curl -sSLo /tmp/gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tgz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --no-banner --exit-code 1 --log-opts="$RANGE" .
+
   frontend-lint:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
 
@@ -257,3 +284,33 @@ jobs:
         # cannot resolve cross-file calls without a drifting globals list).
         run: |
           npx --yes eslint@8 frontend/js --ext .js --max-warnings 0
+
+      - name: Comment stripping leaves every script's syntax tree unchanged
+        # The Docker image serves frontend/js through manage.py
+        # strip_js_comments (apps/services/js_comments.py). A tokenizer
+        # mistake would ship a changed or broken script, so parse each file
+        # before and after with acorn and require identical trees.
+        run: |
+          mkdir -p /tmp/stripped
+          python3 -c "
+          import pathlib, sys
+          sys.path.insert(0, '.')
+          from apps.services.js_comments import strip_comments
+          for f in pathlib.Path('frontend/js').glob('*.js'):
+              pathlib.Path('/tmp/stripped', f.name).write_text(strip_comments(f.read_text(encoding='utf-8')), encoding='utf-8')
+          "
+          npm install --no-save --prefix /tmp/acorn acorn@8
+          node -e "
+          const acorn = require('/tmp/acorn/node_modules/acorn');
+          const fs = require('fs');
+          const tree = s => JSON.stringify(acorn.parse(s, { ecmaVersion: 'latest' }), (k, v) => (k === 'start' || k === 'end') ? undefined : v);
+          let bad = 0;
+          for (const f of fs.readdirSync('frontend/js').filter(f => f.endsWith('.js'))) {
+            const a = fs.readFileSync('frontend/js/' + f, 'utf8'), b = fs.readFileSync('/tmp/stripped/' + f, 'utf8');
+            if (tree(a) !== tree(b)) { console.error('changed by stripping: ' + f); bad++; }
+            let left = 0;
+            acorn.parse(b, { ecmaVersion: 'latest', onComment: () => { left++; } });
+            if (left) { console.error(left + ' comment(s) left in ' + f); bad++; }
+          }
+          process.exit(bad ? 1 : 0);
+          "

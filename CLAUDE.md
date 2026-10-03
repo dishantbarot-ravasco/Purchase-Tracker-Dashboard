@@ -89,6 +89,7 @@ DJANGO_DEBUG=false uv run python manage.py check --deploy --fail-level WARNING
 #        compute_*_consumption takes --all | --since YYYY-MM-DD (default 45-day lookback)
 # Read-only: report_retired_pos, backfill_achhad_po_numbers
 # Procurement (MIR entry): sync_procurement_pos [--plant x] - DB-only projection, also in release.sh
+# Build only (Dockerfile): strip_js_comments - rewrites frontend/js in place, never on a working copy
 # Maintenance: prune_revoked_tokens; backup_database (pg_dump to R2 now - the nightly job by hand);
 #              verify_backup (restore the newest R2 dump into <db>_restore_check, compare, drop)
 ```
@@ -124,6 +125,8 @@ Read the linked section before breaking any of these. Each is there because it w
 - Stock lots are keyed on `natural_key`, never `source_row_ref`; MIR rows key on `source_row_ref`
   and are deactivated, not deleted. [lot identity](docs/architecture.md#stable-lot-identity)
 - Raise `ValueError` with a message to show a user an error; `KeyError` deliberately becomes a 500.
+  Only a `ValueError`/`DoesNotExist` raised from code under `apps/` is shown - one from inside Django or
+  a library gets a generic 400, so don't rely on a library's wording reaching the user.
   [exceptions.py](docs/architecture.md#appsapiexceptionspy)
 
 ### Data sync
@@ -456,6 +459,10 @@ Read the linked section before breaking any of these. Each is there because it w
 - Never recreate the Render services; release tasks run once as the web `preDeployCommand` only;
   the container is non-root and uses plain `python`, not `uv run`. [render](docs/testing-deployment.md#render)
 - Every ignore pattern goes in both `.gitignore` and `.dockerignore` (a test enforces it).
+- CI actions are pinned by commit SHA (version in a comment). `secrets-scan` (gitleaks) checks only the
+  commits being pushed; the image's `frontend/js` is comment-stripped at build (`strip_js_comments`), and
+  CI fails if stripping changes any script's syntax tree.
+  [CI jobs](docs/testing-deployment.md#ci-jobs)
   [.env gotchas](docs/testing-deployment.md#env-gotchas-that-have-already-cost-debugging-time)
 
 ---
@@ -555,6 +562,10 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 - **No measured match accuracy at all.** The Review Matches harness never reached a usable sample and
   was removed with its data on 2026-10-01 at the owner's request; a future measurement starts from
   scratch.
+- **Older git history has 12 gitleaks `generic-api-key` hits** (2026-10-03 scan, values not reviewed by
+  Claude): `render.yaml` 2, `.env.example` 2, `core/plant_config.py` 2, `lib/drive.js` 1,
+  `config/settings.py` 1, and one each in four `apps/api/tests/` files. The owner should check each is a
+  placeholder or test value; rotate anything real. CI's scan skips history for this reason.
 - **`dev_smoke_test.sqlite3.bak_pre_vendorgate` is still in git history** with 4 dev/test `pt_users`
   bcrypt hashes. History was deliberately not rewritten - rotate any reused password.
 - **`prune_revoked_tokens` has a trigger endpoint but no fixed cadence.**

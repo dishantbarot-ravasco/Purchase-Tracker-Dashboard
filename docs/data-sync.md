@@ -921,6 +921,14 @@ panel (10+ characters, not all digits, not the email local-part). bcrypt with `r
 it on an existing account revokes that account's tokens. The only way to create the first admin; see
 [auth-security-email.md](auth-security-email.md).
 
+### [apps/core/management/commands/strip_js_comments.py](../apps/core/management/commands/strip_js_comments.py)
+
+Rewrites every `frontend/js/*.js` (or `--dir`) without comments, through
+`apps/services/js_comments.strip_comments()`, and prints the file count and bytes before and after.
+**Run only by the Dockerfile**, before `collectstatic`: the image serves the scripts without their
+comments (`/js` is public and the comments describe the matching), the repository keeps them. Never
+run it on a working copy - it rewrites the files in place.
+
 ### [apps/core/management/commands/prune_revoked_tokens.py](../apps/core/management/commands/prune_revoked_tokens.py)
 
 Calls `token_revocation.prune_expired_revoked_tokens()` and prints the count. The same function sits

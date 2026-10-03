@@ -1939,6 +1939,14 @@ line's receipts and received quantity (import lines on BOE qty, share-scaled), a
 that moved plus the edited order's, with `unfilled` when the run reported the change unfilled. A
 `ValueError` from `apply_change()` becomes `failed` with its message.
 
+### apps/services/js_comments.py
+
+`strip_comments(src)` - a JavaScript source without its comments, for `manage.py strip_js_comments`
+(Docker build) and CI's frontend-lint check. A small tokenizer: strings, template literals with nested
+`${...}` and regex literals (decided from the previous token) pass through untouched; a block comment
+becomes its newlines or one space, so line numbers hold. Raises `ValueError` on unterminated input.
+Never imports Django - CI runs it with plain `python3`.
+
 ### apps/services/data_stamp.py
 
 `touch(plant)` / `read(plant)` - when a plant's data last changed outside a sync, in the default cache
