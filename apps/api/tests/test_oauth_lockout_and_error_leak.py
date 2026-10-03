@@ -153,6 +153,51 @@ class TestExceptionHandlerDoesNotLeakInternals:
         assert resp.status_code == 400
         assert resp.data["detail"] == "Quantity must be a positive number."
 
+    @staticmethod
+    def _caught(fn):
+        try:
+            fn()
+        except Exception as exc:  # the real, raised exception, traceback included
+            return exc
+        raise AssertionError("expected an exception")
+
+    def test_a_valueerror_raised_by_our_code_describes_itself(self):
+        def service():
+            raise ValueError("Received quantity exceeds the open quantity.")
+
+        resp = self._handle(self._caught(service))
+        assert resp.status_code == 400
+        assert resp.data["detail"] == "Received quantity exceeds the open quantity."
+
+    def test_a_valueerror_from_inside_a_library_is_not_repeated(self):
+        """datetime.strptime raises from the stdlib's _strptime module, so
+        its wording ("time data ... does not match format ...") is not ours."""
+        import datetime
+
+        exc = self._caught(lambda: datetime.datetime.strptime("not-a-date", "%Y-%m-%d"))
+        resp = self._handle(exc)
+        assert resp.status_code == 400
+        assert "does not match format" not in resp.data["detail"]
+        assert resp.data["detail"].startswith("That request could not be processed")
+
+    @pytest.mark.django_db
+    def test_a_missing_row_does_not_name_the_model(self):
+        from apps.core.models import PTUser
+
+        resp = self._handle(self._caught(lambda: PTUser.objects.get(pk=-1)))
+        assert resp.status_code == 400
+        assert "PTUser" not in str(resp.data)
+        assert "matching query" not in str(resp.data)
+
+    def test_a_django_validation_error_still_describes_itself(self):
+        def field_check():
+            from django.core.validators import validate_email
+            validate_email("not an email")
+
+        resp = self._handle(self._caught(field_check))
+        assert resp.status_code == 400
+        assert "valid email" in str(resp.data["detail"])
+
     def test_an_unknown_exception_stays_generic(self):
         resp = self._handle(RuntimeError("connection string: postgres://user:pw@host/db"))
         assert resp.status_code == 500

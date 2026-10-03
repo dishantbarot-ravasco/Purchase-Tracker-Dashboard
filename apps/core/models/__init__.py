@@ -138,6 +138,7 @@ from .procurement import (  # noqa: F401
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseOrderLineChange,
+    PoExtraction,
     MirReasonCode,
     MirSequence,
     Mir,
@@ -148,6 +149,7 @@ from .procurement import (  # noqa: F401
 )
 from .stock import (  # noqa: F401
     StockReasonCode,
+    PlantStockSource,
     StockLocation,
     StockSetting,
     StockSequence,
@@ -222,6 +224,7 @@ __all__ = [
     "PurchaseOrder",
     "PurchaseOrderLine",
     "PurchaseOrderLineChange",
+    "PoExtraction",
     "MirReasonCode",
     "MirSequence",
     "SortPreset",
@@ -231,6 +234,7 @@ __all__ = [
     "MirChange",
     "Document",
     "StockReasonCode",
+    "PlantStockSource",
     "StockLocation",
     "StockSetting",
     "StockSequence",

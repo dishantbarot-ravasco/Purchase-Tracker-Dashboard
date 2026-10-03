@@ -1356,3 +1356,11 @@ tr.mir-editing > td { background:var(--gold-accent-soft); }
 /* Overview: fewer, clearer cards (2026-09-24). The Value card leads. */
 .po-overview .field-block.value-card { background:var(--blue-soft); }
 .po-overview .field-block.value-card .line:first-of-type { font-size:15px; font-weight:800; }
+
+/* Plant stock tabs: which records the figures come from, per plant
+   (plant-stock.js's psSourceBarHtml()). */
+.ps-source-bar { display:flex; flex-wrap:wrap; gap:6px 18px; align-items:center; margin:4px 0 14px; padding:8px 12px; border:1px solid var(--border); border-radius:10px; background:var(--gray-soft); font-size:12.5px; }
+.ps-source-k { font-weight:700; text-transform:uppercase; letter-spacing:.04em; font-size:11px; color:var(--slate-soft); }
+.ps-source-switch { background:none; border:0; padding:0; font:inherit; font-weight:700; color:var(--gold-accent-text); cursor:pointer; }
+.ps-source-switch:hover { text-decoration:underline; }
+.ps-source-switch:disabled { opacity:.5; cursor:default; }

@@ -283,3 +283,14 @@ tr.mir-action-row > td { background: var(--card); }
 /* PO checks (procurement_rules.po_checks()): a warning, never a block. */
 .mir-po-checks { margin:8px 0; padding:8px 12px; border:1px solid var(--amber-border); border-left:3px solid var(--amber); border-radius:8px; background:var(--amber-soft); color:var(--amber-text); font-size:13px; }
 .mir-po-checks ul { margin:4px 0 0; padding-left:18px; }
+
+/* PO readings review (po-review.js). */
+.pr-grid .pr-wide { grid-column:1 / -1; }
+.pr-grid .pr-bad .form-control { border-color:var(--red); }
+.pr-problems { margin:8px 0; padding:8px 12px; border:1px solid var(--red-border); border-left:3px solid var(--red); border-radius:8px; background:var(--red-soft); color:var(--red-text); font-size:13px; }
+.pr-problems ul { margin:4px 0 0; padding-left:18px; }
+.pr-lines table { min-width:1100px; }
+.pr-lines .form-control { min-width:70px; padding:4px 6px; font-size:12.5px; }
+.pr-lines .pr-cell-description .form-control { min-width:260px; }
+.pr-actions { flex-wrap:wrap; gap:8px; align-items:center; }
+.pr-reject-note { max-width:280px; }

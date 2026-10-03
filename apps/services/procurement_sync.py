@@ -127,11 +127,20 @@ def _same(a, b) -> bool:
 
 
 def _project_lines(po, legacy_items, result: ProjectionResult) -> None:
+    write_lines(po, [_line_values(item) for item in legacy_items], result, "The PO sheet")
+
+
+def write_lines(po, lines_values, result: ProjectionResult, changed_by: str) -> None:
+    """Bring a PO's lines in line with `lines_values` (one dict of
+    PurchaseOrderLine fields per line, in PO order; line N is position N), as
+    a diff: an unchanged line is not touched, every change is logged, a line
+    with posted receipts whose identity changes is flagged for review, and a
+    line no longer listed is retired, never deleted. `changed_by` names the
+    source in the review note ("The PO sheet", "The approved PO file")."""
     from apps.core.models import PurchaseOrderLine, PurchaseOrderLineChange
 
     existing = {line.line_no: line for line in po.lines.all()}
-    for position, item in enumerate(legacy_items, start=1):
-        values = _line_values(item)
+    for position, values in enumerate(lines_values, start=1):
         line = existing.get(position)
         if line is None:
             PurchaseOrderLine.objects.create(purchase_order=po, line_no=position, **values)
@@ -155,7 +164,7 @@ def _project_lines(po, legacy_items, result: ProjectionResult) -> None:
         written = [f for f, _o, _n in changes] + (["is_active"] if reactivated else [])
         if received and identity:
             line.needs_review = True
-            line.review_note = (f"The PO sheet changed {', '.join(identity)} after receipts were posted against this "
+            line.review_note = (f"{changed_by} changed {', '.join(identity)} after receipts were posted against this "
                                 f"line on {timezone.localdate():%d-%m-%Y}. Confirm the receipts still belong here.")
             result.lines_flagged.append(f"{po.po_number} line {position}")
             written += ["needs_review", "review_note"]
@@ -165,11 +174,11 @@ def _project_lines(po, legacy_items, result: ProjectionResult) -> None:
         line.save(update_fields=written)
         result.lines_updated += 1
     for line_no, line in existing.items():
-        if line_no > len(legacy_items) and line.is_active:
+        if line_no > len(lines_values) and line.is_active:
             line.is_active = False
             if _has_receipts(line):
                 line.needs_review = True
-                line.review_note = (f"The PO sheet dropped this line on {timezone.localdate():%d-%m-%Y} after receipts "
+                line.review_note = (f"{changed_by} dropped this line on {timezone.localdate():%d-%m-%Y} after receipts "
                                     "were posted against it.")
                 result.lines_flagged.append(f"{po.po_number} line {line_no}")
             line.save(update_fields=["is_active", "needs_review", "review_note"])

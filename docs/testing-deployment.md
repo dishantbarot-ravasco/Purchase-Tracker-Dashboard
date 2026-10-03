@@ -499,7 +499,9 @@ recreate the service and both must change, or every request is a 400 and Google 
 `DATABASE_URL` from the database's `connectionString`, Drive folder/file ids and SMTP host/port as
 plain values, and `sync: false` for every secret (`GOOGLE_SERVICE_ACCOUNT_JSON`, `SMTP_USER/PASS/FROM`,
 `GOOGLE_CLIENT_ID/SECRET`, `SAFECUBE_API_KEY`, `SENTRY_DSN`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-`R2_SECRET_ACCESS_KEY`). The three `R2_BUCKET_*` names are plain values on both services. `REPORT_CRON_SECRET` is generated
+`R2_SECRET_ACCESS_KEY`, `ANTHROPIC_API_KEY`). The three `R2_BUCKET_*` names are plain values on both services.
+`ANTHROPIC_API_KEY` (PO extraction, called on the worker) belongs on both services; blank leaves extraction
+off. `PO_EXTRACTION_MODEL` is optional (default `claude-opus-5-5`). `REPORT_CRON_SECRET` is generated
 (web only) and must be copied into the external cron-job.org jobs. The worker gets
 `DJANGO_SECRET_KEY` and `JWT_SIGNING_KEY` via `fromService`; `SENTRY_DSN` is not shared
 automatically and must be set to the same value on both services.

@@ -84,6 +84,27 @@ class StockLocation(models.Model):
         return f"{self.plant_id}:{self.name}"
 
 
+class PlantStockSource(models.Model):
+    """Where a plant's Inventory / On Order / Stock & Orders tabs read from
+    (owner, 2026-10-03): the Drive RM sheet and MIR register until the plant
+    has moved in-app, then the app's own RM store and MIRs. Switched by an
+    admin at any moment (app_stock_source.set_source()); a plant with no row
+    reads the Drive sheets. The two sources are shown one at a time, never
+    added together."""
+
+    class Source(models.TextChoices):
+        DRIVE = "drive", "Drive sheets"
+        APP = "app", "In-app MIR and RM store"
+
+    plant = models.OneToOneField("core.Plant", on_delete=models.PROTECT, related_name="stock_source")
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.DRIVE)
+    updated_by_email = models.CharField(max_length=255, blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.plant_id}:{self.source}"
+
+
 class StockSetting(models.Model):
     """What a plant's store does with a material. A material with no row is
     stocked, with no minimum level. `is_stocked` False means receipts of it

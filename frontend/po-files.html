@@ -94,6 +94,24 @@
       </form>
     </section>
 
+    <section class="mir-panel" id="readingsPanel" hidden>
+      <div class="mir-detail-head">
+        <h3 class="mir-panel-title">PO readings</h3>
+        <label class="form-label" for="readingsShow">Show</label>
+        <select id="readingsShow">
+          <option value="OPEN">To review</option>
+          <option value="">All</option>
+          <option value="APPROVED">Approved</option>
+          <option value="REJECTED">Rejected</option>
+        </select>
+      </div>
+      <p class="mir-help">Each PO copy uploaded is read into its order and lines. Check every field against the file,
+        correct what is wrong, and approve it - only then can MIR entry receive against it. Nothing is added until it is approved.</p>
+      <div class="mir-banner mir-banner-warn" id="readingsOff" hidden>PO reading is not set up on this server yet - files are stored but not read. Ask an admin to add the extraction key.</div>
+      <div id="readingsArea"></div>
+      <div id="reviewArea"></div>
+    </section>
+
     <div class="filter-row">
       <label for="listPlant">Plant</label>
       <select id="listPlant"></select>
@@ -120,5 +138,6 @@
   <script src="js/shared.js"></script>
   <script src="js/doc-files.js"></script>
   <script src="js/po-files-page.js"></script>
+  <script src="js/po-review.js"></script>
 </body>
 </html>

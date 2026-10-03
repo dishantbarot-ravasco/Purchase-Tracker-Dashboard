@@ -632,6 +632,15 @@ R2_BUCKETS = {
 BACKUP_RETENTION_DAYS = int(os.environ.get("BACKUP_RETENTION_DAYS", "30"))
 
 # ---------------------------------------------------------------------------
+# PO extraction (2026-10-03, apps/services/po_extraction.py): an uploaded PO
+# file is read by Claude on the background worker into a draft a purchase
+# manager reviews and approves. A blank key leaves extraction switched off -
+# uploads still work, and the PO Files page says extraction is not set up.
+# ---------------------------------------------------------------------------
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+PO_EXTRACTION_MODEL = os.environ.get("PO_EXTRACTION_MODEL", "claude-opus-5-5")
+
+# ---------------------------------------------------------------------------
 # Session - DB-backed, required for the Google OAuth PKCE code_verifier
 # round-trip and for the pending_user_id stored during the device-verify OTP
 # flow. SESSION_SAVE_EVERY_REQUEST is essential: without it, session writes

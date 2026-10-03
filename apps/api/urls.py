@@ -15,7 +15,7 @@ from django.urls import include, path
 
 from apps.api import views
 from apps.api.auth_views import PTLoginView, PTTokenRefreshView, PTTokenVerifyView, whoami
-from apps.api.routers import achhad_views, activity_views, admin_overview_views, document_views, hrs_views, imports_views, mir_views, password_views, preferences_views, reports_views, stock_views, vapi_views
+from apps.api.routers import achhad_views, activity_views, admin_overview_views, document_views, hrs_views, imports_views, mir_views, password_views, po_extraction_views, preferences_views, reports_views, stock_source_views, stock_views, vapi_views
 
 urlpatterns = [
     path("health", views.health, name="health"),
@@ -81,12 +81,24 @@ urlpatterns = [
     path("documents/po/upload", document_views.upload_po_document, name="po-document-upload"),
     path("documents/<int:document_id>/open", document_views.open_document, name="document-open"),
     path("documents/<int:document_id>/withdraw", document_views.withdraw_document, name="document-withdraw"),
+    # PO extraction review (po_extraction.py).
+    path("documents/<int:document_id>/extract", po_extraction_views.read_document, name="po-extraction-read"),
+    path("po-extractions", po_extraction_views.extractions, name="po-extractions"),
+    path("po-extractions/<int:extraction_id>", po_extraction_views.extraction, name="po-extraction"),
+    path("po-extractions/<int:extraction_id>/draft", po_extraction_views.save_draft, name="po-extraction-draft"),
+    path("po-extractions/<int:extraction_id>/approve", po_extraction_views.approve, name="po-extraction-approve"),
+    path("po-extractions/<int:extraction_id>/reject", po_extraction_views.reject, name="po-extraction-reject"),
     path("mir/entries/<int:mir_id>/invoice", document_views.mir_invoice, name="mir-invoice"),
     # RM store (2026-09-29; issue from a chosen MIR 2026-09-30) - apps/api/routers/stock_views.py.
     path("stock/meta", stock_views.meta, name="stock-meta"),
     path("stock/receipts", stock_views.receipts, name="stock-receipts"),
     path("stock/receipts/<int:lot_id>", stock_views.receipt, name="stock-receipt"),
     path("stock/receipts/<int:lot_id>/location", stock_views.receipt_location, name="stock-receipt-location"),
+    # Which records the plant stock tabs read (app_stock_source.py).
+    path("stock-source", stock_source_views.stock_source, name="stock-source"),
+    path("stock-source/set", stock_source_views.set_stock_source, name="stock-source-set"),
+    path("app-stock/<str:plant>/materials", stock_source_views.app_materials, name="app-stock-materials"),
+    path("app-stock/<str:plant>/purchase-orders", stock_source_views.app_purchase_orders, name="app-stock-purchase-orders"),
     path("stock/register", stock_views.register, name="stock-register"),
     path("stock/differences", stock_views.differences, name="stock-differences"),
     path("stock/settings", stock_views.settings, name="stock-settings"),

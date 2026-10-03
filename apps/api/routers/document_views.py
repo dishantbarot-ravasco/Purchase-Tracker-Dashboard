@@ -38,7 +38,7 @@ from apps.core.models import (
     RTPAchhadImportPurchaseOrder,
     RTPVapiImportPurchaseOrder,
 )
-from apps.services import documents, object_storage
+from apps.services import documents, object_storage, po_extraction
 
 # The per-plant import PO mirrors, for "In the app": import POs are not in
 # PurchaseOrder yet, and BOE and license files belong to import POs.
@@ -105,7 +105,12 @@ def upload_po_document(request):
         return _not_configured(exc)
     except documents.DocumentError as exc:
         return _refused(exc)
-    return Response(serialize(doc), status=http.HTTP_201_CREATED)
+    payload = serialize(doc)
+    # A PO copy is read into a draft PO on the background worker when
+    # extraction is set up (po_extraction.py); the upload never waits on it.
+    if doc.kind == Document.Kind.PO and po_extraction.is_configured():
+        payload["extractionId"] = po_extraction.request(doc, request.user).id
+    return Response(payload, status=http.HTTP_201_CREATED)
 
 
 @api_view(["GET"])

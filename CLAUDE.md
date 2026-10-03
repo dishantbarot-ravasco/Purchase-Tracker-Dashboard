@@ -276,7 +276,10 @@ Read the linked section before breaking any of these. Each is there because it w
   materials.js's helpers for every figure - never re-derive stock, open qty or Days Left there - and
   never add stock to ordered quantity (Achhad lots have no unit). Material links go through
   `openMaterialLink()`, which routes by role. `vendorContains()` matches identical names at any length
-  first, like `_vendor_matches()` - never let the 4-character floor apply to equal names.
+  first, like `_vendor_matches()` - never let the 4-character floor apply to equal names. Each plant's
+  tabs read ONE source, Drive or the in-app RM store and MIRs (`PlantStockSource`, admin-switched,
+  `app_stock_source.py` in the Drive rows' shape); never add the two, and pass `{stockTabs: true}` to the
+  loaders only from the plant tabs.
   [plant tabs](docs/frontend.md#plant-stock-tabs---inventory-on-order-stock--orders-2026-09-29)
 
 ### MIR entry
@@ -303,6 +306,17 @@ Read the linked section before breaking any of these. Each is there because it w
 - Reference rows (plants, MIR reasons) come from migration `0068`; a `transaction=True` test flushes
   them, so the root `conftest.py` re-seeds them for every database test. Never make a test depend on
   migration data without it. [helpers](docs/testing-deployment.md#test-helpers)
+
+### PO extraction (2026-10-03)
+- An uploaded PO file is read on the worker (`po_extraction.run()`, one structured-output Claude call, no
+  tools, no database access) into a DRAFT; nothing reaches `PurchaseOrder` until a person approves it, and
+  approval is refused unless the billing address names the uploading plant and every compulsory field is
+  there. Never write procurement rows from the model's output directly; never call the model in a request.
+- An approved reading owns the PO (`source = app`, the CSV projection skips it); its lines go through
+  `procurement_sync.write_lines()` by position, like the projection - never delete-and-rebuild.
+- `ANTHROPIC_API_KEY` blank = extraction off (uploads still work). Tests stub `_call_claude()` and
+  `documents.read_bytes()`; nothing in the suite calls the API.
+  [PO extraction](docs/api-and-features.md#po-extraction-2026-10-03)
 
 ### Files and backups (2026-09-30)
 - Uploaded PO and invoice files live in private Cloudflare R2 buckets; `documents.py` is the only writer
@@ -535,6 +549,9 @@ Confirm a gap is still true before treating it as blocking - check the file it p
 
 - **No automated tests for the Drive API calls or the `sync_*` commands' file-fetching.** Everything
   else, including `run_full_match()`, has real coverage.
+- **PO extraction has never read a real PO** (built 2026-10-03 with no `ANTHROPIC_API_KEY` anywhere):
+  the Claude call is stubbed in every test. Before relying on it, set the key on Render, upload a real
+  PO, and compare the reading with the PO sheet's row (the review shows the differences).
 - **No measured match accuracy at all.** The Review Matches harness never reached a usable sample and
   was removed with its data on 2026-10-01 at the owner's request; a future measurement starts from
   scratch.

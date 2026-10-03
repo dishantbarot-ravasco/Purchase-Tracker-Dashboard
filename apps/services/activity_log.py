@@ -92,6 +92,11 @@ ROUTE_LABELS = {
     "stock-reject": "Rejected a stock difference",
     "stock-settings": "Changed stock settings",
     "stock-receipt-location": "Set where a stock receipt sits",
+    "stock-source-set": "Switched where a plant's stock tabs read from",
+    "po-extraction-read": "Asked for a PO file to be read",
+    "po-extraction-draft": "Corrected a PO reading",
+    "po-extraction-approve": "Approved a PO reading into the purchase orders",
+    "po-extraction-reject": "Rejected a PO reading",
     "stock-material-units": "Changed a material's stock units",
     # Dashboard corrections and decisions
     "correct-field": "Corrected a PO field",

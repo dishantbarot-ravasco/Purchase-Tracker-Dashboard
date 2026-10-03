@@ -134,6 +134,14 @@ const root = document.getElementById('root');
 // already populated instead of needing a cache entry of its own.
 let PURCHASE_ORDERS_BY_PLANT = {};
 let MATERIALS_BY_PLANT = {};
+// Which records each plant's two caches above hold: 'drive' (the Drive
+// sheets, what every page but the plant stock tabs reads) or 'app' (the
+// in-app RM store and MIRs, app_stock_source.py). The plant stock tabs read
+// the plant's chosen source (STOCK_SOURCE, from /api/stock-source); a cache
+// holding the other source is re-fetched, never mixed with it.
+let MATERIALS_SOURCE_BY_PLANT = {};
+let POS_SOURCE_BY_PLANT = {};
+let STOCK_SOURCE = null;
 // Import POs, unlike domestic, come from ONE combined cross-plant endpoint
 // (apps/api/routers/imports_views.py's purchase_orders view already merges
 // all three plants and tags each row with `plant`) - so there is exactly
@@ -633,6 +641,9 @@ function clearDataCaches() {
   _syncStatusShared = {};
   PURCHASE_ORDERS_BY_PLANT = {};
   MATERIALS_BY_PLANT = {};
+  MATERIALS_SOURCE_BY_PLANT = {};
+  POS_SOURCE_BY_PLANT = {};
+  STOCK_SOURCE = null;
   IMPORT_PO_CACHE = null;
   IMPORT_PO_DETAIL_CACHE = {};
 }
@@ -1338,13 +1349,36 @@ function startFreshnessWatch() {
 }
 
 // ── API fetch helpers & per-plant caches ────────────────────────────────
-async function ensurePOsLoaded(plantKeys) {
+// `opts.stockTabs`: load the plant's chosen stock source (the plant stock
+// tabs); otherwise the Drive orders every other page reads.
+async function ensurePOsLoaded(plantKeys, opts) {
+  if (opts && opts.stockTabs) await ensureStockSourceLoaded();
   await Promise.all(plantKeys.map(async key => {
-    if (!PURCHASE_ORDERS_BY_PLANT[key]) {
-      const data = await apiForPlant(key, '/purchase-orders');
+    const source = opts && opts.stockTabs ? stockSourceOf(key) : 'drive';
+    if (!PURCHASE_ORDERS_BY_PLANT[key] || (POS_SOURCE_BY_PLANT[key] || 'drive') !== source) {
+      const data = source === 'app' ? await apiAt('/api/app-stock/' + key + '/purchase-orders') : await apiForPlant(key, '/purchase-orders');
       PURCHASE_ORDERS_BY_PLANT[key] = data.purchaseOrders;
+      POS_SOURCE_BY_PLANT[key] = source;
     }
   }));
+}
+
+// STOCK_SOURCE: {sources: {plant: 'drive' | 'app'}, canChange} for the
+// caller's plants (admins may switch a plant - plant-stock.js's source bar).
+// One request however many loaders ask at once (STOCK_SOURCE_LOAD).
+let STOCK_SOURCE_LOAD = null;
+async function ensureStockSourceLoaded() {
+  if (STOCK_SOURCE) return;
+  if (!STOCK_SOURCE_LOAD) {
+    STOCK_SOURCE_LOAD = apiAt('/api/stock-source')
+      .then(data => { STOCK_SOURCE = { sources: data.sources || {}, canChange: !!data.canChange }; })
+      .finally(() => { STOCK_SOURCE_LOAD = null; });
+  }
+  await STOCK_SOURCE_LOAD;
+}
+
+function stockSourceOf(key) {
+  return (STOCK_SOURCE && STOCK_SOURCE.sources[key]) || 'drive';
 }
 
 // Returns cached rows for the current plant selection. In "All Plants"

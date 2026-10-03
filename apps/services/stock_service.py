@@ -977,3 +977,24 @@ def set_location(lot, name: str, user):
     lot.location_set_at = timezone.now()
     lot.save(update_fields=["location", "location_set_by_email", "location_set_at"])
     return lot
+
+
+def plant_holdings(plant, *, window_days: int = 45) -> list[dict]:
+    """Every receipt the plant keeps in store, with what it holds today and
+    how much of it was issued (net of returns) in the last `window_days` -
+    what the Inventory / On Order / Stock & Orders tabs read when the plant's
+    stock source is the app (apps/services/app_stock_source.py)."""
+    from apps.core.models import StockLot
+
+    lots = list(StockLot.objects.filter(plant=plant, stocked=True).select_related(*LOT_RELATED))
+    moves = _movements(lots)
+    since = timezone.localdate() - datetime.timedelta(days=window_days - 1)
+    out = []
+    for lot in lots:
+        mv = moves[lot.id]
+        out.append({
+            "lot": lot,
+            "balance": sum((m["qty"] for m in mv), ZERO),
+            "used": -sum((m["qty"] for m in mv if m["kind"] in ("ISSUE", "RETURN") and m["date"] >= since), ZERO),
+        })
+    return out

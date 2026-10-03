@@ -23,6 +23,7 @@ dependencies = [
     "croniter>=6.2.4",
     "sentry-sdk>=2.69.1",
     "boto3>=1.40",
+    "anthropic>=1.11.0",
 ]
 
 [dependency-groups]

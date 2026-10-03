@@ -358,8 +358,10 @@ async function loadAndRenderPlantView() {
     // switching between the three never waits a second time. The order
     // books only for an account that may read them (Inventory needs none).
     const keys = selectedPlantKeys();
-    const loads = [ensureMaterialsLoaded(keys), psSorter(view).ensurePresetsLoaded()];
-    if (userHasPerm(...PS_ORDER_PERMS)) loads.push(ensurePOsLoaded(keys), ensureImportPOsLoaded());
+    // Each plant's chosen source (Drive sheets or the in-app RM store and
+    // MIRs - main.js's ensurePOsLoaded()); imports have only the Drive one.
+    const loads = [ensureMaterialsLoaded(keys, { stockTabs: true }), psSorter(view).ensurePresetsLoaded()];
+    if (userHasPerm(...PS_ORDER_PERMS)) loads.push(ensurePOsLoaded(keys, { stockTabs: true }), ensureImportPOsLoaded());
     await Promise.all(loads);
   } catch (e) {
     console.error('loadAndRenderPlantView failed:', e);
@@ -393,6 +395,44 @@ const PS_VIEWS = {
   combined: { rows: psCombinedRows, statuses: PS_POSITION, render: psCombinedParts, columns: psCombinedColumns },
 };
 
+// ── Where the figures come from (owner, 2026-10-03) ──
+// Each plant reads either its Drive sheets or the in-app RM store and MIRs
+// (apps/services/app_stock_source.py), never both added together. The bar
+// says which, per selected plant; an admin can switch a plant at once.
+const PS_SOURCE_LABEL = { drive: 'Drive sheets', app: 'In-app MIR and RM store' };
+const PS_SOURCE_SWITCH = { drive: 'Switch to Drive sheets', app: 'Switch to in-app records' };
+
+function psSourceBarHtml() {
+  if (!STOCK_SOURCE) return '';
+  const keys = selectedPlantKeys();
+  return '<div class="ps-source-bar" role="note"><span class="ps-source-k">Figures from</span>' +
+    keys.map(key => {
+      const src = stockSourceOf(key);
+      const other = src === 'app' ? 'drive' : 'app';
+      return '<span class="ps-source-item"><b>' + escapeHtml(PLANTS[key].label) + ':</b> ' + escapeHtml(PS_SOURCE_LABEL[src]) +
+        (STOCK_SOURCE.canChange ? ' <button type="button" class="ps-source-switch" data-ps-source="' + escapeHtml(key) + '" data-to="' + other + '">' +
+          escapeHtml(PS_SOURCE_SWITCH[other]) + '</button>' : '') + '</span>';
+    }).join('') + '</div>';
+}
+
+function wirePsSourceBar(el) {
+  el.querySelectorAll('[data-ps-source]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const res = await apiAt('/api/stock-source/set', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plant: btn.dataset.psSource, source: btn.dataset.to }) });
+        STOCK_SOURCE.sources[res.plant] = res.source;
+        // The loaders see the cache holds the other source and re-fetch it.
+        await loadAndRenderPlantView();
+      } catch (e) {
+        btn.disabled = false;
+        alert(e.message);
+      }
+    };
+  });
+}
+
 function renderPlantView() {
   const el = document.getElementById('plantStockContent');
   if (!el) return;
@@ -403,9 +443,10 @@ function renderPlantView() {
   const all = cfg.rows(psBuildScope());
   if (!all.length) {
     const label = PLANT_STOCK_TABS.find(t => t.key === view).label;
-    el.innerHTML = '<div class="section-title">' + escapeHtml(label) + ': ' + escapeHtml(plantDisplayLabel()) + '</div>' +
+    el.innerHTML = '<div class="section-title">' + escapeHtml(label) + ': ' + escapeHtml(plantDisplayLabel()) + '</div>' + psSourceBarHtml() +
       '<div class="empty-state">' + emptyStateHtml(view === 'onorder' ? 'Nothing is on order and nothing needs reordering right now.' : 'No stock synced yet for these plants.') + '</div>';
     PS_LIST_CTX = null;
+    wirePsSourceBar(el);
     return;
   }
   // Category and Sub Category narrow everything - KPIs, charts and list.
@@ -419,7 +460,7 @@ function renderPlantView() {
 
   el.innerHTML =
     '<div class="section-title">' + escapeHtml(parts.title) + ': ' + escapeHtml(plantDisplayLabel()) + '</div>' +
-    '<div class="section-sub">' + parts.sub + '</div>' +
+    '<div class="section-sub">' + parts.sub + '</div>' + psSourceBarHtml() +
     '<div class="kpi-grid mat-kpi-grid ps-kpi-grid">' + parts.cards.map(c => psKpiCardHtml(c, f.status)).join('') + '</div>' +
     '<div class="filter-row">' +
       '<div class="filter-group"><label for="psCatSelect">Filter by Category</label>' +
@@ -437,6 +478,7 @@ function renderPlantView() {
   applyDynamicStyles(el);
   wireKpiCountUps(el);
   wirePlantViewChrome(el);
+  wirePsSourceBar(el);
   parts.charts.forEach(c => { if (c.wire) c.wire(); });
   renderPlantListRegion();
 }
@@ -1070,7 +1112,7 @@ async function openPlantMaterialPanel(norm) {
   backdrop.onclick = (e) => { if (e.target === backdrop) closeModal(); };
   body.innerHTML = '<div class="modal-head"><div></div><span class="close-btn">&times;</span></div><div class="load-banner"><div class="spinner"></div><div>Loading material&hellip;</div></div>';
   try {
-    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS), ensurePOsLoaded(PLANT_KEYS), ensureImportPOsLoaded()]);
+    await Promise.all([ensureMaterialsLoaded(PLANT_KEYS, { stockTabs: true }), ensurePOsLoaded(PLANT_KEYS, { stockTabs: true }), ensureImportPOsLoaded()]);
   } catch (e) {
     console.error('openPlantMaterialPanel failed:', e);
     if (myModalRequestId !== modalRequestId) return;

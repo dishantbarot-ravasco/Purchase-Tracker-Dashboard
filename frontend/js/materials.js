@@ -14,11 +14,16 @@ function currentMaterials() {
   return merged;
 }
 
-async function ensureMaterialsLoaded(plantKeys) {
+// `opts.stockTabs`: the plant's chosen stock source (main.js's
+// ensurePOsLoaded() explains); otherwise the Drive sheets.
+async function ensureMaterialsLoaded(plantKeys, opts) {
+  if (opts && opts.stockTabs) await ensureStockSourceLoaded();
   await Promise.all(plantKeys.map(async key => {
-    if (!MATERIALS_BY_PLANT[key]) {
-      const data = await apiForPlant(key, '/materials');
+    const source = opts && opts.stockTabs ? stockSourceOf(key) : 'drive';
+    if (!MATERIALS_BY_PLANT[key] || (MATERIALS_SOURCE_BY_PLANT[key] || 'drive') !== source) {
+      const data = source === 'app' ? await apiAt('/api/app-stock/' + key + '/materials') : await apiForPlant(key, '/materials');
       MATERIALS_BY_PLANT[key] = data.materials;
+      MATERIALS_SOURCE_BY_PLANT[key] = source;
     }
   }));
 }

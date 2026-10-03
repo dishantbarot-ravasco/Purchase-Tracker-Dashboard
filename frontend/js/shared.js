@@ -172,7 +172,14 @@ async function apiForPlant(plantKey, path, opts) {
 // and picking an arbitrary plant key, same 401-redirect/error-shape
 // contract as apiForPlant() in shared.js.
 async function apiImports(path, opts) {
-  const res = await authFetch('/api/imports' + path, opts || {});
+  return apiAt('/api/imports' + path, opts);
+}
+
+// Any /api path, with apiForPlant()'s guards (401 to the sign-in page, a
+// non-JSON reply as a readable error). apiImports() and the plant stock
+// tabs' app source (/api/stock-source, /api/app-stock/...) use it.
+async function apiAt(url, opts) {
+  const res = await authFetch(url, opts || {});
   if (res.status === 401) { window.location.href = '/login.html'; throw new Error('Not authenticated'); }
   // See shared.js's apiForPlant() for why res.json() is guarded - same fix
   // applied here for consistency (this is the imports-router equivalent of

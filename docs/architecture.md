@@ -581,7 +581,9 @@ non-pending difference and a reason on every cancellation; each line's `lot` is 
 on), `StockLot` (one per MIR line - the only way stock comes in since 2026-09-30; the old hand-made
 `ADJUSTMENT` lots still count; **no stored quantity** - derived from its MIR line while that is posted;
 `location` - where in the plant's store it sits, with who set it and when), `StockLocation` (a plant's
-store locations by name, unique per plant on `name_key`, never deleted; migration `0096`)
+store locations by name, unique per plant on `name_key`, never deleted; migration `0096`),
+`PlantStockSource` (which records a plant's Inventory / On Order / Stock & Orders read - `drive` or
+`app`, no row = drive; migration `0097`)
 and `StockAllocation` (how much a voucher line took from or put back into a lot). See
 [api-and-features.md](api-and-features.md#rm-stock-entry-2026-09-29).
 
@@ -607,6 +609,11 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   or `app` (entered or confirmed in the app; the projection never writes one, migration `0086`, see
   [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)); `source_hash` (the
   mirror's hash, for skip-if-unchanged). The vendor's name, address, GSTIN, email and code are on `Vendor`, once.
+- `PoExtraction` - one reading of an uploaded PO file (migration `0098`): `document`, `plant`, `status`
+  QUEUED / RUNNING / READY / FAILED / APPROVED / REJECTED, the model's `extracted` JSON and the reviewer's
+  `draft`, model and token counts, `error`, who asked and who decided, and the `purchase_order` an
+  approval wrote (required when APPROVED; a rejection has a reason). See
+  [api-and-features.md](api-and-features.md#po-extraction-2026-10-03).
 - `Material` - the material master: `name`, unique `name_key` (`material_identity.material_key()`),
   `item_code` (reference only - PO sheets reuse a code across grades), `uom`, `hsn`, `category`,
   `subcategory`, and who filed it at MIR entry (`category_set_by_email`, `category_set_at`; blank when

@@ -13,6 +13,7 @@ or, for serializer validation errors:
 """
 
 import logging
+from pathlib import Path
 
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
@@ -27,8 +28,10 @@ from rest_framework.views import exception_handler
 logger = logging.getLogger(__name__)
 
 # Exception types this codebase's own service layer may raise deliberately
-# with human-readable messages - safe to pass str(exc) straight through to
-# the client instead of flattening it into the generic 500 message below.
+# with human-readable messages - passed through to the client as a 400
+# instead of the generic 500 below. Django's ValidationError always shows its
+# message (written for users by design); ValueError and ObjectDoesNotExist
+# only when raised by this app's own code (_raised_by_own_code()).
 # Audit any new addition for that before including it (none of these embed
 # secrets, file paths, or raw SQL).
 _DESCRIBABLE_EXCEPTIONS = (ValueError, DjangoValidationError, ObjectDoesNotExist)
@@ -49,6 +52,29 @@ _DESCRIBABLE_EXCEPTIONS = (ValueError, DjangoValidationError, ObjectDoesNotExist
 # only the leak to the client goes away. If a service-layer caller genuinely
 # wants to describe a missing key to a user, raise ValueError with a written
 # message, the way every other deliberate case here already does.
+
+
+# Where this app's own code lives. A ValueError or DoesNotExist is shown to
+# the user only when it was raised here (2026-10-03): ours carry written
+# messages, while one raised inside Django or a library carries that
+# library's wording - "PTUser matching query does not exist." names a model,
+# a parser error can quote internals. Those get _NOT_DESCRIBED instead. A
+# builtin called from our code (int(), Decimal()) counts as ours, since the
+# innermost Python frame is our line; its message names only the bad value.
+_OWN_CODE = (Path(settings.BASE_DIR) / "apps").resolve()
+_NOT_DESCRIBED = "That request could not be processed. Check the values entered and try again."
+
+
+def _raised_by_own_code(exc) -> bool:
+    tb = exc.__traceback__
+    if tb is None:  # never raised (built and handed over directly): nothing to hide
+        return True
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    try:
+        return Path(tb.tb_frame.f_code.co_filename).resolve().is_relative_to(_OWN_CODE)
+    except (OSError, ValueError):
+        return False
 
 
 def _describe_integrity_error(exc):
@@ -86,8 +112,11 @@ def custom_exception_handler(exc, context):
     if response is None:
         logger.exception("Unhandled exception in %s", context.get("view"))
 
-        if isinstance(exc, _DESCRIBABLE_EXCEPTIONS):
+        if isinstance(exc, DjangoValidationError):
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if isinstance(exc, _DESCRIBABLE_EXCEPTIONS):
+            detail = str(exc) if _raised_by_own_code(exc) else _NOT_DESCRIBED
+            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
 
         if isinstance(exc, IntegrityError):
             return Response({"detail": _describe_integrity_error(exc)}, status=status.HTTP_400_BAD_REQUEST)

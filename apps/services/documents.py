@@ -313,5 +313,20 @@ def withdraw(document, user, reason):
     return doc
 
 
+def read_bytes(document) -> bytes:
+    """A stored file's bytes (the PO extraction worker reads the PDF)."""
+    import os
+    import tempfile
+
+    fd, path = tempfile.mkstemp()
+    os.close(fd)
+    try:
+        object_storage.download_file(_bucket_for(document.kind), document.storage_key, path)
+        with open(path, "rb") as fh:
+            return fh.read()
+    finally:
+        os.unlink(path)
+
+
 def open_link(document, expires_seconds: int = 300) -> str:
     return object_storage.presigned_url(_bucket_for(document.kind), document.storage_key, expires_seconds)

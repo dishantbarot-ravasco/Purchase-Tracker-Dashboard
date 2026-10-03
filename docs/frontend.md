@@ -357,6 +357,18 @@ Do not reintroduce `nowrap` on a cell's content without a column wide enough for
 
 #### Plant stock tabs - Inventory, On Order, Stock & Orders (2026-09-29)
 
+**Each plant reads one source, switchable by an admin at once (owner, 2026-10-03):** the Drive RM
+sheet and Drive PO/MIR matching (the default, `/materials` and `/purchase-orders`), or the app's own
+RM store and MIRs (`/api/app-stock/<plant>/materials` and `/purchase-orders`,
+`apps/services/app_stock_source.py`, same row shape). `ensureMaterialsLoaded(keys, {stockTabs: true})`
+and `ensurePOsLoaded(keys, {stockTabs: true})` load each plant's chosen source (`STOCK_SOURCE` from
+`/api/stock-source`, one shared request), and re-fetch a cache that holds the other source
+(`MATERIALS_SOURCE_BY_PLANT` / `POS_SOURCE_BY_PLANT`); every other page calls them without the option
+and gets Drive. The two sources are never added. Import orders exist only on Drive and are read from
+there either way. A **"Figures from"** bar under the title names each selected plant's source
+(`psSourceBarHtml()`); an admin's bar has a switch per plant (`wirePsSourceBar()`, POST
+`/api/stock-source/set`, then a reload of the tab from the new source).
+
 The project owner asked for three raw-material tabs that **replace Raw Material Analysis for everyone
 but admins**: Inventory (the material in the store at each plant), On Order (the material on order for
 each plant, plus what to reorder soon) and Stock & Orders (the two together). `main.js`'s
@@ -539,6 +551,9 @@ cookie; nothing here holds a token.
   `localStorage['pt-theme']`. Also logs every unhandled promise rejection to the console.
 
 ### frontend/js/shared.js
+
+`apiAt(url, opts)` is the generic `/api` fetch with `apiForPlant()`'s guards (401 to sign-in, a non-JSON
+reply as a readable error); `apiImports()` and the plant tabs' stock source use it.
 
 Cross-page constants and helpers, loaded on every protected page after `auth.js`. No state beyond a
 few module-level variables for the correction box and modal a11y.
@@ -1205,6 +1220,8 @@ outside the moved rows, so it stays put.
 ### frontend/js/plant-stock.js
 
 The three plant tabs (see [Plant stock tabs](#plant-stock-tabs---inventory-on-order-stock--orders-2026-09-29)).
+`PS_SOURCE_LABEL` / `PS_SOURCE_SWITCH`, `psSourceBarHtml()` / `wirePsSourceBar()` - the "Figures from" bar
+and its admin switch.
 Globals: `PLANT_STOCK_TABS` (each with the `perm` that shows it) / `PLANT_STOCK_VIEW_KEYS`,
 `PS_ORDER_PERMS`, `isAdminUser()`, `PS_PLANT_COLORS`,
 `PS_STATE` (per tab: category and subCategory, which narrow everything; status, search and page, which
@@ -1523,9 +1540,20 @@ script from navigating a tab it opened to another origin - and a direct open is 
 Current / Older revision / Withdrawn, name, size, who, when, withdrawal reason) and
 `docFileBindOpen(root)` wires its Open buttons.
 
+### frontend/js/po-review.js
+
+The PO Files page's **PO readings** panel ([PO extraction](api-and-features.md#po-extraction-2026-10-03)),
+for `poUpload` accounts: `prLoad()` lists `/api/po-extractions` (re-polled every 5 s while a reading is
+queued or running), `prOpen()` / `prPaint()` show one reading as an editable form - the order's fields
+in a grid, each line a row of inputs, add or remove a line - with the server's `problems` (red, block
+approval), `checks` (amber) and the PO sheet comparison. Approve first saves the form (`/draft`) and
+approves only when the re-check finds no problem (`prSend()`); Reject needs a reason. `prRead()` asks for
+a file to be read again. It never decides anything itself. Every top-level name is `pr...`.
+
 ### frontend/js/po-files-page.js
 
-`po-files.html`. Reads `/api/mir/meta` for plants and `can`; `poFilesKindsAllowed()` is the kinds the
+`po-files.html`. Reads `/api/mir/meta` for plants and `can`; starts `po-review.js`'s panel (`prLoad()`),
+and gives each current PO copy a "Read again" link for `poUpload` accounts; `poFilesKindsAllowed()` is the kinds the
 account may upload (PO copy for `poUpload`, the import papers for `importDocs` - document_views.py's
 `KIND_PERMISSION`). It shows the upload panel only when there is one, drops the other kinds from the
 Document picker, and lists

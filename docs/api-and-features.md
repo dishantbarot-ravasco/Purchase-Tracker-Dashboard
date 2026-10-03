@@ -73,6 +73,26 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 | GET | `imports/advance-license` | `advance_license_ledger` | `view_dashboard` or `import_docs` | Advance Licence ledger with utilisation, validity and BOE cross-check |
 | POST | `imports/advance-license/sync-trigger` | `advance_license_sync_trigger` | IsAdmin | Run `sync_advance_license` synchronously; 200 or 409 |
 
+### PO extraction (`po_extraction_views`)
+
+| Method | Path | View | Permission | Purpose |
+| --- | --- | --- | --- | --- |
+| POST | `documents/<id>/extract` | `read_document` | `PO_UPLOAD` + the file's plant (404) | Queue a (new) reading of a PO copy |
+| GET | `po-extractions?plant=&status=` | `extractions` | `PO_UPLOAD`, the caller's plants | Readings, newest first, with `configured` |
+| GET | `po-extractions/<id>` | `extraction` | `PO_UPLOAD` + plant (404) | The draft with `problems`, `checks` and `sheet` (differences from the PO sheet) |
+| POST | `po-extractions/<id>/draft` | `save_draft` | `PO_UPLOAD` + plant (404) | Save the reviewer's corrections; returns the detail re-checked |
+| POST | `po-extractions/<id>/approve` | `approve` | `PO_UPLOAD` + plant (404) | Write the draft as the plant's PO; 400 with every `problems` entry when it cannot |
+| POST | `po-extractions/<id>/reject` | `reject` | `PO_UPLOAD` + plant (404) | Reject with a reason |
+
+### Plant stock tabs' source (`stock_source_views`)
+
+| Method | Path | View | Permission | Purpose |
+| --- | --- | --- | --- | --- |
+| GET | `stock-source` | `stock_source` | `HasAnyAccess`, the caller's plants | `{sources: {plant: "drive" or "app"}, canChange}` |
+| POST | `stock-source/set` | `set_stock_source` | `IsAdmin` | Switch a plant's Inventory / On Order / Stock & Orders between the Drive sheets and the in-app records |
+| GET | `app-stock/<plant>/materials` | `app_materials` | `STOCK_VIEWS` + plant (403) | The plant's RM store receipts in the Drive `/materials` row shape |
+| GET | `app-stock/<plant>/purchase-orders` | `app_purchase_orders` | `ORDER_VIEWS` + plant (403) | The plant's POs still on order, received = posted MIRs, in the Drive `/purchase-orders` row shape |
+
 ### RM stock entry (`stock_views`)
 
 | Method | Path | View | Permission | Purpose |
@@ -903,8 +923,8 @@ engine, the ledger, why the old Days-Left arithmetic was wrong, and the report e
 The project owner's direction: MIR moves into the app, one form for every plant, entered against the
 POs the CSV already gives, and without the fuzzy matching and tolerances the Drive files forced - the
 receipt is linked to the PO line the clerk picked, so every figure either agrees exactly or is a
-mismatch with a reason. PO extraction and PDF upload are on hold; the PO master CSV stays the only PO
-source. The Drive MIR files and the existing matching keep running untouched: MIRs entered here are
+mismatch with a reason. POs come from the PO master CSV and, since 2026-10-03, from approved
+readings of uploaded PO files ([PO extraction](#po-extraction-2026-10-03)). The Drive MIR files and the existing matching keep running untouched: MIRs entered here are
 separate records (`Mir` / `MirLine`, [architecture.md](architecture.md#appscoremodelsprocurementpy)),
 so nothing is counted twice while both exist.
 
@@ -1164,10 +1184,59 @@ filters by `?location=` and its search matches a location name; `stock/meta` lis
 locations. A location is never deleted. It is where the goods sit inside the plant that owns them - stock
 still belongs to the receiving plant, which is the PO's billing plant.
 
+**Which records the plant stock tabs read (owner, 2026-10-03).** "Keep drive sheets until we totally move
+to in app, so keep it changeable easily at a moment's notice": `PlantStockSource` holds each plant's
+choice, `drive` (the default, no row) or `app`, switched by an admin from the tabs' "Figures from" bar.
+`app_stock_source.materials_payload()` gives one row per receipt the plant keeps in store
+(`stock_service.plant_holdings()`: today's balance and the last 45 days' issues net of returns), with
+Days Left's rate = those issues over the days observed (45, or since the material's first receipt there
+when shorter; band low under 14 days, medium under 30) and `daysToMsl` from the RM store's minimum level.
+`purchase_orders_payload()` gives each active PO's lines still on order, received = what POSTED MIR lines
+accepted, exactly (a short-closed or retired line is left out). Both use the Drive rows' field names, so
+the tabs render either source without a branch. Nothing is copied, so switching back is instant; the
+two are never added together.
+
 **Not built yet:** transfers between plants (challan, job work), an Excel export of the register, and a
 way to bring the Drive sheets' current stock in (it has to be entered as MIRs). Voucher lines entered
 before 2026-09-30 that drew several lots keep working through their allocations; a pending difference
 from then without a MIR receipt cannot be approved (turn it down and enter it again).
+
+### PO extraction (2026-10-03)
+
+The owner's workflow: a PO is uploaded and read into every field of the order - PO number and date,
+the vendor's name, address, GSTIN, email and SAP code, billing and shipping address, payment terms,
+incoterms, currency, tax type, total, tax and total including tax, remarks - and each of its lines
+(item code, which may be blank; description; HSN; quantity; unit; net price; net value; delivery date).
+`apps/services/po_extraction.py`:
+
+- **Reading.** Uploading a PO copy queues a `PoExtraction` (`request()`, on commit) when
+  `ANTHROPIC_API_KEY` is set; "Read again" on the PO Files list queues another (the earlier ones stay).
+  `run()` on the background worker - never in a request - sends the file to Claude
+  (`PO_EXTRACTION_MODEL`, default `claude-opus-5-5`) in ONE structured-output call: no tools, no database
+  access, the JSON shape fixed by `SCHEMA` (every field a string; numbers as plain digits, dates
+  YYYY-MM-DD, "" for what the document does not state - the model never guesses), the cached
+  `SYSTEM_PROMPT` carrying the rules (supplier not buyer, lines in printed order never merged, Madura
+  fabric weight = GSM x width x length x rolls / 1000 in KG, with no GSM never invented). A safety decline
+  re-runs on a fallback model (`fallbacks: "default"`). The reply is stored as `extracted` and, trimmed,
+  as `draft` (READY); a failure is recorded with a readable reason (FAILED), never raised.
+- **Review.** `problems()` is what blocks approval: every field but the remarks, tax amount and item
+  code is compulsory; figures and dates must parse; the GSTIN must be valid; the billing address must
+  name the uploading plant (`billing_plant_code()` - a PO belongs to the plant it is billed to); and the
+  PO number must be the one the file was filed under. `checks()` is what does not add up
+  (`procurement_rules.po_checks()`: quantity x price against net value, lines against the total, tax on no
+  single GST rate) - a warning, never a block. `sheet_differences()` compares the draft with the PO
+  sheet's row of the same number (dates, vendor, totals, line count, each line's description, quantity,
+  price and unit) - compared, never added. The reviewer corrects any field (`save_draft()`).
+- **Approve** (`approve()`, one transaction): the corrected draft becomes the plant's `PurchaseOrder`
+  with `source = app` - a new one, or the PO sheet's row of that number taken over, after which the CSV
+  projection leaves it alone - its vendor through `upsert_vendor()`, its `billing_plant` the uploading
+  plant, and its lines written by `procurement_sync.write_lines()` (position N is line N, as in the
+  projection, so an order moving from the sheet keeps its lines and receipts; a change to a received
+  line's identity flags it for review with "The approved PO file changed ..."; a dropped line is retired,
+  never deleted). MIR entry can then receive against it. **Reject** needs a reason.
+
+Access: `PO_UPLOAD` at the file's plant for everything; another plant's reading is a 404. The page is
+the PO Files page's "PO readings" panel (`po-review.js`).
 
 ### PO and invoice files (2026-09-30)
 
@@ -1176,7 +1245,8 @@ for its plant (`po-files.html`), and the store attaches the vendor's invoice to 
 (`mir.html`). Files go to Cloudflare R2
 ([testing-deployment.md](testing-deployment.md#cloudflare-r2-object-storage-2026-09-30)); a
 `Document` row ([architecture.md](architecture.md#appscoremodelsprocurementpy)) records each one.
-`documents.py` is the only writer of those rows. The extraction agents will read these same files.
+`documents.py` is the only writer of those rows. [PO extraction](#po-extraction-2026-10-03) reads the PO
+copies (`documents.read_bytes()`).
 
 **A PO number can be revised or cancelled upstream, so a file is filed under (plant, PO number), not
 under a `PurchaseOrder` row**, and nothing is ever deleted:
@@ -1642,7 +1712,9 @@ The [PO and invoice file](#po-and-invoice-files-2026-09-30) endpoints. Gates, pa
 only; every rule is in `documents.py`. Listing is a GET for `DOCUMENT_READERS`, uploading a separate
 POST (`documents/po/upload`) gated by the file kind's permission (`KIND_PERMISSION`). `DocumentError` becomes a 400
 with its message, `StorageNotConfigured` a 503 ("storage is not set up yet"). `open_document`
-answers a plain-text 404/503 rather than JSON, since it is opened in a browser tab. `serialize()`
+answers a plain-text 404/503 rather than JSON, since it is opened in a browser tab. An uploaded PO copy
+is queued for reading (`po_extraction.request()`, its id returned as `extractionId`) when extraction is
+set up. `serialize()`
 (with `kindLabel` and `reference`), `po_files()` (PO copies only) and `invoice_files()` are shared
 with `mir_views`. `po_documents` lists every PO-filed kind (`_PO_FILED_KINDS`) and works out
 `poInSystem` from `PurchaseOrder` plus the plant's import PO mirror (`_IMPORT_POS`).
@@ -1749,6 +1821,20 @@ Where a receipt sits: `location_key()` (upper-cased, spaces collapsed), `locatio
 `StockLocation` names), `set_location(lot, name, user)` (row-locks the lot, finds or creates the plant's
 location by key, blank clears, at most `LOCATION_MAX` characters, records who and when).
 
+`plant_holdings(plant, window_days=45)` - every receipt the plant keeps in store with its balance today
+and its issues net of returns in the window (the app source of the plant stock tabs).
+
+### apps/services/app_stock_source.py
+
+Which records each plant's Inventory / On Order / Stock & Orders read (`sources()`, `source_of()`,
+`set_source()`; `DRIVE` default) and the app-record payloads in the Drive rows' shape:
+`materials_payload(plant)` and `purchase_orders_payload(plant)` (see the RM stock entry section).
+
+### apps/api/routers/stock_source_views.py
+
+`stock_source`, `set_stock_source` (admins), `app_materials`, `app_purchase_orders` - gates and
+serialization only; the table is under "Plant stock tabs' source".
+
 ### apps/services/stock_rules.py
 
 Pure rules, no Django imports (migrations `0082` and `0085` use them): `BASE_UNITS`, `EXACT`, `base_of()`,
@@ -1800,6 +1886,21 @@ a blank never erases. `LEGACY_PO_MODELS` names each plant's CSV mirror model. An
 [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28). A changed line is saved
 with `update_fields` naming only what the sheet changed: the line is read unlocked, and a whole-row save
 put back a short-close or review a person committed meanwhile.
+
+`write_lines(po, lines_values, result, changed_by)` is the one line diff, shared by the projection and an
+approved PO reading (`po_extraction.approve()`); `changed_by` names the source in review notes.
+
+### apps/services/po_extraction.py
+
+Reading a PO file into a draft and approving it - see [PO extraction](#po-extraction-2026-10-03).
+`request()`, `run()` (the worker task), `_call_claude()` (the one structured-output call; stubbed in tests),
+`normalize()`, `problems()`, `checks()`, `sheet_differences()`, `save_draft()`, `approve()`, `reject()`;
+`SCHEMA`, `SYSTEM_PROMPT`, `HEADER_FIELDS` / `LINE_FIELDS` / `LABELS`. `ExtractionError` is a `ValueError`
+shown as it is.
+
+### apps/api/routers/po_extraction_views.py
+
+The PO extraction endpoints (table above). Gates, parses and serializes only.
 
 ### apps/services/rematch.py
 

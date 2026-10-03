@@ -604,3 +604,55 @@ class Document(models.Model):
     def __str__(self):
         ref = f" {self.reference}" if self.reference else ""
         return f"{self.kind} {self.plant_id} {self.po_number or self.mir_id}{ref} r{self.revision}"
+
+
+class PoExtraction(models.Model):
+    """One reading of an uploaded PO file by the extraction model
+    (apps/services/po_extraction.py, owner 2026-10-03): the PDF goes in, every
+    field of the PO and each of its lines comes out as a draft, and nothing
+    reaches the procurement tables until a purchase manager has reviewed the
+    draft (correcting any field) and approved it. A new reading of the same
+    file is a new row; the earlier ones stay as history."""
+
+    class Status(models.TextChoices):
+        QUEUED = "QUEUED", "Waiting for the background worker"
+        RUNNING = "RUNNING", "Reading the PO"
+        READY = "READY", "Ready for review"
+        FAILED = "FAILED", "Could not read it"
+        APPROVED = "APPROVED", "Approved"
+        REJECTED = "REJECTED", "Rejected"
+
+    document = models.ForeignKey(Document, on_delete=models.PROTECT, related_name="extractions")
+    plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="po_extractions")
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.QUEUED)
+    # The model's own output, kept as it came, and the reviewer's draft (the
+    # same shape, edited). Approval writes from `draft`.
+    extracted = models.JSONField(null=True, blank=True)
+    draft = models.JSONField(null=True, blank=True)
+    model_name = models.CharField(max_length=60, blank=True, default="")
+    input_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    error = models.TextField(blank=True, default="")
+    requested_by_email = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by_email = models.CharField(max_length=255, blank=True, default="")
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    review_note = models.TextField(blank=True, default="")
+    # The PO an approval wrote (created, or taken over from the PO sheet).
+    purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, null=True, blank=True, related_name="extractions")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(status="APPROVED") | Q(purchase_order__isnull=False), name="po_extraction_approved_has_po",
+            ),
+            models.CheckConstraint(
+                condition=~Q(status="REJECTED") | ~Q(review_note=""), name="po_extraction_rejected_has_reason",
+            ),
+        ]
+        indexes = [models.Index(fields=["plant", "status"])]
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self):
+        return f"{self.plant_id}:{self.document_id}:{self.status}"
