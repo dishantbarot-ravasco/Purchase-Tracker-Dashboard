@@ -49,18 +49,28 @@ MAX_TOKENS = 16000
 MAX_LINES = 200
 
 HEADER_FIELDS = (
-    "po_number", "po_date", "vendor_name", "vendor_address", "vendor_gstin", "vendor_email", "vendor_sap_code",
+    "order_type", "po_number", "po_date", "vendor_name", "vendor_address", "vendor_gstin", "vendor_email", "vendor_sap_code",
     "billing_address", "shipping_address", "payment_terms", "incoterms", "currency", "tax_type",
     "total_value", "tax_amount", "total_inclusive_value", "remarks",
 )
 LINE_FIELDS = ("item_code", "description", "hsn", "qty", "uom", "rate", "net_value", "delivery_date", "remarks")
+ORDER_TYPES = ("domestic", "import")
 # Compulsory on approval (owner: everything but the remarks; the item code
-# too may be blank - not every PO numbers its items).
-REQUIRED_HEADER = tuple(f for f in HEADER_FIELDS if f not in ("remarks", "tax_amount"))
-REQUIRED_LINE = ("description", "hsn", "qty", "uom", "rate", "net_value", "delivery_date")
+# too may be blank - not every PO numbers its items). An import order has
+# no GST at order time - its tax, landed total and HSN come per shipment
+# from the Bill of Entry - and a supplier abroad has no GSTIN.
+REQUIRED_HEADER = {
+    "domestic": tuple(f for f in HEADER_FIELDS if f not in ("remarks", "tax_amount")),
+    "import": tuple(f for f in HEADER_FIELDS
+                    if f not in ("remarks", "tax_amount", "vendor_gstin", "tax_type", "total_inclusive_value")),
+}
+REQUIRED_LINE = {
+    "domestic": ("description", "hsn", "qty", "uom", "rate", "net_value", "delivery_date"),
+    "import": ("description", "qty", "uom", "rate", "net_value", "delivery_date"),
+}
 
 LABELS = {
-    "po_number": "PO number", "po_date": "PO date", "vendor_name": "Vendor name", "vendor_address": "Vendor address",
+    "order_type": "Order type", "po_number": "PO number", "po_date": "PO date", "vendor_name": "Vendor name", "vendor_address": "Vendor address",
     "vendor_gstin": "Vendor GSTIN", "vendor_email": "Vendor email", "vendor_sap_code": "Vendor SAP code",
     "billing_address": "Billing address", "shipping_address": "Shipping address", "payment_terms": "Payment terms",
     "incoterms": "Incoterms", "currency": "Currency", "tax_type": "Tax type", "total_value": "Total value",
@@ -74,6 +84,7 @@ SCHEMA = {
     "type": "object",
     "properties": {
         **{f: _S for f in HEADER_FIELDS},
+        "order_type": {"type": "string", "enum": list(ORDER_TYPES)},
         "lines": {
             "type": "array",
             "items": {
@@ -94,6 +105,7 @@ SYSTEM_PROMPT = """You read one purchase order issued by Ravasco Transmission an
 Return every field of the schema. Use an empty string for anything the document does not state; never guess, infer from other documents, or fill in a typical value.
 
 Header:
+- order_type: "import" when the supplier is outside India (a foreign address, no GSTIN, a foreign currency, incoterms such as FOB / CIF / CFR); otherwise "domestic".
 - po_number: the purchase order number as printed, without labels ("PO No.") or revision words.
 - po_date: the PO's own date (created / issued), as YYYY-MM-DD.
 - vendor_*: the SUPPLIER's name, address, GSTIN, email and the supplier/vendor code the buyer's system assigns (often labelled Vendor Code or Supplier Code). Never the buyer's own details.
@@ -109,6 +121,8 @@ Lines: one entry per ordered item, in the order printed. Do not merge identical 
 - hsn: the HSN / SAC code. uom: the unit as printed (KG, MT, NOS, ROLL, L, M ...).
 - qty, rate (price per unit before tax), net_value (line value before tax), delivery_date (YYYY-MM-DD; the header delivery date when the line has none).
 - Madura or other conveyor-belt fabric ordered in rolls with GSM, width and length printed: give qty as the weight in KG = GSM x width (m) x length (m) x number of rolls / 1000, uom KG, and keep the roll count, GSM, width and length in the description ("NN-400 fabric roll, width 178cm, GSM 720, length 210m, 5 rolls, total weight 1682.100kgs"). With no GSM printed, never invent one: keep qty in ROLL as printed.
+
+Import orders: give currency, prices and totals in the PO's own currency as printed; leave vendor_gstin, tax_type, tax_amount and total_inclusive_value empty unless the PO itself prints them - duty, IGST and the landed value come later from the Bill of Entry. HSN as printed, empty if not.
 
 Numbers: digits only with a decimal point - no currency symbols, no thousands separators, no units (12345.50, not "Rs. 12,345.50").
 
@@ -234,6 +248,7 @@ def normalize(raw) -> dict:
     raw = raw if isinstance(raw, dict) else {}
     header = {f: _clean(raw.get(f)) for f in HEADER_FIELDS}
     header["vendor_gstin"] = header["vendor_gstin"].replace(" ", "").upper()
+    header["order_type"] = header["order_type"].lower() if header["order_type"].lower() in ORDER_TYPES else "domestic"
     lines = raw.get("lines") if isinstance(raw.get("lines"), list) else []
     return {
         **header,
@@ -276,7 +291,8 @@ def problems(draft: dict, plant, filed_as: str = "") -> list[dict]:
         add("po_number", f"The file was filed under PO {filed_as} but this says {draft['po_number']} - correct the "
                          "number, or withdraw the file and upload it under the right one.")
 
-    for f in REQUIRED_HEADER:
+    kind = draft.get("order_type") if draft.get("order_type") in ORDER_TYPES else "domestic"
+    for f in REQUIRED_HEADER[kind]:
         if not draft.get(f):
             add(f, f"{LABELS[f]} is missing.")
     for f in ("total_value", "tax_amount", "total_inclusive_value"):
@@ -300,7 +316,7 @@ def problems(draft: dict, plant, filed_as: str = "") -> list[dict]:
     if not lines:
         add("lines", "The PO has no lines.")
     for i, ln in enumerate(lines, start=1):
-        for f in REQUIRED_LINE:
+        for f in REQUIRED_LINE[kind]:
             if not ln.get(f):
                 add(f, f"Line {i}: {LABELS[f]} is missing.", i)
         for f in ("qty", "rate", "net_value"):
@@ -337,8 +353,8 @@ def sheet_differences(draft: dict, plant) -> dict | None:
     sheet does not hold it."""
     from apps.core.models import PurchaseOrder
 
-    po = (PurchaseOrder.objects.filter(plant=plant, po_number=draft.get("po_number") or "")
-          .select_related("vendor").first())
+    po = (PurchaseOrder.objects.filter(plant=plant, kind=draft.get("order_type") or "domestic",
+                                       po_number=draft.get("po_number") or "").select_related("vendor").first())
     if po is None:
         return None
     diffs = []
@@ -388,20 +404,22 @@ def approve(extraction, draft_in, user):
         err.problems = found
         raise err
     plant = Plant.objects.select_for_update().get(pk=ext.plant_id)
+    kind = PurchaseOrder.Kind.IMPORT if draft["order_type"] == "import" else PurchaseOrder.Kind.DOMESTIC
     vendor = upsert_vendor(draft["vendor_gstin"], draft["vendor_name"], draft["vendor_sap_code"],
                            draft["vendor_address"], draft["vendor_email"])
     header = {
         "po_date": _day(draft["po_date"]), "vendor": vendor, "currency": draft["currency"].upper()[:10] or "INR",
-        "tax_type": rules.canonical_tax_type(draft["tax_type"]), "tax_type_raw": draft["tax_type"][:100],
+        "tax_type": "" if kind == PurchaseOrder.Kind.IMPORT else rules.canonical_tax_type(draft["tax_type"]),
+        "tax_type_raw": draft["tax_type"][:100],
         "payment_terms": draft["payment_terms"], "incoterms": draft["incoterms"],
         "billing_address": draft["billing_address"], "billing_plant": plant, "ship_to": draft["shipping_address"],
         "total_value": _num(draft["total_value"]), "total_inclusive_value": _num(draft["total_inclusive_value"]),
         "remarks": draft["remarks"], "is_active": True, "source": PurchaseOrder.Source.APP,
         "synced_at": timezone.now(),
     }
-    po = PurchaseOrder.objects.select_for_update().filter(plant=plant, po_number=draft["po_number"]).first()
+    po = PurchaseOrder.objects.select_for_update().filter(plant=plant, kind=kind, po_number=draft["po_number"]).first()
     if po is None:
-        po = PurchaseOrder.objects.create(plant=plant, po_number=draft["po_number"][:100], **header)
+        po = PurchaseOrder.objects.create(plant=plant, kind=kind, po_number=draft["po_number"][:100], **header)
     else:
         for f, v in header.items():
             setattr(po, f, v)

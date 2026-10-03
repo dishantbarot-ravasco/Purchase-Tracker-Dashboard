@@ -94,13 +94,20 @@ function prPaint() {
   const editable = d.status === 'READY';
   const draft = d.draft || {};
   const ro = editable ? '' : ' readonly';
-  const required = f => !['remarks', 'tax_amount', 'item_code'].includes(f);
-  const lineReq = f => ['description', 'hsn', 'qty', 'uom', 'rate', 'net_value', 'delivery_date'].includes(f);
+  // Compulsory fields follow the order type (an import has no GST at order
+  // time); the server sends both lists.
+  const kind = draft.order_type === 'import' ? 'import' : 'domestic';
+  const required = f => (d.requiredHeader[kind] || []).includes(f);
+  const lineReq = f => (d.requiredLine[kind] || []).includes(f);
   const problemFields = new Set((d.problems || []).filter(p => !p.line).map(p => p.field));
   const wide = f => ['vendor_address', 'billing_address', 'shipping_address', 'remarks'].includes(f);
+  const control = f => f === 'order_type'
+    ? '<select class="form-control" id="pr-order_type" data-hf="order_type"' + (editable ? '' : ' disabled') + '>' +
+      [['domestic', 'Domestic'], ['import', 'Import']].map(([v, t]) => '<option value="' + v + '"' + (kind === v ? ' selected' : '') + '>' + t + '</option>').join('') + '</select>'
+    : prInput('id="pr-' + f + '" data-hf="' + f + '"' + ro, draft[f], d.labels[f]);
   const header = d.headerFields.map(f => '<div class="form-group' + (wide(f) ? ' pr-wide' : '') + (problemFields.has(f) ? ' pr-bad' : '') + '">' +
     '<label class="form-label" for="pr-' + f + '">' + escapeHtml(d.labels[f]) + (required(f) ? ' <span class="req-mark">*</span>' : '') + '</label>' +
-    prInput('id="pr-' + f + '" data-hf="' + f + '"' + ro, draft[f], d.labels[f]) + '</div>').join('');
+    control(f) + '</div>').join('');
   const lines = draft.lines || [];
   const lineRows = lines.map((ln, i) => '<tr>' + '<td class="num">' + (i + 1) + '</td>' +
     d.lineFields.map(f => '<td class="pr-cell-' + f + '">' + prInput('data-li="' + i + '" data-lf="' + f + '"' + ro, ln[f], 'Line ' + (i + 1) + ' ' + d.labels[f]) + '</td>').join('') +
@@ -136,6 +143,7 @@ function prPaint() {
     '</section>';
   docFileBindOpen(area);
   if (!editable) return;
+  document.getElementById('pr-order_type').onchange = () => { PR_OPEN.draft = prCollect(); prPaint(); };
   area.querySelectorAll('[data-drop-line]').forEach(b => { b.onclick = () => { PR_OPEN.draft = prCollect(); PR_OPEN.draft.lines.splice(Number(b.dataset.dropLine), 1); prPaint(); }; });
   document.getElementById('prAddLine').onclick = () => {
     PR_OPEN.draft = prCollect();

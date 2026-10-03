@@ -599,7 +599,9 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   27, Vapi 24 - read from the PO sheets), `is_union_territory` (HRS: UGST), unique `mir_prefix`.
 - `Vendor` - unique non-blank `gstin`; a vendor with no GSTIN is unique on `name_key`
   (`procurement_rules.vendor_name_key()`).
-- `PurchaseOrder` - unique `(plant, po_number)` (one number exists at two plants); `vendor` null only
+- `PurchaseOrder` - `kind` `domestic` or `import` (migration `0099`; an import is in the supplier's
+  currency with no GST at order time - every query names the kind it wants); unique
+  `(plant, kind, po_number)` (one number exists at two plants); `vendor` null only
   for the legacy HRS orders naming none; `po_date`, `currency`, `payment_terms`, `incoterms`,
   `billing_address`, `ship_to`, `total_value`, `total_inclusive_value`, `remarks`; `billing_plant` (FK,
   null when unresolved - the plant the billing address names, `procurement_rules.billing_plant_code()`,

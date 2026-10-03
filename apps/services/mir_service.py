@@ -96,7 +96,11 @@ def line_state(line, accepted: Decimal) -> dict:
     open_qty = (ordered - accepted) if ordered is not None else None
     blocked = ""
     po = line.purchase_order
-    if not po.is_active:
+    if po.kind == "import":
+        # Import receipts are checked against their shipment's Bill of Entry
+        # (quantity landed, customs exchange rate) - not built yet.
+        blocked = "Import receipts are entered against the shipment's Bill of Entry, which is not in the app yet."
+    elif not po.is_active:
         blocked = "The PO is no longer in the master PO sheet."
     elif po.billing_plant_id is not None and po.billing_plant_id != po.plant_id:
         # A PO belongs to its billing plant (owner, 2026-10-03); one filed in
@@ -139,6 +143,8 @@ def search_open_pos(query: str, plant_codes, limit: int = 25) -> list:
     not yet received in
     full - open, short-closed or waiting for a purchase manager's review -
     whose PO number contains `query` (case-insensitive). Newest first.
+    Domestic orders only: an import receipt waits for its shipment's Bill of
+    Entry in the app.
     Closed and review-flagged lines are included so a purchase manager can
     find the PO to reopen or confirm them; they still take no receipt
     (line_state()).
@@ -155,7 +161,8 @@ def search_open_pos(query: str, plant_codes, limit: int = 25) -> list:
     open_line = (PurchaseOrderLine.objects.filter(is_active=True, qty_ordered__gt=0, rate__isnull=False)
                  .annotate(acc=_accepted_annotation()).filter(acc__lt=F("qty_ordered")))
     return list(
-        PurchaseOrder.objects.filter(is_active=True, lines__in=open_line, plant__code__in=list(plant_codes))
+        PurchaseOrder.objects.filter(is_active=True, kind=PurchaseOrder.Kind.DOMESTIC, lines__in=open_line,
+                                     plant__code__in=list(plant_codes))
         .filter(po_number__icontains=query)
         .select_related("plant", "vendor", "billing_plant").distinct().order_by("-po_date", "-id")[:limit]
     )

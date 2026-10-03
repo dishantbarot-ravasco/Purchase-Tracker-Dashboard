@@ -197,7 +197,7 @@ def project_plant_orders(plant_code: str) -> ProjectionResult:
     plants_by_code = {p.code: p for p in Plant.objects.all()}
     legacy_model = _legacy_model(plant_code)
     result = ProjectionResult()
-    current = {po.po_number: po for po in PurchaseOrder.objects.filter(plant=plant)}
+    current = {po.po_number: po for po in PurchaseOrder.objects.filter(plant=plant, kind=PurchaseOrder.Kind.DOMESTIC)}
     # Oldest first, so the newest order's vendor details are the ones kept.
     legacy_orders = legacy_model.objects.order_by("po_created_date", "pk").prefetch_related("items")
     for legacy in legacy_orders:
@@ -235,5 +235,92 @@ def project_plant_orders(plant_code: str) -> ProjectionResult:
                 setattr(po, f, v)
             po.save()
         _project_lines(po, sorted(legacy.items.all(), key=lambda i: i.pk), result)
+        result.orders_written += 1
+    return result
+
+
+# The per-plant import CSV mirrors (2026-10-03), read-only here.
+IMPORT_PO_MODELS = {
+    "hrs": "HRSImportPurchaseOrder",
+    "achhad": "RTPAchhadImportPurchaseOrder",
+    "vapi": "RTPVapiImportPurchaseOrder",
+}
+
+
+def import_line_groups(items) -> list[list]:
+    """The import CSV repeats a PO line once per shipment (1000001519's SBR
+    line is three rows: one PO quantity, three BOEs). One ordered item is
+    one PO line: rows group by item code, description and net price, in the
+    order the item first appears. Each group's rows are its shipments."""
+    groups: dict = {}
+    for item in sorted(items, key=lambda i: i.pk):
+        key = ((item.item_id or "").strip(), " ".join((item.description or "").lower().split()),
+               None if item.net_price is None else Decimal(str(item.net_price)))
+        groups.setdefault(key, []).append(item)
+    return list(groups.values())
+
+
+def _import_line_values(rows) -> dict:
+    first = rows[0]
+    uom, _known = rules.canonical_uom(first.uom)
+    qty = next((r.qty_as_per_po for r in rows if r.qty_as_per_po is not None), None)
+    dates = [r.delivery_date for r in rows if r.delivery_date]
+    return {
+        "item_code": (first.item_id or "").strip(),
+        "description": (first.description or "").strip(),
+        "hsn": (first.hsn or "").strip(),
+        "uom": uom,
+        "uom_raw": (first.uom or "").strip()[:20],
+        "qty_ordered": qty,
+        "rate": first.net_price,
+        "net_value": next((r.net_value for r in rows if r.net_value is not None), None),
+        "delivery_date": min(dates) if dates else None,
+        "material": materials.material_for(first.description, first.item_id, uom, first.hsn),
+    }
+
+
+@transaction.atomic
+def project_plant_import_orders(plant_code: str) -> ProjectionResult:
+    """The import CSV mirror into PurchaseOrder (kind IMPORT), like
+    project_plant_orders(): one PO line per ordered item
+    (import_line_groups()), in the PO's own currency, with no tax at order
+    time. An order the app owns (source APP) is left as it is."""
+    from apps.core import models as core_models
+    from apps.core.models import Plant, PurchaseOrder
+
+    plant = Plant.objects.get(code=plant_code)
+    plants_by_code = {p.code: p for p in Plant.objects.all()}
+    mirror = getattr(core_models, IMPORT_PO_MODELS[plant_code])
+    result = ProjectionResult()
+    current = {po.po_number: po for po in PurchaseOrder.objects.filter(plant=plant, kind=PurchaseOrder.Kind.IMPORT)}
+    for legacy in mirror.objects.order_by("po_created_date", "pk").prefetch_related("items"):
+        result.orders_seen += 1
+        po = current.get(legacy.po_number)
+        if po is not None and po.source == PurchaseOrder.Source.APP:
+            result.orders_held.append(legacy.po_number)
+            continue
+        if po is not None and po.source_hash == legacy.synced_from_row_hash and po.is_active == legacy.is_active:
+            continue
+        vendor = upsert_vendor(legacy.vendor_gstin, legacy.vendor_name, legacy.vendor_code,
+                               legacy.vendor_address, legacy.vendor_email)
+        header = {
+            "po_date": legacy.po_created_date, "vendor": vendor,
+            "currency": (legacy.currency or "").strip().upper()[:10] or "INR",
+            "tax_type": "", "tax_type_raw": "",
+            "payment_terms": legacy.payment_terms or "", "incoterms": legacy.incoterms or "",
+            "billing_address": legacy.billing_address or "",
+            "billing_plant": plants_by_code.get(rules.billing_plant_code(legacy.billing_address or "")),
+            "ship_to": legacy.ship_to or "", "total_value": legacy.total_value, "total_inclusive_value": None,
+            "remarks": legacy.remarks or "", "is_active": legacy.is_active,
+            "source_hash": legacy.synced_from_row_hash, "synced_at": timezone.now(),
+        }
+        if po is None:
+            po = PurchaseOrder.objects.create(plant=plant, kind=PurchaseOrder.Kind.IMPORT, po_number=legacy.po_number, **header)
+        else:
+            for f, v in header.items():
+                setattr(po, f, v)
+            po.save()
+        write_lines(po, [_import_line_values(rows) for rows in import_line_groups(legacy.items.all())], result,
+                    "The import PO sheet")
         result.orders_written += 1
     return result

@@ -932,7 +932,10 @@ so nothing is counted twice while both exist.
 2026-09-29 - a vendor-name search offered every open order of that vendor, which is how a receipt lands
 on the wrong one). **Only the caller's own plants' POs are offered, and a PO is received only at its own
 plant** - the plant on its billing address (owner, 2026-10-03, replacing the 2026-09-28 rule that any
-plant could receive any plant's PO). Picking the first line sets the receiving plant to the PO's; once
+plant could receive any plant's PO). Import orders are in the app (`kind = import`) but MIR entry does
+not offer them yet: an import receipt is checked against its shipment's Bill of Entry (quantity landed,
+customs exchange rate), which arrives in phase 2 - `search_open_pos()` returns domestic orders only and
+`line_state()` blocks an import line. Picking the first line sets the receiving plant to the PO's; once
 lines are picked, another plant's PO cannot join (`plantClash()`), and `evaluate()` refuses a line whose
 PO is at another plant. `PurchaseOrder.billing_plant` is read from the billing address
 (`procurement_rules.billing_plant_code()`: a few words of each plant's printed address, unresolved when it
@@ -1234,6 +1237,12 @@ incoterms, currency, tax type, total, tax and total including tax, remarks - and
   projection, so an order moving from the sheet keeps its lines and receipts; a change to a received
   line's identity flags it for review with "The approved PO file changed ..."; a dropped line is retired,
   never deleted). MIR entry can then receive against it. **Reject** needs a reason.
+
+**Domestic or import.** The reading names the order type (`order_type`: import when the supplier is
+abroad - foreign address, no GSTIN, foreign currency, FOB/CIF incoterms), and the reviewer can change it.
+It decides what is compulsory (`REQUIRED_HEADER` / `REQUIRED_LINE`, sent to the page): an import PO has no
+GSTIN, tax type, tax total or total including tax at order time, and its HSN may wait for the Bill of
+Entry. Approval writes `PurchaseOrder.kind` accordingly, in the PO's own currency.
 
 Access: `PO_UPLOAD` at the file's plant for everything; another plant's reading is a 404. The page is
 the PO Files page's "PO readings" panel (`po-review.js`).
@@ -1889,6 +1898,9 @@ put back a short-close or review a person committed meanwhile.
 
 `write_lines(po, lines_values, result, changed_by)` is the one line diff, shared by the projection and an
 approved PO reading (`po_extraction.approve()`); `changed_by` names the source in review notes.
+`project_plant_import_orders(plant_code)` / `import_line_groups()` / `IMPORT_PO_MODELS` - the import CSV
+mirror into `PurchaseOrder` (`kind = import`), one line per ordered item - see
+[data-sync.md](data-sync.md#import-csv-into-the-procurement-tables-2026-10-03).
 
 ### apps/services/po_extraction.py
 

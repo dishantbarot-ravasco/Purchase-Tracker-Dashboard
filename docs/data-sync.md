@@ -281,6 +281,21 @@ own copy in the legacy mirror for the reconciliation dashboard, the app keeps it
 are **compared, never added**. A PO the CSV retires stays active in the app if the app owns it; a
 cancelled app PO is retired in the app.
 
+### Import CSV into the procurement tables (2026-10-03)
+
+Each plant's import CSV mirror (`HRSImportPurchaseOrder` etc.) is projected into `PurchaseOrder` with
+`kind = import` by `procurement_sync.project_plant_import_orders()`, at the end of every
+`sync_*_imports_po_csv` run and by `sync_procurement_pos`. The import CSV repeats a PO line once per
+shipment (1000001519's SBR line is three rows: one PO quantity of 302,400 KG, three BOEs), so
+`import_line_groups()` folds rows with the same item code, description and net price into ONE PO line,
+in the order the item first appears: the ordered quantity is the PO quantity (repeated, never summed),
+the price is in the PO's own currency, and there is no tax at order time (`tax_type` blank,
+`total_inclusive_value` null). The shipment rows themselves - BOE, Bill of Lading, quantity landed,
+exchange rate, licence - become the app's shipments in phase 2 (not built). Lines are written by the same
+`write_lines()` diff; an order the app owns (`source = app`) is skipped. A domestic and an import order
+of the same number at one plant are two rows (`uniq_po_per_plant_kind`). Locally on 2026-10-03: 42 import
+POs, Vapi's 55 CSV rows became 49 PO lines.
+
 ### Rules for the PO extraction agent - Madura fabric weight (2026-09-30)
 
 The PO master CSVs are written upstream, by the agent that extracts each PO PDF into rows; this app

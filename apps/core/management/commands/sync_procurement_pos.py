@@ -1,7 +1,7 @@
 """
 apps/core/management/commands/sync_procurement_pos.py - projects the plants'
-PO master CSV mirrors into the normalized procurement tables the MIR form
-reads (apps/services/procurement_sync.py).
+PO master CSV mirrors (domestic and, since 2026-10-03, import) into the
+normalized procurement tables the MIR form reads (apps/services/procurement_sync.py).
 
 Every sync_*_po_csv run already does this for its own plant; this command is
 for the first backfill after deploying, and for re-running by hand. It reads
@@ -14,7 +14,7 @@ Usage:
 
 from django.core.management.base import BaseCommand
 
-from apps.services.procurement_sync import LEGACY_PO_MODELS, project_plant_orders
+from apps.services.procurement_sync import LEGACY_PO_MODELS, project_plant_import_orders, project_plant_orders
 
 
 class Command(BaseCommand):
@@ -36,3 +36,8 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.WARNING(
                     f"sync_procurement_pos {code}: need review - " + ", ".join(r.lines_flagged)
                 ))
+            ri = project_plant_import_orders(code)
+            self.stdout.write(self.style.SUCCESS(
+                f"sync_procurement_pos {code} imports: {ri.orders_seen} orders seen, {ri.orders_written} written, "
+                f"lines {ri.lines_created} created / {ri.lines_updated} updated / {ri.lines_deactivated} deactivated"
+            ))

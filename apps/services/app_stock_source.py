@@ -147,7 +147,9 @@ def purchase_orders_payload(plant) -> list[dict]:
     with no such line left."""
     from apps.core.models import PurchaseOrder
 
-    orders = list(PurchaseOrder.objects.filter(plant=plant, is_active=True)
+    # Domestic only: import orders are read from the Drive import sheet on
+    # either source (they have no shipments in the app yet).
+    orders = list(PurchaseOrder.objects.filter(plant=plant, is_active=True, kind=PurchaseOrder.Kind.DOMESTIC)
                   .select_related("vendor").prefetch_related("lines__material").order_by("-po_date", "-id"))
     lines = [ln for po in orders for ln in po.lines.all() if ln.is_active and ln.closed_at is None]
     accepted = mir_service.accepted_by_line([ln.id for ln in lines])

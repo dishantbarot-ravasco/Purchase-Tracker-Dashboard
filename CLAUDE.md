@@ -317,6 +317,10 @@ Read the linked section before breaking any of these. Each is there because it w
   there. Never write procurement rows from the model's output directly; never call the model in a request.
 - An approved reading owns the PO (`source = app`, the CSV projection skips it); its lines go through
   `procurement_sync.write_lines()` by position, like the projection - never delete-and-rebuild.
+- `PurchaseOrder.kind` is `domestic` or `import` (2026-10-03): every query names the kind it wants. Import
+  orders are projected one line per ordered item (`import_line_groups()` - the CSV repeats a line per
+  shipment; never sum its PO quantity) and are not receivable in MIR entry until their shipment's Bill of
+  Entry is in the app. [imports](docs/data-sync.md#import-csv-into-the-procurement-tables-2026-10-03)
 - `ANTHROPIC_API_KEY` blank = extraction off (uploads still work). Tests stub `_call_claude()` and
   `documents.read_bytes()`; nothing in the suite calls the API.
   [PO extraction](docs/api-and-features.md#po-extraction-2026-10-03)

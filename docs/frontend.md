@@ -1548,7 +1548,9 @@ queued or running), `prOpen()` / `prPaint()` show one reading as an editable for
 in a grid, each line a row of inputs, add or remove a line - with the server's `problems` (red, block
 approval), `checks` (amber) and the PO sheet comparison. Approve first saves the form (`/draft`) and
 approves only when the re-check finds no problem (`prSend()`); Reject needs a reason. `prRead()` asks for
-a file to be read again. It never decides anything itself. Every top-level name is `pr...`.
+a file to be read again. The order type (Domestic / Import) is a select; changing it repaints the form
+with that type's compulsory fields (`requiredHeader` / `requiredLine` from the server). It never decides
+anything itself. Every top-level name is `pr...`.
 
 ### frontend/js/po-files-page.js
 

@@ -76,6 +76,8 @@ def _detail(ext):
     return {
         **_row(ext), "draft": draft, "labels": po_extraction.LABELS,
         "headerFields": po_extraction.HEADER_FIELDS, "lineFields": po_extraction.LINE_FIELDS,
+        # What is compulsory depends on the order type (an import has no GST at order time).
+        "requiredHeader": po_extraction.REQUIRED_HEADER, "requiredLine": po_extraction.REQUIRED_LINE,
         "problems": po_extraction.problems(draft, ext.plant, ext.document.po_number) if ext.draft else [],
         "checks": po_extraction.checks(draft) if ext.draft else [],
         "sheet": po_extraction.sheet_differences(draft, ext.plant) if ext.draft else None,

@@ -195,7 +195,15 @@ class PurchaseOrder(models.Model):
         # one order, owned by the app (uniq_po_per_plant keeps it one row).
         APP = "app", "Entered in the app"
 
+    class Kind(models.TextChoices):
+        DOMESTIC = "domestic", "Domestic"
+        # An import order (owner, 2026-10-03): ordered in the supplier's
+        # currency, with no GST at order time - duty, IGST, the exchange rate
+        # and the quantity landed come per shipment from its Bill of Entry.
+        IMPORT = "import", "Import"
+
     plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="purchase_orders")
+    kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.DOMESTIC)
     po_number = models.CharField(max_length=100)
     po_date = models.DateField(null=True, blank=True)
     # Null only for the handful of legacy HRS orders the CSV names no vendor
@@ -231,8 +239,9 @@ class PurchaseOrder(models.Model):
 
     class Meta:
         constraints = [
-            # One PO number can exist at two plants (1000001471 does).
-            models.UniqueConstraint(fields=["plant", "po_number"], name="uniq_po_per_plant"),
+            # One PO number can exist at two plants (1000001471 does), and
+            # in principle as a domestic and an import order at one plant.
+            models.UniqueConstraint(fields=["plant", "kind", "po_number"], name="uniq_po_per_plant_kind"),
         ]
         indexes = [models.Index(fields=["po_number"]), models.Index(fields=["is_active"])]
 

@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from apps.core.models import RTPVapiImportPOLineItem, RTPVapiImportPurchaseOrder, SyncRun
 from apps.services.import_sync import sync_orders
+from apps.services.procurement_sync import project_plant_import_orders
 from apps.services.parsers.import_po_csv import HeaderMismatch, parse_import_po_csv
 
 
@@ -51,6 +52,8 @@ class Command(BaseCommand):
             csv_text = self._load_csv_text(options.get("file"))
             orders = parse_import_po_csv(csv_text)
             rows_seen, rows_changed, deactivated = sync_orders(RTPVapiImportPurchaseOrder, RTPVapiImportPOLineItem, orders)
+            # The app's own import POs, one line per ordered item (2026-10-03).
+            project_plant_import_orders("vapi")
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_vapi_imports_po_csv: {rows_seen} POs seen, {rows_changed} created/updated, "
