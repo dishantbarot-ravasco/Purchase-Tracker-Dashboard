@@ -35,11 +35,16 @@ SOURCES = (DRIVE, APP)
 WINDOW_DAYS = 45
 
 
-def sources() -> dict:
-    """{plant code: "drive" | "app"} for every plant (no row = drive)."""
+WHAT = {"stock": "source", "imports": "import_source"}
+
+
+def sources(what: str = "stock") -> dict:
+    """{plant code: "drive" | "app"} for every plant (no row = drive) - for
+    the plant stock tabs (`what` "stock") or the Import Purchases page
+    ("imports")."""
     from apps.core.models import Plant, PlantStockSource
 
-    chosen = dict(PlantStockSource.objects.values_list("plant__code", "source"))
+    chosen = dict(PlantStockSource.objects.values_list("plant__code", WHAT[what]))
     return {p.code: chosen.get(p.code, DRIVE) for p in Plant.objects.all()}
 
 
@@ -50,13 +55,15 @@ def source_of(plant) -> str:
     return row.source if row else DRIVE
 
 
-def set_source(plant, source: str, user):
+def set_source(plant, source: str, user, what: str = "stock"):
     from apps.core.models import PlantStockSource
 
     if source not in SOURCES:
         raise ValueError("Choose drive or app.")
+    if what not in WHAT:
+        raise ValueError("Choose the stock tabs or the import purchases.")
     row, _ = PlantStockSource.objects.get_or_create(plant=plant)
-    row.source = source
+    setattr(row, WHAT[what], source)
     row.updated_by_email = getattr(user, "email", "") or ""
     row.save()
     return row

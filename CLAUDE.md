@@ -234,7 +234,9 @@ Read the linked section before breaking any of these. Each is there because it w
   [dismiss](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag)
   [inline edit](docs/api-and-features.md#inline-edit-everywhere),
   [dismiss](docs/api-and-features.md#dismiss--override-a-flagged-match-or-flag)
-- The licence CSV says which licence was used, not how much; never derive a balance from it.
+- The licence CSV says which licence was used, not how much; never derive a balance from it. A licence's
+  balance is what it sanctioned less its active `LicenceDebit` rows, which come ONLY from approved BOE
+  readings (`licences.py`) - never from the CSV or the Advance License sheet's usage columns.
   [licences](docs/api-and-features.md#licences-the-import-side-was-in-the-csv-all-along-2026-09-22)
 
 ### Frontend
@@ -327,6 +329,10 @@ Read the linked section before breaking any of these. Each is there because it w
   is left alone by the CSV whatever BL it shows - key app ownership on the BOE number alone.
   [import MIR](docs/api-and-features.md#import-receipts-one-shipment-at-a-time-2026-10-03)
 - A BOE reading is reviewed with `IMPORT_DOCS`, a PO reading with `PO_UPLOAD` (`po_extraction_views.KIND_PERMISSION`).
+- The Import Purchases page reads one source per plant (`PlantStockSource.import_source`, admin-switched):
+  the import CSV, or `app_imports.order_standins()` - stand-in rows with the CSV row's attribute names,
+  one per shipment line, so `_po_dict()` and `import_flags` run unchanged. Never add the two; an
+  app-sourced order is read-only in the modal.
 - `ANTHROPIC_API_KEY` blank = extraction off (uploads still work). Tests stub `_call_claude()` and
   `documents.read_bytes()`; nothing in the suite calls the API.
   [PO extraction](docs/api-and-features.md#po-extraction-2026-10-03)

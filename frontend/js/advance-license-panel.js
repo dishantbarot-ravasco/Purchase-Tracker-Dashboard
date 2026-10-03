@@ -271,6 +271,7 @@ function openAdvanceLicenseDetail(licenseNumber) {
         '<div class="line">Utilised: ' + formatPctOrDash(usage.cifUtilisedPct) + '</div>' +
         '<div class="line">' + usage.usageRows + ' usage row(s) across ' + usage.materialCount + ' material(s)</div>' +
       '</div>' +
+      boeDebitsBlockHtml(lic.boeDebits) +
       '<div class="field-block"><h4>Time left</h4>' +
         '<div class="line">Export obligation ends: ' +
           validityCellHtml(lic.exportValidityDate, validity.exportDaysLeft,
@@ -301,4 +302,20 @@ function openAdvanceLicenseDetail(licenseNumber) {
     AL_CTX.licenseNumber = null;
     renderAdvanceLicenseLedgerBody(document.getElementById('modalBody'), AL_CTX.data);
   };
+}
+
+// What approved Bill of Entry readings debited from this licence (2026-10-03,
+// apps/services/licences.py) - the one source of an amount; the workbook's
+// own usage columns above stay as they were.
+function boeDebitsBlockHtml(b) {
+  if (!b) return '';
+  const t = b.totals || {};
+  return '<div class="field-block"><h4>Debited on approved BOEs</h4>' +
+    '<div class="line">CIF value debited: <b>' + formatInrOrDash(t.value) + '</b></div>' +
+    '<div class="line">CIF left: <b>' + formatInrOrDash(b.cifLeft) + '</b></div>' +
+    ((b.debits || []).length
+      ? (b.debits || []).map(d => '<div class="line">BOE ' + escapeHtml(d.boeNumber) + ' (' + escapeHtml(d.plant.toUpperCase()) + ', PO ' +
+          escapeHtml(d.poNumber) + '): ' + formatInrOrDash(d.value) + (d.qty ? ', ' + escapeHtml(String(d.qty)) : '') + '</div>').join('')
+      : '<div class="line no-data-note">No approved BOE has debited this licence yet.</div>') +
+  '</div>';
 }

@@ -67,12 +67,12 @@ from apps.api.routers._domestic_base import (
 # reconcile against the SAME MIR table as that plant's domestic POs (see
 # HRSImportPOMirMatch's docstring) - this router simply never had cause to
 # read it directly before.
-from apps.core.models import HRSMIREntry, RTPAchhadMIREntry, RTPVapiMIREntry
+from apps.core.models import HRSMIREntry, Plant, RTPAchhadMIREntry, RTPVapiMIREntry
 # The matcher's own line numbering, imported rather than re-derived so the
 # API and matching_core can never disagree about what a pin addresses.
 from apps.services.matching_core import _boe_key, _import_rate_value_inr, import_landed_rates, line_item_positions
 from apps.services.parsers.common import normalize_material
-from apps.services import bl_tracking, data_stamp, receipt_preview, rematch
+from apps.services import app_imports, app_stock_source, bl_tracking, data_stamp, licences, receipt_preview, rematch
 from apps.services.manual_receipts import apply_change, manual_changes
 from apps.services import import_flags as flags
 from apps.services import license_links
@@ -161,6 +161,11 @@ def _mir_match_dict(item):
     material exists somewhere in stock." Returns None (no `mir_match`
     payload at all) when the item never crossed MATCH_THRESHOLD - same as
     a domestic line item with no match."""
+    # An app stand-in row (app_imports.py) carries its own: what posted
+    # import MIRs received against its shipment line.
+    app_payload = getattr(item, "app_match_payload", None)
+    if app_payload is not None:
+        return app_payload
     match = getattr(item, "mir_match", None)
     if match is None:
         return None
@@ -436,8 +441,17 @@ def purchase_orders(request):
     filter already has for plants with zero rows."""
     category_reference = _category_reference_map()
     result = []
+    import_sources = app_stock_source.sources("imports")
     for plant_key, (po_model, _item_model, _sr_plant, label, _match_model) in _PLANTS.items():
         if not user_can_access_plant(request.user, plant_key):
+            continue
+        # A plant switched to the app's own records (owner, 2026-10-03): its
+        # import POs, shipments and import MIRs as stand-in rows, the same
+        # shape and rules - never added to the CSV's.
+        if import_sources.get(plant_key) == app_stock_source.APP:
+            plant = Plant.objects.get(code=plant_key)
+            result.extend({**_po_dict(po, plant_key, label, category_reference=category_reference), "source": "app"}
+                          for po in app_imports.order_standins(plant))
             continue
         # is_active=True - see _domestic_base.py's own note.
         qs = po_model.objects.filter(is_active=True).prefetch_related(
@@ -464,6 +478,14 @@ def purchase_order_detail(request, plant, po_number):
     if not user_can_access_plant(request.user, plant):
         return Response({"error": "Unknown plant."}, status=404)
     po_model, _item_model, sr_plant, label, _match_model = resolved
+    if app_stock_source.sources("imports").get(plant) == app_stock_source.APP:
+        found = app_imports.order_standins(Plant.objects.get(code=plant), po_number)
+        if not found:
+            return Response({"error": "Purchase order not found."}, status=404)
+        # sr_plant=None: no CSV corrections or flag dismissals - an app order
+        # is corrected by reading its PO or BOE again, not field by field.
+        return Response({**_po_dict(found[0], plant, label, detail=True, sr_plant=None,
+                                    category_reference=_category_reference_map()), "source": "app"})
     po = po_model.objects.prefetch_related(
         "items", "items__mir_match", "items__mir_match__mir_entry", "items__mir_match__mir_entry__stock_matches", "items__mir_match__group_entries", "items__mir_match__dismissed_by",
     # is_active=True: a retired order is gone from the list, so it must not
@@ -916,6 +938,7 @@ def rodtep_ledger(request):
     # `unknownScrips`, where the fix (add the file to Drive, or correct the
     # CSV) is a different one from anything a ledger row implies.
     all_scripts = sorted(set(ledger_by_script) | set(used_by_script))
+    readable = [p for p in ("hrs", "achhad", "vapi") if user_can_access_plant(request.user, p)]
 
     scripts = []
     for script_no in all_scripts:
@@ -936,6 +959,10 @@ def rodtep_ledger(request):
             "totalUsed": used,
             "balance": sanctioned - used,
             "imports": license_links.citation_totals(citations),
+            # Duty foregone on approved BOE readings (2026-10-03) - the one
+            # source of an amount; see advance_license_ledger.
+            "boeDebits": (lambda d: {**d, "left": sanctioned - d["totals"]["duty"]})(
+                licences.boe_debits_summary("RODTEP", script_no, readable)),
         })
 
     total_sanctioned = sum((s["totalSanctioned"] for s in scripts), Decimal("0"))
@@ -952,6 +979,7 @@ def rodtep_ledger(request):
             "importLines": sum(s["imports"]["lineCount"] for s in scripts),
             "importLandedValue": sum((s["imports"]["landedValue"] for s in scripts), Decimal("0")),
             "hasLoggedUsage": bool(used_by_script),
+            "hasBoeDebits": any(s["boeDebits"]["totals"]["duty"] for s in scripts),
             "totalLoggedUsed": sum(used_by_script.values(), Decimal("0")),
         },
         "unknownScrips": _unrecognised_license_rows(by_license, set(ledger_by_script)),
@@ -1237,12 +1265,20 @@ def advance_license_ledger(request):
 
     rows, known_numbers = [], set()
     known_boes = _known_boe_numbers()
+    readable = [p for p in ("hrs", "achhad", "vapi") if user_can_access_plant(request.user, p)]
     visible = _workbook_row_filter(request.user)
     for lic in licenses:
         number = license_links.normalize_license_number(lic.license_number)
         known_numbers.add(number)
         materials = [m for m in lic.materials.all() if visible(m)] if visible else None
-        rows.append(_advance_license_dict(lic, by_license.get(number, []), today, known_boes, materials))
+        row = _advance_license_dict(lic, by_license.get(number, []), today, known_boes, materials)
+        # What approved BOE readings debited (2026-10-03, apps/services/
+        # licences.py) - the one source of an amount. Totals company-wide
+        # (a licence's balance is one fact); the debits listed only at the
+        # reader's plants.
+        debits = licences.boe_debits_summary("ADVANCE", lic.license_number, readable)
+        row["boeDebits"] = {**debits, "cifLeft": (lic.cif_value_authorized or Decimal("0")) - debits["totals"]["value"]}
+        rows.append(row)
 
     last_run = (
         SyncRun.objects.filter(plant=SyncRun.Plant.COMPANY, source=SyncRun.Source.ADVANCE_LICENSE)

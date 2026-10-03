@@ -88,8 +88,8 @@ and everything in `device_urls.py` / `device_views.py` and `google_oauth_urls.py
 
 | Method | Path | View | Permission | Purpose |
 | --- | --- | --- | --- | --- |
-| GET | `stock-source` | `stock_source` | `HasAnyAccess`, the caller's plants | `{sources: {plant: "drive" or "app"}, canChange}` |
-| POST | `stock-source/set` | `set_stock_source` | `IsAdmin` | Switch a plant's Inventory / On Order / Stock & Orders between the Drive sheets and the in-app records |
+| GET | `stock-source` | `stock_source` | `HasAnyAccess`, the caller's plants | `{sources, importSources: {plant: "drive" or "app"}, canChange}` |
+| POST | `stock-source/set` | `set_stock_source` | `IsAdmin` | Switch a plant's stock tabs (`what: "stock"`, default) or Import Purchases (`what: "imports"`) between Drive and the in-app records |
 | GET | `app-stock/<plant>/materials` | `app_materials` | `STOCK_VIEWS` + plant (403) | The plant's RM store receipts in the Drive `/materials` row shape |
 | GET | `app-stock/<plant>/purchase-orders` | `app_purchase_orders` | `ORDER_VIEWS` + plant (403) | The plant's POs still on order, received = posted MIRs, in the Drive `/purchase-orders` row shape |
 
@@ -1284,6 +1284,36 @@ Access: a PO reading needs `PO_UPLOAD`, a BOE reading `IMPORT_DOCS` (the permiss
 the file's plant; another plant's reading, or a kind the account does not handle, is a 404. The page is
 the PO Files page's "PO readings" panel (`po-review.js`).
 
+### Licences from Bills of Entry (2026-10-03)
+
+Advance Authorisations and RoDTEP scrips only (owner). A BOE's licence section is read with it into a
+second table of the draft, `debits` - one row per (item, licence): the item's position, licence type and
+number, quantity and CIF value debited (Advance) or duty foregone (RoDTEP); one item drawn on two
+licences is two rows. Approval needs each row's item on the BOE, its type and number, and the value
+(Advance) or duty (RoDTEP); it writes `LicenceDebit` rows on that BOE's shipment lines and retires the
+earlier ones when a BOE is approved again (never added twice). `licences.check_debits()` warns the
+reviewer - never blocks - when a licence is not in its ledger, an Advance licence's import validity ended
+before the BOE, an item's HSN is not among the licence's materials, or a debit is more than the licence
+has left; an item naming a licence with no debit row is pointed out too. A licence's balance is what it
+sanctioned (the synced ledgers) less its active debits: the Advance Licence ledger adds `boeDebits`
+(CIF debited, CIF left, the debits at the reader's plants) and the RoDTEP ledger `boeDebits` per scrip
+with `summary.hasBoeDebits`; the panels show "Debited on approved BOEs" / "Left". The import CSV's licence
+columns still say which licence a line cited, never an amount.
+
+### Import Purchases from the app (2026-10-03)
+
+The Import Purchases page reads, per plant, the import CSV or the app's own import POs, shipments and
+import MIRs (`PlantStockSource.import_source`, switched by an admin from the page's "Figures from" bar,
+`stock-source/set` with `what: "imports"`). For an "app" plant, `imports/purchase-orders` and its detail
+build their rows from `app_imports.order_standins()`: one stand-in row per shipment line (a PO line on one
+Bill of Entry, with its BOE number, BL, laden-on-board date, country, exchange rate, total and licence) and
+one per PO line not shipped yet, with the CSV row's attribute names - so `_po_dict()` and `import_flags`
+(shipment stage Placed / Shipped / Cleared, delivery status, partial delivery, PO vs BOE quantity) apply
+unchanged. What arrived is what posted import MIRs accepted against that shipment line, exactly
+(`app_match_payload`, read by `_mir_match_dict()` first). Rows carry `source: "app"`; the modal shows "From
+the app's own records" and is read-only (an order is corrected by reading its PO or BOE again). The two
+sources are never added together, and switching back is instant.
+
 ### PO and invoice files (2026-09-30)
 
 The first step of moving PO and invoice paperwork off Drive: the purchase team uploads each PO's copy
@@ -1875,6 +1905,8 @@ and its issues net of returns in the window (the app source of the plant stock t
 Which records each plant's Inventory / On Order / Stock & Orders read (`sources()`, `source_of()`,
 `set_source()`; `DRIVE` default) and the app-record payloads in the Drive rows' shape:
 `materials_payload(plant)` and `purchase_orders_payload(plant)` (see the RM stock entry section).
+`sources(what)` / `set_source(..., what)` take `"stock"` (the plant stock tabs, `source`) or `"imports"`
+(the Import Purchases page, `import_source`).
 
 ### apps/api/routers/stock_source_views.py
 
@@ -1958,6 +1990,18 @@ The Bill of Entry half of [PO extraction](#po-extraction-2026-10-03): `SCHEMA` /
 `normalize(raw, ext)` (proposes each item's PO line when none is set - `_propose()` over
 `candidate_lines()`), `problems()`, `checks()`, `sheet_differences()` (against the CSV shipment of that
 BOE), `line_options()` and `approve()` (the shipment, taking over a CSV one; items no longer listed retired).
+`DEBIT_FIELDS` / `REQUIRED_DEBIT`, `_debit_values()`; `approve()` also writes the BOE's `LicenceDebit`
+rows (earlier ones retired).
+
+### apps/services/licences.py
+
+Licence balances from BOE debits - see [Licences from Bills of Entry](#licences-from-bills-of-entry-2026-10-03).
+`debited()`, `advance_licence()`, `rodtep_sanctioned()`, `check_debits()` (the reviewer's warnings) and
+`boe_debits_summary()` (the ledgers' `boeDebits`).
+
+### apps/services/app_imports.py
+
+`order_standins(plant, po_number=None)` - see [Import Purchases from the app](#import-purchases-from-the-app-2026-10-03).
 
 ### apps/api/routers/po_extraction_views.py
 

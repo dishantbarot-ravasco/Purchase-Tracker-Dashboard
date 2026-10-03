@@ -160,7 +160,7 @@ BOE_READ = {
 def _boe_document(reference="4026152", po_number="1000001519"):
     n = Document.objects.count() + 1
     return Document.objects.create(kind="BOE", plant=Plant.objects.get(code="vapi"), po_number=po_number, reference=reference,
-                                   revision=1, storage_key=f"vapi/{po_number}/boe-{reference}/r{n}.pdf", original_filename="boe.pdf",
+                                   revision=n, storage_key=f"vapi/{po_number}/boe-{reference}/r{n}.pdf", original_filename="boe.pdf",
                                    content_type="application/pdf", size_bytes=10, sha256=f"{n:064d}", uploaded_by_email="cha@ravasco.com")
 
 

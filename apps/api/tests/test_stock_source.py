@@ -19,7 +19,7 @@ from apps.services import materials, mir_service, stock_service
 class TestTheSwitch:
     def test_every_plant_reads_drive_until_an_admin_switches_it(self):
         viewer = _client(role="viewer", plants=["hrs"])
-        assert viewer.get("/api/stock-source").json() == {"sources": {"hrs": "drive"}, "canChange": False}
+        assert viewer.get("/api/stock-source").json() == {"sources": {"hrs": "drive"}, "importSources": {"hrs": "drive"}, "canChange": False}
         admin = _client(role="admin", email="a@ravasco.com")
         res = admin.post("/api/stock-source/set", {"plant": "hrs", "source": "app"}, format="json")
         assert res.status_code == 200 and res.json()["source"] == "app"

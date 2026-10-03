@@ -889,6 +889,13 @@ The Domestic PO modal and the shared MIR picker.
 
 ### frontend/js/import-po.js
 
+**Figures from (2026-10-03).** `importSourceBarHtml()` / `wireImportSourceBar()` show each selected plant's
+import source (the import CSV, or the in-app POs, BOEs and MIRs - `STOCK_SOURCE.importSources`) above the
+filters, with an admin switch that clears `IMPORT_PO_CACHE` and the detail cache and re-renders. The rows
+arrive in the same shape from either source (the server builds them); an order with `source: "app"` opens
+read-only - no edit pencils, revert links, flag dismissals or MIR picker - and says "From the app's own
+records".
+
 The Import Purchases list and modal. Constants `IMPORT_STAGES`, `IMPORT_STAGE_LABELS`,
 `IMPORT_STAGE_PILL_CLASS`, `IMPORT_FLAG_LABELS` (F1-F7). `importCategoriesFor()` builds each PO's
 categories client-side, leaving out dismissed PO-level flags; `poQtyDiscPo()` is the dismissal-aware
@@ -1305,6 +1312,9 @@ unclassified, noun)`, `licenseImportsTableHtml(citations, totals)` (marks a line
 licence instead of splitting its value). Read-only; syncing is "Refresh Data"'s job. Rules:
 [api-and-features.md](api-and-features.md).
 
+Once any approved BOE has debited a scrip (`summary.hasBoeDebits`) the list adds "Debited on BOEs" and
+"Left" columns (`boeDebits`); until then it says a balance appears when BOEs are read and approved.
+
 ### frontend/js/advance-license-panel.js
 
 `openAdvanceLicensePanel()` - GET `/api/imports/advance-license`, stored in `AL_CTX`;
@@ -1312,6 +1322,9 @@ licence instead of splitting its value). Read-only; syncing is "Refresh Data"'s 
 licence); `openAdvanceLicenseDetail(licenseNumber)` renders from `AL_CTX` with no fetch (so no
 guard). `formatPctOrDash()` never shows a tiny real draw as "0.0%" and shows null as a dash;
 `validityCellHtml()` marks expired / expiring soon. Depends on `rodtep-panel.js`'s helpers.
+
+`boeDebitsBlockHtml()` adds a "Debited on approved BOEs" block to a licence's detail (CIF debited, CIF left,
+each BOE debit at the reader's plants) - the only amounts; the workbook block beside it is unchanged.
 
 ### frontend/js/main.js
 
@@ -1552,7 +1565,9 @@ queued or running), `prOpen()` / `prPaint()` show one reading as an editable for
 in a grid, each line a row of inputs, add or remove a line - with the server's `problems` (red, block
 approval), `checks` (amber) and the PO sheet comparison. Approve first saves the form (`/draft`) and
 approves only when the re-check finds no problem (`prSend()`); Reject needs a reason. `prRead()` asks for
-a file to be read again. A Bill of Entry reading (`kind` BOE, `prWhat()`) shows its shipment fields and
+a file to be read again. `extraTables` from the server (a BOE's licence debits) render as further tables
+of inputs (`prExtraTableHtml()`, add / remove a row, selects where choices are sent) and are collected into
+the draft under their key. A Bill of Entry reading (`kind` BOE, `prWhat()`) shows its shipment fields and
 items, each item's PO line a select from the server's `lineOptions`, and the import-sheet comparison
 (`prBoeSheetHtml()`); it is offered to `importDocs` accounts. The order type (Domestic / Import) is a select; changing it repaints the form
 with that type's compulsory fields (`requiredHeader` / `requiredLine` from the server). It never decides

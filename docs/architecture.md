@@ -582,8 +582,8 @@ on), `StockLot` (one per MIR line - the only way stock comes in since 2026-09-30
 `ADJUSTMENT` lots still count; **no stored quantity** - derived from its MIR line while that is posted;
 `location` - where in the plant's store it sits, with who set it and when), `StockLocation` (a plant's
 store locations by name, unique per plant on `name_key`, never deleted; migration `0096`),
-`PlantStockSource` (which records a plant's Inventory / On Order / Stock & Orders read - `drive` or
-`app`, no row = drive; migration `0097`)
+`PlantStockSource` (which records a plant's Inventory / On Order / Stock & Orders read - `source`, and
+its Import Purchases page - `import_source`; `drive` or `app`, no row = drive; migrations `0097`, `0102`)
 and `StockAllocation` (how much a voucher line took from or put back into a lot). See
 [api-and-features.md](api-and-features.md#rm-stock-entry-2026-09-29).
 
@@ -617,7 +617,10 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   `total_inclusive_value`, `source` csv / app, the BOE `document` an approved reading came from,
   `is_active`. `ImportShipmentLine` - one PO line on it: `qty_as_per_boe` (above zero),
   `total_inclusive_value`, `license_type` / `license_number`, `is_active`; unique (shipment, PO line).
-  `Mir.shipment` and `MirLine.shipment_line` tie an import MIR to them.
+  `Mir.shipment` and `MirLine.shipment_line` tie an import MIR to them. `LicenceDebit` - what one BOE item
+  drew from one licence (migration `0101`): `shipment_line`, `license_type` ADVANCE / RODTEP, normalized
+  `license_number`, `qty`, `value_inr`, `duty_foregone`, `is_active` (a re-approved BOE retires its
+  earlier ones).
 - `PoExtraction` - one reading of an uploaded PO file or Bill of Entry (`kind` PO / BOE; migration `0098`,
   `0100` for the BOE): `document`, `plant`, `status`
   QUEUED / RUNNING / READY / FAILED / APPROVED / REJECTED, the model's `extracted` JSON and the reviewer's

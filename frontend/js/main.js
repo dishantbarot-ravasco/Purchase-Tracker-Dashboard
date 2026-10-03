@@ -1363,15 +1363,16 @@ async function ensurePOsLoaded(plantKeys, opts) {
   }));
 }
 
-// STOCK_SOURCE: {sources: {plant: 'drive' | 'app'}, canChange} for the
-// caller's plants (admins may switch a plant - plant-stock.js's source bar).
+// STOCK_SOURCE: {sources, importSources: {plant: 'drive' | 'app'}, canChange}
+// for the caller's plants - the plant stock tabs' and the Import Purchases
+// page's sources (admins may switch a plant from each page's source bar).
 // One request however many loaders ask at once (STOCK_SOURCE_LOAD).
 let STOCK_SOURCE_LOAD = null;
 async function ensureStockSourceLoaded() {
   if (STOCK_SOURCE) return;
   if (!STOCK_SOURCE_LOAD) {
     STOCK_SOURCE_LOAD = apiAt('/api/stock-source')
-      .then(data => { STOCK_SOURCE = { sources: data.sources || {}, canChange: !!data.canChange }; })
+      .then(data => { STOCK_SOURCE = { sources: data.sources || {}, importSources: data.importSources || {}, canChange: !!data.canChange }; })
       .finally(() => { STOCK_SOURCE_LOAD = null; });
   }
   await STOCK_SOURCE_LOAD;
@@ -1399,6 +1400,8 @@ function currentPOs() {
 }
 
 async function ensureImportPOsLoaded() {
+  // The import page's "Figures from" bar reads the per-plant import source.
+  await ensureStockSourceLoaded();
   if (IMPORT_PO_CACHE) return;
   const data = await apiImports('/purchase-orders');
   IMPORT_PO_CACHE = data.purchaseOrders || [];

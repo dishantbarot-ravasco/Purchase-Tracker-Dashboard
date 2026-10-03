@@ -147,6 +147,7 @@ function prPaint() {
       d.lineFields.map(f => '<th>' + escapeHtml(d.labels[f]) + (lineReq(f) ? ' <span class="req-mark">*</span>' : '') + '</th>').join('') + (editable ? '<th></th>' : '') +
     '</tr></thead><tbody>' + lineRows + '</tbody></table></div>' +
     (editable ? '<button type="button" class="mir-link" id="prAddLine">+ Add a line</button>' : '') +
+    (d.extraTables || []).map(t => prExtraTableHtml(t, draft[t.key] || [], editable)).join('') +
     sheetHtml +
     (editable ? '<div class="mir-actions pr-actions">' +
       '<button type="button" class="btn btn-primary" id="prApprove">' + (boe ? 'Approve the shipment' : 'Approve into purchase orders') + '</button>' +
@@ -160,6 +161,17 @@ function prPaint() {
   const orderType = document.getElementById('pr-order_type');
   if (orderType) orderType.onchange = () => { PR_OPEN.draft = prCollect(); prPaint(); };
   area.querySelectorAll('[data-drop-line]').forEach(b => { b.onclick = () => { PR_OPEN.draft = prCollect(); PR_OPEN.draft.lines.splice(Number(b.dataset.dropLine), 1); prPaint(); }; });
+  area.querySelectorAll('[data-add-row]').forEach(b => { b.onclick = () => {
+    const t = d.extraTables.find(x => x.key === b.dataset.addRow);
+    PR_OPEN.draft = prCollect();
+    (PR_OPEN.draft[t.key] = PR_OPEN.draft[t.key] || []).push(Object.fromEntries(t.fields.map(f => [f, ''])));
+    prPaint();
+  }; });
+  area.querySelectorAll('[data-drop-row]').forEach(b => { b.onclick = () => {
+    PR_OPEN.draft = prCollect();
+    PR_OPEN.draft[b.dataset.dropRow].splice(Number(b.dataset.ti), 1);
+    prPaint();
+  }; });
   document.getElementById('prAddLine').onclick = () => {
     PR_OPEN.draft = prCollect();
     PR_OPEN.draft.lines.push(Object.fromEntries(d.lineFields.map(f => [f, ''])));
@@ -184,6 +196,28 @@ function prBoeSheetHtml(sheet) {
     : '<p class="mir-muted">The import sheet agrees with this BOE. Approving makes this BOE the shipment\'s record.</p>');
 }
 
+// A second table of the draft (a BOE's licence debits): rows of inputs, a
+// select where the server sends choices, add and remove a row.
+function prExtraTableHtml(t, rows, editable) {
+  const ro = editable ? '' : ' readonly';
+  const cell = (row, i, f) => {
+    const attrs = 'data-tk="' + t.key + '" data-ti="' + i + '" data-tf="' + f + '"';
+    const label = escapeHtml(t.title + ' row ' + (i + 1) + ' ' + PR_OPEN.labels[f]);
+    return (t.options || {})[f]
+      ? '<select class="form-control" ' + attrs + (editable ? '' : ' disabled') + ' aria-label="' + label + '"><option value="">Choose...</option>' +
+        t.options[f].map(o => '<option value="' + escapeHtml(o.value) + '"' + (String(row[f] || '') === o.value ? ' selected' : '') + '>' + escapeHtml(o.label) + '</option>').join('') + '</select>'
+      : '<input class="form-control" ' + attrs + ro + ' value="' + escapeHtml(row[f] || '') + '" aria-label="' + label + '">';
+  };
+  return '<h4 class="mir-subtitle">' + escapeHtml(t.title) + '</h4>' +
+    (rows.length || editable ? '<div class="table-wrap pr-lines"><table><thead><tr>' +
+      t.fields.map(f => '<th>' + escapeHtml(PR_OPEN.labels[f]) + ((t.required || []).includes(f) ? ' <span class="req-mark">*</span>' : '') + '</th>').join('') +
+      (editable ? '<th></th>' : '') + '</tr></thead><tbody>' +
+      rows.map((row, i) => '<tr>' + t.fields.map(f => '<td>' + cell(row, i, f) + '</td>').join('') +
+        (editable ? '<td><button type="button" class="mir-link" data-drop-row="' + t.key + '" data-ti="' + i + '">Remove</button></td>' : '') + '</tr>').join('') +
+      '</tbody></table></div>' : '<p class="mir-muted">None.</p>') +
+    (editable ? '<button type="button" class="mir-link" data-add-row="' + t.key + '">+ Add a row</button>' : '');
+}
+
 /** The draft as the form now stands. */
 function prCollect() {
   const area = document.getElementById('reviewArea');
@@ -196,6 +230,15 @@ function prCollect() {
     lines[n][i.dataset.lf] = i.value;
   });
   draft.lines = lines.filter(Boolean);
+  (PR_OPEN.extraTables || []).forEach(t => {
+    const rows = [];
+    area.querySelectorAll('[data-tk="' + t.key + '"]').forEach(i => {
+      const n = Number(i.dataset.ti);
+      rows[n] = rows[n] || {};
+      rows[n][i.dataset.tf] = i.value;
+    });
+    draft[t.key] = rows.filter(Boolean);
+  });
   return draft;
 }
 

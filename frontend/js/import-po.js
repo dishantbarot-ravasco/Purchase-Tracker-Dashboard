@@ -440,7 +440,7 @@ function renderImportPoList(el) {
   // can rebuild the list alone - see IMPORT_LIST_CTX's own comment.
   IMPORT_LIST_CTX = { el: el, filtered: filtered, poInwarded: poInwarded, poQtyDiscMir: poQtyDiscMir, poRateDiscMir: poRateDiscMir };
 
-  el.innerHTML =
+  el.innerHTML = importSourceBarHtml() +
     '<div class="filter-row">' +
       '<div class="filter-group">' +
         '<label>Date filter (Created on)</label>' +
@@ -512,6 +512,7 @@ function renderImportPoList(el) {
     '<div id="importListRegion">' + importListRegionHtml() + '</div>';
 
   wireKpiCountUps();
+  wireImportSourceBar(el);
   wireImportListRegion();
 
   document.querySelectorAll('[data-kpi]').forEach(c => {
@@ -1110,6 +1111,14 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
     '<div class="modal-tab-panel" id="importPoModalShipment"' + (importModalTab !== 'shipment' ? ' hidden' : '') + '>' + shipmentTabHtml + '</div>' +
     '<div class="modal-tab-panel" id="importPoModalFlags"' + (importModalTab !== 'flags' ? ' hidden' : '') + '>' + flagsTabHtml + correctionsHtml + manualChangesSectionHtml() + correctionBoxHtml + '</div>';
 
+  if (po.source === 'app') {
+    // From the app's own records (import POs, shipments, import MIRs): read
+    // only - an order is corrected by reading its PO or BOE again on the PO
+    // Files page, not field by field, and receipts are entered in MIR entry.
+    body.querySelectorAll('.edit-pencil, .revert-link, .dismiss-link, .override-box').forEach(x => x.remove());
+    body.querySelector('.modal-meta').insertAdjacentHTML('beforeend', ' &middot; <b>From the app\'s own records</b>');
+  }
+
   body.querySelectorAll('[data-itab]').forEach(tab => tab.onclick = () => {
     importModalTab = tab.dataset.itab;
     body.querySelectorAll('[data-itab]').forEach(t => { t.classList.remove('active'); t.setAttribute('aria-selected', 'false'); });
@@ -1143,9 +1152,11 @@ function renderImportPoModalBody(plantKey, poNumber, po) {
     changes: () => apiImports(mirBase + '/manual-changes'),
   };
   const onMirChanged = () => onImportFieldSaved(plantKey, poNumber);
-  wireMirPicker(body, mirApi, poNumber, onMirChanged);
-  loadManualChanges(body, mirApi, plantKey, onMirChanged, myModalRequestId);
-  wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
+  if (po.source !== 'app') {
+    wireMirPicker(body, mirApi, poNumber, onMirChanged);
+    loadManualChanges(body, mirApi, plantKey, onMirChanged, myModalRequestId);
+    wireDismissLinks(body, plantKey, () => onImportFieldSaved(plantKey, poNumber));
+  }
   applyDynamicStyles(body); // the reconciliation cards' progress bars
   body.querySelectorAll('[data-track-bl]').forEach(el2 => el2.onclick = () =>
     trackBlNumber(el2.dataset.trackBl, () => openImportPoModal(plantKey + '::' + poNumber)));
@@ -1166,3 +1177,42 @@ async function onImportFieldSaved(plantKey, poNumber) {
   if (content && state.purchaseType === 'import') renderImportPoList(content);
 }
 
+
+// ── Where the import figures come from (owner, 2026-10-03) ──
+// Per plant: the import CSV, or the app's own import POs, shipments (one per
+// Bill of Entry) and import MIRs - the server builds the same rows from
+// either (apps/services/app_imports.py), never both. An admin switches a
+// plant here; STOCK_SOURCE.importSources comes from /api/stock-source.
+function importSourceBarHtml() {
+  if (!STOCK_SOURCE || !STOCK_SOURCE.importSources) return '';
+  const keys = selectedPlantKeys();
+  const label = { drive: 'Import PO sheet (Drive)', app: 'In-app POs, BOEs and MIRs' };
+  return '<div class="ps-source-bar" role="note"><span class="ps-source-k">Figures from</span>' +
+    keys.map(key => {
+      const src = STOCK_SOURCE.importSources[key] || 'drive';
+      const other = src === 'app' ? 'drive' : 'app';
+      return '<span class="ps-source-item"><b>' + escapeHtml(PLANTS[key].label) + ':</b> ' + escapeHtml(label[src]) +
+        (STOCK_SOURCE.canChange ? ' <button type="button" class="ps-source-switch" data-import-source="' + escapeHtml(key) + '" data-to="' + other + '">' +
+          (other === 'app' ? 'Switch to in-app records' : 'Switch to the import sheet') + '</button>' : '') + '</span>';
+    }).join('') + '</div>';
+}
+
+function wireImportSourceBar(el) {
+  el.querySelectorAll('[data-import-source]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const res = await apiAt('/api/stock-source/set', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ plant: btn.dataset.importSource, source: btn.dataset.to, what: 'imports' }) });
+        STOCK_SOURCE.importSources[res.plant] = res.source;
+        IMPORT_PO_CACHE = null;
+        IMPORT_PO_DETAIL_CACHE = {};
+        await ensureImportPOsLoaded();
+        renderImportPoList(document.getElementById('content'));
+      } catch (e) {
+        btn.disabled = false;
+        alert(e.message);
+      }
+    };
+  });
+}

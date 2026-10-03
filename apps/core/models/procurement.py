@@ -369,6 +369,35 @@ class ImportShipmentLine(models.Model):
         ordering = ["shipment_id", "id"]
 
 
+class LicenceDebit(models.Model):
+    """What one BOE item drew from one licence (owner, 2026-10-03): an
+    Advance Authorisation (quantity and CIF value debited) or a RoDTEP scrip
+    (duty foregone). Read from the BOE's licence section and written when its
+    reading is approved; a licence's balance is what it sanctioned less its
+    active debits (apps/services/licences.py) - never derived from the import
+    CSV, which names a licence but not the amount. A re-approved BOE retires
+    its earlier debits."""
+
+    class Type(models.TextChoices):
+        ADVANCE = "ADVANCE", "Advance Authorisation"
+        RODTEP = "RODTEP", "RoDTEP scrip"
+
+    shipment_line = models.ForeignKey(ImportShipmentLine, on_delete=models.PROTECT, related_name="licence_debits")
+    license_type = models.CharField(max_length=10, choices=Type.choices)
+    # license_links.normalize_license_number(): '311051817' and '0311051817'
+    # are one authorisation.
+    license_number = models.CharField(max_length=50)
+    qty = models.DecimalField(max_digits=16, decimal_places=3, null=True, blank=True)
+    value_inr = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+    duty_foregone = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["license_type", "license_number"])]
+        ordering = ["shipment_line_id", "id"]
+
+
 class MirReasonCode(models.Model):
     class Kind(models.TextChoices):
         QTY_SHORT = "QTY_SHORT", "Quantity short"

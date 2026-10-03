@@ -98,6 +98,9 @@ class PlantStockSource(models.Model):
 
     plant = models.OneToOneField("core.Plant", on_delete=models.PROTECT, related_name="stock_source")
     source = models.CharField(max_length=10, choices=Source.choices, default=Source.DRIVE)
+    # The same switch for the Import Purchases page (2026-10-03): the import
+    # CSV, or the app's import POs, shipments and import MIRs.
+    import_source = models.CharField(max_length=10, choices=Source.choices, default=Source.DRIVE)
     updated_by_email = models.CharField(max_length=255, blank=True, default="")
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -11,9 +11,10 @@ model reads only the document; the pairing is proposed here (the PO the file
 is filed under first, then same HSN and the most words in common) and the
 reviewer confirms or changes it. Approval writes an ImportShipment (source
 APP) with one ImportShipmentLine per item; a shipment the import CSV already
-made for the same BOE is taken over (the CSV then leaves it alone). Licence
-type and number are kept per line; the debits against each licence's
-balance are phase 3.
+made for the same BOE is taken over (the CSV then leaves it alone). The BOE's
+licence section becomes `debits` - one row per (item, licence): quantity and
+CIF value for an Advance Authorisation, duty foregone for a RoDTEP scrip -
+written as LicenceDebit rows (apps/services/licences.py keeps the balances).
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ REQUIRED_HEADER = ("boe_number", "boe_date", "bill_of_lading_number", "country_o
                    "total_inclusive_value")
 REQUIRED_LINE = ("po_line_id", "description", "qty", "uom")
 LICENSE_TYPES = ("", "ADVANCE", "RODTEP")
+DEBIT_FIELDS = ("item", "license_type", "license_number", "qty", "value", "duty")
+REQUIRED_DEBIT = ("item", "license_type", "license_number")
 
 LABELS = {
     "boe_number": "BOE number", "boe_date": "BOE date", "bill_of_lading_number": "Bill of Lading number",
@@ -44,6 +47,7 @@ LABELS = {
     "po_line_id": "PO line", "po_number": "PO number", "description": "Material description", "hsn": "HSN",
     "qty": "Quantity (as per BOE)", "uom": "Unit", "unit_price": "Unit price (invoice currency)",
     "license_type": "Licence type", "license_number": "Licence number",
+    "item": "Item no.", "value": "CIF value debited (INR)", "duty": "Duty foregone (INR)",
 }
 
 _S = {"type": "string"}
@@ -61,9 +65,19 @@ SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "debits": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {**{f: _S for f in DEBIT_FIELDS},
+                               "license_type": {"type": "string", "enum": ["ADVANCE", "RODTEP"]}},
+                "required": list(DEBIT_FIELDS),
+                "additionalProperties": False,
+            },
+        },
         "notes": _S,
     },
-    "required": [*HEADER_FIELDS, "lines", "notes"],
+    "required": [*HEADER_FIELDS, "lines", "debits", "notes"],
     "additionalProperties": False,
 }
 
@@ -85,6 +99,8 @@ Lines: one entry per item of the BOE, in the order printed.
 - description, hsn (the CTH / tariff item), qty and uom as assessed, unit_price in the invoice currency.
 - total_inclusive_value: this item's assessable value plus its duties, in INR, if printed per item; else empty.
 - license_type: "ADVANCE" for an Advance Authorisation, "RODTEP" for a RoDTEP scrip, empty when the item clears without a licence. license_number: the licence / scrip number(s) as printed, several separated by " / ".
+
+debits: the BOE's licence section - one entry per (item, licence) debited. item: the item's position in your lines list (1 for the first). license_type ADVANCE or RODTEP; license_number as printed; qty: the quantity debited; value: the CIF / assessable value debited in INR (Advance); duty: the duty foregone in INR (the duty the licence covered). One item drawn on two licences is two entries. Empty when no licence was used.
 
 Numbers: digits only with a decimal point - no currency symbols, no thousands separators, no units.
 
@@ -171,6 +187,13 @@ def normalize(raw, ext=None) -> dict:
         item = {f: _clean(ln.get(f)) for f in LINE_FIELDS}
         item["license_type"] = item["license_type"].upper() if item["license_type"].upper() in LICENSE_TYPES else ""
         draft["lines"].append(item)
+    debits = raw.get("debits") if isinstance(raw.get("debits"), list) else []
+    draft["debits"] = []
+    for d in debits[:400]:
+        d = d if isinstance(d, dict) else {}
+        row = {f: _clean(d.get(f)) for f in DEBIT_FIELDS}
+        row["license_type"] = row["license_type"].upper() if row["license_type"].upper() in ("ADVANCE", "RODTEP") else ""
+        draft["debits"].append(row)
     draft["notes"] = _clean(raw.get("notes"))
     if ext is not None and not any(item["po_line_id"] for item in draft["lines"]):
         candidates = candidate_lines(ext)
@@ -225,7 +248,35 @@ def problems(draft: dict, ext) -> list[dict]:
             add("license_number", f"Item {i}: the licence number is missing.", i)
         if ln.get("license_number") and not ln.get("license_type"):
             add("license_type", f"Item {i}: say whether it is an Advance licence or a RoDTEP scrip.", i)
+    for j, d in enumerate(draft.get("debits") or [], start=1):
+        for f in REQUIRED_DEBIT:
+            if not d.get(f):
+                add(f"debits.{f}", f"Licence debit {j}: {LABELS[f]} is missing.")
+        item = _item_no(d.get("item"))
+        if d.get("item") and (item is None or item > len(lines)):
+            add("debits.item", f"Licence debit {j}: item {d.get('item')} is not on this BOE.")
+        for f in ("qty", "value", "duty"):
+            v = _num(d.get(f))
+            if v == "bad" or (v is not None and v < 0):
+                add(f"debits.{f}", f"Licence debit {j}: {LABELS[f]} is not a number.")
+        need = "value" if d.get("license_type") == "ADVANCE" else "duty" if d.get("license_type") == "RODTEP" else None
+        if need and not d.get(need):
+            add(f"debits.{need}", f"Licence debit {j}: {LABELS[need]} is missing.")
     return out
+
+
+def _item_no(text):
+    try:
+        n = int(str(text or "").strip())
+    except ValueError:
+        return None
+    return n if n > 0 else None
+
+
+def _debit_values(draft) -> list[dict]:
+    return [{"item": _item_no(d.get("item")), "license_type": d.get("license_type", ""), "license_number": d.get("license_number", ""),
+             "qty": _ok(_num(d.get("qty"))), "value": _ok(_num(d.get("value"))), "duty": _ok(_num(d.get("duty")))}
+            for d in draft.get("debits") or [] if d.get("license_type") and d.get("license_number")]
 
 
 def checks(draft: dict, ext) -> list[dict]:
@@ -240,6 +291,17 @@ def checks(draft: dict, ext) -> list[dict]:
     if header_total is not None and totals and all(t is not None for t in totals) and abs(sum(totals) - header_total) > Decimal("1"):
         out.append({"check": "total", "line": None,
                     "message": f"The items add up to {sum(totals)} but the BOE total payable says {header_total}."})
+    from apps.services import licences
+
+    boe_date = _day(draft.get("boe_date"))
+    existing = _existing(ext, draft)
+    out += licences.check_debits(_debit_values(draft), lines, boe_date if isinstance(boe_date, datetime.date) else None,
+                                 existing.id if existing else None)
+    named = {i for i, ln in enumerate(lines, start=1) if ln.get("license_type")}
+    debited_items = {d["item"] for d in _debit_values(draft)}
+    for i in sorted(named - debited_items):
+        out.append({"check": "licence_amount", "line": i,
+                    "message": f"Item {i} names a licence but no debit amounts - add them, or the licence's balance will not show it."})
     accepted = mir_service.accepted_by_line([ln.id for ln in valid.values()])
     for i, item in enumerate(lines, start=1):
         po_line = valid.get(item.get("po_line_id") or "")
@@ -305,7 +367,8 @@ def sheet_differences(draft: dict, ext) -> dict | None:
 def approve(ext, draft: dict, user):
     """Write the reviewed draft as the plant's shipment. The caller has
     checked problems() is empty and the reading is READY."""
-    from apps.core.models import ImportShipment, ImportShipmentLine
+    from apps.core.models import ImportShipment, ImportShipmentLine, LicenceDebit
+    from apps.services.license_links import normalize_license_number
 
     shipment = _existing(ext, draft)
     if shipment is None:
@@ -337,4 +400,11 @@ def approve(ext, draft: dict, user):
             line.save()
         kept.append(line.id)
     shipment.lines.exclude(id__in=kept).update(is_active=False)
+    # This BOE's licence debits are exactly the approved reading's: earlier
+    # ones (a previous approval of this BOE) are retired, never deleted.
+    LicenceDebit.objects.filter(shipment_line__shipment=shipment, is_active=True).update(is_active=False)
+    for d in _debit_values(draft):
+        LicenceDebit.objects.create(shipment_line_id=kept[d["item"] - 1], license_type=d["license_type"],
+                                    license_number=normalize_license_number(d["license_number"])[:50],
+                                    qty=d["qty"], value_inr=d["value"], duty_foregone=d["duty"])
     return shipment

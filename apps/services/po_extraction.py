@@ -484,6 +484,11 @@ def review(ext) -> dict:
             "labels": boe_extraction.LABELS,
             "requiredHeader": {"boe": boe_extraction.REQUIRED_HEADER}, "requiredLine": {"boe": boe_extraction.REQUIRED_LINE},
             "lineOptions": {"po_line_id": boe_extraction.line_options(ext)} if ext.draft else {},
+            # The licence section: a second table of the draft (`debits`).
+            "extraTables": [{"key": "debits", "title": "Licence debits - one row per item and licence",
+                             "fields": boe_extraction.DEBIT_FIELDS, "required": boe_extraction.REQUIRED_DEBIT,
+                             "options": {"license_type": [{"value": "ADVANCE", "label": "Advance"},
+                                                          {"value": "RODTEP", "label": "RoDTEP"}]}}],
             "problems": boe_extraction.problems(draft, ext) if ext.draft else [],
             "checks": boe_extraction.checks(draft, ext) if ext.draft else [],
             "sheet": boe_extraction.sheet_differences(draft, ext) if ext.draft else None,

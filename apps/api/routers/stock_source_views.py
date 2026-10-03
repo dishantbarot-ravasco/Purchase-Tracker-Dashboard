@@ -31,25 +31,28 @@ def _forbidden():
 @permission_classes([HasAnyAccess])
 def stock_source(request):
     """{"sources": {plant: "drive" | "app"}, "canChange"} for the caller's plants."""
-    sources = app_stock_source.sources()
-    mine = {code: src for code, src in sources.items() if user_can_access_plant(request.user, code)}
-    return Response({"sources": mine, "canChange": is_admin(request.user)})
+    def mine(what):
+        return {code: src for code, src in app_stock_source.sources(what).items() if user_can_access_plant(request.user, code)}
+
+    return Response({"sources": mine("stock"), "importSources": mine("imports"), "canChange": is_admin(request.user)})
 
 
 @api_view(["POST"])
 @permission_classes([IsAdmin])
 def set_stock_source(request):
-    """Body {"plant", "source": "drive" | "app"}. Nothing is copied or
-    deleted, so switching back is instant."""
+    """Body {"plant", "source": "drive" | "app", "what": "stock" (default) |
+    "imports"}. Nothing is copied or deleted, so switching back is instant."""
     data = request.data or {}
     plant = get_object_or_404(Plant, code=data.get("plant"))
     if not user_can_access_plant(request.user, plant.code):
         return _forbidden()
     try:
-        row = app_stock_source.set_source(plant, data.get("source"), request.user)
+        what = data.get("what") or "stock"
+        row = app_stock_source.set_source(plant, data.get("source"), request.user, what)
     except ValueError as exc:
         return Response({"error": str(exc)}, status=http.HTTP_400_BAD_REQUEST)
-    return Response({"plant": plant.code, "source": row.source, "updatedBy": row.updated_by_email})
+    return Response({"plant": plant.code, "what": what, "source": getattr(row, app_stock_source.WHAT[what]),
+                     "updatedBy": row.updated_by_email})
 
 
 @api_view(["GET"])

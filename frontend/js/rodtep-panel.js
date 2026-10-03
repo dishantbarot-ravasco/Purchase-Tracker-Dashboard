@@ -30,14 +30,15 @@
 //             ledger row. See apps/services/license_links.py's header for
 //             the measurement. The form had never been used once (0 rows).
 //
-// What the CSV does NOT carry is the AMOUNT of credit debited, so this
-// panel deliberately does not show a remaining balance. The Total Used /
-// Balance columns appear only when the legacy hand-entered RodtepUsage
-// table actually holds rows (`summary.hasLoggedUsage`) - with it empty they
-// rendered Balance == Sanctioned on every row, which reads as "none of this
-// scrip has been spent" while the CSV says several imports were cleared
-// under it. Saying nothing is the honest answer; saying "full balance" is
-// not.
+// What the CSV does NOT carry is the AMOUNT of credit debited. The only
+// amounts are the duty foregone on approved Bill of Entry readings
+// (2026-10-03, apps/services/licences.py): "Debited on BOEs" / "Left" appear
+// once any exist (`summary.hasBoeDebits`), and a BOE not read in the app is
+// not in them. The Total Used / Balance columns appear only when the legacy
+// hand-entered RodtepUsage table holds rows (`summary.hasLoggedUsage`) - with
+// it empty they rendered Balance == Sanctioned on every row, which reads as
+// "none of this scrip has been spent". Saying nothing is the honest answer;
+// saying "full balance" is not.
 
 // Three helpers below - licenseGapsHtml(), licenseImportsTableHtml() and
 // formatQtyOrDash() - are shared with advance-license-panel.js, which loads
@@ -112,6 +113,8 @@ function renderRodtepLedgerBody(body, data) {
   const unknown = data.unknownScrips || [];
   const unclassified = data.unclassifiedCitations || [];
   const showUsage = !!summary.hasLoggedUsage;
+  // Duty foregone on approved BOE readings (2026-10-03) - a real balance.
+  const showBoe = !!summary.hasBoeDebits;
 
   const rowsHtml = scripts.length ? scripts.map(s => {
     const imports = s.imports || {};
@@ -130,8 +133,9 @@ function renderRodtepLedgerBody(body, data) {
       '</td>' +
       '<td>' + formatInrOrDash(imports.landedValue) + '</td>' +
       (showUsage ? '<td>' + formatInrOrDash(s.totalUsed) + '</td><td><b>' + formatInrOrDash(s.balance) + '</b></td>' : '') +
+      (showBoe ? '<td>' + formatInrOrDash(((s.boeDebits || {}).totals || {}).duty) + '</td><td><b>' + formatInrOrDash((s.boeDebits || {}).left) + '</b></td>' : '') +
     '</tr>';
-  }).join('') : '<tr><td colspan="' + (showUsage ? 9 : 7) + '" class="empty-state">No RoDTEP data synced yet.</td></tr>';
+  }).join('') : '<tr><td colspan="' + (7 + (showUsage ? 2 : 0) + (showBoe ? 2 : 0)) + '" class="empty-state">No RoDTEP data synced yet.</td></tr>';
 
   const scripsTabHtml =
     '<div class="field-block full-width">' +
@@ -139,10 +143,12 @@ function renderRodtepLedgerBody(body, data) {
         '<th>Script No</th><th>Script Date</th><th>Location</th><th>SB Rows</th>' +
         '<th>Total Sanctioned</th><th>Used Against Imports</th><th>Landed Value Cleared</th>' +
         (showUsage ? '<th>Total Used</th><th>Balance</th>' : '') +
+        (showBoe ? '<th>Debited on BOEs</th><th>Left</th>' : '') +
       '</tr></thead><tbody>' + rowsHtml + '</tbody></table>' +
       '<div class="no-data-note mt-8">Credit is earned from exports (each scrip\'s Shipping Bills) and spent ' +
-        'against imports. Click a scrip for both sides. No synced source records how much credit a given ' +
-        'import debited, so this panel does not show a remaining balance.</div>' +
+        'against imports. Click a scrip for both sides. ' + (showBoe
+          ? 'Debited on BOEs is the duty foregone on approved Bill of Entry readings, and Left is what that leaves; a BOE not read in the app is not in it.'
+          : 'A balance appears once Bills of Entry are read and approved in the app (their licence section records the duty foregone).') + '</div>' +
     '</div>';
 
   const gapCount = unknown.length + unclassified.length;
