@@ -34,7 +34,7 @@ from django.utils import timezone
 
 from apps.core.models import HRSImportPOLineItem, HRSImportPurchaseOrder, SyncRun
 from apps.services.import_sync import sync_orders
-from apps.services.procurement_sync import project_plant_import_orders
+from apps.services.procurement_sync import project_plant_import_orders, project_plant_import_shipments
 from apps.services.parsers.import_po_csv import HeaderMismatch, parse_import_po_csv
 
 
@@ -69,6 +69,7 @@ class Command(BaseCommand):
             rows_seen, rows_changed, deactivated = sync_orders(HRSImportPurchaseOrder, HRSImportPOLineItem, orders)
             # The app's own import POs, one line per ordered item (2026-10-03).
             project_plant_import_orders("hrs")
+            project_plant_import_shipments("hrs")
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_hrs_imports_po_csv: {rows_seen} POs seen, {rows_changed} created/updated, "

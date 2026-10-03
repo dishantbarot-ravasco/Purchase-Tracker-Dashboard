@@ -319,8 +319,14 @@ Read the linked section before breaking any of these. Each is there because it w
   `procurement_sync.write_lines()` by position, like the projection - never delete-and-rebuild.
 - `PurchaseOrder.kind` is `domestic` or `import` (2026-10-03): every query names the kind it wants. Import
   orders are projected one line per ordered item (`import_line_groups()` - the CSV repeats a line per
-  shipment; never sum its PO quantity) and are not receivable in MIR entry until their shipment's Bill of
-  Entry is in the app. [imports](docs/data-sync.md#import-csv-into-the-procurement-tables-2026-10-03)
+  shipment; never sum its PO quantity). [imports](docs/data-sync.md#import-csv-into-the-procurement-tables-2026-10-03)
+- An import is received one shipment (`ImportShipment`, one per Bill of Entry) at a time: the MIR's invoice
+  IS the BOE number, every line is that BOE's line, the expected quantity is the BOE line's open quantity
+  and the expected rate is PO price x the BOE's customs exchange rate (INR, before duty); there is no
+  invoice total to type. Domestic and import never share a MIR. A BOE the app owns (an approved reading)
+  is left alone by the CSV whatever BL it shows - key app ownership on the BOE number alone.
+  [import MIR](docs/api-and-features.md#import-receipts-one-shipment-at-a-time-2026-10-03)
+- A BOE reading is reviewed with `IMPORT_DOCS`, a PO reading with `PO_UPLOAD` (`po_extraction_views.KIND_PERMISSION`).
 - `ANTHROPIC_API_KEY` blank = extraction off (uploads still work). Tests stub `_call_claude()` and
   `documents.read_bytes()`; nothing in the suite calls the API.
   [PO extraction](docs/api-and-features.md#po-extraction-2026-10-03)

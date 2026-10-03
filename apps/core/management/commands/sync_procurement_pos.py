@@ -14,7 +14,7 @@ Usage:
 
 from django.core.management.base import BaseCommand
 
-from apps.services.procurement_sync import LEGACY_PO_MODELS, project_plant_import_orders, project_plant_orders
+from apps.services.procurement_sync import LEGACY_PO_MODELS, project_plant_import_orders, project_plant_import_shipments, project_plant_orders
 
 
 class Command(BaseCommand):
@@ -40,4 +40,9 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(
                 f"sync_procurement_pos {code} imports: {ri.orders_seen} orders seen, {ri.orders_written} written, "
                 f"lines {ri.lines_created} created / {ri.lines_updated} updated / {ri.lines_deactivated} deactivated"
+            ))
+            rs = project_plant_import_shipments(code)
+            self.stdout.write(self.style.SUCCESS(
+                f"sync_procurement_pos {code} shipments: {rs.shipments_written} written, {rs.lines_written} lines written, "
+                f"{rs.lines_retired} retired, {len(rs.held)} left as the app has them"
             ))

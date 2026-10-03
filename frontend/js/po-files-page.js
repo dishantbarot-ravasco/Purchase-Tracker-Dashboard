@@ -176,7 +176,7 @@ function poFilesRender() {
       '<td>' + escapeHtml(d.uploadedBy) + '<div class="mir-muted">' + escapeHtml(new Date(d.uploadedAt).toLocaleString('en-IN')) + '</div></td>' +
       '<td>' + (d.poInSystem ? 'Yes' : '<span class="mir-muted" title="No PO with this number at this plant yet">Not yet</span>') + '</td>' +
       '<td>' + (d.status !== 'WITHDRAWN' && poFilesCanWrite(d.plant, d.kind) ? '<button type="button" class="mir-link" data-withdraw="' + d.id + '">Withdraw</button>' : '') +
-        (d.kind === 'PO' && d.status === 'CURRENT' && poFilesCanWrite(d.plant, 'PO') ? ' <button type="button" class="mir-link" data-read="' + d.id + '">Read again</button>' : '') + '</td></tr>' +
+        ((d.kind === 'PO' || d.kind === 'BOE') && d.status === 'CURRENT' && poFilesCanWrite(d.plant, d.kind) ? ' <button type="button" class="mir-link" data-read="' + d.id + '">Read again</button>' : '') + '</td></tr>' +
       '<tr class="mir-action-row" data-withdraw-row="' + d.id + '" hidden><td colspan="9"></td></tr>').join('') +
     '</tbody></table></div>';
   docFileBindOpen(area);

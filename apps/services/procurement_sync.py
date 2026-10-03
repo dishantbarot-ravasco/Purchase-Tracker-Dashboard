@@ -324,3 +324,90 @@ def project_plant_import_orders(plant_code: str) -> ProjectionResult:
                     "The import PO sheet")
         result.orders_written += 1
     return result
+
+
+@dataclass
+class ShipmentResult:
+    shipments_written: int = 0
+    lines_written: int = 0
+    lines_retired: int = 0
+    held: list = field(default_factory=list)
+
+
+@transaction.atomic
+def project_plant_import_shipments(plant_code: str) -> ShipmentResult:
+    """The import CSV's shipment rows into ImportShipment / ImportShipmentLine
+    (2026-10-03). Each row with a BOE number is one PO line's part of one
+    shipment, keyed (plant, BOE, Bill of Lading); the PO line is found through
+    the same folding as the PO projection (import_line_groups(): group N is
+    line N). Runs over every row each time - cheap, and the PO projection's
+    hash skip would otherwise never fill shipments for unchanged orders. A
+    shipment the app owns (an approved BOE reading) is left alone; a line the
+    CSV no longer lists is retired, never deleted (import MIRs point at it)."""
+    from apps.core import models as core_models
+    from apps.core.models import ImportShipment, ImportShipmentLine, Plant, PurchaseOrder
+
+    plant = Plant.objects.get(code=plant_code)
+    mirror = getattr(core_models, IMPORT_PO_MODELS[plant_code])
+    pos = {po.po_number: po for po in PurchaseOrder.objects.filter(plant=plant, kind=PurchaseOrder.Kind.IMPORT)
+           .prefetch_related("lines")}
+    result = ShipmentResult()
+    seen_lines = set()
+    # A BOE the app owns is left alone whatever BL the CSV shows: an approved
+    # reading may have corrected the BL (the CSV has "1.41E+11"), and keying
+    # on both would fork the shipment.
+    owned = set(ImportShipment.objects.filter(plant=plant, source=ImportShipment.Source.APP)
+                .values_list("boe_number", flat=True))
+    for legacy in mirror.objects.filter(is_active=True).prefetch_related("items"):
+        po = pos.get(legacy.po_number)
+        if po is None:
+            continue
+        by_no = {ln.line_no: ln for ln in po.lines.all()}
+        for position, rows in enumerate(import_line_groups(legacy.items.all()), start=1):
+            po_line = by_no.get(position)
+            if po_line is None:
+                continue
+            for row in rows:
+                boe = (row.boe_number or "").strip()
+                if not boe or not row.qty_as_per_boe or row.qty_as_per_boe <= 0:
+                    continue
+                bl = (row.bill_of_lading_number or "").strip()[:100]
+                if boe in owned:
+                    result.held.append(boe)
+                    continue
+                shipment, created = ImportShipment.objects.get_or_create(
+                    plant=plant, boe_number=boe[:50], bill_of_lading_number=bl,
+                    defaults={"source": ImportShipment.Source.CSV})
+                header = {
+                    "laden_on_board_date": row.laden_on_board_date, "country_of_origin": (row.country_of_origin or "")[:100],
+                    "currency": po.currency, "currency_after_taxes": (row.currency_after_taxes or "INR").strip()[:10] or "INR",
+                    "is_active": True,
+                }
+                if row.exchange_rate is not None:
+                    header["exchange_rate"] = row.exchange_rate
+                changed = created
+                for f, v in header.items():
+                    if getattr(shipment, f) != v and v not in (None, ""):
+                        setattr(shipment, f, v)
+                        changed = True
+                if changed:
+                    shipment.save()
+                    result.shipments_written += 1
+                values = {"qty_as_per_boe": row.qty_as_per_boe, "total_inclusive_value": row.total_inclusive_value,
+                          "license_type": (row.license_type or "").strip()[:20],
+                          "license_number": (row.license_number or "").strip()[:100], "is_active": True}
+                line, made = ImportShipmentLine.objects.get_or_create(shipment=shipment, po_line=po_line, defaults=values)
+                if not made and any(not _same(getattr(line, f), v) for f, v in values.items()):
+                    for f, v in values.items():
+                        setattr(line, f, v)
+                    line.save()
+                    result.lines_written += 1
+                elif made:
+                    result.lines_written += 1
+                seen_lines.add(line.id)
+    stale = (ImportShipmentLine.objects.filter(shipment__plant=plant, shipment__source=ImportShipment.Source.CSV, is_active=True)
+             .exclude(id__in=seen_lines))
+    result.lines_retired = stale.update(is_active=False)
+    ImportShipment.objects.filter(plant=plant, source=ImportShipment.Source.CSV, is_active=True).exclude(
+        lines__is_active=True).update(is_active=False)
+    return result

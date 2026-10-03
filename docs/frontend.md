@@ -1463,7 +1463,11 @@ the chosen plant's or every readable plant's).
 
 A PO is received only at its own plant: the PO search returns only the caller's plants, picking the
 first line sets `#plantSel` to the PO's plant (`addLines()`), and once lines are picked another plant's PO
-shows "Another plant" and cannot be added (`plantClash()`, beside `vendorClash()`). The Invoice step has
+shows "Another plant" and cannot be added (`plantClash()`, beside `vendorClash()`). An import PO shows its
+Bills of Entry instead of a line picker (`shipmentsHtml()`); "Receive this BOE" sets `S.shipment`, adds the
+BOE's open lines at their INR rate (`importLineView()`), and `applyShipmentHeader()` fills and locks the
+invoice number and date from the BOE and hides the invoice total; the payload carries `shipment_id`, and a
+draft keeps the shipment. The Invoice step has
 a required **Vendor State** select (`#vendorState`, from `META.gstStates`): `syncVendorState()` fixes and
 disables it from the vendor's GSTIN when there is one, and `resetForm()` re-enables it. TCS is required
 (0 when the invoice shows none). `poChecksHtml()` lists the PO's `checks` (what does not add up on the PO
@@ -1548,7 +1552,9 @@ queued or running), `prOpen()` / `prPaint()` show one reading as an editable for
 in a grid, each line a row of inputs, add or remove a line - with the server's `problems` (red, block
 approval), `checks` (amber) and the PO sheet comparison. Approve first saves the form (`/draft`) and
 approves only when the re-check finds no problem (`prSend()`); Reject needs a reason. `prRead()` asks for
-a file to be read again. The order type (Domestic / Import) is a select; changing it repaints the form
+a file to be read again. A Bill of Entry reading (`kind` BOE, `prWhat()`) shows its shipment fields and
+items, each item's PO line a select from the server's `lineOptions`, and the import-sheet comparison
+(`prBoeSheetHtml()`); it is offered to `importDocs` accounts. The order type (Domestic / Import) is a select; changing it repaints the form
 with that type's compulsory fields (`requiredHeader` / `requiredLine` from the server). It never decides
 anything itself. Every top-level name is `pr...`.
 

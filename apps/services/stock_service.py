@@ -105,7 +105,9 @@ def receive_mir(mir) -> list:
         lots.append(StockLot.objects.create(
             plant=mir.plant, material=po_line.material, uom=uom, source=StockLot.Source.MIR, mir_line=line,
             received_date=mir.mir_date, vendor=mir.vendor, bill_to_plant=po.plant if po.plant_id != mir.plant_id else None,
-            factor=factor, rate=rules.lot_rate(line.taxable, line.qty_received, factor), currency=po.currency or "INR",
+            factor=factor, rate=rules.lot_rate(line.taxable, line.qty_received, factor),
+            # An import receipt is priced in INR (PO price at the BOE's rate).
+            currency="INR" if line.shipment_line_id else (po.currency or "INR"),
             stocked=is_stocked(mir.plant, po_line.material), batch_no=line.batch_no,
         ))
     return lots

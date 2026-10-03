@@ -44,7 +44,7 @@ def configured(settings, monkeypatch):
 def _fake_read(monkeypatch, reply):
     calls = []
 
-    def fake(data, content_type):
+    def fake(data, content_type, *args):
         calls.append((data, content_type))
         if isinstance(reply, Exception):
             raise reply

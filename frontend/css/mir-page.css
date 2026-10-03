@@ -294,3 +294,7 @@ tr.mir-action-row > td { background: var(--card); }
 .pr-lines .pr-cell-description .form-control { min-width:260px; }
 .pr-actions { flex-wrap:wrap; gap:8px; align-items:center; }
 .pr-reject-note { max-width:280px; }
+
+/* An import PO's Bills of Entry (mir-page.js's shipmentsHtml()). */
+.mir-boe { margin:10px 0; padding:8px 10px; border:1px solid var(--border); border-radius:8px; }
+.mir-boe-head { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:6px; }

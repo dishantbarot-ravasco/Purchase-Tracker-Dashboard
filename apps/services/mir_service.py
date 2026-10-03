@@ -82,6 +82,25 @@ def accepted_by_line(line_ids) -> dict:
     return {r["po_line_id"]: r["acc"] or Decimal("0") for r in rows}
 
 
+def accepted_by_shipment_line(shipment_line_ids) -> dict:
+    """{shipment_line_id: accepted qty} over POSTED import MIR lines - what
+    each Bill of Entry's line has already been received against."""
+    from apps.core.models import MirLine
+
+    rows = (MirLine.objects.filter(shipment_line_id__in=list(shipment_line_ids), mir__status="POSTED")
+            .values("shipment_line_id").annotate(acc=Sum(F("qty_received") - F("qty_rejected"))))
+    return {r["shipment_line_id"]: r["acc"] or Decimal("0") for r in rows}
+
+
+def import_expected_rate(po_line, shipment):
+    """An import line's rate in INR: the PO price at the BOE's customs
+    exchange rate, before duty (the basis the import matching compares on).
+    None when the BOE has no exchange rate."""
+    if shipment.exchange_rate is None or po_line.rate is None:
+        return None
+    return (po_line.rate * shipment.exchange_rate).quantize(rules.RATE)
+
+
 def _accepted_annotation():
     return Coalesce(
         Sum(F("mir_lines__qty_received") - F("mir_lines__qty_rejected"), filter=Q(mir_lines__mir__status="POSTED")),
@@ -96,10 +115,9 @@ def line_state(line, accepted: Decimal) -> dict:
     open_qty = (ordered - accepted) if ordered is not None else None
     blocked = ""
     po = line.purchase_order
-    if po.kind == "import":
-        # Import receipts are checked against their shipment's Bill of Entry
-        # (quantity landed, customs exchange rate) - not built yet.
-        blocked = "Import receipts are entered against the shipment's Bill of Entry, which is not in the app yet."
+    if po.kind == "import" and not line.shipment_lines.filter(is_active=True, shipment__is_active=True).exists():
+        # An import receipt is one shipment's (its Bill of Entry's) receipt.
+        blocked = "No Bill of Entry for this line yet - it is received once its shipment's BOE is in the app."
     elif not po.is_active:
         blocked = "The PO is no longer in the master PO sheet."
     elif po.billing_plant_id is not None and po.billing_plant_id != po.plant_id:
@@ -143,8 +161,8 @@ def search_open_pos(query: str, plant_codes, limit: int = 25) -> list:
     not yet received in
     full - open, short-closed or waiting for a purchase manager's review -
     whose PO number contains `query` (case-insensitive). Newest first.
-    Domestic orders only: an import receipt waits for its shipment's Bill of
-    Entry in the app.
+    Import orders included: one is received a shipment (a Bill of Entry) at a
+    time.
     Closed and review-flagged lines are included so a purchase manager can
     find the PO to reopen or confirm them; they still take no receipt
     (line_state()).
@@ -161,8 +179,7 @@ def search_open_pos(query: str, plant_codes, limit: int = 25) -> list:
     open_line = (PurchaseOrderLine.objects.filter(is_active=True, qty_ordered__gt=0, rate__isnull=False)
                  .annotate(acc=_accepted_annotation()).filter(acc__lt=F("qty_ordered")))
     return list(
-        PurchaseOrder.objects.filter(is_active=True, kind=PurchaseOrder.Kind.DOMESTIC, lines__in=open_line,
-                                     plant__code__in=list(plant_codes))
+        PurchaseOrder.objects.filter(is_active=True, lines__in=open_line, plant__code__in=list(plant_codes))
         .filter(po_number__icontains=query)
         .select_related("plant", "vendor", "billing_plant").distinct().order_by("-po_date", "-id")[:limit]
     )
@@ -270,7 +287,8 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
     invoice_date = _date(payload.get("invoice_date"), "invoice_date", errors)
     if invoice_date and mir_date and invoice_date > mir_date:
         errors.append({"field": "invoice_date", "message": "The invoice date cannot be after the MIR date."})
-    invoice_total = _dec(payload.get("invoice_total"), "invoice_total", errors, places=2)
+    # Not required here: an import MIR has none of its own (below).
+    invoice_total = _dec(payload.get("invoice_total"), "invoice_total", errors, required=False, places=2)
     if invoice_total is not None and invoice_total < 0:
         errors.append({"field": "invoice_total", "message": "Cannot be negative."})
     # Required (owner, 2026-10-03): 0 when the invoice shows none, but typed,
@@ -306,6 +324,31 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         list(PurchaseOrderLine.objects.select_for_update().filter(id__in=wanted).order_by("id"))
     po_lines = {line.id: line for line in qs.filter(id__in=wanted)}
     accepted = accepted_by_line(po_lines)
+
+    # ── An import MIR is one shipment's receipt (owner, 2026-10-03): its Bill
+    # of Entry is the invoice, every line is one of that BOE's lines, and the
+    # BOE (checked when it was approved) carries the totals and the duty - so
+    # there is no invoice total to type. Domestic and import never mix.
+    kinds = {po_lines[x].purchase_order.kind for x in wanted if x in po_lines}
+    is_import = kinds == {"import"}
+    shipment = None
+    shipment_lines = {}
+    if len(kinds) > 1:
+        errors.append({"field": "lines", "message": "One MIR is either a domestic invoice or one import shipment - not both."})
+    if is_import:
+        from apps.core.models import ImportShipment
+
+        shipment = (ImportShipment.objects.filter(pk=payload.get("shipment_id") or 0, plant=plant, is_active=True).first()
+                    if str(payload.get("shipment_id") or "").isdigit() and plant is not None else None)
+        if shipment is None:
+            errors.append({"field": "shipment_id", "message": "Choose the Bill of Entry this delivery came under."})
+        else:
+            shipment_lines = {sl.po_line_id: sl for sl in shipment.lines.filter(is_active=True)}
+            if rules.invoice_key(invoice_no) != rules.invoice_key(shipment.boe_number):
+                errors.append({"field": "invoice_no", "message": f"An import MIR's invoice is its Bill of Entry - {shipment.boe_number}."})
+    elif invoice_total is None and not any(e["field"] == "invoice_total" for e in errors):
+        errors.append({"field": "invoice_total", "message": "Required."})
+    accepted_on_boe = accepted_by_shipment_line([sl.id for sl in shipment_lines.values()])
 
     # ── Vendor: one per MIR, from the POs (or chosen when none names one).
     po_vendors = {po_lines[x].purchase_order.vendor for x in wanted if x in po_lines and po_lines[x].purchase_order.vendor}
@@ -352,6 +395,8 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
             errors.append({"field": "vendor_state", "message": f"The vendor's GSTIN is from {rules.GST_STATES.get(gst_state, gst_state)}."})
     elif chosen_state in rules.GST_STATES:
         vendor_state = chosen_state
+    elif is_import and vendor is not None:
+        vendor_state = "96"  # a supplier abroad: Outside India, so IGST
     elif vendor is not None:
         errors.append({"field": "vendor_state", "message": "Choose the vendor's State, as the invoice prints it."})
 
@@ -398,6 +443,24 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
             continue
         if mir_date and po.po_date and mir_date < po.po_date:
             errors.append({"field": "mir_date", "message": f"The MIR date is before PO {po.po_number}'s date ({po.po_date:%d-%m-%Y})."})
+        # What this line is checked against: the PO's open quantity and price,
+        # or for an import its BOE line's open quantity at the PO price in INR.
+        shipment_line = None
+        expected_qty, expected_rate = state["open_qty"], line.rate
+        if po.kind == "import" and shipment is not None:
+            shipment_line = shipment_lines.get(pid)
+            if shipment_line is None:
+                errors.append({"field": f"{f}.po_line_id", "message": f"This line is not on Bill of Entry {shipment.boe_number}."})
+                continue
+            expected_qty = shipment_line.qty_as_per_boe - accepted_on_boe.get(shipment_line.id, Decimal("0"))
+            if expected_qty <= 0:
+                errors.append({"field": f"{f}.po_line_id",
+                               "message": f"Bill of Entry {shipment.boe_number} is already received in full for this line."})
+                continue
+            expected_rate = import_expected_rate(line, shipment)
+            if expected_rate is None:
+                errors.append({"field": "shipment_id", "message": f"Bill of Entry {shipment.boe_number} has no exchange rate."})
+                continue
         qty = _dec(raw.get("qty_received"), f"{f}.qty_received", errors, places=3)
         if qty is not None and qty <= 0:
             errors.append({"field": f"{f}.qty_received", "message": "Must be more than zero."})
@@ -451,7 +514,8 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
                "discount": discount, "other_charges": other, "gst_rate": gst, "rolls": rolls,
                "batch_no": _text(raw.get("batch_no"), 60), "dept_use": _text(raw.get("dept_use"), 60),
                "material_category": category, "material_subcategory": subcategory, "category_from_master": from_master,
-               "remarks": _text(raw.get("remarks"), 2000), "amounts": None}
+               "remarks": _text(raw.get("remarks"), 2000), "amounts": None,
+               "shipment_line": shipment_line, "expected_qty": expected_qty, "expected_rate": expected_rate}
         ready = None not in (qty, rejected, rate, discount, other, gst) and discount >= 0 and other >= 0
         if ready:
             amounts = rules.line_amounts(qty, rate, discount, other, gst, tax_type or rules.TaxType.IGST)
@@ -460,7 +524,7 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
             out["amounts"] = amounts
         if qty is not None and rejected is not None:
             accepted_qty = qty - rejected
-            open_qty = state["open_qty"]
+            open_qty = expected_qty
             if accepted_qty != open_qty:
                 kind = "QTY_SHORT" if accepted_qty < open_qty else "QTY_OVER"
                 reason = _reason(raw.get("qty_reason"), kind, f"{f}.qty_reason", raw.get("qty_note"), errors, reasons)
@@ -477,11 +541,11 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
             reason = _reason(raw.get("gst_reason"), "GST_RATE", f"{f}.gst_reason", raw.get("gst_note"), errors, reasons)
             mismatches.append({"line": i, "kind": "GST_RATE", "expected": po_gst, "actual": gst,
                                "difference_pct": None, "reason": reason, "note": _text(raw.get("gst_note"), 2000)})
-        if rate is not None and rules.rate_differs(line.rate, rate):
-            kind = "RATE_HIGH" if rate > line.rate else "RATE_LOW"
+        if rate is not None and rules.rate_differs(expected_rate, rate):
+            kind = "RATE_HIGH" if rate > expected_rate else "RATE_LOW"
             reason = _reason(raw.get("rate_reason"), "RATE", f"{f}.rate_reason", raw.get("rate_note"), errors, reasons)
-            mismatches.append({"line": i, "kind": kind, "expected": line.rate, "actual": rate,
-                               "difference_pct": rules.pct_of(rate - line.rate, line.rate),
+            mismatches.append({"line": i, "kind": kind, "expected": expected_rate, "actual": rate,
+                               "difference_pct": rules.pct_of(rate - expected_rate, expected_rate),
                                "reason": reason, "note": _text(raw.get("rate_note"), 2000)})
         lines_out.append(out)
 
@@ -505,7 +569,10 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
     computed_total = None
     if priced and len(priced) == len(lines_out) and tcs is not None:
         computed_total = sum((a["total"] for a in priced), Decimal("0")) + tcs
-        if invoice_total is not None and abs(invoice_total - computed_total) > rules.INVOICE_ROUNDING_TOLERANCE:
+        if is_import:
+            # Nothing typed to compare: the BOE was checked when approved.
+            invoice_total = computed_total
+        elif invoice_total is not None and abs(invoice_total - computed_total) > rules.INVOICE_ROUNDING_TOLERANCE:
             reason = _reason(payload.get("invoice_total_reason"), "INVOICE_TOTAL", "invoice_total_reason",
                              payload.get("invoice_total_note"), errors, reasons)
             mismatches.append({"line": None, "kind": "INVOICE_TOTAL", "expected": computed_total, "actual": invoice_total,
@@ -516,7 +583,7 @@ def evaluate(payload: dict, *, lock: bool = False) -> dict:
         "ok": not errors, "errors": errors, "mismatches": mismatches, "lines": lines_out,
         "plant": plant, "vendor": vendor, "mir_date": mir_date, "invoice_no": invoice_no, "invoice_key": invoice_key,
         "invoice_date": invoice_date, "invoice_fy": invoice_fy, "invoice_total": invoice_total, "tcs_amount": tcs,
-        "vendor_state": vendor_state,
+        "vendor_state": vendor_state, "shipment": shipment,
         "tax_type": tax_type, "tax_type_expected": expected_tax, "computed_total": computed_total,
         # Each cut to its own column (EDITABLE_HEADER): a flat 60 let a
         # 31-60 character vehicle or e-way bill number through to a 500.
@@ -554,7 +621,8 @@ def post_mir(payload: dict, user):
         seq = _next_seq(plant, fy)
         mir = Mir.objects.create(
             plant=plant, fy=fy, seq=seq, mir_no=rules.mir_number(plant.mir_prefix, fy, seq),
-            mir_date=result["mir_date"], vendor=result["vendor"], vendor_state=result["vendor_state"], invoice_no=result["invoice_no"],
+            mir_date=result["mir_date"], vendor=result["vendor"], vendor_state=result["vendor_state"], shipment=result["shipment"],
+            invoice_no=result["invoice_no"],
             invoice_key=result["invoice_key"], invoice_date=result["invoice_date"], invoice_fy=result["invoice_fy"],
             invoice_total=result["invoice_total"], tcs_amount=result["tcs_amount"], tax_type=result["tax_type"],
             tax_type_expected=result["tax_type_expected"], remarks=result["remarks"],
@@ -566,8 +634,9 @@ def post_mir(payload: dict, user):
             saved[ln["index"]] = MirLine.objects.create(
                 mir=mir, line_no=n, po_line=ln["po_line"], description=ln["po_line"].description[:500],
                 uom=ln["po_line"].uom[:20], qty_received=ln["qty_received"],
-                qty_rejected=ln["qty_rejected"], rate=ln["rate"], po_rate=ln["po_line"].rate,
-                open_qty_before=ln["state"]["open_qty"], discount=ln["discount"], other_charges=ln["other_charges"],
+                qty_rejected=ln["qty_rejected"], rate=ln["rate"], po_rate=ln["expected_rate"],
+                open_qty_before=ln["expected_qty"], shipment_line=ln["shipment_line"],
+                discount=ln["discount"], other_charges=ln["other_charges"],
                 gst_rate=ln["gst_rate"], gross=a["gross"], taxable=a["taxable"], igst=a["igst"], cgst=a["cgst"],
                 sgst=a["sgst"], line_total=a["total"], rolls=ln["rolls"], batch_no=ln["batch_no"],
                 dept_use=ln["dept_use"], remarks=ln["remarks"],

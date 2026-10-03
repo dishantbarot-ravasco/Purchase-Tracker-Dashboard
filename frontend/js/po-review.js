@@ -15,7 +15,14 @@ let PR_OPEN = null; // the reading shown in #reviewArea
 const PR_STATUS_TONE = { QUEUED: 'muted', RUNNING: 'muted', READY: 'warn', FAILED: 'bad', APPROVED: 'ok', REJECTED: 'muted' };
 
 function prCanReview() {
-  return !!(PO_FILES_META && PO_FILES_META.can && PO_FILES_META.can.poUpload);
+  const can = (PO_FILES_META && PO_FILES_META.can) || {};
+  return !!(can.poUpload || can.importDocs);
+}
+
+// What a reading is of: a PO copy, or a Bill of Entry (CHA checklist) filed
+// under its PO.
+function prWhat(r) {
+  return r.kind === 'BOE' ? 'BOE ' + r.reference + ' (PO ' + r.poNumber + ')' : 'PO ' + r.poNumber;
 }
 
 async function prLoad() {
@@ -49,8 +56,8 @@ function prRender() {
     area.innerHTML = '<div class="mir-muted">' + (PR_ROWS.length ? 'No readings in this view.' : 'No PO copies have been read yet. Upload a PO copy and it is read here.') + '</div>';
     return;
   }
-  area.innerHTML = '<div class="table-wrap"><table><thead><tr><th>PO number</th><th>Plant</th><th>File</th><th>Status</th><th>Read</th><th>Decided</th><th></th></tr></thead><tbody>' +
-    rows.map(r => '<tr><td><b>' + escapeHtml(r.poNumber) + '</b></td><td>' + escapeHtml(poFilesPlantName(r.plant)) + '</td>' +
+  area.innerHTML = '<div class="table-wrap"><table><thead><tr><th>Document</th><th>Plant</th><th>File</th><th>Status</th><th>Read</th><th>Decided</th><th></th></tr></thead><tbody>' +
+    rows.map(r => '<tr><td><b>' + escapeHtml(prWhat(r)) + '</b></td><td>' + escapeHtml(poFilesPlantName(r.plant)) + '</td>' +
       '<td>' + escapeHtml(r.fileName) + ' <span class="mir-muted">rev ' + r.revision + '</span></td>' +
       '<td>' + prPill(r) + (r.error ? '<div class="mir-error-text">' + escapeHtml(r.error) + '</div>' : '') + '</td>' +
       '<td>' + escapeHtml(r.requestedBy) + '<div class="mir-muted">' + escapeHtml(new Date(r.createdAt).toLocaleString('en-IN')) + '</div></td>' +
@@ -94,9 +101,10 @@ function prPaint() {
   const editable = d.status === 'READY';
   const draft = d.draft || {};
   const ro = editable ? '' : ' readonly';
-  // Compulsory fields follow the order type (an import has no GST at order
-  // time); the server sends both lists.
-  const kind = draft.order_type === 'import' ? 'import' : 'domestic';
+  // Compulsory fields follow the order type for a PO (an import has no GST
+  // at order time); a BOE has its own. The server sends the lists.
+  const kind = d.kind === 'BOE' ? 'boe' : draft.order_type === 'import' ? 'import' : 'domestic';
+  const options = d.lineOptions || {};
   const required = f => (d.requiredHeader[kind] || []).includes(f);
   const lineReq = f => (d.requiredLine[kind] || []).includes(f);
   const problemFields = new Set((d.problems || []).filter(p => !p.line).map(p => p.field));
@@ -109,13 +117,19 @@ function prPaint() {
     '<label class="form-label" for="pr-' + f + '">' + escapeHtml(d.labels[f]) + (required(f) ? ' <span class="req-mark">*</span>' : '') + '</label>' +
     control(f) + '</div>').join('');
   const lines = draft.lines || [];
+  // A field with server-sent choices (a BOE item's PO line) is a select.
+  const lineControl = (ln, i, f) => options[f]
+    ? '<select class="form-control" data-li="' + i + '" data-lf="' + f + '"' + (editable ? '' : ' disabled') + ' aria-label="' + escapeHtml('Line ' + (i + 1) + ' ' + d.labels[f]) + '">' +
+      '<option value="">Choose...</option>' + options[f].map(o => '<option value="' + escapeHtml(o.value) + '"' + (String(ln[f] || '') === o.value ? ' selected' : '') + '>' + escapeHtml(o.label) + '</option>').join('') + '</select>'
+    : prInput('data-li="' + i + '" data-lf="' + f + '"' + ro, ln[f], 'Line ' + (i + 1) + ' ' + d.labels[f]);
   const lineRows = lines.map((ln, i) => '<tr>' + '<td class="num">' + (i + 1) + '</td>' +
-    d.lineFields.map(f => '<td class="pr-cell-' + f + '">' + prInput('data-li="' + i + '" data-lf="' + f + '"' + ro, ln[f], 'Line ' + (i + 1) + ' ' + d.labels[f]) + '</td>').join('') +
+    d.lineFields.map(f => '<td class="pr-cell-' + f + '">' + lineControl(ln, i, f) + '</td>').join('') +
     (editable ? '<td><button type="button" class="mir-link" data-drop-line="' + i + '">Remove</button></td>' : '') + '</tr>').join('');
   const list = (items, cls, title) => items.length ? '<div class="' + cls + '" role="note"><b>' + escapeHtml(title) + '</b><ul>' +
     items.map(p => '<li>' + escapeHtml(p.message) + '</li>').join('') + '</ul></div>' : '';
   const sheet = d.sheet;
-  const sheetHtml = !sheet ? '<p class="mir-muted">The PO sheet does not have this PO number at this plant - approving adds it.</p>'
+  const boe = d.kind === 'BOE';
+  const sheetHtml = boe ? prBoeSheetHtml(sheet) : !sheet ? '<p class="mir-muted">The PO sheet does not have this PO number at this plant - approving adds it.</p>'
     : sheet.source === 'app' ? '<p class="mir-muted">This PO is already in the app (approved earlier) - approving replaces it with this reading.</p>'
     : '<h4 class="mir-subtitle">PO sheet vs this file</h4>' + (sheet.differences.length
       ? '<div class="table-wrap"><table><thead><tr><th>What</th><th>PO sheet</th><th>This file</th></tr></thead><tbody>' +
@@ -123,19 +137,19 @@ function prPaint() {
         '<p class="mir-hint">Approving makes this file the PO\'s record: the PO sheet stops updating it.</p>'
       : '<p class="mir-muted">The PO sheet agrees with this file. Approving makes this file the PO\'s record.</p>');
   area.innerHTML = '<section class="mir-panel">' +
-    '<div class="mir-detail-head"><h3 class="mir-panel-title">PO ' + escapeHtml(d.poNumber) + ' <span class="mir-muted">' + escapeHtml(poFilesPlantName(d.plant)) + '</span></h3>' + prPill(d) +
+    '<div class="mir-detail-head"><h3 class="mir-panel-title">' + escapeHtml(prWhat(d)) + ' <span class="mir-muted">' + escapeHtml(poFilesPlantName(d.plant)) + '</span></h3>' + prPill(d) +
       '<button type="button" class="mir-link" data-doc-open="' + d.documentId + '">Open the file</button></div>' +
     (draft.notes ? '<div class="mir-banner mir-banner-warn">Reader\'s note: ' + escapeHtml(draft.notes) + '</div>' : '') +
     (editable ? list(d.problems || [], 'pr-problems', 'Fix before approving:') : '') +
     list(d.checks || [], 'mir-po-checks', 'Check with the PO:') +
-    '<h4 class="mir-subtitle">Order</h4><div class="mir-grid pr-grid">' + header + '</div>' +
-    '<h4 class="mir-subtitle">Lines</h4><div class="table-wrap pr-lines"><table><thead><tr><th>#</th>' +
+    '<h4 class="mir-subtitle">' + (boe ? 'Shipment' : 'Order') + '</h4><div class="mir-grid pr-grid">' + header + '</div>' +
+    '<h4 class="mir-subtitle">' + (boe ? 'Items - each against the PO line it clears' : 'Lines') + '</h4><div class="table-wrap pr-lines"><table><thead><tr><th>#</th>' +
       d.lineFields.map(f => '<th>' + escapeHtml(d.labels[f]) + (lineReq(f) ? ' <span class="req-mark">*</span>' : '') + '</th>').join('') + (editable ? '<th></th>' : '') +
     '</tr></thead><tbody>' + lineRows + '</tbody></table></div>' +
     (editable ? '<button type="button" class="mir-link" id="prAddLine">+ Add a line</button>' : '') +
     sheetHtml +
     (editable ? '<div class="mir-actions pr-actions">' +
-      '<button type="button" class="btn btn-primary" id="prApprove">Approve into purchase orders</button>' +
+      '<button type="button" class="btn btn-primary" id="prApprove">' + (boe ? 'Approve the shipment' : 'Approve into purchase orders') + '</button>' +
       '<button type="button" class="btn btn-navy btn-small" id="prSave">Save corrections</button>' +
       '<input class="form-control pr-reject-note" id="prRejectNote" maxlength="500" placeholder="Why reject? e.g. wrong file" aria-label="Why reject this reading">' +
       '<button type="button" class="btn btn-small" id="prReject">Reject</button>' +
@@ -143,7 +157,8 @@ function prPaint() {
     '</section>';
   docFileBindOpen(area);
   if (!editable) return;
-  document.getElementById('pr-order_type').onchange = () => { PR_OPEN.draft = prCollect(); prPaint(); };
+  const orderType = document.getElementById('pr-order_type');
+  if (orderType) orderType.onchange = () => { PR_OPEN.draft = prCollect(); prPaint(); };
   area.querySelectorAll('[data-drop-line]').forEach(b => { b.onclick = () => { PR_OPEN.draft = prCollect(); PR_OPEN.draft.lines.splice(Number(b.dataset.dropLine), 1); prPaint(); }; });
   document.getElementById('prAddLine').onclick = () => {
     PR_OPEN.draft = prCollect();
@@ -157,6 +172,16 @@ function prPaint() {
     if (!note) { document.getElementById('prErr').textContent = 'Say why it is rejected.'; return; }
     prSend('reject', { note }, null);
   };
+}
+
+function prBoeSheetHtml(sheet) {
+  if (!sheet) return '<p class="mir-muted">The import PO sheet does not list this Bill of Entry - approving adds the shipment.</p>';
+  if (sheet.source === 'app') return '<p class="mir-muted">This shipment is already in the app (approved earlier) - approving replaces it with this reading.</p>';
+  return '<h4 class="mir-subtitle">Import PO sheet vs this BOE</h4>' + (sheet.differences.length
+    ? '<div class="table-wrap"><table><thead><tr><th>What</th><th>Import sheet</th><th>This BOE</th></tr></thead><tbody>' +
+      sheet.differences.map(x => '<tr><td>' + escapeHtml(x.field) + '</td><td>' + escapeHtml(x.sheet || '-') + '</td><td><b>' + escapeHtml(x.pdf || '-') + '</b></td></tr>').join('') + '</tbody></table></div>' +
+      '<p class="mir-hint">Approving makes this BOE the shipment\'s record: the import sheet stops updating it.</p>'
+    : '<p class="mir-muted">The import sheet agrees with this BOE. Approving makes this BOE the shipment\'s record.</p>');
 }
 
 /** The draft as the form now stands. */

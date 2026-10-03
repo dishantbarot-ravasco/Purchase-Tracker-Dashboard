@@ -101,7 +101,7 @@ def _po_line(line, state):
 
 def _po_summary(po):
     return {
-        "id": po.id, "poNumber": po.po_number, "poDate": _d(po.po_date), "plant": _plant(po.plant),
+        "id": po.id, "poNumber": po.po_number, "poDate": _d(po.po_date), "plant": _plant(po.plant), "kind": po.kind,
         "billingPlant": _plant(po.billing_plant) if po.billing_plant_id else None,
         "vendor": _vendor(po.vendor), "taxType": po.tax_type, "currency": po.currency,
         "gstRate": _s(rules.po_gst_rate(po.total_value, po.total_inclusive_value)),
@@ -187,7 +187,32 @@ def purchase_order(request, po_id):
           "net_value": ln.net_value} for ln, _st in lines if ln.is_active],
         po.total_value, po.total_inclusive_value, po.vendor.gstin if po.vendor else "", po.po_date)
     return Response({**_po_summary(po), **_po_header(po), "isActive": po.is_active, "canManage": can_manage,
-                     "poFiles": po_files(po), "checks": checks, "lines": [_po_line(line, st) for line, st in lines]})
+                     "poFiles": po_files(po), "checks": checks, "lines": [_po_line(line, st) for line, st in lines],
+                     "shipments": _shipments(po) if po.kind == PurchaseOrder.Kind.IMPORT else []})
+
+
+def _shipments(po):
+    """An import PO's shipments (one per Bill of Entry), each with this PO's
+    lines on it: the BOE quantity, what posted MIRs accepted against it, and
+    the rate a receipt is checked against (PO price x the BOE's rate, INR)."""
+    from apps.core.models import ImportShipmentLine
+
+    rows = list(ImportShipmentLine.objects.filter(po_line__purchase_order=po, is_active=True, shipment__is_active=True)
+                .select_related("shipment", "po_line").order_by("shipment__boe_date", "shipment_id", "po_line__line_no"))
+    accepted = mir_service.accepted_by_shipment_line([r.id for r in rows])
+    out = {}
+    for r in rows:
+        sh = r.shipment
+        entry = out.setdefault(sh.id, {
+            "id": sh.id, "boeNumber": sh.boe_number, "boeDate": _d(sh.boe_date), "blNumber": sh.bill_of_lading_number,
+            "exchangeRate": _s(sh.exchange_rate), "currency": sh.currency, "source": sh.source, "lines": []})
+        acc = accepted.get(r.id, Decimal("0"))
+        entry["lines"].append({
+            "shipmentLineId": r.id, "poLineId": r.po_line_id, "lineNo": r.po_line.line_no, "qtyBoe": _s(r.qty_as_per_boe),
+            "accepted": _s(acc), "openQty": _s(r.qty_as_per_boe - acc),
+            "expectedRate": _s(mir_service.import_expected_rate(r.po_line, sh)),
+            "licenseType": r.license_type, "licenseNumber": r.license_number})
+    return list(out.values())
 
 
 @api_view(["GET"])
@@ -208,7 +233,8 @@ def _preview_payload(result):
     lines = []
     for ln in result["lines"]:
         a = ln["amounts"] or {}
-        lines.append({"index": ln["index"], "poLineId": ln["po_line"].id, "openQty": _s(ln["state"]["open_qty"]),
+        lines.append({"index": ln["index"], "poLineId": ln["po_line"].id, "openQty": _s(ln["expected_qty"]),
+                      "expectedRate": _s(ln["expected_rate"]),
                       **{k: _s(a.get(k)) for k in ("gross", "taxable", "igst", "cgst", "sgst", "total")}})
     return {
         "ok": result["ok"], "errors": result["errors"],
@@ -217,6 +243,7 @@ def _preview_payload(result):
                         "differencePct": _s(m["difference_pct"]), "reason": m["reason"].code if m["reason"] else None}
                        for m in result["mismatches"]],
         "lines": lines, "vendor": _vendor(result["vendor"]), "vendorState": result["vendor_state"], "taxType": result["tax_type"],
+        "shipmentId": result["shipment"].id if result["shipment"] else None,
         "taxTypeExpected": result["tax_type_expected"], "computedTotal": _s(result["computed_total"]),
         "invoiceTotal": _s(result["invoice_total"]), "notices": result["notices"],
     }
@@ -261,7 +288,7 @@ def _mir_row(mir, total):
 
 
 def _mir_detail(mir):
-    mir = Mir.objects.select_related("plant", "vendor").get(pk=mir.pk)
+    mir = Mir.objects.select_related("plant", "vendor", "shipment").get(pk=mir.pk)
     lines = list(mir.lines.select_related("po_line__purchase_order__plant", "po_line__material").order_by("line_no"))
     window = mir_service.edit_window(mir)
     total = sum((ln.line_total for ln in lines), Decimal("0")) + mir.tcs_amount
@@ -270,6 +297,8 @@ def _mir_detail(mir):
     return {
         **_mir_row(mir, total), "taxType": mir.tax_type, "taxTypeExpected": mir.tax_type_expected,
         "vendorState": mir.vendor_state, "vendorStateName": rules.GST_STATES.get(mir.vendor_state, ""),
+        "shipment": ({"id": mir.shipment.id, "boeNumber": mir.shipment.boe_number, "blNumber": mir.shipment.bill_of_lading_number,
+                      "exchangeRate": _s(mir.shipment.exchange_rate)} if mir.shipment_id else None),
         "tcsAmount": _s(mir.tcs_amount), "challanNo": mir.challan_no, "lrNo": mir.lr_no, "vehicleNo": mir.vehicle_no,
         "ewayBillNo": mir.eway_bill_no, "gateEntryNo": mir.gate_entry_no, "weighbridgeSlipNo": mir.weighbridge_slip_no,
         "sapGrnNumber": mir.sap_grn_number, "remarks": mir.remarks, "cancelledBy": mir.cancelled_by_email, "cancelledAt": mir.cancelled_at.isoformat() if mir.cancelled_at else None,

@@ -39,7 +39,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from apps.services import documents, materials, rematch
+from apps.services import boe_extraction, documents, materials, rematch
 from apps.services import procurement_rules as rules
 from apps.services.procurement_sync import ProjectionResult, upsert_vendor, write_lines
 
@@ -144,13 +144,14 @@ def request(document, user):
     """Queue a reading of an uploaded PO file. Returns the PoExtraction."""
     from apps.core.models import Document, PoExtraction
 
-    if document.kind != Document.Kind.PO:
-        raise ExtractionError("Only a PO file is read into a purchase order.")
+    if document.kind not in (Document.Kind.PO, Document.Kind.BOE):
+        raise ExtractionError("Only a PO copy or a Bill of Entry is read.")
     if document.status == Document.Status.WITHDRAWN:
         raise ExtractionError("This file was withdrawn.")
     if not is_configured():
         raise ExtractionError("PO extraction is not set up on this server (ANTHROPIC_API_KEY).")
-    ext = PoExtraction.objects.create(document=document, plant=document.plant,
+    kind = PoExtraction.Kind.BOE if document.kind == Document.Kind.BOE else PoExtraction.Kind.PO
+    ext = PoExtraction.objects.create(document=document, plant=document.plant, kind=kind,
                                       requested_by_email=getattr(user, "email", "") or "")
     if rematch._inline():
         transaction.on_commit(lambda: run(ext.id))
@@ -161,7 +162,7 @@ def request(document, user):
     return ext
 
 
-def _call_claude(data: bytes, content_type: str) -> dict:
+def _call_claude(data: bytes, content_type: str, schema=None, prompt=None, ask="Read this purchase order.") -> dict:
     """One structured-output call: the file in, the schema's JSON out.
     Returns {"json", "model", "input_tokens", "output_tokens"}; raises
     ExtractionError with a readable reason."""
@@ -183,9 +184,9 @@ def _call_claude(data: bytes, content_type: str) -> dict:
             # model inside the same call.
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",
-            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
-            output_config={"effort": "high", "format": {"type": "json_schema", "schema": SCHEMA}},
-            messages=[{"role": "user", "content": [block, {"type": "text", "text": "Read this purchase order."}]}],
+            system=[{"type": "text", "text": prompt or SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            output_config={"effort": "high", "format": {"type": "json_schema", "schema": schema or SCHEMA}},
+            messages=[{"role": "user", "content": [block, {"type": "text", "text": ask}]}],
         )
     except anthropic.BadRequestError as exc:
         raise ExtractionError(f"The file could not be read: {exc.message}") from exc
@@ -219,9 +220,16 @@ def run(extraction_id: int) -> None:
     ext.status = PoExtraction.Status.RUNNING
     ext.save(update_fields=["status"])
     try:
-        result = _call_claude(documents.read_bytes(ext.document), ext.document.content_type)
+        data = documents.read_bytes(ext.document)
+        if ext.kind == PoExtraction.Kind.BOE:
+            result = _call_claude(data, ext.document.content_type, boe_extraction.SCHEMA, boe_extraction.SYSTEM_PROMPT,
+                                  "Read this Bill of Entry.")
+            draft = boe_extraction.normalize(result["json"], ext)
+        else:
+            result = _call_claude(data, ext.document.content_type)
+            draft = normalize(result["json"])
         ext.extracted = result["json"]
-        ext.draft = normalize(result["json"])
+        ext.draft = draft
         ext.model_name = result["model"][:60]
         ext.input_tokens, ext.output_tokens = result["input_tokens"], result["output_tokens"]
         ext.status = PoExtraction.Status.READY
@@ -397,6 +405,8 @@ def approve(extraction, draft_in, user):
     ext = PoExtraction.objects.select_for_update().select_related("plant", "document").get(pk=extraction.pk)
     if ext.status != PoExtraction.Status.READY:
         raise ExtractionError("Only a reading that is ready for review can be approved.")
+    if ext.kind == PoExtraction.Kind.BOE:
+        return _approve_boe(ext, draft_in, user)
     draft = normalize(draft_in if draft_in is not None else ext.draft)
     found = problems(draft, ext.plant, ext.document.po_number)
     if found:
@@ -443,6 +453,50 @@ def approve(extraction, draft_in, user):
     return ext
 
 
+def _approve_boe(ext, draft_in, user):
+    """A Bill of Entry reading into the plant's import shipment."""
+    from apps.core.models import PoExtraction
+
+    draft = boe_extraction.normalize(draft_in if draft_in is not None else ext.draft)
+    found = boe_extraction.problems(draft, ext)
+    if found:
+        err = ExtractionError(found[0]["message"])
+        err.problems = found
+        raise err
+    shipment = boe_extraction.approve(ext, draft, user)
+    ext.draft = draft
+    ext.status = PoExtraction.Status.APPROVED
+    ext.shipment = shipment
+    ext.reviewed_by_email = getattr(user, "email", "") or ""
+    ext.reviewed_at = timezone.now()
+    ext.save()
+    return ext
+
+
+def review(ext) -> dict:
+    """Everything the review screen shows for a reading, by what was read."""
+    from apps.core.models import PoExtraction
+
+    draft = ext.draft or {}
+    if ext.kind == PoExtraction.Kind.BOE:
+        return {
+            "headerFields": boe_extraction.HEADER_FIELDS, "lineFields": boe_extraction.LINE_FIELDS,
+            "labels": boe_extraction.LABELS,
+            "requiredHeader": {"boe": boe_extraction.REQUIRED_HEADER}, "requiredLine": {"boe": boe_extraction.REQUIRED_LINE},
+            "lineOptions": {"po_line_id": boe_extraction.line_options(ext)} if ext.draft else {},
+            "problems": boe_extraction.problems(draft, ext) if ext.draft else [],
+            "checks": boe_extraction.checks(draft, ext) if ext.draft else [],
+            "sheet": boe_extraction.sheet_differences(draft, ext) if ext.draft else None,
+        }
+    return {
+        "headerFields": HEADER_FIELDS, "lineFields": LINE_FIELDS, "labels": LABELS,
+        "requiredHeader": REQUIRED_HEADER, "requiredLine": REQUIRED_LINE, "lineOptions": {},
+        "problems": problems(draft, ext.plant, ext.document.po_number) if ext.draft else [],
+        "checks": checks(draft) if ext.draft else [],
+        "sheet": sheet_differences(draft, ext.plant) if ext.draft else None,
+    }
+
+
 def save_draft(extraction, draft_in, user):
     """Keep a reviewer's corrections without approving."""
     from apps.core.models import PoExtraction
@@ -450,7 +504,7 @@ def save_draft(extraction, draft_in, user):
     ext = PoExtraction.objects.select_for_update().get(pk=extraction.pk)
     if ext.status != PoExtraction.Status.READY:
         raise ExtractionError("Only a reading that is ready for review can be edited.")
-    ext.draft = normalize(draft_in)
+    ext.draft = boe_extraction.normalize(draft_in) if ext.kind == PoExtraction.Kind.BOE else normalize(draft_in)
     ext.save(update_fields=["draft"])
     return ext
 

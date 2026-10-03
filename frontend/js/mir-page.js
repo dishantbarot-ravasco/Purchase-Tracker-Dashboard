@@ -22,6 +22,7 @@ const S = {
   preview: null,
   previewSeq: 0,
   triedToPost: false,
+  shipment: null,     // an import MIR's Bill of Entry: {id, boeNumber, boeDate, ...}
 };
 
 // Each difference the server can report, what reason list answers it, and
@@ -122,6 +123,54 @@ function plantName(code) { const p = META.plants.find(x => x.code === code); ret
 function req() { return ' <span class="req-mark" aria-hidden="true">*</span>'; }
 // The MIR's currency: its lines' PO currency (one vendor, one invoice).
 function mirCurrency() { return S.lines.length ? (S.lines[0].line.currency || 'INR') : 'INR'; }
+
+// ── Import receipts (2026-10-03) ──
+// An import MIR is one shipment's receipt: its Bill of Entry is the invoice,
+// each line is checked against that BOE's open quantity at the PO price x
+// the BOE's customs rate (INR). The server decides; the page only fills the
+// form from the shipment the clerk picks.
+function importLineView(line, shipLine) {
+  return Object.assign({}, line, { rate: shipLine.expectedRate, openQty: shipLine.openQty, currency: 'INR', shipmentLineId: shipLine.shipmentLineId });
+}
+
+function applyShipmentHeader() {
+  const inv = document.getElementById('invoiceNo');
+  const total = document.getElementById('invoiceTotal').closest('.form-group');
+  if (S.shipment) {
+    inv.value = S.shipment.boeNumber;
+    inv.readOnly = true;
+    const date = document.getElementById('invoiceDate');
+    if (S.shipment.boeDate && !date.value) date.value = S.shipment.boeDate;
+    total.hidden = true;
+  } else {
+    inv.readOnly = false;
+    total.hidden = false;
+  }
+}
+
+function shipmentsHtml(po) {
+  if (!po.shipments || !po.shipments.length) {
+    return '<p class="mir-muted">No Bill of Entry for this import order yet - it is received once its shipment\'s BOE is in the app.</p>';
+  }
+  const other = sh => (S.shipment && S.shipment.id !== sh.id) || (!S.shipment && S.lines.length);
+  return '<h4 class="mir-subtitle">Bills of Entry</h4>' + po.shipments.map(sh => {
+    const open = sh.lines.some(l => Number(l.openQty) > 0);
+    const byLine = Object.fromEntries(po.lines.map(l => [l.id, l]));
+    return '<div class="mir-boe"><div class="mir-boe-head"><b>BOE ' + escapeHtml(sh.boeNumber) + '</b>' +
+      (sh.boeDate ? ' <span class="mir-muted">' + dateIN(sh.boeDate) + '</span>' : '') +
+      (sh.blNumber ? ' <span class="mir-muted">BL ' + escapeHtml(sh.blNumber) + '</span>' : '') +
+      ' <span class="mir-muted">' + escapeHtml(sh.currency || '') + ' at ' + escapeHtml(sh.exchangeRate || '-') + '</span>' +
+      (S.shipment && S.shipment.id === sh.id ? ' ' + statusPill('on this MIR', 'warn')
+        : open && !other(sh) ? ' <button type="button" class="btn btn-primary btn-small" data-receive-boe="' + sh.id + '">Receive this BOE</button>'
+        : open ? ' <span class="mir-muted">Another BOE or invoice is on this MIR</span>' : ' ' + statusPill('received', 'ok')) +
+      '</div><div class="table-wrap mir-table-wrap"><table><thead><tr><th>#</th><th>Material</th><th class="num">On the BOE</th>' +
+      '<th class="num">Received</th><th class="num">Open</th><th class="num">Rate (INR)</th><th>Licence</th></tr></thead><tbody>' +
+      sh.lines.map(l => '<tr><td>' + l.lineNo + '</td><td>' + escapeHtml((byLine[l.poLineId] || {}).description || '') + '</td>' +
+        '<td class="num">' + qty(l.qtyBoe) + '</td><td class="num">' + qty(l.accepted) + '</td><td class="num"><b>' + qty(l.openQty) + '</b></td>' +
+        '<td class="num">' + money(l.expectedRate, 'INR') + '</td><td>' + escapeHtml([l.licenseType, l.licenseNumber].filter(Boolean).join(' ') || '-') + '</td></tr>').join('') +
+      '</tbody></table></div></div>';
+  }).join('');
+}
 function statusPill(text, tone) { return '<span class="status-pill mir-pill-' + tone + '">' + escapeHtml(text) + '</span>'; }
 const MIR_STATUS_TONE = { POSTED: 'ok', CANCELLED: 'bad' };
 const MISMATCH_STATUS_TONE = { OPEN: 'warn', RESOLVED: 'ok', VOID: 'muted' };
@@ -309,6 +358,20 @@ async function openPo(poId, el) {
   try {
     const po = await apiMir('/purchase-orders/' + poId);
     const picked = new Set(S.lines.map(l => l.line.id));
+    if (po.kind === 'import') {
+      target.innerHTML = poHeaderHtml(po) + poFilesHtml(po) + shipmentsHtml(po);
+      docFileBindOpen(target);
+      target.querySelectorAll('[data-receive-boe]').forEach(b => { b.onclick = () => {
+        const sh = po.shipments.find(x => x.id === Number(b.dataset.receiveBoe));
+        S.shipment = { id: sh.id, boeNumber: sh.boeNumber, boeDate: sh.boeDate };
+        const byLine = Object.fromEntries(po.lines.map(l => [l.id, l]));
+        addLines(po, sh.lines.filter(l => Number(l.openQty) > 0 && byLine[l.poLineId] && !picked.has(l.poLineId))
+          .map(l => importLineView(byLine[l.poLineId], l)));
+        applyShipmentHeader();
+        openPo(poId, el);
+      }; });
+      return;
+    }
     target.innerHTML = poHeaderHtml(po) + poFilesHtml(po) +
       '<div class="table-wrap mir-table-wrap"><table><thead><tr><th></th><th>#</th><th>Material</th><th>HSN</th><th>Unit</th><th class="num">Ordered</th>' +
       '<th class="num">Received</th><th class="num">Open</th><th class="num">PO rate</th><th>Delivery</th>' + (po.canManage ? '<th>Purchase manager</th>' : '') + '</tr></thead><tbody>' +
@@ -633,6 +696,7 @@ function payload() {
     lines: S.lines.map(ln => Object.assign({ po_line_id: ln.line.id }, ln.v)),
   };
   if (S.taxTouched) body.tax_type = val('taxType');
+  if (S.shipment) body.shipment_id = S.shipment.id;
   if (S.vendor && !S.vendorFromPo) body.vendor_id = S.vendor.id;
   return body;
 }
@@ -926,7 +990,7 @@ function saveDraft() {
     DRAFT_FIELDS.forEach(id => { fields[id] = document.getElementById(id).value; });
     localStorage.setItem(draftKey(), JSON.stringify({
       savedAt: Date.now(), fields, taxTouched: S.taxTouched, header: S.header,
-      vendor: S.vendor, vendorFromPo: S.vendorFromPo,
+      vendor: S.vendor, vendorFromPo: S.vendorFromPo, shipment: S.shipment,
       lines: S.lines.map(ln => ({ poId: ln.po.id, lineId: ln.line.id, poNumber: ln.line.poNumber, v: ln.v })),
     }));
   } catch (e) { /* storage full or blocked: the form still works, just without a draft */ }
@@ -978,12 +1042,21 @@ async function restoreDraft(d) {
   const pos = {};
   for (const poId of [...new Set(d.lines.map(l => l.poId))]) pos[poId] = await apiMir('/purchase-orders/' + poId);
   let dropped = 0;
+  S.shipment = d.shipment || null;
   d.lines.forEach(saved => {
     const po = pos[saved.poId];
-    const line = po && po.lines.find(l => l.id === saved.lineId);
+    let line = po && po.lines.find(l => l.id === saved.lineId);
+    if (line && S.shipment) {
+      // An import line is shown at its BOE's open quantity and INR rate.
+      const sh = (po.shipments || []).find(x => x.id === S.shipment.id);
+      const sl = sh && sh.lines.find(x => x.poLineId === line.id && Number(x.openQty) > 0);
+      line = sl ? importLineView(line, sl) : null;
+    }
     if (!line || !line.receivable) { dropped += 1; return; }
     S.lines.push({ line, po, v: saved.v });
   });
+  if (!S.lines.length) S.shipment = null;
+  applyShipmentHeader();
   if (S.lines.length) {
     S.vendor = d.vendor || S.lines[0].po.vendor;
     S.vendorFromPo = !!d.vendorFromPo;
@@ -1015,12 +1088,14 @@ function mirToast(text) {
 
 function resetForm(keepDraft) {
   S.lines = []; S.vendor = null; S.vendorFromPo = false; S.taxTouched = false; S.header = {}; S.preview = null; S.triedToPost = false;
+  S.shipment = null;
   // The receiving plant is kept: a store entering several MIRs is at one plant.
   const plant = document.getElementById('plantSel').value;
   document.getElementById('mirForm').reset();
   document.getElementById('plantSel').value = plant;
   document.getElementById('mirDate').value = META.today;
   document.getElementById('vendorState').disabled = false;
+  applyShipmentHeader();
   ['poResults', 'linesArea', 'totalsBox', 'formErrors', 'vendorBox', 'noticeBox', 'todoBox'].forEach(id => { document.getElementById(id).innerHTML = ''; });
   ['taxReasonRow', 'totalReasonRow', 'invoiceDateReasonRow'].forEach(id => { const r = document.getElementById(id); r.hidden = true; r.innerHTML = ''; r.dataset.sig = ''; });
   showEntrySections(false);

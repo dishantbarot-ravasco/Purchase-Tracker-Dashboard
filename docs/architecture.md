@@ -611,10 +611,18 @@ categories already chosen on MIR lines moved onto their materials - and `MirChan
   or `app` (entered or confirmed in the app; the projection never writes one, migration `0086`, see
   [data-sync.md](data-sync.md#po-csv-into-the-procurement-tables-2026-09-28)); `source_hash` (the
   mirror's hash, for skip-if-unchanged). The vendor's name, address, GSTIN, email and code are on `Vendor`, once.
-- `PoExtraction` - one reading of an uploaded PO file (migration `0098`): `document`, `plant`, `status`
+- `ImportShipment` - one Bill of Entry (migration `0100`): `plant`, `boe_number`, `bill_of_lading_number`
+  (with the BOE, its identity - one BOE has been seen against two BLs), `boe_date`, `laden_on_board_date`,
+  `country_of_origin`, invoice `currency`, `currency_after_taxes`, the customs `exchange_rate`, the BOE's
+  `total_inclusive_value`, `source` csv / app, the BOE `document` an approved reading came from,
+  `is_active`. `ImportShipmentLine` - one PO line on it: `qty_as_per_boe` (above zero),
+  `total_inclusive_value`, `license_type` / `license_number`, `is_active`; unique (shipment, PO line).
+  `Mir.shipment` and `MirLine.shipment_line` tie an import MIR to them.
+- `PoExtraction` - one reading of an uploaded PO file or Bill of Entry (`kind` PO / BOE; migration `0098`,
+  `0100` for the BOE): `document`, `plant`, `status`
   QUEUED / RUNNING / READY / FAILED / APPROVED / REJECTED, the model's `extracted` JSON and the reviewer's
-  `draft`, model and token counts, `error`, who asked and who decided, and the `purchase_order` an
-  approval wrote (required when APPROVED; a rejection has a reason). See
+  `draft`, model and token counts, `error`, who asked and who decided, and the `purchase_order` or
+  `shipment` an approval wrote (one is required when APPROVED; a rejection has a reason). See
   [api-and-features.md](api-and-features.md#po-extraction-2026-10-03).
 - `Material` - the material master: `name`, unique `name_key` (`material_identity.material_key()`),
   `item_code` (reference only - PO sheets reuse a code across grades), `uom`, `hsn`, `category`,

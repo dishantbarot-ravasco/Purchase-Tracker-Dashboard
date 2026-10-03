@@ -106,9 +106,10 @@ def upload_po_document(request):
     except documents.DocumentError as exc:
         return _refused(exc)
     payload = serialize(doc)
-    # A PO copy is read into a draft PO on the background worker when
-    # extraction is set up (po_extraction.py); the upload never waits on it.
-    if doc.kind == Document.Kind.PO and po_extraction.is_configured():
+    # A PO copy (or a Bill of Entry) is read into a draft on the background
+    # worker when extraction is set up (po_extraction.py); the upload never
+    # waits on it.
+    if doc.kind in (Document.Kind.PO, Document.Kind.BOE) and po_extraction.is_configured():
         payload["extractionId"] = po_extraction.request(doc, request.user).id
     return Response(payload, status=http.HTTP_201_CREATED)
 

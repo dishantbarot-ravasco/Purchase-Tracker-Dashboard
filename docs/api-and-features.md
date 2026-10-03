@@ -932,10 +932,8 @@ so nothing is counted twice while both exist.
 2026-09-29 - a vendor-name search offered every open order of that vendor, which is how a receipt lands
 on the wrong one). **Only the caller's own plants' POs are offered, and a PO is received only at its own
 plant** - the plant on its billing address (owner, 2026-10-03, replacing the 2026-09-28 rule that any
-plant could receive any plant's PO). Import orders are in the app (`kind = import`) but MIR entry does
-not offer them yet: an import receipt is checked against its shipment's Bill of Entry (quantity landed,
-customs exchange rate), which arrives in phase 2 - `search_open_pos()` returns domestic orders only and
-`line_state()` blocks an import line. Picking the first line sets the receiving plant to the PO's; once
+plant could receive any plant's PO). Import orders are received one shipment at a time - see
+[Import receipts](#import-receipts-one-shipment-at-a-time-2026-10-03). Picking the first line sets the receiving plant to the PO's; once
 lines are picked, another plant's PO cannot join (`plantClash()`), and `evaluate()` refuses a line whose
 PO is at another plant. `PurchaseOrder.billing_plant` is read from the billing address
 (`procurement_rules.billing_plant_code()`: a few words of each plant's printed address, unresolved when it
@@ -1204,6 +1202,29 @@ way to bring the Drive sheets' current stock in (it has to be entered as MIRs). 
 before 2026-09-30 that drew several lots keep working through their allocations; a pending difference
 from then without a MIR receipt cannot be approved (turn it down and enter it again).
 
+### Import receipts: one shipment at a time (2026-10-03)
+
+An import PO ships in parts, each cleared under its own Bill of Entry; the app keeps each as an
+`ImportShipment` with one `ImportShipmentLine` per PO line it carries (quantity as per BOE, the line's
+share of the total payable, licence type and number), made from the import CSV's repeated rows
+([data-sync.md](data-sync.md#import-csv-into-the-procurement-tables-2026-10-03)) or from an approved BOE
+reading ([PO extraction](#po-extraction-2026-10-03)).
+
+**An import MIR is one shipment's receipt** (`mir_service.evaluate()`, `shipment_id` in the payload): the
+MIR's invoice number must be the BOE number, every line must be on that BOE (`not on Bill of Entry ...`
+otherwise), and domestic and import lines never share a MIR. Each line is checked - exactly, with a reason
+for any difference, as for domestic - against the BOE line's open quantity (BOE quantity less what posted
+MIRs accepted against that shipment line, `accepted_by_shipment_line()`) and against the PO price at the
+BOE's customs exchange rate in INR, before duty (`import_expected_rate()`, the same basis the import
+matching compares on). There is no invoice total to type: the BOE's totals and duty were checked when it
+was approved, so the MIR's total is its computed one. A supplier abroad gets State 96 (Outside India),
+so IGST is expected. A line with no active shipment takes no receipt (`line_state()`). The MIR keeps
+`shipment` and each line its `shipment_line`; `po_rate` and `open_qty_before` hold the INR rate and the
+BOE quantity it was checked against. The stock lot is priced in INR (`stock_service.receive_mir()`), so an
+import receipt now has a stock value. On the page, an import PO lists its Bills of Entry with each line's
+BOE quantity, received, open and INR rate; "Receive this BOE" fills the invoice number (locked) and date
+from the BOE, hides the invoice total, and adds that BOE's open lines of the PO at the INR rate.
+
 ### PO extraction (2026-10-03)
 
 The owner's workflow: a PO is uploaded and read into every field of the order - PO number and date,
@@ -1244,7 +1265,23 @@ It decides what is compulsory (`REQUIRED_HEADER` / `REQUIRED_LINE`, sent to the 
 GSTIN, tax type, tax total or total including tax at order time, and its HSN may wait for the Bill of
 Entry. Approval writes `PurchaseOrder.kind` accordingly, in the PO's own currency.
 
-Access: `PO_UPLOAD` at the file's plant for everything; another plant's reading is a 404. The page is
+**Bills of Entry.** A BOE uploaded under its PO (the CHA's checklist, corrected until right - each
+correction a new revision) is read the same way into a draft shipment (`PoExtraction.kind = BOE`,
+`boe_extraction.py`): BOE number and date, Bill of Lading number, laden-on-board date when printed,
+supplier, country of origin, invoice currency, the customs exchange rate printed on the BOE, currency after
+taxes, the total payable, and per item the description, HSN, quantity, unit price, item total, licence
+type (Advance or RoDTEP) and number. Each item is paired to the import PO line it clears - proposed from
+the PO it is filed under, the HSN and the words in common, and confirmed in a select by the reviewer.
+Approval needs the BOE number the file was filed under, its date, BL, country, currency, exchange rate and
+total, and every item paired to a distinct open import PO line at the plant; it warns when the items do
+not add up to the total, a price differs from the PO's, the currency differs, or the BOE quantity is more
+than the line still has open. It writes the shipment (`source = app`), taking over the one the import CSV
+made for that BOE number (compared first, field by field); the CSV then leaves that BOE alone. The BOE's
+"total payable" is read as printed (assessable value plus duty); what the CSV's "Final Bill Paid" column
+holds is still an open question with the owner.
+
+Access: a PO reading needs `PO_UPLOAD`, a BOE reading `IMPORT_DOCS` (the permissions that upload them), at
+the file's plant; another plant's reading, or a kind the account does not handle, is a 404. The page is
 the PO Files page's "PO readings" panel (`po-review.js`).
 
 ### PO and invoice files (2026-09-30)
@@ -1901,6 +1938,9 @@ approved PO reading (`po_extraction.approve()`); `changed_by` names the source i
 `project_plant_import_orders(plant_code)` / `import_line_groups()` / `IMPORT_PO_MODELS` - the import CSV
 mirror into `PurchaseOrder` (`kind = import`), one line per ordered item - see
 [data-sync.md](data-sync.md#import-csv-into-the-procurement-tables-2026-10-03).
+`project_plant_import_shipments(plant_code)` - the import CSV's rows with a BOE into `ImportShipment` /
+`ImportShipmentLine` every run (no hash skip), keyed (plant, BOE, BL); a BOE number the app owns is left
+alone; a row the CSV drops retires its line (and an emptied shipment), never deletes.
 
 ### apps/services/po_extraction.py
 
@@ -1909,6 +1949,15 @@ Reading a PO file into a draft and approving it - see [PO extraction](#po-extrac
 `normalize()`, `problems()`, `checks()`, `sheet_differences()`, `save_draft()`, `approve()`, `reject()`;
 `SCHEMA`, `SYSTEM_PROMPT`, `HEADER_FIELDS` / `LINE_FIELDS` / `LABELS`. `ExtractionError` is a `ValueError`
 shown as it is.
+`review(ext)` gives the review screen's payload by what was read (fields, required lists, line choices,
+problems, checks, sheet comparison); a BOE is approved through `_approve_boe()`.
+
+### apps/services/boe_extraction.py
+
+The Bill of Entry half of [PO extraction](#po-extraction-2026-10-03): `SCHEMA` / `SYSTEM_PROMPT`,
+`normalize(raw, ext)` (proposes each item's PO line when none is set - `_propose()` over
+`candidate_lines()`), `problems()`, `checks()`, `sheet_differences()` (against the CSV shipment of that
+BOE), `line_options()` and `approve()` (the shipment, taking over a CSV one; items no longer listed retired).
 
 ### apps/api/routers/po_extraction_views.py
 

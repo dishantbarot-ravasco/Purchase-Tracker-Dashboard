@@ -26,7 +26,7 @@ from django.utils import timezone
 
 from apps.core.models import RTPAchhadImportPOLineItem, RTPAchhadImportPurchaseOrder, SyncRun
 from apps.services.import_sync import sync_orders
-from apps.services.procurement_sync import project_plant_import_orders
+from apps.services.procurement_sync import project_plant_import_orders, project_plant_import_shipments
 from apps.services.parsers.import_po_csv import HeaderMismatch, parse_import_po_csv
 
 
@@ -55,6 +55,7 @@ class Command(BaseCommand):
             rows_seen, rows_changed, deactivated = sync_orders(RTPAchhadImportPurchaseOrder, RTPAchhadImportPOLineItem, orders)
             # The app's own import POs, one line per ordered item (2026-10-03).
             project_plant_import_orders("achhad")
+            project_plant_import_shipments("achhad")
 
             self.stdout.write(self.style.SUCCESS(
                 f"sync_achhad_imports_po_csv: {rows_seen} POs seen, {rows_changed} created/updated, "

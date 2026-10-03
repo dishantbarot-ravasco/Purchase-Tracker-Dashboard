@@ -291,7 +291,10 @@ shipment (1000001519's SBR line is three rows: one PO quantity of 302,400 KG, th
 in the order the item first appears: the ordered quantity is the PO quantity (repeated, never summed),
 the price is in the PO's own currency, and there is no tax at order time (`tax_type` blank,
 `total_inclusive_value` null). The shipment rows themselves - BOE, Bill of Lading, quantity landed,
-exchange rate, licence - become the app's shipments in phase 2 (not built). Lines are written by the same
+exchange rate, licence - become the app's shipments (`project_plant_import_shipments()`, run after the
+orders every time: one `ImportShipment` per (plant, BOE, BL), one `ImportShipmentLine` per PO line on it;
+a BOE the app owns through an approved reading is left alone; a dropped row retires its line). Locally:
+Vapi's CSV made 46 shipments. Lines are written by the same
 `write_lines()` diff; an order the app owns (`source = app`) is skipped. A domestic and an import order
 of the same number at one plant are two rows (`uniq_po_per_plant_kind`). Locally on 2026-10-03: 42 import
 POs, Vapi's 55 CSV rows became 49 PO lines.

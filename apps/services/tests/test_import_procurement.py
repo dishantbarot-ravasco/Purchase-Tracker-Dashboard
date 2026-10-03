@@ -65,10 +65,9 @@ class TestImportProjection:
         r = project_plant_import_orders("vapi")
         assert r.orders_held == ["1000001519"] and not PurchaseOrderLine.objects.exists()
 
-    def test_mir_entry_and_the_app_stock_tabs_leave_imports_out_for_now(self):
-        _import_po()
+    def test_an_import_line_without_a_bill_of_entry_takes_no_receipt(self):
+        _import_po(shipments=())
         project_plant_import_orders("vapi")
-        assert mir_service.search_open_pos("1000001519", ["vapi"]) == []
         line = PurchaseOrderLine.objects.get(line_no=1)
         state = mir_service.line_state(line, Decimal("0"))
         assert state["receivable"] is False and "Bill of Entry" in state["blocked_reason"]

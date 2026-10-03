@@ -300,6 +300,75 @@ class PurchaseOrderLineChange(models.Model):
         ordering = ["-changed_at", "-id"]
 
 
+class ImportShipment(models.Model):
+    """One import shipment = one Bill of Entry (owner, 2026-10-03): what landed
+    at the port against one or more import PO lines, at the customs exchange
+    rate printed on the BOE. Made from the import CSV's repeated rows
+    (procurement_sync.project_plant_import_shipments(), source CSV) or from an
+    approved reading of the BOE / CHA checklist (boe_extraction.approve(),
+    source APP - the CSV then leaves it alone). An import MIR is one
+    shipment's receipt (mir_service). Never deleted - retired."""
+
+    class Source(models.TextChoices):
+        CSV = "csv", "Import PO sheet (Drive)"
+        APP = "app", "Approved BOE reading"
+
+    plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="import_shipments")
+    boe_number = models.CharField(max_length=50)
+    # Blank when the BOE does not print it. One BOE has been seen against two
+    # Bills of Lading in the CSV (1000001560), so the BL is part of identity.
+    bill_of_lading_number = models.CharField(max_length=100, blank=True, default="")
+    boe_date = models.DateField(null=True, blank=True)
+    laden_on_board_date = models.DateField(null=True, blank=True)
+    country_of_origin = models.CharField(max_length=100, blank=True, default="")
+    # The invoice currency (USD ...) and the customs rate to INR the BOE
+    # applies; "currency after taxes" is what the duty was paid in (INR).
+    currency = models.CharField(max_length=10, blank=True, default="")
+    currency_after_taxes = models.CharField(max_length=10, blank=True, default="INR")
+    exchange_rate = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)
+    # The BOE's total payable, as printed (assessable value plus duty). What
+    # exactly the CSV's "Final Bill Paid" holds is still an open question.
+    total_inclusive_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+    source = models.CharField(max_length=10, choices=Source.choices, default=Source.CSV)
+    # The BOE / checklist file an approved reading came from.
+    document = models.ForeignKey("core.Document", on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["plant", "boe_number", "bill_of_lading_number"], name="uniq_import_shipment"),
+            models.CheckConstraint(condition=~Q(boe_number=""), name="import_shipment_has_boe"),
+        ]
+        ordering = ["-boe_date", "-id"]
+
+    def __str__(self):
+        return f"{self.plant_id}:BOE {self.boe_number}"
+
+
+class ImportShipmentLine(models.Model):
+    """One PO line's part of a shipment: the quantity the BOE assessed and
+    the licence it was cleared under (licence debits proper are phase 3)."""
+
+    shipment = models.ForeignKey(ImportShipment, on_delete=models.CASCADE, related_name="lines")
+    # PROTECT: a PO line with a shipment can never be deleted from under it.
+    po_line = models.ForeignKey(PurchaseOrderLine, on_delete=models.PROTECT, related_name="shipment_lines")
+    qty_as_per_boe = models.DecimalField(max_digits=14, decimal_places=3)
+    # This line's share of the total payable, when the BOE or CSV states it.
+    total_inclusive_value = models.DecimalField(max_digits=16, decimal_places=2, null=True, blank=True)
+    license_type = models.CharField(max_length=20, blank=True, default="")
+    license_number = models.CharField(max_length=100, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["shipment", "po_line"], name="uniq_shipment_po_line"),
+            models.CheckConstraint(condition=Q(qty_as_per_boe__gt=0), name="shipment_line_qty_positive"),
+        ]
+        ordering = ["shipment_id", "id"]
+
+
 class MirReasonCode(models.Model):
     class Kind(models.TextChoices):
         QTY_SHORT = "QTY_SHORT", "Quantity short"
@@ -362,6 +431,8 @@ class Mir(models.Model):
     # expected tax type. Blank only on MIRs posted before 2026-10-03 whose
     # vendor had no GSTIN.
     vendor_state = models.CharField(max_length=2, blank=True, default="")
+    # An import MIR is one shipment's receipt (its BOE is the invoice).
+    shipment = models.ForeignKey(ImportShipment, on_delete=models.PROTECT, null=True, blank=True, related_name="mirs")
     invoice_no = models.CharField(max_length=60)
     # procurement_rules.invoice_key() - how the form finds earlier MIRs of the same invoice.
     invoice_key = models.CharField(max_length=60)
@@ -423,6 +494,9 @@ class MirLine(models.Model):
     # quantity was entered in this unit, and a later PO sheet edit must not
     # change what a posted receipt says it received.
     description = models.CharField(max_length=500, blank=True, default="")
+    # On an import MIR, the shipment line this receipt is checked against.
+    shipment_line = models.ForeignKey(ImportShipmentLine, on_delete=models.PROTECT, null=True, blank=True,
+                                      related_name="mir_lines")
     uom = models.CharField(max_length=20, blank=True, default="")
     qty_received = models.DecimalField(max_digits=14, decimal_places=3)
     # Rejected at the quality check. Accepted = received - rejected, and only
@@ -631,8 +705,14 @@ class PoExtraction(models.Model):
         APPROVED = "APPROVED", "Approved"
         REJECTED = "REJECTED", "Rejected"
 
+    class Kind(models.TextChoices):
+        PO = "PO", "Purchase order"
+        BOE = "BOE", "Bill of Entry"
+
     document = models.ForeignKey(Document, on_delete=models.PROTECT, related_name="extractions")
     plant = models.ForeignKey(Plant, on_delete=models.PROTECT, related_name="po_extractions")
+    # What was read: a PO copy, or a Bill of Entry / CHA checklist.
+    kind = models.CharField(max_length=4, choices=Kind.choices, default=Kind.PO)
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.QUEUED)
     # The model's own output, kept as it came, and the reviewer's draft (the
     # same shape, edited). Approval writes from `draft`.
@@ -648,13 +728,16 @@ class PoExtraction(models.Model):
     reviewed_by_email = models.CharField(max_length=255, blank=True, default="")
     reviewed_at = models.DateTimeField(null=True, blank=True)
     review_note = models.TextField(blank=True, default="")
-    # The PO an approval wrote (created, or taken over from the PO sheet).
+    # What an approval wrote: the PO (created, or taken over from the PO
+    # sheet), or the shipment of an approved BOE.
     purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.PROTECT, null=True, blank=True, related_name="extractions")
+    shipment = models.ForeignKey(ImportShipment, on_delete=models.PROTECT, null=True, blank=True, related_name="extractions")
 
     class Meta:
         constraints = [
             models.CheckConstraint(
-                condition=~Q(status="APPROVED") | Q(purchase_order__isnull=False), name="po_extraction_approved_has_po",
+                condition=~Q(status="APPROVED") | Q(purchase_order__isnull=False) | Q(shipment__isnull=False),
+                name="po_extraction_approved_has_record",
             ),
             models.CheckConstraint(
                 condition=~Q(status="REJECTED") | ~Q(review_note=""), name="po_extraction_rejected_has_reason",
